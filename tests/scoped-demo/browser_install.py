@@ -68,14 +68,49 @@ def main() -> int:
             page.wait_for_load_state("domcontentloaded")
             activated_body = page.content()
             check("activation screen has no PHP diagnostic", not DIAGNOSTIC.search(activated_body))
-            # The Owner's dead end: activation dropped them on Plugins and the only
-            # demo entry point looked like the clean-site page. Activation must land
-            # on a demo console instead, and on a NON-EMPTY site that console is the
-            # scoped one (the strict page is for a fresh, empty WordPress only).
+            # The Owner's dead end: activation dropped them on Plugins, and the only
+            # demo entry point was the clean-site page - a dead end on a NON-EMPTY
+            # site. Activation now lands on the Owner dashboard, which says what is
+            # true for THIS site and offers the one next action; the strict
+            # clean-site page and the scoped console both stay one link away.
             landed = page.url
-            check("activation lands the operator on a demo console instead of the Plugins screen",
-                  "page=cpms-scoped-demo" in landed or "page=cpms-disposable-demo" in landed, landed)
-            check("a populated site is routed to the scoped demo console", "page=cpms-scoped-demo" in landed, landed)
+            check("activation lands the operator on the Owner dashboard instead of the Plugins screen",
+                  "wp-admin" in landed and "page=cpms-demo" in landed, landed)
+            check("the landing screen really renders the dashboard",
+                  page.locator('[data-cpms-demo-page="1"]').count() == 1, landed)
+            state_node = page.locator("[data-cpms-demo-state]").first
+            dash_state = (state_node.get_attribute("data-cpms-demo-state") if state_node.count() else "") or ""
+            check("the dashboard states this site's live situation",
+                  dash_state in {"prepare", "needs-consent", "ready", "resumable", "blocked",
+                                 "manifest-invalid", "core-unavailable", "empty-site"}, dash_state)
+            check("a populated site is offered the demo's next action, not the empty-site page",
+                  dash_state in {"prepare", "needs-consent"}, dash_state)
+            if dash_state == "needs-consent":
+                # This site has exactly one Clinic, and the demo necessarily adds one
+                # synthetic anchor Clinic that survives teardown (audit rows are never
+                # deleted). The consequence is disclosed and accepted once, bound to
+                # THIS site's own host name - the only phrase the one-click page asks.
+                consent = page.locator('form[data-cpsd-form="private_host"]')
+                check("a single-Clinic site asks for the site-bound acceptance",
+                      consent.count() == 1, dash_state)
+                phrase = consent.locator('input[name="cpdd_confirm"]')
+                check("the acceptance is one required field, not a machine token",
+                      phrase.count() == 1 and phrase.first.get_attribute("required") is not None)
+                phrase_code = consent.locator("label code")
+                consent_host = (phrase_code.first.inner_text().strip() if phrase_code.count() else "")
+                check("the acceptance phrase is this site's own host name",
+                      consent_host != "" and consent_host in BASE, f"{consent_host!r} in {BASE!r}")
+                check("a single-Clinic site is offered no demo action it cannot use",
+                      page.locator('form[data-cpsd-form="prepare"]').count() == 0)
+            else:
+                check("the one-click prepare form is present",
+                      page.locator('form[data-cpsd-form="prepare"]').count() == 1, dash_state)
+                check("building the demo asks for no typed phrase",
+                      page.locator('input[name="cpdd_confirm"]').count() == 0)
+            console = page.locator('[data-cpms-demo-console="1"]')
+            console_href = (console.first.get_attribute("href") if console.count() else "") or ""
+            check("the scoped console is one real link away, not a URL to type",
+                  console.count() == 1 and "page=cpms-scoped-demo" in console_href, console_href)
             # One-shot activation redirects (this demo's own landing, and the embedded
             # core's first-run wizard) can each steal exactly one request. Ask for the
             # Plugins screen until WordPress actually serves it, so the assertion below

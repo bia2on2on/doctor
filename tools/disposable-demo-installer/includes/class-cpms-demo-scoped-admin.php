@@ -169,6 +169,13 @@ class ScopedAdmin {
 					self::$credentials = self::$provisioned['credentials'];
 					self::$notice      = array( 'type' => 'success', 'text' => 'دمو ساخته شد. رمزها فقط در همین پاسخ نمایش داده میشوند.' );
 					break;
+				case ScopedRequest::ACTION_RESUME:
+					// Additive recovery only: ScopedRecovery must prove that every
+					// synthetic row already exists before the seal is completed, and
+					// the provisioner re-checks that inside the concurrency lock.
+					self::$provisioned = $provisioner->finish( $admin_id );
+					self::$notice      = array( 'type' => 'success', 'text' => 'دموی ناتمام با همان شواهد مهرشده کامل شد. رمزهای نقش‌ها در این پاسخ نیستند؛ اگر آن‌ها را ندارید، «چرخش رمزهای نمایشی» را اجرا کنید.' );
+					break;
 				case ScopedRequest::ACTION_ROTATE:
 					$loaded = $manifest->load();
 					if ( null === $loaded || 'active' !== (string) ( $loaded['status'] ?? '' ) ) {
@@ -241,7 +248,7 @@ class ScopedAdmin {
 		}
 	}
 
-	private static function harden_headers(): void {
+	public static function harden_headers(): void {
 		header( 'Cache-Control: no-store, no-cache, must-revalidate, max-age=0' );
 		header( 'Pragma: no-cache' );
 		header( 'Referrer-Policy: no-referrer' );
@@ -293,20 +300,24 @@ class ScopedAdmin {
 		if ( '' !== $manifest_error ) {
 			echo '<div class="notice notice-error inline"><p>' . esc_html( $manifest_error ) . '</p></div>';
 		} elseif ( ! $manifest->mode_enabled() ) {
-			self::render_form( $request, ScopedRequest::ACTION_ENABLE, 'فعالسازی حالت محدودشده', 'I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE', 'این دکمه فقط یک نشانگر HMACشده مینویسد و هیچ کاربر یا رکورد CPMS نمیسازد.' );
+			self::render_form( $request, ScopedRequest::ACTION_ENABLE, 'فعالسازی حالت محدودشده', '', 'این دکمه فقط یک نشانگر HMACشده مینویسد و هیچ کاربر یا رکورد CPMS نمیسازد.' );
 		} elseif ( null === $loaded ) {
-			self::render_form( $request, ScopedRequest::ACTION_PROVISION, 'ساخت دموی محدودشده', 'CREATE_SCOPED_DEMO_ON_TEST_SITE', 'سازمان/درمانگاه/شعبهها و حساب‌های کاملاً ساختگی دمو ایجاد میشوند؛ هیچ رکورد قبلی تغییر نمیکند.' );
+			self::render_form( $request, ScopedRequest::ACTION_PROVISION, 'ساخت دموی محدودشده', '', 'سازمان/درمانگاه/شعبهها و حساب‌های کاملاً ساختگی دمو ایجاد میشوند؛ هیچ رکورد قبلی تغییر نمیکند.' );
 		} else {
 			$status = (string) ( $loaded['status'] ?? 'unknown' );
 			self::render_ownership( $env, $manifest, $request, $loaded );
 			if ( 'active' === $status ) {
 				self::render_persona_access( $loaded );
-				self::render_form( $request, ScopedRequest::ACTION_ROTATE, 'چرخش رمزهای نمایشی', 'ROTATE_SCOPED_DEMO_CREDENTIALS', 'رمزهای تازه فقط در همین پاسخ نشان داده می‌شوند و همه نشست‌های قبلی نقش‌های نمایشی باطل می‌شوند.' );
-				self::render_form( $request, ScopedRequest::ACTION_OTP, 'نمایش کد OTP نمایشی', 'SHOW_SCOPED_DEMO_OTP', 'ابتدا در رزرو عمومی با شماره ساختگی بالا کد بخواهید؛ سپس همین فرم کد همان چالش زنده را نشان می‌دهد. پیامک واقعی ارسال نمی‌شود.' );
+				self::render_form( $request, ScopedRequest::ACTION_ROTATE, 'چرخش رمزهای نمایشی', '', 'رمزهای تازه فقط در همین پاسخ نشان داده می‌شوند و همه نشست‌های قبلی نقش‌های نمایشی باطل می‌شوند.' );
+				self::render_form( $request, ScopedRequest::ACTION_OTP, 'نمایش کد OTP نمایشی', '', 'ابتدا در رزرو عمومی با شماره ساختگی بالا کد بخواهید؛ سپس همین فرم کد همان چالش زنده را نشان می‌دهد. پیامک واقعی ارسال نمی‌شود.' );
 			} else {
-				echo '<div class="notice notice-warning inline"><p>وضعیت دمو ناتمام است: <code dir="ltr">' . esc_html( $status ) . '</code>. ساخت دمو تازهای مجاز نیست؛ از پیشنمایش و پاکسازی ایمن استفاده کنید.</p></div>';
+				$recovery = ( new ScopedRecovery( $env, $platform, $manifest ) )->assess( $loaded );
+				echo '<div class="notice notice-warning inline" data-cpsd-recovery="' . esc_attr( (string) $recovery['verdict'] ) . '" data-cpsd-recovery-code="' . esc_attr( (string) $recovery['code'] ) . '"><p>وضعیت دمو ناتمام است: <code dir="ltr">' . esc_html( $status ) . '</code>. ' . esc_html( (string) $recovery['reason'] ) . '</p></div>';
+				if ( ScopedRecovery::VERDICT_RESUMABLE === $recovery['verdict'] ) {
+					self::render_form( $request, ScopedRequest::ACTION_RESUME, 'ادامهٔ ساخت دموی ناتمام', '', 'همهٔ ردیف‌های ساختگی ساخته شده‌اند و فقط مهر نهایی ناقص است. ادامه هیچ ردیفی نمی‌سازد و هیچ ردیفی را حذف نمی‌کند؛ فقط مالکیت را مهر و دمو را فعال می‌کند.' );
+				}
 			}
-			self::render_form( $request, ScopedRequest::ACTION_DIAGNOSE, 'پیشنمایش پاکسازی', 'RUN_READ_ONLY_SCOPED_DIAGNOSTIC', 'هیچ ردیفی حذف نمیشود؛ مالکیت دقیق و اقلام حفظشده نشان داده میشود.' );
+			self::render_form( $request, ScopedRequest::ACTION_DIAGNOSE, 'پیشنمایش پاکسازی', '', 'هیچ ردیفی حذف نمیشود؛ مالکیت دقیق و اقلام حفظشده نشان داده میشود.' );
 			self::render_diagnostic();
 			self::render_form( $request, ScopedRequest::ACTION_TEARDOWN, 'پاکسازی فقط دادههای دمو', 'REMOVE_ONLY_SCOPED_DEMO_DATA', 'در صورت باقی ماندن هر ردیف بالینی یا مالی دمو، موفقیت اعلام نمیشود.' );
 		}
@@ -530,6 +541,22 @@ class ScopedAdmin {
 		echo '</tbody></table></div>';
 	}
 
+	/**
+	 * Render one authorized action form.
+	 *
+	 * The typed phrase is rendered ONLY when the action requires one. Since an
+	 * empty phrase means "no phrase" (see Request::phrase_required()), showing the
+	 * field for an action that does not enforce it would be a lie in the UI, and
+	 * hiding it for an action that does enforce it would be a broken form.
+	 *
+	 * @param ScopedRequest       $request Request gates.
+	 * @param string              $action  Action key.
+	 * @param string              $title   Button/heading label.
+	 * @param string              $phrase  Confirmation phrase ('' when none).
+	 * @param string              $hint    Plain-Persian explanation.
+	 * @param array<string,mixed> $fields  Extra hidden fields.
+	 * @return void
+	 */
 	private static function render_form( ScopedRequest $request, string $action, string $title, string $phrase, string $hint, array $fields = array() ): void {
 		echo '<form method="post" class="cpdd-card" data-cpsd-form="' . esc_attr( $action ) . '">';
 		echo '<input type="hidden" name="' . esc_attr( self::ACTION ) . '" value="' . esc_attr( $action ) . '" />';
@@ -538,11 +565,15 @@ class ScopedAdmin {
 		foreach ( $fields as $name => $value ) {
 			echo '<input type="hidden" name="' . esc_attr( (string) $name ) . '" value="' . esc_attr( (string) $value ) . '" />';
 		}
-		$field_id = 'cpdd-phrase-' . preg_replace( '/[^a-z0-9_]/', '', $action );
 		echo '<h2>' . esc_html( $title ) . '</h2><p>' . esc_html( $hint ) . '</p>';
-		echo '<p><label for="' . esc_attr( $field_id ) . '">عبارت تأیید: <code dir="ltr">' . esc_html( $phrase ) . '</code></label></p>';
-		echo '<p><input type="text" id="' . esc_attr( $field_id ) . '" name="cpdd_confirm" class="regular-text" dir="ltr" autocomplete="off" required />'
-			. ' <button type="button" class="button" data-cpdd-copy="' . esc_attr( $field_id ) . '" data-cpdd-copy-value="' . esc_attr( $phrase ) . '">کپی عبارت</button></p>';
+		if ( $request->phrase_required( $action ) ) {
+			$field_id = 'cpdd-phrase-' . preg_replace( '/[^a-z0-9_]/', '', $action );
+			echo '<p><label for="' . esc_attr( $field_id ) . '">عبارت تأیید: <code dir="ltr">' . esc_html( $phrase ) . '</code></label></p>';
+			echo '<p><input type="text" id="' . esc_attr( $field_id ) . '" name="cpdd_confirm" class="regular-text" dir="ltr" autocomplete="off" required />'
+				. ' <button type="button" class="button" data-cpdd-copy="' . esc_attr( $field_id ) . '" data-cpdd-copy-value="' . esc_attr( $phrase ) . '">کپی عبارت</button></p>';
+		} else {
+			echo '<p class="description" data-cpsd-no-phrase="1">این دکمه بدون عبارت تأیید کار می‌کند: درخواست با مجوز مدیرکل، nonce مخصوص همین عملیات و شناسهٔ همین سایت بررسی می‌شود.</p>';
+		}
 		echo '<p><button type="submit" class="button ' . ( ScopedRequest::ACTION_TEARDOWN === $action ? 'button-link-delete' : 'button-primary' ) . '">' . esc_html( $title ) . '</button></p>';
 		echo '</form>';
 	}
@@ -585,11 +616,11 @@ class ScopedAdmin {
 				$token = (string) ( $intent['token'] ?? '' );
 				$slug  = (string) ( $intent['slug'] ?? '' );
 				echo '<p>قصد ناتمام — شناسهٔ یکتا: <code dir="ltr">' . esc_html( $slug ) . '</code></p>';
-				self::render_form( $request, ScopedRequest::ACTION_RESOLVE_CLINIC, 'ثبت مالکیت درمانگاه متناظر', 'RESOLVE_INTERRUPTED_DEMO_CLINIC', 'فقط ردیفی ثبت می‌شود که دقیقاً با شناسهٔ یکتای مهرشده و سازمان دمو هم‌خوان باشد.', array( 'cpdd_token' => $token, 'cpdd_decision' => 'claim' ) );
-				self::render_form( $request, ScopedRequest::ACTION_RESOLVE_CLINIC, 'لغو قصد ناتمام', 'RESOLVE_INTERRUPTED_DEMO_CLINIC', 'فقط وقتی مجاز است که هیچ ردیفی با شناسهٔ یکتای مهرشده وجود نداشته باشد.', array( 'cpdd_token' => $token, 'cpdd_decision' => 'abandon' ) );
+				self::render_form( $request, ScopedRequest::ACTION_RESOLVE_CLINIC, 'ثبت مالکیت درمانگاه متناظر', '', 'فقط ردیفی ثبت می‌شود که دقیقاً با شناسهٔ یکتای مهرشده و سازمان دمو هم‌خوان باشد.', array( 'cpdd_token' => $token, 'cpdd_decision' => 'claim' ) );
+				self::render_form( $request, ScopedRequest::ACTION_RESOLVE_CLINIC, 'لغو قصد ناتمام', '', 'فقط وقتی مجاز است که هیچ ردیفی با شناسهٔ یکتای مهرشده وجود نداشته باشد.', array( 'cpdd_token' => $token, 'cpdd_decision' => 'abandon' ) );
 			}
 		} elseif ( 'active' === $status ) {
-			self::render_form( $request, ScopedRequest::ACTION_ADD_CLINIC, 'ساخت درمانگاه نمایشی دوم', 'REGISTER_ADDITIONAL_DEMO_CLINIC', 'مالکیت این درمانگاه پیش از ساخت در دفتر مهرشده ثبت می‌شود؛ ساخت آن با سرویس واقعی production انجام می‌گیرد.' );
+			self::render_form( $request, ScopedRequest::ACTION_ADD_CLINIC, 'ساخت درمانگاه نمایشی دوم', '', 'مالکیت این درمانگاه پیش از ساخت در دفتر مهرشده ثبت می‌شود؛ ساخت آن با سرویس واقعی production انجام می‌گیرد.' );
 		}
 		if ( is_array( self::$extra ) ) {
 			echo '<p data-cpsd-extra="1">درمانگاه نمایشی: <code dir="ltr">' . esc_html( (string) ( self::$extra['slug'] ?? '' ) ) . '</code> — شناسه: <code dir="ltr">' . esc_html( (string) ( self::$extra['clinic_id'] ?? 0 ) ) . '</code></p>';
@@ -677,7 +708,7 @@ class ScopedAdmin {
 		);
 	}
 
-	private static function render_credentials( ?array $loaded ): void {
+	public static function render_credentials( ?array $loaded ): void {
 		if ( ! is_array( self::$credentials ) ) {
 			return;
 		}
@@ -702,7 +733,7 @@ class ScopedAdmin {
 	 *
 	 * @return array<string,array{link:string,portal:string,hint:string}>
 	 */
-	private static function persona_portals(): array {
+	public static function persona_portals(): array {
 		return array(
 			'organization_manager' => array(
 				'link'   => 'management',
@@ -760,7 +791,7 @@ class ScopedAdmin {
 	 * @param array<string,mixed> $manifest Verified manifest.
 	 * @return void
 	 */
-	private static function render_persona_access( array $manifest ): void {
+	public static function render_persona_access( array $manifest ): void {
 		$links    = (array) ( $manifest['links'] ?? array() );
 		$fixture  = (string) ( $manifest['fixture_id'] ?? '' );
 		$portals  = self::persona_portals();
@@ -850,8 +881,8 @@ class ScopedAdmin {
 
 	private static function render_instructions(): void {
 		echo '<div class="cpdd-card" data-cpsd-instructions="1"><h2>سه گام، به زبان ساده</h2><ol>';
-		echo '<li><strong>حالت دمو را فعال کنید.</strong> فرم «فعال‌سازی حالت محدودشده» را بزنید؛ عبارت تأیید را با دکمهٔ «کپی عبارت» در کادر بگذارید و ارسال کنید. این کار هیچ کاربر و هیچ رکورد درمانگاهی نمی‌سازد.</li>';
-		echo '<li><strong>دمو را بسازید.</strong> وقتی همهٔ ردیف‌های پیش‌بررسی سبز شدند، فرم «ساخت دموی محدودشده» را اجرا کنید. رمز هشت نقش فقط یک‌بار و در همان پاسخ نشان داده می‌شود؛ همان لحظه آن را جایی امن نگه دارید. اگر از دست رفت، با «چرخش رمزهای نمایشی» رمز تازه بگیرید.</li>';
+			echo '<li><strong>حالت دمو را فعال کنید.</strong> دکمهٔ «فعال‌سازی حالت محدودشده» را بزنید. این کار هیچ کاربر و هیچ رکورد درمانگاهی نمی‌سازد.</li>';
+			echo '<li><strong>دمو را بسازید.</strong> وقتی همهٔ ردیف‌های پیش‌بررسی سبز شدند، دکمهٔ «ساخت دموی محدودشده» را بزنید. رمز هشت نقش فقط یک‌بار و در همان پاسخ نشان داده می‌شود؛ همان لحظه آن را در مدیر رمز نگه دارید. اگر از دست رفت، «چرخش رمزهای نمایشی» رمز تازه می‌دهد.</li>';
 		echo '<li><strong>با نقش‌ها کار کنید.</strong> از کارت «دسترسی به نقش‌های نمایشی» هر نقش را در یک پنجرهٔ خصوصی جدا باز کنید و جریان‌های نوبت، پذیرش، بالینی و مالی را ببینید. برای رزرو عمومی و کد نمایشی، راهنمای همان کارت را دنبال کنید.</li>';
 		echo '</ol>';
 		echo '<p>در پایان، اول «پیش‌نمایش پاک‌سازی» را ببینید و بعد «پاک‌سازی فقط داده‌های دمو» را اجرا کنید. دادهٔ قبلی سایت و تاریخچهٔ حسابرسی حفظ می‌شوند.</p></div>';

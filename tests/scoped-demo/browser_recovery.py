@@ -62,10 +62,21 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         raise AssertionError(name + (f": {detail}" if detail else ""))
 
 
-def submit(page, action: str, phrase: str) -> None:
+def submit(page, action: str, phrase: str | None = None) -> None:
+    """Submit one scoped action, asserting exactly the phrase policy it has.
+
+    Setup and recovery are additive and are therefore one-click; only teardown is
+    irreversible and still demands its typed phrase. Asserting both directions
+    keeps a regression from slipping through as a merely cosmetic difference.
+    """
     form = page.locator(f'form[data-cpsd-form="{action}"]')
     form.wait_for(state="visible")
-    form.locator('input[name="cpdd_confirm"]').fill(phrase)
+    confirm = form.locator('input[name="cpdd_confirm"]')
+    if phrase:
+        check(f"phrase required: {action}", confirm.count() == 1)
+        confirm.fill(phrase)
+    else:
+        check(f"no typed phrase: {action}", confirm.count() == 0)
     form.locator('button[type="submit"]').click()
     page.wait_for_load_state("domcontentloaded")
 
@@ -86,8 +97,8 @@ def main() -> int:
             admin.wait_for_load_state("domcontentloaded")
             admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
             if admin.locator('form[data-cpsd-form="enable"]').count():
-                submit(admin, "enable", "I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE")
-            submit(admin, "provision", "CREATE_SCOPED_DEMO_ON_TEST_SITE")
+                submit(admin, "enable")
+            submit(admin, "provision")
             check("fresh recovery fixture provisioned through admin form", admin.locator('[data-cpsd-owner-guide="1"]').count() == 1)
             booking_url = admin.locator('[data-cpsd-owner-guide="1"] a.button-primary').get_attribute("href") or ""
             check("Owner guide exposes the public booking link", booking_url.startswith("http"), booking_url)
@@ -211,7 +222,7 @@ def main() -> int:
             ctx.close()
 
             admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
-            submit(admin, "diagnose", "RUN_READ_ONLY_SCOPED_DIAGNOSTIC")
+            submit(admin, "diagnose")
             diag = admin.locator('[data-cpsd-diagnostic="fail"]')
             check("cleanup preview refuses unattributable wrong-mobile rows", diag.count() == 1 and "SCOPED_FOREIGN_TENANT_ROW" in diag.inner_text(),
                   diag.inner_text()[:300] if diag.count() else "no fail card")

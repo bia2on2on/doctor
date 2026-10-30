@@ -69,9 +69,10 @@ Existing `Admin`, `cpms-disposable-demo.php`, `README.md`, `readme.txt`, and tes
 
 - Default mode: strict disposable. Scoped mode is off and cannot be auto-enabled by activation, constants, filters, or a hidden URL.
 - Activation form requires an authenticated Administrator with `manage_options` **and** `install_plugins`, action nonce, exact phrase `I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE`, HTTPS (or isolated loopback only in CI), and the rendered site fingerprint.
+   > **Superseded (see *Mission N* in `implementation-status.md`).** The typed phrase is now required only for the irreversible teardown; activation, provisioning, resume and rotation are one click and are still gated by POST + capability + action nonce + site fingerprint + HTTPS.
 - Store a sealed `cpsd_mode_enabled` marker with actor ID and timestamp; re-check it on each mutation. Deactivate/reactivate does not silently re-enable.
 - Reuse `Env::with_lock()` for every mutation so strict and scoped modes cannot run concurrently.
-- Teardown uses a separate phrase `REMOVE_ONLY_SCOPED_DEMO_DATA` and a read-only preview first.
+- Teardown uses a separate phrase `REMOVE_ONLY_SCOPED_DEMO_DATA` (now the only typed phrase) and a read-only preview first.
 
 ### 4.4 Collision resistance and fixture identity
 

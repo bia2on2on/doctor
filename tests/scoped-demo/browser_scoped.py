@@ -127,10 +127,24 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         raise AssertionError(name + ": " + detail)
 
 
-def submit_form(page, action: str, phrase: str) -> None:
+def submit_form(page, action: str, phrase: str | None = None) -> None:
+    """Submit one scoped action, asserting exactly the phrase policy it has.
+
+    The typed phrase is anti-misclick friction, not an authorization control, so
+    it now exists only where the action is irreversible (teardown, and the
+    private-host acceptance whose phrase is this site's own host name). The drill
+    asserts the *presence* of the field where a phrase is required and its
+    *absence* everywhere else: filling a field that should not be there, or
+    skipping one that should be, is a real regression in either direction.
+    """
     form = page.locator(f'form[data-cpsd-form="{action}"]')
     check(f"form present: {action}", form.count() == 1)
-    form.locator('input[name="cpdd_confirm"]').fill(phrase)
+    confirm = form.locator('input[name="cpdd_confirm"]')
+    if phrase:
+        check(f"phrase required: {action}", confirm.count() == 1)
+        confirm.fill(phrase)
+    else:
+        check(f"no typed phrase: {action}", confirm.count() == 0)
     form.locator("button[type=submit]").click()
     page.wait_for_load_state("domcontentloaded")
 
@@ -396,11 +410,11 @@ def provision_phase(browser) -> None:
     admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
     check("scoped admin page renders", admin.locator('[data-cpsd-page="1"]').count() == 1)
 
-    submit_form(admin, "enable", "I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE")
+    submit_form(admin, "enable")
     check("mode activation accepted", admin.locator('form[data-cpsd-form="provision"]').count() == 1)
     check("scoped preflight passes in browser", admin.locator('[data-cpsd-preflight="pass"]').count() == 1)
 
-    submit_form(admin, "provision", "CREATE_SCOPED_DEMO_ON_TEST_SITE")
+    submit_form(admin, "provision")
     credentials_card = admin.locator('[data-cpsd-secret="credentials"]')
     check("credentials shown once", credentials_card.count() == 1)
     rows = credentials_card.locator("tr[data-cpsd-persona]")
@@ -417,6 +431,28 @@ def provision_phase(browser) -> None:
           sorted(creds.keys()) == sorted(PERSONAS), json.dumps(sorted(creds.keys())))
     admin.screenshot(path=str(EVIDENCE / "scoped-admin-provisioned.png"))
     CREDENTIALS_FILE.write_text(json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    # The Owner's one-click dashboard: one page that says what is true and offers
+    # the next safe action. It is the first screen after activation, so it is
+    # exercised over real HTTP with a real browser, not only in the unit harness.
+    check("the dashboard is reachable by its own slug",
+          admin.goto(f"{BASE}/wp-admin/admin.php?page=cpms-demo", wait_until="domcontentloaded") is not None)
+    check("the dashboard reports the sealed demo as ready",
+          admin.locator('[data-cpms-demo-state="ready"]').count() == 1)
+    dash_rows = admin.locator('[data-cpsd-persona-portal]')
+    check("the dashboard maps every persona", dash_rows.count() == len(PERSONAS), f"rows={dash_rows.count()}")
+    dash_keys = sorted({dash_rows.nth(i).get_attribute("data-cpsd-persona-portal") or ""
+                        for i in range(dash_rows.count())})
+    check("the dashboard names the same eight personas as the fixture", dash_keys == sorted(PERSONAS), json.dumps(dash_keys))
+    dash_rotate = admin.locator('form[data-cpsd-form="rotate_credentials"]')
+    check("the dashboard offers credential rotation in one click", dash_rotate.count() == 1)
+    check("dashboard rotation asks for no typed phrase",
+          dash_rotate.locator('input[name="cpdd_confirm"]').count() == 0)
+    check("the dashboard never offers the destructive action",
+          admin.locator('form[data-cpsd-form="teardown"]').count() == 0)
+    check("the dashboard links the advanced console",
+          admin.locator('[data-cpms-demo-console="1"]').count() >= 1)
+    admin.screenshot(path=str(EVIDENCE / "dashboard-ready.png"))
 
     # The Product Owner's map of the demo: one row per persona, each naming its
     # portal and linking straight to it - and NO password anywhere in it.
@@ -679,7 +715,7 @@ def patient_otp_journey(browser, targets: dict) -> None:
     # ------------------------------- sanctioned code disclosure (admin form)
     ctx_a, admin = admin_login(browser)
     admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
-    submit_form(admin, "otp", "SHOW_SCOPED_DEMO_OTP")
+    submit_form(admin, "otp")
     otp_node = admin.locator("[data-cpsd-otp-code]")
     code = otp_node.inner_text().strip() if otp_node.count() else ""
     check("the scoped admin form shows the code of that live challenge",
@@ -1155,13 +1191,13 @@ def journeys_phase(browser) -> None:
     check("the scoped demo page explains the portal restriction in Persian",
           policy_card.count() == 1 and "مسدود" in policy_card.inner_text(),
           policy_card.inner_text()[:300] if policy_card.count() else "no policy card")
-    submit_form(admin, "add_clinic", "REGISTER_ADDITIONAL_DEMO_CLINIC")
+    submit_form(admin, "add_clinic")
     check("the demo created and registered an additional Clinic",
           "درمانگاه نمایشی دوم ساخته و مالکیت آن در دفتر مهرشدهٔ دمو ثبت شد" in admin.content(),
           admin.url)
     admin.screenshot(path=str(EVIDENCE / "scoped-admin-ownership.png"))
     admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
-    submit_form(admin, "diagnose", "RUN_READ_ONLY_SCOPED_DIAGNOSTIC")
+    submit_form(admin, "diagnose")
     check("the read-only diagnostic page publishes the scoped surface",
           admin.locator('[data-cpsd-page="1"]').count() == 1, f"url={admin.url}")
     diag = admin.locator("[data-cpsd-diagnostic]")

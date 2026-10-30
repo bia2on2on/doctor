@@ -137,26 +137,136 @@ class ScopedProvisioner extends Provisioner {
 	 */
 	protected function after_provision( array $result, int $admin_id ): array {
 		unset( $admin_id );
-		$manifest = $result['manifest'];
-		$manifest['mode']        = 'scoped';
-		$manifest['baseline']    = $this->pending_baseline;
-		$manifest['host_before'] = $this->pending_host;
-		// Ownership of the fixture is recorded explicitly, never inferred later
-		// from "it names the demo Organization and has a higher id". The ledger is
-		// opened FIRST, because the scope collected below must already see it: a
-		// sealed, active fixture is only trustworthy while its ledger exists.
-		$ownership = new ScopedOwnership( $this->env, $this->scoped_manifest );
-		$ownership->open(
-			(string) $manifest['fixture_id'],
-			(int) ( $manifest['ids']['organization_id'] ?? 0 ),
-			(int) ( $manifest['ids']['clinic_id'] ?? 0 )
+		$result['manifest'] = $this->seal_fixture( $result['manifest'], $this->pending_baseline, $this->pending_host );
+
+		return $result;
+	}
+
+	/**
+	 * Finish a fixture whose interruption was provably confined to the seal.
+	 *
+	 * This is the ONLY automatic recovery the scoped mode offers. It refuses
+	 * unless `ScopedRecovery` proves - from the HMAC-sealed manifest, the sealed
+	 * baseline and the sealed ownership ledger - that every synthetic row of every
+	 * earlier stage exists with the exact ids the manifest recorded, so nothing is
+	 * re-created and nothing is adopted from a name, an e-mail domain or a slug
+	 * that merely looks similar.
+	 *
+	 * The operation is additive and idempotent: it opens the ownership ledger if
+	 * it was never opened, collects the exact owned scope, records the audit-chain
+	 * state, writes `active`, verifies the result by reading it back, and then
+	 * applies the portal Clinic policy. Running it twice is a no-op the second
+	 * time, because the second run is no longer `resumable` - it is `active`.
+	 *
+	 * @param int $admin_id Acting Administrator.
+	 * @return array{manifest:array<string,mixed>,credentials:array<string,string>}
+	 * @throws Exception When the fixture is not provably resumable.
+	 */
+	public function finish( int $admin_id ): array {
+		return $this->env->with_lock(
+			'provision',
+			function () use ( $admin_id ): array {
+				$manifest = $this->scoped_manifest->load();
+				if ( ! is_array( $manifest ) ) {
+					throw new Exception( 'NO_DEMO', 'سند مالکیت دمو برای ادامه پیدا نشد.' );
+				}
+				// Re-assessed INSIDE the lock: the state that was rendered to the
+				// operator must still be the state on disk when the write happens.
+				$assessment = ( new ScopedRecovery( $this->env, $this->platform, $this->scoped_manifest ) )->assess( $manifest );
+				if ( ScopedRecovery::VERDICT_ACTIVE === $assessment['verdict'] ) {
+					throw new Exception( 'ALREADY_PROVISIONED', 'این دمو از قبل کامل و مهرشده است؛ ادامه لازم نیست. برای دیدن درگاه‌ها از همین صفحه استفاده کنید.' );
+				}
+				if ( ScopedRecovery::VERDICT_RESUMABLE !== $assessment['verdict'] ) {
+					throw new Exception(
+						'' !== (string) $assessment['code'] ? (string) $assessment['code'] : 'RECOVERY_NOT_SAFE',
+						(string) $assessment['reason']
+					);
+				}
+
+				$fixture = (string) ( $manifest['fixture_id'] ?? '' );
+				$pending = $this->scoped_manifest->load_pending_baseline( $fixture );
+				$baseline = (array) ( $manifest['baseline'] ?? array() );
+				if ( array() === $baseline && is_array( $pending ) ) {
+					$baseline = (array) ( $pending['baseline'] ?? array() );
+				}
+				if ( array() === $baseline ) {
+					throw new Exception( 'RECOVERY_NO_BASELINE', 'پایهٔ مرجع برای ادامه پیدا نشد؛ ادامه متوقف شد.' );
+				}
+				$host_before = (array) ( $manifest['host_before'] ?? array() );
+				if ( array() === $host_before && is_array( $pending ) ) {
+					$host_before = (array) ( $pending['host_before'] ?? array() );
+				}
+
+				$manifest = $this->seal_fixture( $manifest, $baseline, $host_before );
+
+				// Additive audit evidence that this fixture was finished by an
+				// authorized recovery instead of a first run. Audit rows are never
+				// deleted, and this one names no secret.
+				$this->platform->audit(
+					$this->scoped_manifest->audit_action(),
+					$admin_id,
+					(int) ( $manifest['ids']['clinic_id'] ?? 0 ),
+					array(
+						'fixture_id' => $fixture,
+						'recovered'  => true,
+						'stage'      => (string) ( $manifest['failed_stage'] ?? '' ),
+					)
+				);
+
+				return array(
+					'manifest'    => $manifest,
+					'credentials' => array(),
+				);
+			}
 		);
+	}
+
+	/**
+	 * Seal a fixture whose synthetic rows already exist.
+	 *
+	 * ONE implementation for the first run and for a resumed run, so the two
+	 * paths can never drift. Ownership of the fixture is recorded explicitly,
+	 * never inferred later from "it names the demo Organization and has a higher
+	 * id". The ledger is opened FIRST, because the scope collected below must
+	 * already see it: a sealed, active fixture is only trustworthy while its
+	 * ledger exists.
+	 *
+	 * @param array<string,mixed> $manifest    Fixture manifest.
+	 * @param array<string,mixed> $baseline    Sealed pre-provisioning baseline.
+	 * @param array<string,mixed> $host_before Host counters captured before the run.
+	 * @return array<string,mixed> Sealed, active manifest.
+	 */
+	private function seal_fixture( array $manifest, array $baseline, array $host_before ): array {
+		$manifest['mode']        = 'scoped';
+		$manifest['baseline']    = $baseline;
+		$manifest['host_before'] = $host_before;
+		$manifest['status']      = 'active';
+		if ( (string) ( $manifest['sealed_at'] ?? '' ) === '' ) {
+			$manifest['sealed_at'] = $this->env->now_sql();
+		}
+		$clinic_id = (int) ( $manifest['ids']['clinic_id'] ?? 0 );
+		if ( (string) ( $manifest['shortcode'] ?? '' ) === '' && $clinic_id > 0 ) {
+			$manifest['shortcode'] = $this->platform->booking_shortcode( $clinic_id );
+		}
+		$manifest['counts']['future_slots'] = (int) ( $manifest['counts']['future_slots'] ?? count( (array) ( $manifest['ids']['slot_ids'] ?? array() ) ) );
+		$manifest['failed_stage']           = null;
+		$manifest['failure_code']           = null;
+		$manifest['failure_message']        = null;
+
+		$ownership = new ScopedOwnership( $this->env, $this->scoped_manifest );
+		if ( ! $ownership->exists() ) {
+			$ownership->open(
+				(string) $manifest['fixture_id'],
+				(int) ( $manifest['ids']['organization_id'] ?? 0 ),
+				$clinic_id
+			);
+		}
 		$this->env->maybe_inject_fault(
 			'scoped_ownership:after-open',
 			array( 'fixture_id' => (string) $manifest['fixture_id'] )
 		);
 		$teardown = new ScopedTeardown( $this->env, $this->platform, $this->scoped_manifest, $this->audit_guard, $this->baseline );
-		$scope    = $teardown->collect_scope( $manifest, $this->pending_baseline );
+		$scope    = $teardown->collect_scope( $manifest, $baseline );
 		$manifest['owned'] = array(
 			'tables'           => $scope['tables'],
 			'jobs'             => $scope['jobs'],
@@ -181,8 +291,7 @@ class ScopedProvisioner extends Provisioner {
 
 		$this->enforce_portal_clinic_policy( $manifest );
 
-		$result['manifest'] = $manifest;
-		return $result;
+		return $manifest;
 	}
 
 	/**

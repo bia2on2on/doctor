@@ -44,6 +44,14 @@ class Admin {
 	public const SCOPED_PAGE = 'cpms-scoped-demo';
 
 	/**
+	 * Slug of the Owner-facing dashboard, repeated here for the same load-order
+	 * reason as SCOPED_PAGE: the activation landing must be able to build this URL
+	 * in a request where the dashboard class was not loaded. `Dashboard::PAGE`
+	 * remains the owner of the slug and a static contract test pins the two.
+	 */
+	public const DASHBOARD_PAGE = 'cpms-demo';
+
+	/**
 	 * @var string Hook suffix of the active companion page.
 	 */
 	private static string $hook = '';
@@ -121,9 +129,15 @@ class Admin {
 	/**
 	 * Return the existing CPMS unified parent slug, or null when that menu is absent.
 	 *
+	 * Read-only and hook-independent: it asks the production menu class for its
+	 * own parent slug, so the strict page, the demo dashboard and the routing
+	 * target can never disagree about where a CPMS submenu belongs. It is public
+	 * because `Dashboard` must hang off the SAME single top-level menu instead of
+	 * creating a second CPMS-like one.
+	 *
 	 * @return string|null
 	 */
-	private static function cpms_parent_slug(): ?string {
+	public static function cpms_parent_slug(): ?string {
 		$cpms_menu = '\\ClinicCore\\Admin\\CpmsAdminMenu';
 		if ( ! class_exists( $cpms_menu ) || ! is_callable( array( $cpms_menu, 'parent_slug' ) ) ) {
 			return null;
@@ -342,8 +356,14 @@ class Admin {
 		if ( headers_sent() ) {
 			return;
 		}
-		$target = self::setup_target();
-		wp_safe_redirect( self::setup_page_url( (bool) $target['scoped'] ) );
+		// The dashboard is the single first screen for BOTH kinds of site: it reads
+		// live state and sends an empty install to the disposable console, a
+		// populated one to the one-click setup, and an existing demo straight to the
+		// eight portals. No authority is stored here - the target is re-decided on
+		// the request that follows.
+		// The dashboard's own URL resolver decides whether it is a CPMS submenu or a
+		// Tools page in this request - the landing never guesses a pagenow.
+		wp_safe_redirect( Dashboard::page_url() );
 		exit;
 	}
 

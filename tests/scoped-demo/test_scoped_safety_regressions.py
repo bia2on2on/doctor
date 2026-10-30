@@ -400,7 +400,7 @@ class ClinicOwnershipIsExplicitNotInferred(unittest.TestCase):
         self.assertIn("guard_portal_clinic_creation", self.plugin)
         self.assertIn("'template_redirect'", self.plugin)
         guard = self.admin[self.admin.index("public static function guard_portal_clinic_creation()"):]
-        guard = guard[: guard.index("private static function render_credentials(")]
+        guard = guard[: guard.index("function render_credentials(")]
         self.assertIn("'org_create_clinic'", guard)
         self.assertIn("wp_die(", guard)
         self.assertIn("403", guard)
@@ -724,7 +724,7 @@ class DefectIRealUserDataInDemoTenants(unittest.TestCase):
         # The portal refusal reads the manifest on a POST too; it must not fatal.
         admin = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
         portal = admin[admin.index("public static function guard_portal_clinic_creation()"):]
-        portal = portal[: portal.index("private static function render_credentials(")]
+        portal = portal[: portal.index("function render_credentials(")]
         self.assertIn("} catch ( \\Throwable $error ) {", portal)
         self.assertLess(portal.index("} catch ( \\Throwable $error ) {"), portal.index("'active' !== (string) ( $loaded['status'] ?? '' )"))
 
@@ -738,13 +738,13 @@ class DefectJPortalGuardScope(unittest.TestCase):
 
     def test_guard_requires_an_active_fixture(self) -> None:
         body = self.admin[self.admin.index("public static function guard_portal_clinic_creation("):]
-        body = body[: body.index("private static function render_credentials(")]
+        body = body[: body.index("function render_credentials(")]
         self.assertIn("'active' !== (string) ( $loaded['status'] ?? '' )", body)
         self.assertIn("return;", body)
 
     def test_guard_is_scoped_to_the_demo_organization_and_manager(self) -> None:
         body = self.admin[self.admin.index("public static function guard_portal_clinic_creation("):]
-        body = body[: body.index("private static function render_credentials(")]
+        body = body[: body.index("function render_credentials(")]
         self.assertIn("(int) ( $loaded['ids']['organization_id'] ?? 0 )", body)
         self.assertIn("(int) ( $loaded['ids']['user_ids']['organization_manager'] ?? 0 )", body)
         self.assertIn("get_current_user_id() !== $manager", body)
@@ -754,7 +754,7 @@ class DefectJPortalGuardScope(unittest.TestCase):
         # Only the exact production action is refused, and only after all three
         # scoping conditions hold.
         body = self.admin[self.admin.index("public static function guard_portal_clinic_creation("):]
-        body = body[: body.index("private static function render_credentials(")]
+        body = body[: body.index("function render_credentials(")]
         self.assertEqual(body.count("if ( 'org_create_clinic' !== $action )"), 1)
 
 
@@ -1015,9 +1015,14 @@ class PrivateTestHostAcceptanceTest(unittest.TestCase):
     def test_the_phrase_is_this_sites_own_host_name(self) -> None:
         self.assertIn("return ScopedManifest::host_of( $env->home_url() );", self.request)
         self.assertIn("if ( self::ACTION_PRIVATE_HOST === $action ) {", self.request)
-        # The fixed machine phrases are untouched: only the new action is dynamic.
-        for phrase in ("I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE", "CREATE_SCOPED_DEMO_ON_TEST_SITE", "REMOVE_ONLY_SCOPED_DEMO_DATA"):
-            self.assertIn(phrase, self.request)
+        # The fixed machine phrase is still the teardown's alone; the phrase is
+        # gone everywhere else because it was friction, not a control.
+        self.assertIn("REMOVE_ONLY_SCOPED_DEMO_DATA", self.request)
+        for removed in ("I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE", "CREATE_SCOPED_DEMO_ON_TEST_SITE"):
+            self.assertNotIn(removed, self.request)
+        # And the empty phrase is never treated as "the empty field matches".
+        authorize = read(ROOT / "tools" / "disposable-demo-installer" / "includes" / "class-cpms-demo-request.php")
+        self.assertIn("if ( '' !== $expected_phrase ) {", authorize)
 
     def test_accepting_never_bypasses_the_administrator_or_nonce_gates(self) -> None:
         dispatch = self.admin.split("case ScopedRequest::ACTION_PRIVATE_HOST:", 1)[1][:600]

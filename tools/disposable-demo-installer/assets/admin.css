@@ -37,3 +37,19 @@
 .cpdd [data-cpsd-summary="pass"] .cpdd-summary-headline { color: #007017; }
 .cpdd [data-cpsd-summary="fail"] .cpdd-summary-headline { color: #b32d2e; }
 .cpdd .cpdd-attention { border-color: #dba617; background: #fffdf5; }
+
+/* Owner dashboard (`admin.php?page=cpms-demo`): the first screen must answer
+   "is the demo ready, and what is the single next click?" without any technical
+   vocabulary. RTL-safe, no fixed widths, readable at 320px. */
+.cpdd .cpdd-hero { border-width: 2px; padding: 18px 20px; }
+.cpdd .cpdd-hero h2 { font-size: 20px; margin: 0 0 8px; }
+.cpdd .cpdd-hero-lead { font-size: 15px; line-height: 1.9; max-width: 75ch; }
+.cpdd .cpdd-hero .button-hero { font-size: 16px; line-height: 1.5; height: auto; padding: 10px 22px; white-space: normal; }
+.cpdd .cpdd-action { border-inline-start: 4px solid #2271b1; }
+.cpdd .cpdd-advanced { margin: 16px 0; }
+.cpdd details.cpdd-card > summary { cursor: pointer; font-weight: 600; }
+@media (max-width: 782px) {
+  .cpdd .cpdd-hero { padding: 12px 12px; }
+  .cpdd .cpdd-hero h2 { font-size: 18px; }
+  .cpdd .cpdd-hero .button-hero { width: 100%; text-align: center; }
+}

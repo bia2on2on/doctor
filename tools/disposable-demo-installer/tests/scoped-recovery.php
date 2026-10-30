@@ -24,6 +24,10 @@
  *   R7  SIGKILL during provisioning: the lock is released, the state is
  *       flagged, and the recovery teardown completes
  *   R8  every pre-existing host row is byte-identical after all drills
+ *   R10 an interruption confined to the SEAL is finished additively: the
+ *       read-only verdict allows exactly that state and refuses every earlier
+ *       one, the resume re-seals the SAME rows (no duplicate is created), a
+ *       second resume is refused, and the resumed fixture tears down cleanly
  *   R9  a foreign tenant that depends on a synthetic demo user is refused with
  *       SCOPED_FOREIGN_DEPENDENCY - five SELF-CONTAINED vectors (clinician, clinic
  *       membership, organization membership, indirect actor columns and a
@@ -49,6 +53,7 @@ use CpmsDemo\ScopedBaseline;
 use CpmsDemo\ScopedManifest;
 use CpmsDemo\ScopedPreflight;
 use CpmsDemo\ScopedProvisioner;
+use CpmsDemo\ScopedRecovery;
 use CpmsDemo\ScopedTeardown;
 
 defined( 'ABSPATH' ) || exit;
@@ -1242,6 +1247,166 @@ try {
 		$checks
 	);
 	$report['foreign_tenant_pristine'] = substr( $frn_pristine_digest, 0, 16 );
+
+
+	// ------------------------------------- R10 interrupted AT the seal: resume
+	// The one recovery the scoped mode offers. Everything before the seal writes
+	// rows through production services that cannot be re-created idempotently, so
+	// only an interruption at (or inside) the seal may be finished. The drill
+	// injects the fault at the first write of the seal, then proves the verdict,
+	// the resume and its idempotence against the real database.
+	$manifest->enable_mode( $admin_id );
+	$env->set_fault_injector(
+		static function ( string $reached ): void {
+			if ( 'scoped_ownership:after-open' === $reached ) {
+				throw new RuntimeException( 'INJECTED_FAULT:seal' );
+			}
+		}
+	);
+	$seal_interrupted = false;
+	try {
+		$services['provisioner']->provision( $admin_id );
+	} catch ( Throwable $error ) {
+		$seal_interrupted = true;
+	}
+	$env->set_fault_injector( null );
+	cpsd_rec_check( $seal_interrupted, 'R10 provisioning was interrupted inside the seal', $checks );
+
+	$stalled = $manifest->load();
+	cpsd_rec_check( is_array( $stalled ) && 'failed' === (string) ( $stalled['status'] ?? '' ), 'R10 the interruption is recorded as failed', $checks );
+	cpsd_rec_check( 'seal' === (string) ( $stalled['failed_stage'] ?? '' ), 'R10 the recorded stage is the seal (' . (string) ( $stalled['failed_stage'] ?? '?' ) . ')', $checks );
+	cpsd_rec_check( array() === (array) ( $stalled['owned'] ?? array() ), 'R10 the ownership map was never sealed', $checks );
+
+	$recovery = new ScopedRecovery( $env, $platform, $manifest );
+	$verdict  = $recovery->assess( $stalled );
+	cpsd_rec_check( ScopedRecovery::VERDICT_RESUMABLE === (string) $verdict['verdict'], 'R10 the read-only verdict allows an interruption confined to the seal', $checks );
+	cpsd_rec_check( false === (bool) $verdict['sealed'], 'R10 the verdict reports the seal as incomplete', $checks );
+
+	// The same state a SIGKILL leaves behind: `active` already written, the seal
+	// not finished, and no error handler to record a stage.
+	$killed                = $manifest->load();
+	$killed['status']      = 'active';
+	$killed['failed_stage'] = null;
+	$manifest->save( $killed );
+	cpsd_rec_check(
+		ScopedRecovery::VERDICT_RESUMABLE === (string) $recovery->assess( $manifest->load() )['verdict'],
+		'R10 a killed run (active, unsealed) is resumable as well',
+		$checks
+	);
+
+	// An interruption one stage earlier is refused, not guessed at.
+	$early                = $manifest->load();
+	$early['status']      = 'failed';
+	$early['failed_stage'] = 'clinical';
+	$manifest->save( $early );
+	$early_verdict = $recovery->assess( $manifest->load() );
+	cpsd_rec_check( ScopedRecovery::VERDICT_BLOCKED === (string) $early_verdict['verdict'], 'R10 an interruption before the seal is refused', $checks );
+	cpsd_rec_check( 'RECOVERY_NOT_SAFE' === (string) $early_verdict['code'], 'R10 the refusal names RECOVERY_NOT_SAFE (' . (string) $early_verdict['code'] . ')', $checks );
+	$early_finish_code = '';
+	try {
+		$services['provisioner']->finish( $admin_id );
+	} catch ( DemoException $error ) {
+		$early_finish_code = $error->demo_code();
+	}
+	cpsd_rec_check( 'RECOVERY_NOT_SAFE' === $early_finish_code, 'R10 finishing an earlier interruption is refused (' . $early_finish_code . ')', $checks );
+	cpsd_rec_check( 'failed' === (string) ( $manifest->load()['status'] ?? '' ), 'R10 a refused resume leaves the manifest exactly as it was', $checks );
+
+	// A tampered sealed map is never re-derived: only a MISSING seal is resumable.
+	$tampered                 = $manifest->load();
+	$tampered['status']       = 'failed';
+	$tampered['failed_stage'] = 'seal';
+	$tampered['owned']        = array();
+	$tampered['audit_chain_at_seal'] = array( 'ok' => true );
+	$manifest->save( $tampered );
+	cpsd_rec_check(
+		ScopedRecovery::VERDICT_RESUMABLE === (string) $recovery->assess( $manifest->load() )['verdict'],
+		'R10 a seal interrupted before its ownership map is written is resumable',
+		$checks
+	);
+
+	// Now resume for real.
+	$counted = array(
+		'cpms_organizations',
+		'cpms_clinics',
+		'cpms_locations',
+		'cpms_patients',
+		'cpms_appointments',
+		'cpms_visits',
+		'cpms_invoices',
+		'cpms_payments',
+		'cpms_schedule_slots',
+		'cpms_clinic_memberships',
+		'cpms_organization_memberships',
+	);
+	$before_resume = array();
+	foreach ( $counted as $short ) {
+		$before_resume[ $short ] = $platform->count_all( $short );
+	}
+	$before_users = count( $env->all_users() );
+
+	$resumed_fixture = $services['provisioner']->finish( $admin_id );
+	cpsd_rec_check(
+		is_array( $resumed_fixture['manifest'] ?? null ) && 'active' === (string) ( $resumed_fixture['manifest']['status'] ?? '' ),
+		'R10 resume completes and seals the fixture',
+		$checks
+	);
+	cpsd_rec_check( array() === (array) ( $resumed_fixture['credentials'] ?? array() ), 'R10 resume returns no stored password (none is stored)', $checks );
+
+	$after_resume = array();
+	$duplicated   = array();
+	foreach ( $counted as $short ) {
+		$after_resume[ $short ] = $platform->count_all( $short );
+		if ( $after_resume[ $short ] !== $before_resume[ $short ] ) {
+			$duplicated[] = $short . ':' . $before_resume[ $short ] . '->' . $after_resume[ $short ];
+		}
+	}
+	cpsd_rec_check( array() === $duplicated, 'R10 resume created no duplicate row: ' . implode( ',', $duplicated ), $checks );
+	cpsd_rec_check( count( $env->all_users() ) === $before_users, 'R10 resume created no duplicate account', $checks );
+
+	$live_resumed = $manifest->load();
+	cpsd_rec_check( is_array( $live_resumed ) && 'active' === (string) $live_resumed['status'], 'R10 the sealed manifest is active after resume', $checks );
+	cpsd_rec_check( array() !== (array) ( $live_resumed['owned']['tables'] ?? array() ), 'R10 the ownership map was sealed by the resume', $checks );
+	// A resumed fixture must carry no failure at all. `?? 'x'` would have been a
+	// trap here: PHP's null-coalescing operator also falls through when the key
+	// EXISTS and holds null, which is exactly the cleared state.
+	$residual_failure = array();
+	foreach ( array( 'failed_stage', 'failure_code', 'failure_message' ) as $failure_field ) {
+		$failure_value = $live_resumed[ $failure_field ] ?? null;
+		if ( null !== $failure_value && '' !== $failure_value ) {
+			$residual_failure[] = $failure_field . '=' . (string) wp_json_encode( $failure_value );
+		}
+	}
+	cpsd_rec_check( array() === $residual_failure, 'R10 the failure flag was cleared by the resume (left: ' . implode( ',', $residual_failure ) . ')', $checks );
+	cpsd_rec_check( isset( $live_resumed['audit_chain_at_seal']['ok'] ) && true === (bool) $live_resumed['audit_chain_at_seal']['ok'], 'R10 the resumed seal records a valid audit chain', $checks );
+
+	$second_finish = '';
+	try {
+		$services['provisioner']->finish( $admin_id );
+	} catch ( DemoException $error ) {
+		$second_finish = $error->demo_code();
+	}
+	cpsd_rec_check( 'ALREADY_PROVISIONED' === $second_finish, 'R10 a second resume is refused (' . $second_finish . ')', $checks );
+	cpsd_rec_check( ScopedRecovery::VERDICT_ACTIVE === (string) $recovery->assess( $manifest->load() )['verdict'], 'R10 the verdict is active after the resume', $checks );
+
+	$resumed_user = get_user_by( 'login', 'cpsd-doctor-' . (string) $live_resumed['fixture_id'] );
+	cpsd_rec_check( $resumed_user instanceof WP_User, 'R10 the synthetic accounts of the resumed fixture still exist', $checks );
+
+	$resumed_preview = $services['teardown']->preview( $live_resumed );
+	cpsd_rec_check( true === (bool) $resumed_preview['ok'], 'R10 the resumed fixture previews clean: ' . implode( ' | ', (array) ( $resumed_preview['problems'] ?? array() ) ), $checks );
+	$resumed_chain = $audit_guard->verify_chain();
+	cpsd_rec_check( true === (bool) $resumed_chain['ok'], 'R10 the audit chain is valid after the resume', $checks );
+	$resumed_clean = $services['teardown']->execute( $manifest->load(), $admin_id );
+	cpsd_rec_check( true === (bool) $resumed_clean['ok'], 'R10 the resumed fixture tears down cleanly', $checks );
+	cpsd_rec_check( 0 === cpsd_rec_synthetic_users( $env ), 'R10 no synthetic account survives the resumed fixture teardown', $checks );
+	cpsd_rec_check( null === $manifest->load(), 'R10 the manifest is released by the resumed fixture teardown', $checks );
+	$report['seal_interruption_resume'] = array(
+		'verdict_before'  => (string) $verdict['verdict'],
+		'verdict_after'   => ScopedRecovery::VERDICT_ACTIVE,
+		'rows_before'     => $before_resume,
+		'rows_after'      => $after_resume,
+		'second_resume'   => $second_finish,
+		'early_resume'    => $early_finish_code,
+	);
 
 	// ------------------------------------------------------ final host invariant
 	// Every drill above (provisioning, four tamper vectors, three teardowns,

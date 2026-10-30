@@ -57,8 +57,11 @@ namespace {
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-request.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-otp.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-ownership.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-recovery.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-dashboard.php';
 
 	if ( ! defined( 'ARRAY_A' ) ) {
 		define( 'ARRAY_A', 'ARRAY_A' );
@@ -67,7 +70,19 @@ namespace {
 		function wp_enqueue_style( ...$args ) { return true; }
 	}
 	if ( ! function_exists( 'add_submenu_page' ) ) {
-		function add_submenu_page( ...$args ) { return 'cpms_page_cpsd'; }
+		function add_submenu_page( string $parent_slug, string $page_title, string $menu_title, string $capability, string $menu_slug, $callback ): string {
+			$GLOBALS['cpsd_test_submenu_pages'][] = compact( 'parent_slug', 'page_title', 'menu_title', 'capability', 'menu_slug', 'callback' );
+			return $parent_slug . '_page_' . $menu_slug;
+		}
+	}
+	// A top-level menu is FORBIDDEN for this companion: CPMS owns exactly one
+	// («مدیریت مطب», registered by the production plugin). The stub records any
+	// call so a regression fails a test instead of only splitting the menu.
+	if ( ! function_exists( 'add_menu_page' ) ) {
+		function add_menu_page( ...$args ) {
+			$GLOBALS['cpsd_test_forbidden_top_level'][] = $args;
+			return 'toplevel_page_' . (string) ( $args[3] ?? '' );
+		}
 	}
 	if ( ! function_exists( 'wp_register_script' ) ) {
 		function wp_register_script( ...$args ) { return true; }
@@ -94,8 +109,9 @@ namespace {
 	);
 	Cpdd_Test::ok(
 		isset( ScopedRequest::actions()[ ScopedRequest::ACTION_ROTATE ] )
-		&& 'ROTATE_SCOPED_DEMO_CREDENTIALS' === ScopedRequest::actions()[ ScopedRequest::ACTION_ROTATE ]['phrase'],
-		'credentials: scoped rotation has its own nonce/confirmation gate'
+		&& 'cpsd_rotate_credentials' === ScopedRequest::actions()[ ScopedRequest::ACTION_ROTATE ]['nonce']
+		&& '' === ScopedRequest::actions()[ ScopedRequest::ACTION_ROTATE ]['phrase'],
+		'credentials: scoped rotation keeps its own nonce and needs no typed phrase'
 	);
 
 	$rotate_env = new Cpdd_Fake_Env();
@@ -190,11 +206,19 @@ namespace {
 	// 3. Scoped request actions are distinct and enforce every gate.
 	$ctx = cpsd_fixture();
 	$request = new ScopedRequest( $ctx['env'], $ctx['manifest'] );
-	Cpdd_Test::equals( 'I_AUTHORIZE_SCOPED_DEMO_ON_NON_EMPTY_SITE', $request->phrase( ScopedRequest::ACTION_ENABLE ), 'distinct enable phrase' );
+	Cpdd_Test::equals( '', $request->phrase( ScopedRequest::ACTION_ENABLE ), 'enable needs no typed phrase' );
+	Cpdd_Test::equals( false, $request->phrase_required( ScopedRequest::ACTION_ENABLE ), 'enable is phrase-free but nonce/site/capability gated' );
+	Cpdd_Test::equals( false, $request->phrase_required( ScopedRequest::ACTION_PREPARE ), 'one-click prepare is phrase-free' );
+	Cpdd_Test::equals( false, $request->phrase_required( ScopedRequest::ACTION_RESUME ), 'safe resume is phrase-free' );
 	Cpdd_Test::equals( 'REMOVE_ONLY_SCOPED_DEMO_DATA', $request->phrase( ScopedRequest::ACTION_TEARDOWN ), 'distinct teardown phrase' );
+	Cpdd_Test::equals( true, $request->phrase_required( ScopedRequest::ACTION_TEARDOWN ), 'teardown keeps its typed phrase' );
 	$request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE ) );
 	Cpdd_Test::ok( true, 'valid scoped request is accepted' );
-	Cpdd_Test::refuses( static fn () => $request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE, array( 'cpdd_confirm' => 'WRONG' ) ) ), 'CONFIRMATION', 'wrong phrase is refused' );
+	// A phrase-free action must IGNORE any cpdd_confirm value; the gates that
+	// actually protect it (nonce, capability, site identity, HTTPS) must not.
+	$request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE, array( 'cpdd_confirm' => 'WRONG' ) ) );
+	Cpdd_Test::ok( true, 'a phrase-free action cannot be unlocked with a phrase and does not depend on one' );
+	Cpdd_Test::refuses( static fn () => $request->authorize( ScopedRequest::ACTION_TEARDOWN, cpsd_post( $ctx, ScopedRequest::ACTION_TEARDOWN, array( 'cpdd_confirm' => 'WRONG' ) ) ), 'CONFIRMATION', 'the destructive teardown still refuses a wrong phrase' );
 	Cpdd_Test::refuses( static fn () => $request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE, array( 'cpdd_nonce' => 'bad' ) ) ), 'NONCE', 'wrong nonce is refused' );
 	Cpdd_Test::refuses( static fn () => $request->authorize( ScopedRequest::ACTION_ENABLE, cpsd_post( $ctx, ScopedRequest::ACTION_ENABLE, array( 'cpdd_site' => 'other-site' ) ) ), 'SITE_IDENTITY', 'cross-site fingerprint is refused' );
 
@@ -487,6 +511,363 @@ namespace {
 	ob_start();
 	$preserved_render->invoke( null, cpsd_fixture()['env'], new Cpdd_Fake_Platform() );
 	Cpdd_Test::equals( '', (string) ob_get_clean(), 'preserved card: not rendered at all when the namespace is empty' );
+
+
+	// -----------------------------------------------------------------------
+	// 11. Recovery assessment: resume is proven, never guessed.
+	// -----------------------------------------------------------------------
+	/**
+	 * A complete synthetic fixture, as a real `after_provision()` would leave it.
+	 *
+	 * Every id below is written into the sealed manifest AND into the fake
+	 * database, so the assessment can compare the two. `$seal` adds exactly what
+	 * the seal stage adds (ledger, owned map, audit-chain state), which is what
+	 * distinguishes "active" from "interrupted after the last write".
+	 *
+	 * @param string $status Manifest status.
+	 * @param string $stage  Recorded failed stage ('' = none).
+	 * @param bool   $seal   Whether the seal evidence exists.
+	 * @return array<string,mixed>
+	 */
+	function cpsd_full_demo( string $status = 'active', string $stage = '', bool $seal = true ): array {
+		$env      = new Cpdd_Fake_Env();
+		$env->seed_clean_site();
+		$platform = new Cpdd_Fake_Platform();
+		$platform->seed_clean_install();
+		$platform->set_env( $env );
+		$fixture  = str_repeat( 'ab', 16 );
+		$users    = array();
+		foreach ( CpmsDemo\Credentials::PERSONA_ORDER as $persona ) {
+			$users[ $persona ] = $env->create_user(
+				array(
+					'user_login' => 'cpsd-' . $persona . '-' . $fixture,
+					'user_pass'  => 'pw-' . $persona,
+					'user_email' => $persona . '@demo.invalid',
+					'role'       => 'patient' === $persona ? 'cpms_patient' : 'subscriber',
+				)
+			);
+		}
+		$platform->tables_data['cpms_organizations'][] = array( 'id' => 2, 'slug' => 'cpsd-' . $fixture, 'status' => 'active' );
+		$platform->tables_data['cpms_clinics'][]       = array( 'id' => 2, 'organization_id' => 2, 'slug' => 'cpsd-' . $fixture . '-clinic', 'status' => 'active' );
+		$platform->tables_data['cpms_locations'][]     = array( 'id' => 2, 'clinic_id' => 2, 'slug' => 'cpsd-' . $fixture . '-main', 'is_primary' => 1, 'is_active' => 1 );
+		$platform->tables_data['cpms_locations'][]     = array( 'id' => 3, 'clinic_id' => 2, 'slug' => 'cpsd-' . $fixture . '-branch', 'is_primary' => 0, 'is_active' => 1 );
+		$platform->tables_data['cpms_patients'][]      = array( 'id' => 4, 'clinic_id' => 2, 'mobile' => '09001234567' );
+		$platform->tables_data['cpms_visits'][]        = array( 'id' => 5, 'clinic_id' => 2, 'patient_id' => 4 );
+		$platform->tables_data['cpms_appointments'][]  = array( 'id' => 6, 'clinic_id' => 2, 'patient_id' => 4 );
+		$platform->tables_data['cpms_invoices'][]      = array( 'id' => 7, 'clinic_id' => 2, 'visit_id' => 5 );
+		$platform->tables_data['cpms_payments'][]      = array( 'id' => 8, 'clinic_id' => 2, 'invoice_id' => 7 );
+		$page = $env->insert_page(
+			array(
+				'title'   => 'booking',
+				'slug'    => 'cpsd-' . $fixture . '-booking',
+				'content' => '[cpms_public_booking clinic_id="2"]',
+				'author'  => 1,
+			)
+		);
+		$ids = array(
+			'user_ids'            => $users,
+			'organization_id'     => 2,
+			'clinic_id'           => 2,
+			'location_ids'        => array( 2, 3 ),
+			'clinician_id'        => 9,
+			'clinician_id_second' => 10,
+			'patient_id'          => 4,
+			'appointment_id'      => 6,
+			'visit_id'            => 5,
+			'invoice_id'          => 7,
+			'payment_id'          => 8,
+			'booking_page_id'     => $page,
+			'slot_ids'            => array( 11, 12, 13 ),
+		);
+		$manifest = new CpmsDemo\ScopedManifest( $env );
+		$payload  = array(
+			'fixture_id'     => $fixture,
+			'status'         => $status,
+			'admin_id'       => 1,
+			'schema_version' => CPMS_DEMO_SCHEMA_VERSION,
+			'ids'            => $ids,
+			'slugs'          => array(
+				'organization'       => 'cpsd-' . $fixture,
+				'clinic'             => 'cpsd-' . $fixture . '-clinic',
+				'location_primary'   => 'cpsd-' . $fixture . '-main',
+				'location_secondary' => 'cpsd-' . $fixture . '-branch',
+				'page'               => 'cpsd-' . $fixture . '-booking',
+			),
+			'links'          => array( 'booking' => 'https://demo.test/?page_id=' . $page ),
+			'counts'         => array( 'future_slots' => 3 ),
+		);
+		if ( '' !== $stage ) {
+			$payload['failed_stage'] = $stage;
+		}
+		if ( $seal ) {
+			$payload['baseline']            = array( 'tables' => array( 'cpms_clinics' => array( 'count' => 1 ) ) );
+			$payload['host_before']         = array( 'clinic_count' => 1 );
+			$payload['owned']               = array( 'tables' => array( 'cpms_invoices' => array( 7 ) ) );
+			$payload['audit_chain_at_seal'] = 'ok';
+		}
+		$manifest->save( $payload );
+		$manifest->save_pending_baseline( $fixture, array( 'tables' => array( 'cpms_clinics' => array( 'count' => 1 ) ) ), array( 'clinic_count' => 1 ) );
+		if ( $seal ) {
+			( new CpmsDemo\ScopedOwnership( $env, $manifest ) )->open( $fixture, 2, 2 );
+		}
+
+		return array(
+			'env'      => $env,
+			'platform' => $platform,
+			'manifest' => $manifest,
+			'fixture'  => $fixture,
+			'ids'      => $ids,
+			'page'     => $page,
+		);
+	}
+
+	$recovery = static function ( array $ctx ): array {
+		return ( new CpmsDemo\ScopedRecovery( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->assess( $ctx['manifest']->load() );
+	};
+
+	$active_ctx = cpsd_full_demo( 'active', '', true );
+	$active     = $recovery( $active_ctx );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_ACTIVE, (string) $active['verdict'], 'recovery: a sealed active fixture is recognised as ready' );
+	Cpdd_Test::equals( '', (string) $active['code'], 'recovery: the ready verdict carries no refusal code' );
+	$active_check_ids = array_column( (array) $active['checks'], 'id' );
+	foreach ( array( 'status', 'fixture', 'tenant', 'accounts', 'booking_page', 'baseline', 'ledger', 'completion', 'seal' ) as $expected_check ) {
+		Cpdd_Test::ok( in_array( $expected_check, $active_check_ids, true ), 'recovery: evidence row present: ' . $expected_check );
+	}
+
+	// Interrupted inside the seal: every row exists, only the seal is missing.
+	$seal_ctx  = cpsd_full_demo( 'failed', 'seal', false );
+	$seal_eval = $recovery( $seal_ctx );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_RESUMABLE, (string) $seal_eval['verdict'], 'recovery: an interruption at the seal stage is safely resumable' );
+	Cpdd_Test::equals( false, (bool) $seal_eval['sealed'], 'recovery: the resumable verdict reports that the seal is incomplete' );
+
+	// Killed between the last save and the error handler: no failed stage.
+	$killed_ctx = cpsd_full_demo( 'provisioning', '', false );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_RESUMABLE, (string) $recovery( $killed_ctx )['verdict'], 'recovery: a killed run with complete evidence is resumable even without a recorded stage' );
+
+	// Status active, seal never completed (process died inside after_provision).
+	$half_ctx = cpsd_full_demo( 'active', '', false );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_RESUMABLE, (string) $recovery( $half_ctx )['verdict'], 'recovery: active-but-unsealed is finished, not torn down' );
+
+	// Interrupted earlier: production services are not idempotent, so refuse.
+	$early_ctx = cpsd_full_demo( 'failed', 'clinical', false );
+	$early     = $recovery( $early_ctx );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $early['verdict'], 'recovery: an interruption before the seal is refused' );
+	Cpdd_Test::equals( 'RECOVERY_NOT_SAFE', (string) $early['code'], 'recovery: the refusal names a stable code' );
+	Cpdd_Test::ok( str_contains( (string) $early['reason'], 'clinical' ), 'recovery: the refusal names the stage that stopped the run' );
+
+	// A missing synthetic account: nothing is adopted, nothing is resumed.
+	$missing_ctx = cpsd_full_demo( 'failed', 'seal', false );
+	unset( $missing_ctx['env']->users[ $missing_ctx['ids']['user_ids']['doctor'] ] );
+	$missing = $recovery( $missing_ctx );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $missing['verdict'], 'recovery: a missing sealed account blocks recovery' );
+	Cpdd_Test::equals( 'DEMO_EVIDENCE_MISSING', (string) $missing['code'], 'recovery: the missing-account refusal is a missing-evidence refusal' );
+
+	// Same id, different login: an account that only LOOKS like ours is refused.
+	$renamed_ctx = cpsd_full_demo( 'failed', 'seal', false );
+	$renamed_ctx['env']->users[ $renamed_ctx['ids']['user_ids']['doctor'] ]['login'] = 'cpsd-doctor-' . str_repeat( 'cd', 16 );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $recovery( $renamed_ctx )['verdict'], 'recovery: a renamed account (same id, other login) is not adopted' );
+
+	// A persona that holds manage_options is refused.
+	$admin_ctx = cpsd_full_demo( 'failed', 'seal', false );
+	$admin_ctx['env']->caps[ $admin_ctx['ids']['user_ids']['accountant'] ]['manage_options'] = true;
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $recovery( $admin_ctx )['verdict'], 'recovery: a demo account with administrator authority blocks recovery' );
+
+	// The demo tenant row must still be the sealed row.
+	$tenant_ctx = cpsd_full_demo( 'failed', 'seal', false );
+	$tenant_ctx['platform']->tables_data['cpms_clinics'] = array_values(
+		array_filter(
+			$tenant_ctx['platform']->tables_data['cpms_clinics'],
+			static fn ( array $row ): bool => 2 !== (int) $row['id']
+		)
+	);
+	$tenant = $recovery( $tenant_ctx );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $tenant['verdict'], 'recovery: a missing demo Clinic blocks recovery' );
+
+	// A tampered ownership ledger is never silently rebuilt.
+	$ledger_ctx = cpsd_full_demo( 'active', '', true );
+	$ledger_raw = $ledger_ctx['env']->option_get( 'cpsd_ownership_ledger', array() );
+	$ledger_raw['entries'][0]['payload']['clinic_id'] = 999;
+	$ledger_ctx['env']->option_set( 'cpsd_ownership_ledger', $ledger_raw );
+	$ledger = $recovery( $ledger_ctx );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $ledger['verdict'], 'recovery: a tampered ledger blocks everything' );
+	Cpdd_Test::equals( 'SCOPED_OWNERSHIP_LEDGER_INVALID', (string) $ledger['code'], 'recovery: the tampered ledger names its stable code' );
+
+	// No baseline anywhere: neither resume nor teardown can be proven.
+	$no_base_ctx = cpsd_full_demo( 'failed', 'seal', false );
+	$no_base_ctx['manifest']->clear_pending_baseline();
+	$no_base = $recovery( $no_base_ctx );
+	Cpdd_Test::equals( CpmsDemo\ScopedRecovery::VERDICT_BLOCKED, (string) $no_base['verdict'], 'recovery: a missing baseline blocks recovery' );
+
+	// `finish()` refuses anything that is not provably resumable.
+	$finish_ctx = cpsd_full_demo( 'active', '', true );
+	$finish_provisioner = new CpmsDemo\ScopedProvisioner(
+		$finish_ctx['env'],
+		$finish_ctx['platform'],
+		$finish_ctx['manifest'],
+		new CpmsDemo\ScopedPreflight( $finish_ctx['env'], $finish_ctx['platform'], $finish_ctx['manifest'], new CpmsDemo\ScopedAuditGuard( $finish_ctx['platform'] ), new CpmsDemo\ScopedBaseline( $finish_ctx['env'], $finish_ctx['platform'] ) ),
+		new CpmsDemo\Credentials( $finish_ctx['env'] ),
+		new CpmsDemo\ScopedBaseline( $finish_ctx['env'], $finish_ctx['platform'] ),
+		new CpmsDemo\ScopedAuditGuard( $finish_ctx['platform'] )
+	);
+	Cpdd_Test::refuses( static fn () => $finish_provisioner->finish( 1 ), 'ALREADY_PROVISIONED', 'resume: finishing an already-sealed demo is refused (no second seal)' );
+	$early_finish = cpsd_full_demo( 'failed', 'finance', false );
+	$early_provisioner = new CpmsDemo\ScopedProvisioner(
+		$early_finish['env'],
+		$early_finish['platform'],
+		$early_finish['manifest'],
+		new CpmsDemo\ScopedPreflight( $early_finish['env'], $early_finish['platform'], $early_finish['manifest'], new CpmsDemo\ScopedAuditGuard( $early_finish['platform'] ), new CpmsDemo\ScopedBaseline( $early_finish['env'], $early_finish['platform'] ) ),
+		new CpmsDemo\Credentials( $early_finish['env'] ),
+		new CpmsDemo\ScopedBaseline( $early_finish['env'], $early_finish['platform'] ),
+		new CpmsDemo\ScopedAuditGuard( $early_finish['platform'] )
+	);
+	Cpdd_Test::refuses( static fn () => $early_provisioner->finish( 1 ), 'RECOVERY_NOT_SAFE', 'resume: finishing an earlier interruption is refused' );
+	Cpdd_Test::equals( 'failed', (string) $early_finish['manifest']->load()['status'], 'resume: a refused finish leaves the manifest exactly as it was' );
+
+	// -----------------------------------------------------------------------
+	// 12. The dashboard: one page, one obvious action, no new authority.
+	// -----------------------------------------------------------------------
+	Cpdd_Test::equals( 'cpms-demo', CpmsDemo\Dashboard::PAGE, 'dashboard: canonical slug' );
+	Cpdd_Test::equals( CpmsDemo\Dashboard::PAGE, CpmsDemo\Admin::DASHBOARD_PAGE, 'dashboard: the landing page and the menu agree on the slug' );
+	// CPMS owns exactly ONE top-level menu; the companion must never add another.
+	// Without the production menu in this request the dashboard is a Tools page.
+	$GLOBALS['cpdd_test_management_pages']   = array();
+	$GLOBALS['cpsd_test_submenu_pages']      = array();
+	$GLOBALS['cpsd_test_forbidden_top_level'] = array();
+	$GLOBALS['cpdd_test_hooks']              = array();
+	CpmsDemo\Dashboard::register_menu();
+	$tools_page = (array) ( $GLOBALS['cpdd_test_management_pages'][0] ?? array() );
+	Cpdd_Test::equals( 'cpms-demo', (string) ( $tools_page['menu_slug'] ?? '' ), 'dashboard: registered under its own slug' );
+	Cpdd_Test::equals( 'manage_options', (string) ( $tools_page['capability'] ?? '' ), 'dashboard: requires manage_options and nothing clinical' );
+	Cpdd_Test::ok( array() === $GLOBALS['cpsd_test_forbidden_top_level'], 'dashboard: no top-level menu is created when the CPMS menu is absent' );
+	Cpdd_Test::equals( array(), $GLOBALS['cpsd_test_submenu_pages'], 'dashboard: no submenu is invented for an absent parent' );
+	Cpdd_Test::ok( in_array( 'load-tools_page_cpms-demo', array_column( $GLOBALS['cpdd_test_hooks'], 'hook' ), true ), 'dashboard: dispatch runs on the page load hook' );
+	Cpdd_Test::ok( str_ends_with( CpmsDemo\Dashboard::page_url(), '/wp-admin/tools.php?page=cpms-demo' ), 'dashboard: its URL follows the menu it was actually registered under (' . CpmsDemo\Dashboard::page_url() . ')' );
+
+	// With the production menu present it becomes a CHILD of that menu - the same
+	// rule the strict console already follows - never a second top-level page.
+	if ( ! class_exists( 'ClinicCore\\Admin\\CpmsAdminMenu' ) ) {
+		eval( 'namespace ClinicCore\\Admin; class CpmsAdminMenu { public static function parent_slug(): string { return \'cpms-dashboard\'; } }' );
+	}
+	$GLOBALS['cpdd_test_management_pages']    = array();
+	$GLOBALS['cpsd_test_submenu_pages']       = array();
+	$GLOBALS['cpsd_test_forbidden_top_level'] = array();
+	$GLOBALS['cpdd_test_hooks']               = array();
+	CpmsDemo\Dashboard::register_menu();
+	$submenu = (array) ( $GLOBALS['cpsd_test_submenu_pages'][0] ?? array() );
+	Cpdd_Test::equals( 'cpms-dashboard', (string) ( $submenu['parent_slug'] ?? '' ), 'dashboard: hangs off the CPMS unified menu, not a new top-level one' );
+	Cpdd_Test::equals( 'cpms-demo', (string) ( $submenu['menu_slug'] ?? '' ), 'dashboard: keeps its own slug as a CPMS child' );
+	Cpdd_Test::equals( 'manage_options', (string) ( $submenu['capability'] ?? '' ), 'dashboard: the CPMS child needs manage_options only' );
+	Cpdd_Test::ok( array() === $GLOBALS['cpsd_test_forbidden_top_level'], 'dashboard: no top-level menu is created even when a parent exists' );
+	Cpdd_Test::equals( array(), $GLOBALS['cpdd_test_management_pages'], 'dashboard: it does not register twice' );
+	Cpdd_Test::ok( in_array( 'load-cpms-dashboard_page_cpms-demo', array_column( $GLOBALS['cpdd_test_hooks'], 'hook' ), true ), 'dashboard: dispatch follows the CPMS child hook' );
+	Cpdd_Test::ok( str_ends_with( CpmsDemo\Dashboard::page_url(), '/wp-admin/admin.php?page=cpms-demo' ), 'dashboard: its URL follows the CPMS parent when that menu exists (' . CpmsDemo\Dashboard::page_url() . ')' );
+
+	$render_dashboard = static function ( ?array $ctx = null ): string {
+		CpmsDemo\Dashboard::set_test_services( $ctx['env'] ?? null, $ctx['platform'] ?? null );
+		CpmsDemo\Admin::set_test_services( $ctx['env'] ?? null, $ctx['platform'] ?? null );
+		CpmsDemo\Dashboard::reset_state();
+		ob_start();
+		CpmsDemo\Dashboard::render();
+		return (string) ob_get_clean();
+	};
+
+	// (a) A populated site with no demo: one primary action, no typed phrase.
+	$dash_ctx = cpsd_full_demo( 'active', '', true );
+	$dash_ctx['manifest']->delete();
+	$dash_ctx['manifest']->disable_mode();
+	$dash_html = $render_dashboard( $dash_ctx );
+	Cpdd_Test::ok( str_contains( $dash_html, 'data-cpms-demo-state="prepare"' ), 'dashboard: a site with no demo offers the prepare state' );
+	Cpdd_Test::ok( str_contains( $dash_html, 'data-cpsd-form="prepare"' ), 'dashboard: the primary action is the one-click prepare form' );
+	Cpdd_Test::ok( ! str_contains( $dash_html, 'name="cpdd_confirm"' ), 'dashboard: no typed phrase is asked for to create the demo' );
+	Cpdd_Test::ok( str_contains( $dash_html, 'data-cpsd-no-phrase="1"' ) || str_contains( $dash_html, 'button-hero' ), 'dashboard: the primary action is a hero button' );
+	Cpdd_Test::ok( str_contains( $dash_html, 'data-cpms-demo-console="1"' ), 'dashboard: the advanced console is linked, not required' );
+
+	// (b) A ready demo: enter-the-demo action, eight portals, one-click rotation.
+	$ready_ctx = cpsd_full_demo( 'active', '', true );
+	$ready_html = $render_dashboard( $ready_ctx );
+	Cpdd_Test::ok( str_contains( $ready_html, 'data-cpms-demo-state="ready"' ), 'dashboard: a sealed demo renders the ready state' );
+	Cpdd_Test::ok( str_contains( $ready_html, 'ورود به دموی آماده' ), 'dashboard: the primary action is the enter-the-demo button' );
+	Cpdd_Test::ok( str_contains( $ready_html, 'id="cpms-demo-portals"' ) && str_contains( $ready_html, 'data-cpsd-persona-access="1"' ), 'dashboard: the eight portal rows are on the page' );
+	$portal_rows = substr_count( $ready_html, 'data-cpsd-persona-portal=' );
+	Cpdd_Test::equals( count( CpmsDemo\Credentials::PERSONA_ORDER ), $portal_rows, 'dashboard: exactly one row per persona' );
+	Cpdd_Test::ok( str_contains( $ready_html, 'data-cpsd-form="rotate_credentials"' ), 'dashboard: credential rotation is offered in one click' );
+	Cpdd_Test::ok( ! str_contains( $ready_html, 'name="cpdd_confirm"' ), 'dashboard: rotation asks for no typed phrase' );
+	Cpdd_Test::ok( str_contains( $ready_html, 'data-cpms-demo-evidence=' ), 'dashboard: the ownership evidence is available, collapsed' );
+	Cpdd_Test::ok( str_contains( $ready_html, 'data-cpms-demo-console="1"' ), 'dashboard: teardown is reachable, but only through the console' );
+	Cpdd_Test::ok( ! str_contains( $ready_html, 'data-cpsd-form="teardown"' ), 'dashboard: teardown is never a one-click form' );
+
+	// (c) A resumable interruption: the resume action, additively.
+	$resume_ctx = cpsd_full_demo( 'failed', 'seal', false );
+	$resume_html = $render_dashboard( $resume_ctx );
+	Cpdd_Test::ok( str_contains( $resume_html, 'data-cpms-demo-state="resumable"' ), 'dashboard: a resumable interruption renders the resume state' );
+	Cpdd_Test::ok( str_contains( $resume_html, 'data-cpsd-form="resume"' ), 'dashboard: the primary action is the resume form' );
+	Cpdd_Test::ok( ! str_contains( $resume_html, 'name="cpdd_confirm"' ), 'dashboard: resume asks for no typed phrase' );
+
+	// (d) An unsafe interruption: explain, never adopt, never auto-destroy.
+	$blocked_ctx = cpsd_full_demo( 'failed', 'finance', false );
+	$blocked_html = $render_dashboard( $blocked_ctx );
+	Cpdd_Test::ok( str_contains( $blocked_html, 'data-cpms-demo-state="blocked"' ), 'dashboard: an unsafe interruption renders the blocked state' );
+	Cpdd_Test::ok( ! str_contains( $blocked_html, 'data-cpsd-form="resume"' ), 'dashboard: blocked means no resume button' );
+	Cpdd_Test::ok( ! str_contains( $blocked_html, 'data-cpsd-form="teardown"' ), 'dashboard: destructive cleanup is never on the one-click page' );
+	Cpdd_Test::ok( str_contains( $blocked_html, 'data-cpms-demo-console="1"' ), 'dashboard: the blocked state points at the authorized console' );
+
+	// (e) A manifest that does not verify: fail closed, no action at all.
+	$tamper_ctx = cpsd_full_demo( 'active', '', true );
+	$tampered   = $tamper_ctx['manifest']->load();
+	$tampered['mac'] = str_repeat( '0', 64 );
+	$tamper_ctx['env']->option_set( 'cpsd_manifest', $tampered );
+	$tamper_html = $render_dashboard( $tamper_ctx );
+	Cpdd_Test::ok( str_contains( $tamper_html, 'data-cpms-demo-state="manifest-invalid"' ), 'dashboard: an unverifiable manifest is refused in plain Persian' );
+	Cpdd_Test::ok( ! str_contains( $tamper_html, 'data-cpsd-form=' ), 'dashboard: an unverifiable manifest renders zero action forms' );
+
+	// (e2) No state is a dead end, and none links the console twice.
+	$state_html = array(
+		'prepare'          => $dash_html,
+		'ready'            => $ready_html,
+		'resumable'        => $resume_html,
+		'blocked'          => $blocked_html,
+		'manifest-invalid' => $tamper_html,
+	);
+	foreach ( $state_html as $state_name => $html ) {
+		Cpdd_Test::equals( 1, substr_count( $html, 'data-cpms-demo-console="1"' ), 'dashboard: the ' . $state_name . ' state links the authorized console exactly once' );
+	}
+	Cpdd_Test::equals( 0, substr_count( $blocked_html, 'data-cpms-demo-console-hero="1"' ) - 1, 'dashboard: the blocked hero keeps its own marker, so no attribute is duplicated' );
+
+	// (f) The dashboard never adds impersonation, credential storage or a bypass.
+	$dashboard_source = (string) file_get_contents( CPMS_DEMO_DIR . 'includes/class-cpms-demo-dashboard.php' );
+	foreach ( array( 'set_current_user(', 'wp_set_auth_cookie(', 'switch_to_user' ) as $forbidden ) {
+		Cpdd_Test::ok( ! str_contains( $dashboard_source, $forbidden ), 'dashboard: no impersonation primitive: ' . $forbidden );
+	}
+	Cpdd_Test::ok( str_contains( $dashboard_source, 'phrase_required' ), 'dashboard: the rendered form follows the server-side phrase policy' );
+	Cpdd_Test::ok( str_contains( $dashboard_source, '$request->authorize( $action, $post );' ), 'dashboard: every action goes through the shared authorization chain' );
+
+	// (g) Static proof that every class reference in the demo's PHP resolves.
+	// The `wp eval-file` drills are never executed by this harness, which is how a
+	// bare `ScopedRecovery::class` in scoped-integration.php reached CI twice: it
+	// resolved to the global `\ScopedRecovery`, `php -l` was satisfied and every
+	// local suite stayed green. See class-refs.php.
+	require_once __DIR__ . '/class-refs.php';
+	$cpsd_ref_files = array( CPMS_DEMO_DIR . 'cpms-disposable-demo.php' );
+	foreach ( array( 'includes', 'tests' ) as $cpsd_ref_dir ) {
+		foreach ( (array) glob( CPMS_DEMO_DIR . $cpsd_ref_dir . '/*.php' ) as $cpsd_ref_file ) {
+			$cpsd_ref_files[] = $cpsd_ref_file;
+		}
+	}
+	Cpdd_Test::ok( count( $cpsd_ref_files ) > 30, 'class refs: the scan covers the entry file, includes and drills (' . count( $cpsd_ref_files ) . ' files)' );
+	$cpsd_ref_problems = cpsd_class_ref_problems( $cpsd_ref_files );
+	Cpdd_Test::equals( array(), $cpsd_ref_problems, 'class refs: every Name:: and new Name resolves (found: ' . implode( ' | ', $cpsd_ref_problems ) . ')' );
+
+	// Positive control: without it this section could be a green no-op.
+	$cpsd_control_file = (string) tempnam( sys_get_temp_dir(), 'cpsdrefs' );
+	// phpcs:ignore WordPress.WP.AlternativeFunctions.file_system_operations_file_put_contents -- test fixture in the system temp dir.
+	file_put_contents(
+		$cpsd_control_file,
+		"<?php\nnamespace CpmsDemo;\nuse CpmsDemo\\Env;\nfunction cpsd_control() { return array( Env::class, MissingThing::class ); }\n"
+	);
+	$cpsd_control = cpsd_class_ref_problems( array( $cpsd_control_file ) );
+	unlink( $cpsd_control_file );
+	Cpdd_Test::equals( 1, count( $cpsd_control ), 'class refs: the checker catches an un-imported class (control)' );
+	Cpdd_Test::ok( str_contains( (string) ( $cpsd_control[0] ?? '' ), 'MissingThing' ), 'class refs: the control names the offending symbol' );
 
 	exit( Cpdd_Test::summary() );
 }

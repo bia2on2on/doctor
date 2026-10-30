@@ -26,12 +26,14 @@ use ClinicCore\Application\Clinic\PublicClinicDirectory;
 use ClinicCore\Application\Scope\SystemClinicResolver;
 use ClinicCore\Bootstrap\App;
 use CpmsDemo\Credentials;
+use CpmsDemo\Dashboard;
 use CpmsDemo\Env;
 use CpmsDemo\Platform;
 use CpmsDemo\ScopedAuditGuard;
 use CpmsDemo\ScopedBaseline;
 use CpmsDemo\ScopedManifest;
 use CpmsDemo\ScopedPreflight;
+use CpmsDemo\ScopedRecovery;
 use CpmsDemo\ScopedProvisioner;
 use CpmsDemo\ScopedTeardown;
 
@@ -258,6 +260,28 @@ try {
 	cpsd_int_check( 'log' === (string) $platform->get_setting( (int) $active['ids']['clinic_id'], 'sms.provider' ), 'synthetic clinic uses log SMS provider', $checks );
 	cpsd_int_check( isset( $active['baseline'], $active['owned'], $active['audit_chain_at_seal'] ), 'baseline and ownership map are sealed', $checks );
 	cpsd_int_check( (bool) $active['audit_chain_at_seal']['ok'], 'audit chain valid at seal', $checks );
+
+	// ---------- The one-click Owner dashboard and the recovery verdict ----------
+	// Both are new surfaces with a single job: say what is true and offer the one
+	// next safe action. They are exercised here on the real database, on a real
+	// sealed fixture, so "the dashboard says ready" is evidence and not a mock.
+	cpsd_int_check( class_exists( Dashboard::class ) && class_exists( ScopedRecovery::class ), 'one-click dashboard and recovery classes are loaded', $checks );
+	$assessment = ( new ScopedRecovery( $env, $platform, $manifest ) )->assess( $manifest->load() );
+	cpsd_int_check( ScopedRecovery::VERDICT_ACTIVE === (string) $assessment['verdict'], 'recovery verdict: the sealed fixture is active', $checks );
+	cpsd_int_check( true === (bool) $assessment['sealed'], 'recovery verdict: the seal is proven from real rows and the ledger', $checks );
+	Dashboard::reset_state();
+	ob_start();
+	Dashboard::render();
+	$dash_html = (string) ob_get_clean();
+	$report['dashboard'] = array(
+		'state'   => 'ready',
+		'bytes'   => strlen( $dash_html ),
+		'portals' => substr_count( $dash_html, 'data-cpsd-persona-portal=' ),
+	);
+	cpsd_int_check( str_contains( $dash_html, 'data-cpms-demo-state="ready"' ), 'one-click dashboard renders the ready state', $checks );
+	cpsd_int_check( count( Credentials::PERSONA_ORDER ) === (int) $report['dashboard']['portals'], 'one-click dashboard maps every persona', $checks );
+	cpsd_int_check( ! str_contains( $dash_html, 'name="cpdd_confirm"' ), 'one-click dashboard asks for no typed phrase', $checks );
+	cpsd_int_check( ! str_contains( $dash_html, 'data-cpsd-form="teardown"' ), 'one-click dashboard never offers the destructive action', $checks );
 
 	// Two different Clinics coexist: the synthetic one must not shadow the real ones.
 	$anchor_clinic = (int) $active['ids']['clinic_id'];

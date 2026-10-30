@@ -28,9 +28,13 @@
  *    same repository revision, booted through its own executable entry file
  *    (only the staged docblock's discoverable Plugin Name key is neutralized).
  *  - It exposes no REST route, no AJAX action and no frontend surface. All work
- *    happens on isolated wp-admin pages (the scoped evaluation console is a
- *    Tools page), behind capability + nonce +
- *    confirmation-phrase + site-identity checks.
+ *    happens on isolated wp-admin pages: the Owner-facing dashboard
+ *    (`page=cpms-demo`, a submenu of the existing CPMS menu when that menu
+ *    exists and a Tools page otherwise) and the scoped evidence console
+ *    (Tools → `page=cpms-scoped-demo`), both behind capability + nonce +
+ *    site-identity checks. A typed confirmation phrase is required only for the
+ *    destructive teardown. No top-level wp-admin menu is registered by this
+ *    plugin.
  *  - The original mode refuses anything that is not a provably empty,
  *    single-site disposable installation. The separate scoped mode is disabled
  *    by default and requires its own explicit administrator authorization.
@@ -75,11 +79,13 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-preflight.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-request.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-otp.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-ownership.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-recovery.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-guard.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-clinics.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-provisioner.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-teardown.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-admin.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-dashboard.php';
 
 /**
  * Boot the embedded production core (standalone builds) before anything else.
@@ -177,12 +183,17 @@ add_action( 'admin_init', array( 'CpmsDemo\\Admin', 'maybe_land_after_activation
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\Admin', 'enqueue_assets' ) );
 add_action( 'admin_menu', array( 'CpmsDemo\\ScopedAdmin', 'register_menu' ), 11 );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\ScopedAdmin', 'enqueue_assets' ) );
+// The Owner-facing dashboard: one page, one primary action. It re-uses every
+// gate of the scoped console and adds no surface of its own.
+add_action( 'admin_menu', array( 'CpmsDemo\\Dashboard', 'register_menu' ), 9 );
+add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\Dashboard', 'enqueue_assets' ) );
 add_filter(
 	'plugin_action_links_' . plugin_basename( CPMS_DEMO_FILE ),
 	static function ( array $links ): array {
 		array_unshift(
 			$links,
-			'<a href="' . esc_url( admin_url( 'tools.php?page=' . CpmsDemo\ScopedAdmin::PAGE ) ) . '">' . esc_html__( 'دموی محدودشده', 'cpms' ) . '</a>'
+			'<a href="' . esc_url( CpmsDemo\Dashboard::page_url() ) . '"><strong>' . esc_html__( 'دموی CPMS', 'cpms' ) . '</strong></a>',
+			'<a href="' . esc_url( admin_url( 'tools.php?page=' . CpmsDemo\ScopedAdmin::PAGE ) ) . '">' . esc_html__( 'ابزارهای پیشرفتهٔ دمو', 'cpms' ) . '</a>'
 		);
 		return $links;
 	}
