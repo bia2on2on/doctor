@@ -1362,6 +1362,31 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-session.php';
 	Cpdd_Test::equals( null, $boundary->current(), 'boundary: the administrator session is not reported as a persona session' );
 	$boundary_ctx['env']->current_user = (int) $boundary_ctx['ids']['user_ids']['doctor'];
 	Cpdd_Test::equals( 'doctor', (string) ( $boundary->current()['persona'] ?? '' ), 'boundary: a sealed persona account is recognised as its own session' );
+	// The boundary must also exist where no theme footer is ever rendered - the
+	// production portal shells render their own document and end the request. That
+	// surface is the output handler, exercised here as the product runs it.
+	$buffer_ctx = cpsd_full_demo( 'active', '', true );
+	$buffer_ctx['env']->current_user = (int) $buffer_ctx['ids']['user_ids']['doctor'];
+	$buffer_page = '<!doctype html><html><body class="logged-in"><p>portal</p></body></html>';
+	$buffer_once = CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_page );
+	Cpdd_Test::ok( false !== strpos( $buffer_once, 'data-cpsd-session-boundary="1"' ), 'boundary: the output handler injects the banner into a portal document' );
+	Cpdd_Test::ok( false !== strpos( $buffer_once, 'data-cpsd-persona="doctor"' ), 'boundary: the injected banner names the persona' );
+	Cpdd_Test::ok( false !== strpos( $buffer_once, 'data-cpsd-session-exit="1"' ), 'boundary: the injected banner carries the one-click way back' );
+	Cpdd_Test::ok( (int) strpos( $buffer_once, 'data-cpsd-session-boundary' ) < (int) strpos( $buffer_once, '</body>' ), 'boundary: the banner is spliced in before the closing body tag' );
+	$buffer_twice = CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_once );
+	Cpdd_Test::equals( 1, substr_count( $buffer_twice, 'data-cpsd-session-boundary' ), 'boundary: the banner is printed at most once per request' );
+	CpmsDemo\ScopedPersonaSession::reset_boundary_state();
+	Cpdd_Test::equals( '', CpmsDemo\ScopedPersonaSession::inject_boundary( '' ), 'boundary: an empty body (a redirect) is never decorated' );
+	$buffer_ctx['env']->current_user = 1;
+	Cpdd_Test::equals( $buffer_page, CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_page ), 'boundary: an administrator request is left byte-for-byte untouched' );
+	$buffer_ctx['env']->current_user = (int) $buffer_ctx['ids']['user_ids']['doctor'];
+	// A broken banner must never take the page with it: an error inside the handler
+	// returns the document unchanged instead of turning it into a fatal page.
+	$GLOBALS['cpdd_active_fake_env'] = null;
+	CpmsDemo\ScopedPersonaSession::reset_boundary_state();
+	Cpdd_Test::equals( $buffer_page, CpmsDemo\ScopedPersonaSession::inject_boundary( $buffer_page ), 'boundary: a failing handler returns the page intact' );
+	$GLOBALS['cpdd_active_fake_env'] = $buffer_ctx['env'];
+
 	// ... and it disappears with the fixture.
 	$boundary_ctx['manifest']->delete();
 	CpmsDemo\ScopedPersonaSession::reset_cache();

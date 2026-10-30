@@ -706,9 +706,20 @@ class OwnerIncidentRepairContract(unittest.TestCase):
         banner = session.split("public static function boundary_html(", 1)[1]
         for forbidden in ("add_cap(", "set_role(", "$wpdb", "wp_set_auth_cookie", "wp_redirect"):
             self.assertNotIn(forbidden, banner, forbidden)
-        inject = session.split("public static function inject_boundary(", 1)[1].split("\n\t}", 1)[0]
+        inject = session.split("private static function do_inject_boundary(", 1)[1].split("\n\t}", 1)[0]
         self.assertIn("location:", inject.lower())
         self.assertIn("text/html", inject)
+        # A demo banner must never be able to take a page down: the public output
+        # handler catches \Throwable, logs the reason and returns the page intact.
+        handler = session.split("public static function inject_boundary(", 1)[1].split("\n\t}", 1)[0]
+        self.assertIn("catch ( \\Throwable $error )", handler)
+        self.assertIn("report_boundary_error", handler)
+        error_log = session.split("private static function report_boundary_error(", 1)[1].split("\n\t}", 1)[0]
+        self.assertIn("error_log(", error_log)
+        # The banner is spliced in, never used as a preg_replace replacement (where
+        # `$1` inside a label would be read as a backreference).
+        self.assertIn("substr( $html, 0, $pos ) . $banner . substr( $html, $pos )", session)
+        self.assertNotIn("preg_replace( '#</body>#i'", session)
         # And the drill accepts either surface rather than assuming the admin bar.
         drill = (ROOT / "tests" / "scoped-demo" / "browser_scoped.py").read_text(encoding="utf-8")
         self.assertIn('[data-cpsd-session-boundary="1"]', drill)

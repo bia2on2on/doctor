@@ -685,3 +685,19 @@ site-wide count is back to its pre-fixture value; the incident drill asserts par
 exactly the fresh fixture's eight. Failure messages name the surviving logins. The
 invariant is unchanged and is now stricter, not looser. Everything after the portal drill
 (Chromium phases, incident `stage`/`finish`, WPCS) remains **NOT RUN**.
+
+### The boundary defect, in full (head `fc67496` → next)
+
+The banner is now rendered by an output buffer because the production portal shells
+render their own document and never fire the theme's footer. That change exposed a real
+defect that had been invisible while the banner simply never rendered:
+`boundary_html()` was being handed the session object instead of the resolved persona
+array, so every persona page it touched ended in a `TypeError` — which WordPress turns
+into its fatal-error page (and into a `recovery_keys` option write, which is how the
+`Standalone on a non-empty site` jobs first showed it). Both call sites are fixed. The
+unit harness reproduces the failure and now proves the injection, the once-per-request
+print, the untouched administrator page, the untouched redirect and the "a failing
+handler returns the page intact" path; the output handler catches `\Throwable` and logs
+`cpsd_persona_boundary_error` rather than ever taking a page down. `exit_url()` also no
+longer emits `https://site//?...`. Neither the real WordPress lanes nor Chromium has
+confirmed any of this yet.

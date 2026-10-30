@@ -592,6 +592,21 @@ jobs:
           test -z "$(cat /tmp/cpsa-ci/fault-after.txt)"
           wp eval 'echo defined("CPMS_VERSION") ? "CORE_OK" : "CORE_MISSING";' --path="$WP_DIR" --allow-root | grep -qx CORE_OK
 
+      - name: Surface PHP diagnostics from the demo site (annotations only)
+        if: failure()
+        run: |
+          set -Eeuo pipefail
+          report () {
+            FILE="$1"
+            [ -f "$FILE" ] || return 0
+            grep -E 'PHP (Fatal|Parse) error|Uncaught|Warning:|Notice:|Deprecated:|cpsd_persona_boundary_error' "$FILE" \
+              | tail -6 | sed 's/%/%25/g' | while IFS= read -r LINE; do
+                  echo "::error title=CPSA_CI_PHPLOG (${{ matrix.db_name }})::$(printf '%s' "$LINE" | tr '\n' ' ' | cut -c1-900)"
+                done
+          }
+          report /tmp/cpsa-ci/php-server.log
+          report "$WP_DIR/wp-content/debug.log"
+
       - name: Publish sanitized evidence (no credentials, no PHI)
         if: always()
         run: |

@@ -95,6 +95,13 @@ function admin_url( string $path = '' ): string {
 	return 'https://demo.test/wp-admin/' . ltrim( $path, '/' );
 }
 
+function home_url( string $path = '' ): string {
+	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
+	$home = $env instanceof Cpdd_Fake_Env ? (string) $env->home : 'https://demo.test/';
+
+	return rtrim( $home, '/' ) . '/' . ltrim( $path, '/' );
+}
+
 function get_current_user_id(): int {
 	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
 
@@ -127,6 +134,12 @@ function wp_nonce_field( string $action, string $name = '_wpnonce', bool $refere
 	}
 
 	return $html;
+}
+
+function wp_create_nonce( string $action = '' ): string {
+	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
+
+	return $env instanceof Cpdd_Fake_Env ? $env->nonce_create( $action ) : 'nonce-' . $action;
 }
 
 function wp_nonce_url( string $url, string $action = '' ): string {

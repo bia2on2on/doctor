@@ -112,6 +112,13 @@ final class ScopedPersonaSession {
 	private static $boundary_printed = false;
 
 	/**
+	 * Ensures one log line per request when the boundary cannot be rendered.
+	 *
+	 * @var bool
+	 */
+	private static $boundary_error_logged = false;
+
+	/**
 	 * @param Env            $env      Environment.
 	 * @param Platform       $platform Production adapter.
 	 * @param ScopedManifest $manifest Sealed manifest store.
@@ -168,11 +175,13 @@ final class ScopedPersonaSession {
 		}
 		$env     = new Env();
 		$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
-		if ( null === $session->current() ) {
+		$current = $session->current();
+		if ( null === $current ) {
 			return;
 		}
 		self::$boundary_printed = true;
-		echo self::boundary_html( $session );
+		// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- boundary_html() escapes every dynamic value with esc_attr()/esc_html()/esc_url(); the static markup around them is constant.
+		echo self::boundary_html( $current, $session );
 	}
 
 	/**
@@ -193,12 +202,16 @@ final class ScopedPersonaSession {
 		if ( is_admin() ) {
 			return;
 		}
-		$env     = new Env();
-		$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
-		if ( null === $session->current() ) {
-			return;
+		try {
+			$env     = new Env();
+			$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
+			if ( null === $session->current() ) {
+				return;
+			}
+			ob_start( array( __CLASS__, 'inject_boundary' ) );
+		} catch ( \Throwable $error ) {
+			self::report_boundary_error( $error );
 		}
-		ob_start( array( __CLASS__, 'inject_boundary' ) );
 	}
 
 	/**
@@ -211,7 +224,43 @@ final class ScopedPersonaSession {
 	 * @return string
 	 */
 	public static function inject_boundary( $html ) {
-		$html = (string) $html;
+		try {
+			return self::do_inject_boundary( (string) $html );
+		} catch ( \Throwable $error ) {
+			// An output handler that throws takes the whole page down with it. A demo
+			// banner is not worth a fatal error, so the page is returned untouched and
+			// the reason is logged for the CI evidence step to surface.
+			self::report_boundary_error( $error );
+
+			return (string) $html;
+		}
+	}
+
+	/**
+	 * Log why the boundary could not be rendered, once per request.
+	 *
+	 * Written with `error_log()` (never to the page) so it reaches the server log
+	 * and `wp-content/debug.log` where the CI diagnostics step can read it.
+	 *
+	 * @param \Throwable $error Failure.
+	 * @return void
+	 */
+	private static function report_boundary_error( \Throwable $error ): void {
+		if ( self::$boundary_error_logged ) {
+			return;
+		}
+		self::$boundary_error_logged = true;
+		error_log( 'cpsd_persona_boundary_error: ' . get_class( $error ) . ': ' . $error->getMessage() . ' @ ' . $error->getFile() . ':' . $error->getLine() ); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- A broken banner must be diagnosable; the message carries no secrets.
+	}
+
+	/**
+	 * The actual injection, separated so the caller can guarantee that nothing
+	 * escapes into the page.
+	 *
+	 * @param string $html Buffered response body.
+	 * @return string
+	 */
+	private static function do_inject_boundary( string $html ): string {
 		if ( self::$boundary_printed || '' === trim( $html ) ) {
 			return $html;
 		}
@@ -228,13 +277,17 @@ final class ScopedPersonaSession {
 		}
 		$env     = new Env();
 		$session = new self( $env, new Platform(), new ScopedManifest( $env ) );
-		if ( null === $session->current() ) {
+		$current = $session->current();
+		if ( null === $current ) {
 			return $html;
 		}
 		self::$boundary_printed = true;
-		$banner = self::boundary_html( $session );
-		if ( false !== stripos( $html, '</body>' ) ) {
-			return (string) preg_replace( '#</body>#i', $banner . '</body>', $html, 1 );
+		$banner = self::boundary_html( $current, $session );
+		$pos = stripos( $html, '</body>' );
+		if ( false !== $pos ) {
+			// A plain splice, not preg_replace(): a replacement string would
+			// interpret `$1`/`\1` inside the banner as a backreference.
+			return substr( $html, 0, $pos ) . $banner . substr( $html, $pos );
 		}
 
 		return $html . $banner;
@@ -244,25 +297,24 @@ final class ScopedPersonaSession {
 	 * The boundary markup. A notice and a nonced link: no capability, no SQL, no
 	 * session change.
 	 *
-	 * @param array{persona:string,user_id:int,manifest:array<string,mixed>} $current Sealed persona session.
+	 * @param array{persona:string,user_id:int,manifest:array<string,mixed>} $current Resolved sealed persona session.
+	 * @param ScopedPersonaSession                                              $session The session that resolved it (for the way back).
 	 * @return string
 	 */
-	public static function boundary_html( array $current ): string {
+	public static function boundary_html( array $current, ScopedPersonaSession $session ): string {
 		$personas = Credentials::personas();
 		$label    = (string) ( $personas[ $current['persona'] ]['label'] ?? $current['persona'] );
-		$env      = new Env();
-		$session  = new self( $env, new Platform(), new ScopedManifest( $env ) );
-		$html     = '<div id="cpsd-persona-boundary" dir="rtl" data-cpsd-session-boundary="1" data-cpsd-persona="'
-			. esc_attr( (string) $current['persona'] ) . '" style="position:fixed;inset-inline:0;bottom:0;z-index:99999;'
-			. 'background:#1d2327;color:#fff;padding:10px 16px;font:14px/1.6 Tahoma,sans-serif;text-align:center;'
-			. 'box-shadow:0 -2px 8px rgba(0,0,0,.25)">';
-		$html    .= '<span data-cpsd-session-label="1">نشست نمایشی: <strong>' . esc_html( $label ) . '</strong></span> — ';
-		$html    .= '<span>این نشست جداست و اختیار مدیرکل ندارد؛ همهٔ مجوزها همان‌طور که برای یک کاربر واقعی سنجیده می‌شود، سنجیده می‌شود.</span> ';
-		$html    .= '<a href="' . esc_url( $session->exit_url() ) . '" data-cpsd-session-exit="1" '
-			. 'style="color:#72aee6;font-weight:700;text-decoration:underline">پایان نشست نمایشی و بازگشت</a>';
-		$html    .= '</div>';
 
-		return $html;
+		return '<div id="cpsd-persona-boundary" dir="rtl" data-cpsd-session-boundary="1" data-cpsd-persona="'
+			. esc_attr( (string) $current['persona'] )
+			. '" style="position:fixed;inset-inline:0;bottom:0;z-index:99999;background:#1d2327;color:#fff;'
+			. 'padding:10px 16px;font:14px/1.6 Tahoma,sans-serif;text-align:center;box-shadow:0 -2px 8px rgba(0,0,0,.25)">'
+			. '<span data-cpsd-session-label="1">نشست نمایشی: <strong>' . esc_html( $label ) . '</strong></span> — '
+			. '<span>این نشست جداست و اختیار مدیرکل ندارد؛ همهٔ مجوزها همان‌طور که برای یک کاربر واقعی '
+			. 'سنجیده می‌شود، سنجیده می‌شود.</span> '
+			. '<a href="' . esc_url( $session->exit_url() ) . '" data-cpsd-session-exit="1" '
+			. 'style="color:#72aee6;font-weight:700;text-decoration:underline">پایان نشست نمایشی و بازگشت</a>'
+			. '</div>';
 	}
 
 	/**
@@ -505,13 +557,29 @@ final class ScopedPersonaSession {
 	}
 
 	/**
+	 * Forget the one-per-request render guard too.
+	 *
+	 * The end-of-session path uses it because the logout of this request must not
+	 * leave the guard set for anything that renders afterwards, and the unit suite
+	 * uses it to exercise more than one request in a single process.
+	 *
+	 * @return void
+	 */
+	public static function reset_boundary_state(): void {
+		self::$boundary_printed     = false;
+		self::$boundary_error_logged = false;
+	}
+
+	/**
 	 * Nonced, GET-only exit URL for the current persona session.
 	 *
 	 * @return string
 	 */
 	public function exit_url(): string {
+		// `Env::home_url()` already ends in a slash; appending another one produced
+		// `https://site//?...` in the real site's markup.
 		return wp_nonce_url(
-			add_query_arg( self::EXIT_ARG, '1', $this->env->home_url() . '/' ),
+			add_query_arg( self::EXIT_ARG, '1', $this->env->home_url() ),
 			'cpsd_persona_exit'
 		);
 	}
@@ -570,6 +638,7 @@ final class ScopedPersonaSession {
 		);
 		$env->logout();
 		self::reset_cache();
+		self::reset_boundary_state();
 		wp_safe_redirect( add_query_arg( self::ENDED_ARG, '1', wp_login_url() ) );
 		exit;
 	}
