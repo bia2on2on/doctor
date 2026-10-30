@@ -153,6 +153,19 @@ class Preflight {
 	);
 
 	/**
+	 * The checks that answer "is this site still empty?" rather than "is this
+	 * environment compatible?".
+	 *
+	 * They are the only inputs to `occupancy()`: a site that fails one of them is
+	 * not a disposable empty site, no matter what else is green, and the strict
+	 * page must route its administrator to the scoped mode instead of asking them
+	 * to rebuild a brand-new WordPress. `cpms_data` joins the set only when the
+	 * CPMS core is actually readable - when it is not, that check fails for a
+	 * compatibility reason and says nothing about occupancy.
+	 */
+	public const OCCUPANCY_CHECKS = array( 'plugins', 'users', 'content' );
+
+	/**
 	 * @var Env
 	 */
 	protected Env $env;
@@ -209,6 +222,40 @@ class Preflight {
 			'ok'       => array() === $blocking,
 			'checks'   => $checks,
 			'blocking' => $blocking,
+		);
+	}
+
+	/**
+	 * Pure decision: is this installation still the empty, disposable site the
+	 * strict mode is allowed to touch?
+	 *
+	 * @param list<array{id:string,label:string,status:string,detail:string}> $checks Preflight checks.
+	 * @param bool $cpms_available Whether the CPMS tables could be read at all.
+	 * @return array{occupied:bool,reasons:list<string>,labels:list<string>}
+	 */
+	public static function occupancy( array $checks, bool $cpms_available ): array {
+		$considered = self::OCCUPANCY_CHECKS;
+		if ( $cpms_available ) {
+			$considered[] = 'cpms_data';
+		}
+		$reasons = array();
+		$labels  = array();
+		foreach ( $checks as $check ) {
+			$id = (string) ( $check['id'] ?? '' );
+			if ( ! in_array( $id, $considered, true ) ) {
+				continue;
+			}
+			if ( 'pass' === (string) ( $check['status'] ?? '' ) ) {
+				continue;
+			}
+			$reasons[] = $id;
+			$labels[]  = (string) ( $check['label'] ?? $id );
+		}
+
+		return array(
+			'occupied' => array() !== $reasons,
+			'reasons'  => $reasons,
+			'labels'   => $labels,
 		);
 	}
 
@@ -541,6 +588,18 @@ class Preflight {
 	}
 
 	/**
+	 * This check answers ONE question: is there a strict (`cpdd-`) disposable
+	 * demo recorded on this site? It is the only thing its option can prove.
+	 *
+	 * It therefore no longer prints a bare "there is no residue" while
+	 * `cpsd-…` accounts sit in wp_users: that sentence was read (correctly) as a
+	 * contradiction by an operator whose site HAS leftovers from the scoped mode.
+	 * The scoped namespace is surveyed by the same single implementation the
+	 * scoped page renders (`FixtureNamespace`), and any finding is named here.
+	 * The status stays `pass` - those rows are not strict-mode residue and do not
+	 * make the strict mode any more (or less) applicable - but the sentence now
+	 * says exactly what was and was not checked.
+	 *
 	 * @return array{id:string,label:string,status:string,detail:string}
 	 */
 	private function check_manifest_state(): array {
@@ -556,6 +615,18 @@ class Preflight {
 			return $this->result( $id, $label, 'fail', 'فایل مالکیت موجود معتبر نیست: ' . $e->getMessage() );
 		}
 
-		return $this->result( $id, $label, 'pass', 'اثر دموی قبلی وجود ندارد.' );
+		$survey = FixtureNamespace::survey( $this->env, null );
+		if ( 0 === (int) $survey['total'] ) {
+			return $this->result( $id, $label, 'pass', 'اثر دموی قبلی (نه یک‌بارمصرف و نه محدودشده) وجود ندارد.' );
+		}
+
+		return $this->result(
+			$id,
+			$label,
+			'pass',
+			'اثر دموی یک‌بارمصرف قبلی وجود ندارد. با این حال بقایای «حالت محدودشده» با پیشوند cpsd- دیده می‌شود ('
+				. FixtureNamespace::counts_fa( $survey )
+				. ')؛ این موارد مربوط به همین حالت یک‌بارمصرف نیستند و حذف یا تغییر نمی‌شوند.'
+		);
 	}
 }

@@ -258,9 +258,87 @@ $ctx['manifest']->save( array( 'fixture_id' => 'abcdef0123456789', 'status' => '
 $state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
 Cpdd_Test::ok( in_array( 'manifest', $state['blocking'], true ), 'preflight: existing demo manifest blocks a second provisioning' );
 
+// ---- Occupancy: the decision that routes an operator to the right console ----
+// The strict page may only manage an EMPTY installation. On anything else the
+// operator must be routed to the scoped console instead of being told to build
+// another WordPress. The decision is a pure function of the real preflight, so
+// the routing card and the red rows can never disagree.
+$ctx = cpdd_fixture();
+$state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
+$occupancy = Preflight::occupancy( $state['checks'], $ctx['platform']->available() );
+Cpdd_Test::equals( false, (bool) $occupancy['occupied'], 'occupancy: a clean disposable site is not "occupied"' );
+Cpdd_Test::equals( array(), $occupancy['reasons'], 'occupancy: a clean disposable site reports no occupancy reason' );
+
+$ctx = cpdd_fixture();
+foreach ( array( 'staff_one', 'staff_two' ) as $leftover_login ) {
+	$ctx['env']->create_user(
+		array(
+			'user_login'   => $leftover_login,
+			'user_pass'    => 'x',
+			'user_email'   => $leftover_login . '@example.test',
+			'display_name' => $leftover_login,
+			'role'         => 'subscriber',
+		)
+	);
+}
+$state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
+$occupancy = Preflight::occupancy( $state['checks'], $ctx['platform']->available() );
+Cpdd_Test::equals( true, (bool) $occupancy['occupied'], 'occupancy: extra WordPress accounts make the site non-empty' );
+Cpdd_Test::ok( in_array( 'users', $occupancy['reasons'], true ), 'occupancy: the extra accounts are named as the reason' );
+Cpdd_Test::ok( in_array( 'تنها یک حساب کاربری (مدیر)', $occupancy['labels'], true ), 'occupancy: the operator-facing label is carried through' );
+
+$ctx = cpdd_fixture();
+$ctx['env']->plugin_list[] = 'akismet/akismet.php';
+$state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
+$occupancy = Preflight::occupancy( $state['checks'], $ctx['platform']->available() );
+Cpdd_Test::ok(
+	in_array( 'plugins', $occupancy['reasons'], true ),
+	'occupancy: a third-party active plugin makes the site non-empty'
+);
+
+$ctx = cpdd_fixture();
+$ctx['platform']->available_flag = false;
+$state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
+$occupancy = Preflight::occupancy( $state['checks'], $ctx['platform']->available() );
+Cpdd_Test::equals(
+	false,
+	(bool) $occupancy['occupied'],
+	'occupancy: an unreadable CPMS core is a compatibility failure, never proof of a populated site'
+);
+
+// A scoped-mode leftover is NOT strict-mode residue, and the strict residue row
+// must say so instead of printing a bare "no residue" beside cpsd- accounts.
+$ctx = cpdd_fixture();
+$ctx['env']->create_user(
+	array(
+		'user_login'   => 'cpsd-doctor-0123456789abcdef0123456789abcdef',
+		'user_pass'    => 'x',
+		'user_email'   => 'cpsd-doctor-0123456789abcdef0123456789abcdef@demo.invalid',
+		'display_name' => 'leftover persona',
+		'role'         => 'subscriber',
+	)
+);
+$state = ( new Preflight( $ctx['env'], $ctx['platform'], $ctx['manifest'] ) )->run();
+$manifest_row = array();
+foreach ( $state['checks'] as $check ) {
+	if ( 'manifest' === $check['id'] ) {
+		$manifest_row = $check;
+	}
+}
+Cpdd_Test::equals( 'pass', (string) $manifest_row['status'], 'residue: a scoped leftover does not fail the STRICT residue check' );
+Cpdd_Test::ok(
+	str_contains( (string) $manifest_row['detail'], 'cpsd-' ) && str_contains( (string) $manifest_row['detail'], 'حالت محدودشده' ),
+	'residue: the strict residue row names the scoped leftover instead of claiming a bare "no residue"'
+);
+Cpdd_Test::ok(
+	str_contains( (string) $manifest_row['detail'], 'حساب کاربری: 1' ),
+	'residue: the strict residue row states how many scoped accounts were found'
+);
+
 // ---------------------------------------------------------------------------
 // 2. Request gate
 // ---------------------------------------------------------------------------
+
 $ctx     = cpdd_fixture();
 $request = new Request( $ctx['env'], $ctx['manifest'] );
 $request->authorize( Request::ACTION_PROVISION, cpdd_post( $ctx, Request::ACTION_PROVISION ) );
@@ -1650,5 +1728,118 @@ try {
 	}
 }
 cpdd_test_reset_hooks();
+
+// ---------------------------------------------------------------------------
+// 20. Routing an operator with a NON-EMPTY site to the scoped console
+// ---------------------------------------------------------------------------
+// The reported owner situation: the standalone ZIP is installed on an existing
+// test site, the administrator opens the only page the product ever mentioned,
+// and every empty-site check is red - with no hint that a second, purpose-built
+// console exists. These assertions pin the fix: the card is rendered from live
+// state, it links to the scoped page, and the "build another WordPress"
+// instruction is gone on a populated site.
+$ctx = cpdd_fixture();
+foreach ( array( 'owner_assistant', 'front_desk' ) as $leftover_login ) {
+	$ctx['env']->create_user(
+		array(
+			'user_login'   => $leftover_login,
+			'user_pass'    => 'x',
+			'user_email'   => $leftover_login . '@example.test',
+			'display_name' => $leftover_login,
+			'role'         => 'subscriber',
+		)
+	);
+}
+Admin::reset_state();
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+$_SERVER['REQUEST_METHOD'] = 'GET';
+$_POST                     = array();
+ob_start();
+Admin::render();
+$html_occupied = (string) ob_get_clean();
+
+Cpdd_Test::ok( str_contains( $html_occupied, 'data-cpdd-route="scoped"' ), 'routing: a non-empty site is routed to the scoped console' );
+Cpdd_Test::ok( str_contains( $html_occupied, 'data-cpdd-goto-scoped="1"' ), 'routing: the routing card carries an actionable button' );
+Cpdd_Test::ok(
+	str_contains( $html_occupied, 'admin_url' ) === false && str_contains( $html_occupied, 'tools.php?page=cpms-scoped-demo' ),
+	'routing: the button points at the scoped Tools page'
+);
+Cpdd_Test::ok( str_contains( $html_occupied, 'data-cpdd-preflight="fail"' ), 'routing: the empty-site preflight is still shown truthfully as FAIL' );
+Cpdd_Test::ok(
+	! str_contains( $html_occupied, 'یک WordPress تازه و خالی (تک‌سایتی، HTTPS) بسازید' ),
+	'routing: a populated site is no longer told to build a brand-new empty WordPress'
+);
+Cpdd_Test::ok(
+	str_contains( $html_occupied, 'هیچ سایت تازه‌ای لازم نیست' ),
+	'routing: the Persian instructions replace the new-site step with the correct next step'
+);
+
+// A provably empty site keeps the original page and gets no routing card.
+$ctx = cpdd_fixture();
+Admin::reset_state();
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+ob_start();
+Admin::render();
+$html_empty = (string) ob_get_clean();
+Cpdd_Test::ok( ! str_contains( $html_empty, 'data-cpdd-route="scoped"' ), 'routing: an empty site is not routed away from the strict page' );
+Cpdd_Test::ok( str_contains( $html_empty, 'data-cpdd-preflight="pass"' ), 'routing: an empty site still sees a passing preflight' );
+
+// A recorded strict fixture is managed HERE, even on a populated site: routing
+// its owner to another page would hide the only surface that can clean it up.
+$ctx  = cpdd_fixture();
+$post = cpdd_provision( $ctx );
+$ctx['env']->create_user(
+	array(
+		'user_login'   => 'late_owner_colleague',
+		'user_pass'    => 'x',
+		'user_email'   => 'late@example.test',
+		'display_name' => 'late',
+		'role'         => 'subscriber',
+	)
+);
+Admin::reset_state();
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+ob_start();
+Admin::render();
+$html_active = (string) ob_get_clean();
+Cpdd_Test::ok(
+	! str_contains( $html_active, 'data-cpdd-route="scoped"' ),
+	'routing: a site with a recorded strict demo keeps the strict page (its only cleanup surface)'
+);
+unset( $post );
+
+// The landing target is decided from live state, never from a request value.
+$ctx = cpdd_fixture();
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+Cpdd_Test::equals( false, (bool) Admin::setup_target()['scoped'], 'landing: an empty site lands on the strict page' );
+Cpdd_Test::ok( str_contains( Admin::setup_page_url( false ), 'cpms-disposable-demo' ), 'landing: the strict URL is built from the registered slug' );
+Cpdd_Test::equals( 'https://demo.test/wp-admin/tools.php?page=cpms-scoped-demo', Admin::setup_page_url( true ), "landing: the scoped URL is this site's own Tools page" );
+
+$ctx = cpdd_fixture();
+$ctx['env']->create_user(
+	array(
+		'user_login'   => 'colleague',
+		'user_pass'    => 'x',
+		'user_email'   => 'colleague@example.test',
+		'display_name' => 'colleague',
+		'role'         => 'subscriber',
+	)
+);
+Admin::set_test_services( $ctx['env'], $ctx['platform'] );
+Cpdd_Test::equals( true, (bool) Admin::setup_target()['scoped'], 'landing: a populated site lands on the scoped console' );
+
+// The one-shot marker is bound to the administrator who armed it and is consumed.
+$GLOBALS['cpdd_test_transients'] = array();
+Admin::mark_landing( 1 );
+$armed = get_transient( Admin::LANDING_TRANSIENT );
+Cpdd_Test::ok( is_array( $armed ) && 1 === (int) $armed['user'], 'landing: activation arms a one-shot marker for the acting administrator' );
+Admin::mark_landing( 0 );
+Cpdd_Test::ok(
+	is_array( get_transient( Admin::LANDING_TRANSIENT ) ) && 1 === (int) get_transient( Admin::LANDING_TRANSIENT )['user'],
+	'landing: an anonymous activation marker cannot overwrite the acting administrator\'s marker'
+);
+delete_transient( Admin::LANDING_TRANSIENT );
+Cpdd_Test::equals( false, get_transient( Admin::LANDING_TRANSIENT ), 'landing: the marker is single-use' );
+Admin::set_test_services( null, null );
 
 exit( Cpdd_Test::summary() );

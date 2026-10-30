@@ -49,6 +49,7 @@ namespace {
 	use CpmsDemo\ScopedRequest;
 
 	require_once __DIR__ . '/bootstrap.php';
+	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-fixture-namespace.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-manifest.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-audit-guard.php';
 	require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-scoped-baseline.php';
@@ -395,6 +396,97 @@ namespace {
 	Cpdd_Test::ok( false !== strpos( $all, 'never deletes' ) || 1 === preg_match( '/never deletes|Never deletes|عدم حذف/', $all ), 'audit preservation is documented in scoped sources' );
 	Cpdd_Test::ok( 1 !== preg_match( '/DELETE FROM [^;]*cpms_audit_logs|TRUNCATE TABLE|CPMS_DEV_OTP_ECHO[^;]*define/i', $all ), 'no audit delete, truncate or dev OTP define in scoped sources' );
 	Cpdd_Test::ok( 1 !== preg_match( '/DELETE FROM [^;]*WHERE\s+(created_at|request_id|ip_hash)/i', $all ), 'no broad time/request/IP deletion predicate' );
+
+	// 9. A populated site whose earlier demo left `cpsd-` rows behind is NOT a dead end.
+	//
+	// The reported owner situation: eight `cpsd-…` accounts from an earlier run
+	// whose sealed manifest is gone. The old rule failed the preflight on the
+	// prefix alone, so the page permanently refused the only site the mode exists
+	// for. The prefix is not the question - an exact collision is - and the exact
+	// collision check lives in ScopedProvisioner::check_collisions(), before the
+	// first synthetic row. What the preflight must do is REPORT, and never adopt.
+	$names_ctx = cpsd_fixture();
+	$names_fixture = str_repeat( '0123456789abcdef', 2 );
+	foreach ( CpmsDemo\Credentials::PERSONA_ORDER as $names_persona ) {
+		$names_ctx['env']->create_user(
+			array(
+				'user_login'   => 'cpsd-' . $names_persona . '-' . $names_fixture,
+				'user_pass'    => 'x',
+				'user_email'   => 'patient' === $names_persona ? '09001234567@otp.cpms.local' : 'cpsd-' . $names_persona . '-' . $names_fixture . '@demo.invalid',
+				'display_name' => $names_persona,
+				'role'         => 'subscriber',
+			)
+		);
+	}
+	// One account that merely shares the prefix and nothing else: it must not be
+	// described as this package's, and it must never be treated as ours.
+	$names_ctx['env']->create_user(
+		array(
+			'user_login'   => 'cpsd-office-manager',
+			'user_pass'    => 'x',
+			'user_email'   => 'manager@clinic.example',
+			'display_name' => 'office manager',
+			'role'         => 'editor',
+		)
+	);
+	$names_platform = new Cpdd_Fake_Platform();
+	$names_platform->seed_clean_install();
+	$names_platform->tables_data['cpms_organizations'][] = array( 'id' => 40, 'slug' => 'cpsd-' . $names_fixture, 'status' => 'active' );
+	$names_platform->tables_data['cpms_clinics'][]       = array( 'id' => 41, 'organization_id' => 40, 'slug' => 'cpsd-' . $names_fixture . '-clinic', 'status' => 'suspended' );
+	$names_platform->tables_data['cpms_locations'][]     = array( 'id' => 42, 'clinic_id' => 41, 'slug' => 'cpsd-' . $names_fixture . '-main', 'is_primary' => 1, 'is_active' => 0 );
+	$names_org_count = count( $names_platform->tables_data['cpms_organizations'] );
+
+	$names_survey = CpmsDemo\FixtureNamespace::survey( $names_ctx['env'], $names_platform );
+	Cpdd_Test::equals( 9, count( $names_survey['users'] ), 'namespace: every pre-existing cpsd- account is reported (8 personas + 1 other)' );
+	Cpdd_Test::equals( 8, count( $names_survey['signature_users'] ), 'namespace: only the eight persona-shaped accounts carry the package signature' );
+	Cpdd_Test::equals( array( 'cpsd-office-manager' ), $names_survey['other_users'], 'namespace: an unrelated cpsd- account is never labelled as this package\'s' );
+	Cpdd_Test::equals( 1, (int) $names_survey['tenant_tables']['cpms_organizations'], 'namespace: an ACTIVE cpsd- Organization is counted (the seeded default is not)' );
+	Cpdd_Test::equals( 0, (int) $names_survey['tenant_tables']['cpms_clinics'], 'namespace: a suspended cpsd- Clinic (teardown anchor) is not counted as live' );
+	Cpdd_Test::equals( 0, (int) $names_survey['tenant_tables']['cpms_locations'], 'namespace: an inactive cpsd- Location is not counted as live' );
+	Cpdd_Test::equals( 1 + 9, (int) $names_survey['total'], 'namespace: the total combines accounts, pages and live tenant slugs' );
+
+	$names_row = ScopedPreflight::namespace_result( $names_survey );
+	Cpdd_Test::equals( 'pass', (string) $names_row['status'], 'namespace: pre-existing cpsd- residue NEVER blocks the scoped preflight' );
+	Cpdd_Test::ok(
+		str_contains( (string) $names_row['detail'], 'حساب کاربری: 9' )
+			&& str_contains( (string) $names_row['detail'], 'حذف' )
+			&& str_contains( (string) $names_row['detail'], 'متصل' ),
+		'namespace: the row states the count AND that nothing is deleted or adopted'
+	);
+	Cpdd_Test::ok(
+		str_contains( (string) $names_row['detail'], 'تضاد نام دقیق' ),
+		'namespace: the row explains that the exact-collision check still runs at provisioning time'
+	);
+
+	// Nothing was touched by the survey: same users, same rows.
+	Cpdd_Test::equals( 10, count( $names_ctx['env']->users ), 'namespace: the survey is read-only (no account created or removed)' );
+	Cpdd_Test::equals( $names_org_count, count( $names_platform->tables_data['cpms_organizations'] ), 'namespace: the survey is read-only (no tenant row created or removed)' );
+
+	$empty_row = ScopedPreflight::namespace_result( CpmsDemo\FixtureNamespace::survey( cpsd_fixture()['env'], new Cpdd_Fake_Platform() ) );
+	Cpdd_Test::equals( 'pass', (string) $empty_row['status'], 'namespace: an empty namespace also passes' );
+	Cpdd_Test::ok( str_contains( (string) $empty_row['detail'], 'وجود ندارد' ), 'namespace: an empty namespace says so plainly' );
+
+	// The signature is login shape AND e-mail domain; a name alone proves nothing.
+	Cpdd_Test::equals( true, CpmsDemo\FixtureNamespace::persona_signature( 'cpsd-doctor-' . str_repeat( 'a', 32 ), 'cpsd-doctor-' . str_repeat( 'a', 32 ) . '@demo.invalid' ), 'namespace: a persona-shaped login with the package e-mail domain is labelled' );
+	Cpdd_Test::equals( false, CpmsDemo\FixtureNamespace::persona_signature( 'cpsd-doctor-' . str_repeat( 'a', 32 ), 'real.doctor@clinic.example' ), 'namespace: the same login with a real domain is NOT labelled as this package\'s' );
+	Cpdd_Test::equals( false, CpmsDemo\FixtureNamespace::persona_signature( 'cpsd-doctor-' . str_repeat( 'a', 32 ), '' ), 'namespace: a missing e-mail is never a signature' );
+	Cpdd_Test::equals( false, CpmsDemo\FixtureNamespace::persona_signature( 'cpsd-unknown-' . str_repeat( 'a', 32 ), 'x@demo.invalid' ), 'namespace: an unknown role is not a persona login' );
+	Cpdd_Test::equals( false, CpmsDemo\FixtureNamespace::persona_signature( 'cpsd-doctor-' . str_repeat( 'a', 31 ), 'x@demo.invalid' ), 'namespace: a short fixture id is not a persona login' );
+
+	// 10. The scoped page tells the operator what it will NOT do with those rows.
+	$preserved_render = new ReflectionMethod( CpmsDemo\ScopedAdmin::class, 'render_preserved_namespace' );
+	ob_start();
+	$preserved_render->invoke( null, $names_ctx['env'], $names_platform );
+	$preserved_html = (string) ob_get_clean();
+	Cpdd_Test::ok( str_contains( $preserved_html, 'data-cpsd-preserved-namespace="10"' ), 'preserved card: rendered with the exact pre-existing total' );
+	Cpdd_Test::ok( str_contains( $preserved_html, 'data-cpsd-preserved-user="cpsd-office-manager"' ), 'preserved card: every pre-existing account is listed by name' );
+	Cpdd_Test::ok( str_contains( $preserved_html, 'حذف نمی‌شوند' ) && str_contains( $preserved_html, 'دکمه‌ای برای آن ندارد' ), 'preserved card: states that nothing is deleted and that no button can claim it' );
+	Cpdd_Test::ok( str_contains( $preserved_html, 'اثبات مالکیت' ), 'preserved card: an apparent signature is explicitly not proof of ownership' );
+	Cpdd_Test::ok( ! str_contains( $preserved_html, 'data-cpsd-form=' ), 'preserved card: exposes no action of any kind' );
+
+	ob_start();
+	$preserved_render->invoke( null, cpsd_fixture()['env'], new Cpdd_Fake_Platform() );
+	Cpdd_Test::equals( '', (string) ob_get_clean(), 'preserved card: not rendered at all when the namespace is empty' );
 
 	exit( Cpdd_Test::summary() );
 }

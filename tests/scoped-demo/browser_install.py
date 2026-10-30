@@ -22,6 +22,7 @@ ADMIN_PASS = os.environ["ADMIN_PASS"]
 ZIP = Path(os.environ.get("CPSD_INSTALL_ZIP", "/tmp/cpsa-ci/cpms-disposable-demo-1.0.0.zip"))
 CI_DIR = Path(os.environ.get("CPSD_CI_DIR", "/tmp/cpsa-ci"))
 EVIDENCE = Path(os.environ.get("CPSD_EVIDENCE_DIR", str(CI_DIR / "browser")))
+PRESERVED_LOGIN = os.environ.get("CPSD_PRESERVED_LOGIN", "cpsd-legacy-01")
 ROOT_BASENAME = "cpms-disposable-demo/cpms-disposable-demo.php"
 EMBEDDED_BASENAME = "cpms-disposable-demo/core/clinic-practice-management.php"
 DIAGNOSTIC = re.compile(r"(Fatal error|Parse error|Uncaught|Warning|Notice|Deprecated)(</b>)?:\s")
@@ -67,9 +68,22 @@ def main() -> int:
             page.wait_for_load_state("domcontentloaded")
             activated_body = page.content()
             check("activation screen has no PHP diagnostic", not DIAGNOSTIC.search(activated_body))
-            # Activation may redirect to the production first-run wizard. Return to
-            # the canonical Plugins screen before asserting the active row.
-            page.goto(f"{BASE}/wp-admin/plugins.php", wait_until="domcontentloaded")
+            # The Owner's dead end: activation dropped them on Plugins and the only
+            # demo entry point looked like the clean-site page. Activation must land
+            # on a demo console instead, and on a NON-EMPTY site that console is the
+            # scoped one (the strict page is for a fresh, empty WordPress only).
+            landed = page.url
+            check("activation lands the operator on a demo console instead of the Plugins screen",
+                  "page=cpms-scoped-demo" in landed or "page=cpms-disposable-demo" in landed, landed)
+            check("a populated site is routed to the scoped demo console", "page=cpms-scoped-demo" in landed, landed)
+            # One-shot activation redirects (this demo's own landing, and the embedded
+            # core's first-run wizard) can each steal exactly one request. Ask for the
+            # Plugins screen until WordPress actually serves it, so the assertion below
+            # is about the real screen and not about who redirected first.
+            for _ in range(4):
+                page.goto(f"{BASE}/wp-admin/plugins.php", wait_until="domcontentloaded")
+                if "plugins.php" in page.url:
+                    break
             row = page.locator('tr[data-plugin="cpms-disposable-demo/cpms-disposable-demo.php"]')
             check("outer demo plugin is active on Plugins screen", row.count() == 1 and "active" in (row.get_attribute("class") or ""),
                   row.get_attribute("class") if row.count() else page.url)
@@ -86,6 +100,34 @@ def main() -> int:
 
             tools_link = page.locator('#menu-tools a[href*="page=cpms-scoped-demo"]')
             check("administrator navigation exposes the scoped demo under Tools", tools_link.count() == 1)
+
+            # The clean-site screen must not be a dead end on a populated site: it
+            # has to SAY that this site is not empty and hand over the scoped route.
+            page.goto(f"{BASE}/wp-admin/admin.php?page=cpms-disposable-demo", wait_until="domcontentloaded")
+            strict_body = page.content()
+            check("clean-site screen has no PHP diagnostic on a populated site", not DIAGNOSTIC.search(strict_body))
+            route_card = page.locator('[data-cpdd-route="scoped"]')
+            check("clean-site screen routes a populated site to the scoped console", route_card.count() == 1, page.url)
+            goto = page.locator('[data-cpdd-goto-scoped="1"]')
+            href = (goto.get_attribute("href") if goto.count() else "") or ""
+            check("the routing button links to the scoped demo page", goto.count() == 1 and "page=cpms-scoped-demo" in href, href)
+            page.screenshot(path=str(EVIDENCE / "admin-populated-route.png"), full_page=True)
+            if goto.count():
+                goto.first.click()
+                page.wait_for_load_state("domcontentloaded")
+            check("the routing button really opens the scoped console", page.locator('[data-cpsd-page="1"]').count() == 1, page.url)
+            # Nobody's existing cpsd- prefixed account may be deleted, blocked on,
+            # or silently adopted: it is reported, and the preflight row passes.
+            preserved = page.locator("[data-cpsd-preserved-namespace]")
+            preserved_total = preserved.get_attribute("data-cpsd-preserved-namespace") if preserved.count() else "0"
+            check("pre-existing cpsd- accounts are reported on the console, not removed",
+                  preserved.count() == 1 and int(preserved_total or 0) >= 8, preserved_total or "missing")
+            check(f"the pre-existing {PRESERVED_LOGIN} account is listed for a human",
+                  page.locator(f'[data-cpsd-preserved-user="{PRESERVED_LOGIN}"]').count() == 1)
+            namespace_row = page.locator('[data-cpsd-preflight] tr', has_text="فضای نام دمو")
+            check("a pre-existing cpsd- account does not block the scoped preflight",
+                  namespace_row.count() == 1 and "PASS" in namespace_row.first.inner_text(),
+                  namespace_row.first.inner_text()[:200] if namespace_row.count() else "row missing")
             page.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
             check("scoped demo Tools page renders for the administrator", page.locator('[data-cpsd-page="1"]').count() == 1, page.url)
             check("scoped demo Tools page has no PHP diagnostic", not DIAGNOSTIC.search(page.content()))

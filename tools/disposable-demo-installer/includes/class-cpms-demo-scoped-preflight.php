@@ -5,7 +5,8 @@
  * This is not a bypass of the strict disposable preflight. It is a different
  * contract that explicitly allows existing users/content/CPMS data, while
  * proving compatibility, an intact global audit chain, a free queue-runner lock,
- * no colliding fixture namespace, and a readable baseline snapshot.
+ * a reported (never silently adopted) fixture namespace, and a readable baseline
+ * snapshot.
  *
  * @package CpmsDisposableDemo
  */
@@ -286,34 +287,50 @@ class ScopedPreflight extends Preflight {
 		return $this->result( 'other_manifest', 'عدم تداخل manifest', 'pass', 'هیچ manifest فعالی وجود ندارد.' );
 	}
 
-	/** @return array{id:string,label:string,status:string,detail:string} */
+	/**
+	 * Report the `cpsd-` namespace instead of blocking on its existence.
+	 *
+	 * The old rule refused to run while ANY account whose login started with
+	 * `cpsd-` existed. On the very site this mode exists for - a real test site
+	 * that has already been used, and whose leftover synthetic accounts nobody
+	 * has sealed proof for - that turned a harmless, already-present row into a
+	 * permanent dead end, and it said nothing about what those accounts are.
+	 *
+	 * The blocking question is not "does the prefix appear" but "would this run
+	 * collide", and that is decided where the identity actually exists:
+	 * `ScopedProvisioner::check_collisions()` builds the exact logins, e-mails,
+	 * page slug, tenant slugs, synthetic mobile, idempotency keys and rate-limit
+	 * keys of THIS fixture id and refuses with `COLLISION` BEFORE the first
+	 * synthetic row is written. Nothing is adopted, renamed or deleted here.
+	 *
+	 * So this check is informational and always non-blocking, and its detail is
+	 * produced by the same single survey the page renders (FixtureNamespace), so
+	 * the table and the card cannot disagree.
+	 *
+	 * @return array{id:string,label:string,status:string,detail:string}
+	 */
 	private function check_fixture_namespace(): array {
-		foreach ( $this->env->all_users() as $user ) {
-			if ( 0 === strpos( (string) ( $user['login'] ?? '' ), 'cpsd-' ) ) {
-				return $this->result( 'fixture_namespace', 'عدم برخورد پیشوند دمو', 'fail', 'یک حساب با پیشوند cpsd- از قبل وجود دارد.' );
-			}
-		}
-		foreach ( $this->env->posts_summary() as $post ) {
-			if ( 0 === strpos( (string) ( $post['slug'] ?? '' ), 'cpsd-' ) ) {
-				return $this->result( 'fixture_namespace', 'عدم برخورد پیشوند دمو', 'fail', 'یک نوشته/برگه با پیشوند cpsd- از قبل وجود دارد.' );
-			}
-		}
-		// A previous clean scoped teardown may leave suspended/inactive parent
-		// rows as audit FK anchors. They are inert and use an older fixture ID;
-		// only active namespace holders must block a new provisioning run.
-		$active_predicates = array(
-			'cpms_organizations' => "slug LIKE %s AND status = 'active'",
-			'cpms_clinics'       => "slug LIKE %s AND status = 'active'",
-			'cpms_locations'     => 'slug LIKE %s AND is_active = 1',
-		);
-		foreach ( $active_predicates as $short => $predicate ) {
-			$rows = $this->platform->fetch_all( 'SELECT id FROM `' . $this->platform->table( $short ) . '` WHERE ' . $predicate . ' LIMIT 1', array( 'cpsd-%' ) );
-			if ( array() !== $rows ) {
-				return $this->result( 'fixture_namespace', 'عدم برخورد پیشوند دمو', 'fail', 'یک slug فعال با پیشوند cpsd- در ' . $short . ' وجود دارد.' );
-			}
-		}
+		return self::namespace_result( FixtureNamespace::survey( $this->env, $this->platform ) );
+	}
 
-		return $this->result( 'fixture_namespace', 'عدم برخورد پیشوند دمو', 'pass', 'هیچ اثر قدیمی با پیشوند cpsd- یافت نشد.' );
+	/**
+	 * The namespace row is informational by design: it reports what already
+	 * exists, and it never blocks. Blocking is done by the exact collision check
+	 * at provisioning time, where the fixture identity actually exists.
+	 *
+	 * Kept as a pure function so the "never blocks" property is testable without
+	 * a database.
+	 *
+	 * @param array<string,mixed> $survey Result of FixtureNamespace::survey().
+	 * @return array{id:string,label:string,status:string,detail:string}
+	 */
+	public static function namespace_result( array $survey ): array {
+		return array(
+			'id'     => 'fixture_namespace',
+			'label'  => 'فضای نام دمو (بدون تداخل)',
+			'status' => 'pass',
+			'detail' => FixtureNamespace::summary_fa( $survey ),
+		);
 	}
 
 	/** @return array{id:string,label:string,status:string,detail:string} */

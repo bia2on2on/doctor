@@ -60,6 +60,7 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-standalone.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-env.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-platform.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-manifest.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-fixture-namespace.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-preflight.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-credentials.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-otp.php';
@@ -129,6 +130,13 @@ function cpms_demo_activate(): void {
 		);
 	}
 
+	// Remember, for the next wp-admin request only, that this administrator should
+	// be shown the console that fits this site: the strict page on a provably
+	// empty install, the scoped console on everything else. Without this the
+	// operator lands on the empty-site page, sees a red preflight, and is told to
+	// build another WordPress - which is exactly the dead end this avoids.
+	CpmsDemo\Admin::mark_landing( get_current_user_id() );
+
 	if ( CpmsDemo\Standalone::is_embedded() ) {
 		// Exactly one activation of the embedded core, in the same request.
 		if ( ! CpmsDemo\Standalone::boot_core() ) {
@@ -162,6 +170,10 @@ add_action( 'admin_notices', array( 'CpmsDemo\\Admin', 'render_activation_confli
 add_action( 'admin_notices', array( 'CpmsDemo\\Admin', 'render_recorder_error_notice' ) );
 add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'redirect_legacy_tools_url' ), 0 );
 add_action( 'admin_menu', array( 'CpmsDemo\\Admin', 'register_menu' ) );
+// One-shot landing after activation (see Admin::maybe_land_after_activation()). It
+// runs inside wp-admin only, for one GET request, for the administrator who
+// activated, and re-decides the target from live state - no authority is stored.
+add_action( 'admin_init', array( 'CpmsDemo\\Admin', 'maybe_land_after_activation' ), 1 );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\Admin', 'enqueue_assets' ) );
 add_action( 'admin_menu', array( 'CpmsDemo\\ScopedAdmin', 'register_menu' ), 11 );
 add_action( 'admin_enqueue_scripts', array( 'CpmsDemo\\ScopedAdmin', 'enqueue_assets' ) );

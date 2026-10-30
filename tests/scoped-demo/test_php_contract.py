@@ -179,5 +179,218 @@ class ScopedPhpContractTests(unittest.TestCase):
             self.assertIn("includes/" + name, self.bootstrap, name)
 
 
+
+class NonEmptySiteRoutingContract(unittest.TestCase):
+    """The operator must be routed to the mode that fits the site.
+
+    Reported defect: on an existing test site the only documented entry point was
+    the strict (empty-site) page. Every one of its occupancy checks was red, the
+    page offered no route to the scoped console, and its Persian instructions told
+    the owner to build another empty WordPress. The scoped mode - written for
+    exactly this site - was reachable only by guessing a Tools URL.
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.bootstrap = read(BOOTSTRAP)
+        cls.admin = read(COMPANION / "includes" / "class-cpms-demo-admin.php")
+        cls.preflight = read(COMPANION / "includes" / "class-cpms-demo-preflight.php")
+        cls.scoped_preflight = read(COMPANION / "includes" / "class-cpms-demo-scoped-preflight.php")
+        cls.scoped_admin = read(COMPANION / "includes" / "class-cpms-demo-scoped-admin.php")
+        cls.namespace = read(COMPANION / "includes" / "class-cpms-demo-fixture-namespace.php")
+
+    def test_activation_lands_on_the_right_console(self) -> None:
+        self.assertTrue("Admin::mark_landing( get_current_user_id() )" in self.bootstrap, "activation does not arm the landing")
+        self.assertTrue(
+            "add_action( 'admin_init', array( 'CpmsDemo\\\\Admin', 'maybe_land_after_activation' ), 1 )" in self.bootstrap,
+            "the landing hook is not registered on admin_init",
+        )
+        self.assertTrue("public static function maybe_land_after_activation" in self.admin, "landing hook missing")
+        # One-shot and non-destructive: consumed before the redirect, GET only.
+        self.assertLess(
+            self.admin.index("delete_transient( self::LANDING_TRANSIENT );\n\t\tif ( headers_sent() )"),
+            self.admin.index("wp_safe_redirect( self::setup_page_url("),
+        )
+        self.assertTrue("'GET' !== strtoupper(" in self.admin, "the landing accepts non-GET requests too")
+        self.assertTrue("wp_doing_ajax" in self.admin, "the landing is not excluded from AJAX")
+        self.assertTrue("current_user_can( self::CAP )" in self.admin, "the landing does not re-check the capability")
+
+    def test_routing_target_is_decided_from_live_state_only(self) -> None:
+        self.assertTrue("public static function setup_target" in self.admin, "setup_target missing")
+        self.assertTrue(
+            "Preflight::occupancy( (array) $state['checks'], $platform->available() )" in self.admin,
+            "the routing target is not derived from the real preflight",
+        )
+        # A recorded strict fixture is managed on the strict page whatever else the site holds.
+        self.assertTrue("! $manifest->exists()" in self.admin, "a recorded strict fixture must keep the strict page")
+        # No request input may select the target page.
+        target = self.admin[self.admin.index("public static function setup_target") : self.admin.index("public static function setup_page_url")]
+        for forbidden in ("$_GET", "$_POST", "$_REQUEST"):
+            self.assertFalse(forbidden in target, forbidden)
+
+    def test_occupancy_is_a_pure_function_of_the_real_preflight(self) -> None:
+        self.assertTrue("public const OCCUPANCY_CHECKS = array( 'plugins', 'users', 'content' );" in self.preflight, "occupancy input set changed")
+        self.assertTrue("public static function occupancy( array $checks, bool $cpms_available ): array" in self.preflight, "occupancy is not a pure function")
+        # An unreadable CPMS core is a compatibility failure, never proof of a populated site.
+        self.assertTrue(
+            "if ( $cpms_available ) {" in self.preflight and "$considered[] = 'cpms_data';" in self.preflight,
+            "cpms_data must be considered only when the core is readable",
+        )
+
+    def test_strict_page_offers_the_scoped_route(self) -> None:
+        self.assertTrue('data-cpdd-route="scoped"' in self.admin, "no route card")
+        self.assertTrue('data-cpdd-goto-scoped="1"' in self.admin, "no route button")
+        self.assertTrue("self::SCOPED_PAGE" in self.admin, "the route button does not use the shared slug")
+        self.assertTrue("public const SCOPED_PAGE = 'cpms-scoped-demo';" in self.admin, "slug constant missing")
+        # The duplicated slug must not drift from its owner.
+        self.assertTrue("public const PAGE   = 'cpms-scoped-demo';" in self.scoped_admin, "the two slugs drifted")
+
+    def test_strict_instructions_stop_asking_for_another_wordpress(self) -> None:
+        self.assertTrue(
+            "private static function render_instructions( bool $cpms_menu_available, bool $occupied = false )" in self.admin,
+            "instructions do not depend on occupancy",
+        )
+        self.assertTrue("$first_step = $occupied" in self.admin, "the first step is not occupancy-aware")
+        # The empty-site sentence must still exist for an actually empty install.
+        self.assertTrue("(\u062a\u06a9\u200c\u0633\u0627\u06cc\u062a\u06cc\u060c HTTPS)" in self.admin,
+                        "the empty-site first step was removed")
+        self.assertTrue("\u0647\u06cc\u0686 \u0633\u0627\u06cc\u062a \u062a\u0627\u0632\u0647" in self.admin,
+                        "the populated-site first step is missing")
+
+    def test_scoped_namespace_check_can_never_block(self) -> None:
+        """The prefix is not a collision; an exact collision is, and it is checked
+        at provisioning time. The row must therefore always be `pass`."""
+        self.assertTrue(
+            "public static function namespace_result( array $survey ): array" in self.scoped_preflight,
+            "namespace_result missing",
+        )
+        window = self.scoped_preflight[
+            self.scoped_preflight.index("public static function namespace_result") : self.scoped_preflight.index("private function check_queue_lock")
+        ]
+        self.assertTrue("'status' => 'pass'" in window, "the namespace row is not an unconditional pass")
+        self.assertFalse("'fail'" in window, "the namespace row can still fail")
+        # The old blanket-prefix refusals must be gone for good.
+        for old_shape in (
+            "\u06cc\u06a9 \u062d\u0633\u0627\u0628 \u0628\u0627 \u067e\u06cc\u0634\u0648\u0646\u062f cpsd- \u0627\u0632 \u0642\u0628\u0644",
+            "\u06cc\u06a9 slug \u0641\u0639\u0627\u0644 \u0628\u0627 \u067e\u06cc\u0634\u0648\u0646\u062f cpsd-",
+        ):
+            self.assertFalse(old_shape in self.scoped_preflight, "the blanket-prefix refusal is back")
+        # And the check still reads live state through the shared survey.
+        self.assertTrue(
+            "FixtureNamespace::survey( $this->env, $this->platform )" in self.scoped_preflight,
+            "the check no longer reads live state",
+        )
+
+    def test_namespace_survey_is_read_only(self) -> None:
+        for forbidden in (
+            "delete_user",
+            "wp_delete_user",
+            "delete_post",
+            "wp_delete_post",
+            "option_set",
+            "option_delete",
+            "insert_row",
+            "delete_where",
+            "->delete(",
+            "wp_update_user",
+            "wp_insert_user",
+        ):
+            self.assertNotIn(forbidden, self.namespace, f"{forbidden} must not appear in the read-only survey")
+
+    def test_namespace_survey_is_shipped_before_it_is_used(self) -> None:
+        self.assertTrue("includes/class-cpms-demo-fixture-namespace.php" in self.bootstrap, "the survey is not shipped")
+        self.assertLess(
+            self.bootstrap.index("includes/class-cpms-demo-fixture-namespace.php"),
+            self.bootstrap.index("includes/class-cpms-demo-preflight.php"),
+        )
+
+    def test_scoped_page_reports_preserved_residue_without_an_action(self) -> None:
+        self.assertTrue("private static function render_preserved_namespace" in self.scoped_admin, "preserved card missing")
+        self.assertTrue("self::render_preserved_namespace( $env, $platform );" in self.scoped_admin, "preserved card not wired")
+        self.assertTrue('data-cpsd-preserved-namespace=' in self.scoped_admin, 'preserved card has no identity')
+        window = self.scoped_admin[
+            self.scoped_admin.index("private static function render_preserved_namespace") : self.scoped_admin.index("private static function render_preflight")
+        ]
+        self.assertTrue("حذف نمی‌شوند" in window, "the card does not say the rows are preserved")
+        self.assertTrue("اثبات مالکیت" in window, "the card does not say a name is not proof")
+        # The card is informational: no form, no button, no action constant.
+        for forbidden in ("<form", "<button", "ScopedRequest::ACTION_", "data-cpsd-form"):
+            self.assertNotIn(forbidden, window)
+
+    def test_strict_residue_row_names_a_scoped_leftover(self) -> None:
+        self.assertTrue("FixtureNamespace::survey( $this->env, null )" in self.preflight, "the strict residue row does not name scoped leftovers")
+        window = self.preflight[self.preflight.index("private function check_manifest_state") :]
+        self.assertTrue("بقایای «حالت محدودشده»" in window, "the scoped leftover is not named")
+        self.assertTrue("FixtureNamespace::counts_fa( $survey )" in window, "the counts are not rendered")
+        # The scoped survey is passed a null platform here: an inactive CPMS must
+        # not be queried by the strict residue row.
+        self.assertFalse("$this->platform" in window, "an inactive CPMS must not be queried by the residue row")
+
+    def test_single_clinic_gate_is_named_where_the_operator_looks(self) -> None:
+        """A single-Clinic host needs a typed acceptance, not a greener table."""
+        self.assertTrue(
+            "private static function render_setup_summary( ScopedManifest $manifest, array $state, ?array $loaded, string $error, int $clinics = 0 )"
+            in self.scoped_admin,
+            "the summary card is not clinic-aware",
+        )
+        self.assertTrue(
+            "self::render_setup_summary( $manifest, $state, $loaded, $manifest_error, $clinic_count );" in self.scoped_admin,
+            "the clinic count is not passed to the summary",
+        )
+        self.assertLess(
+            self.scoped_admin.index("$clinic_count = (int) $platform->count_all( 'cpms_clinics' );"),
+            self.scoped_admin.index("self::render_setup_summary("),
+            "the count is read after the card that needs it",
+        )
+        self.assertTrue('data-cpsd-private-host-hint="1"' in self.scoped_admin, "nothing points at the confirmation")
+        self.assertTrue(
+            "$needs_private_host && array( 'host_scope' ) === $blocking_id" in self.scoped_admin,
+            "the headline does not name the single-Clinic blocker",
+        )
+        # The gate itself is unchanged: only the sealed acceptance passes it, and
+        # the consent card still renders for a single-Clinic host alone.
+        self.assertTrue("if ( 1 !== $clinics ) {" in self.scoped_admin, "the consent card is no longer single-Clinic only")
+        self.assertTrue("$manifest->private_host_consent()" in self.scoped_admin, "the sealed acceptance is no longer read")
+        # The clean-site page names the same confirmation before sending the owner on.
+        route = self.admin[self.admin.index('data-cpdd-route="scoped"') : self.admin.index("private static function render_credentials")]
+        self.assertTrue("\u062a\u06a9\u200c\u062f\u0631\u0645\u0627\u0646\u06af\u0627\u0647\u06cc" in route,
+                        "the route card does not mention the single-Clinic confirmation")
+
+    def test_preexisting_cpsd_accounts_are_proved_preserved(self) -> None:
+        """Eight pre-existing `cpsd-` accounts are the Owner's real condition.
+
+        A login prefix is not ownership: the drill must seed them, digest them
+        (login, e-mail, roles, password hash) and prove they survive provisioning,
+        teardown and plugin deletion - and the browser must see them reported.
+        """
+        driver = read(ROOT / "tests" / "scoped-demo" / "standalone-acceptance.php")
+        browser = read(ROOT / "tests" / "scoped-demo" / "browser_install.py")
+        self.assertTrue("$cpsd_sa_legacy_digest" in driver, "the drill does not digest the pre-existing accounts")
+        self.assertTrue("'cpsd-legacy-' . str_pad(" in driver, "the drill does not seed pre-existing cpsd- accounts")
+        self.assertTrue("'user_email'   => $login . '@example.invalid'" in driver,
+                        "the seeded accounts must not carry one of this package's own e-mail domains")
+        self.assertTrue("pre-existing cpsd- accounts are byte-identical (login, e-mail, roles, password hash)" in driver,
+                        "assert mode does not prove the accounts are untouched")
+        self.assertTrue("the eight pre-existing cpsd- accounts survived deactivation and deletion" in driver,
+                        "after_delete does not prove the accounts survive the plugin lifecycle")
+        for forbidden in ("wp_delete_user", "delete_user", "wp_update_user", "set_role("):
+            self.assertNotIn(forbidden, driver, f"{forbidden} must never be used on a pre-existing account")
+        self.assertTrue('data-cpsd-preserved-namespace' in browser, "the browser does not read the preserved card")
+        self.assertTrue('data-cpsd-preserved-user=' in browser, "the browser does not list a preserved account")
+        self.assertTrue("page=cpms-scoped-demo" in browser, "the browser does not follow the routing button")
+
+    def test_browser_drill_proves_the_populated_site_route(self) -> None:
+        browser = read(ROOT / "tests" / "scoped-demo" / "browser_install.py")
+        self.assertTrue('data-cpdd-route="scoped"' in browser, "the browser does not assert the route card")
+        self.assertTrue('data-cpdd-goto-scoped="1"' in browser, "the browser does not click the routing button")
+        self.assertTrue('data-cpsd-page="1"' in browser, "the browser does not assert the scoped console")
+        self.assertTrue('has_text="\u0641\u0636\u0627\u06cc \u0646\u0627\u0645 \u062f\u0645\u0648"' in browser,
+                        "the browser does not assert the namespace preflight row")
+        # The Plugins-screen assertion must survive one-shot activation redirects.
+        self.assertTrue("for _ in range(4):" in browser, "the Plugins screen is asserted on a redirect response")
+        # And it must never assert success for a page it did not reach.
+        self.assertTrue('if "plugins.php" in page.url:' in browser, "the retry does not check where it landed")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -91,6 +91,16 @@ function esc_url( string $url ): string {
 	return htmlspecialchars( $url, ENT_QUOTES, 'UTF-8' );
 }
 
+function admin_url( string $path = '' ): string {
+	return 'https://demo.test/wp-admin/' . ltrim( $path, '/' );
+}
+
+function get_current_user_id(): int {
+	$env = $GLOBALS['cpdd_active_fake_env'] ?? null;
+
+	return $env instanceof Cpdd_Fake_Env ? $env->current_user_id() : 0;
+}
+
 function esc_textarea( string $text ): string {
 	return htmlspecialchars( $text, ENT_QUOTES, 'UTF-8' );
 }
@@ -292,6 +302,7 @@ require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-standalone.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-env.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-platform.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-manifest.php';
+require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-fixture-namespace.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-preflight.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-credentials.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-request.php';
@@ -405,10 +416,11 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 	public function create_user( array $args ): int {
 		$id                = $this->next_user++;
 		$this->users[ $id ] = array(
-			'id'    => $id,
-			'login' => $args['user_login'],
-			'email' => $args['user_email'],
-			'roles' => array( $args['role'] ),
+			'id'         => $id,
+			'login'      => $args['user_login'],
+			'email'      => $args['user_email'],
+			'roles'      => array( $args['role'] ),
+			'registered' => '2026-10-01 00:00:00',
 		);
 		$this->passwords[ $id ] = $args['user_pass'];
 
@@ -553,10 +565,11 @@ class Cpdd_Fake_Env extends CpmsDemo\Env {
 		$GLOBALS['cpdd_active_fake_env'] = $this;
 		$this->users        = array(
 			1 => array(
-				'id'    => 1,
-				'login' => 'owner',
-				'email' => 'owner@example.test',
-				'roles' => array( 'administrator' ),
+				'id'         => 1,
+				'login'      => 'owner',
+				'email'      => 'owner@example.test',
+				'roles'      => array( 'administrator' ),
+				'registered' => '2026-01-01 00:00:00',
 			),
 		);
 		$this->caps         = array( 1 => array( 'manage_options' => true, 'install_plugins' => true ) );
@@ -909,6 +922,28 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 		$out   = array();
 		if ( '1 = 0' === $where ) {
 			return array();
+		}
+		// FixtureNamespace::survey() counts ACTIVE namespace holders only; a
+		// previous clean teardown leaves suspended/archived anchors behind.
+		$namespace_like = array(
+			"slug LIKE %s AND status = 'active'",
+			'slug LIKE %s AND is_active = 1',
+		);
+		if ( in_array( $where, $namespace_like, true ) ) {
+			$needle = rtrim( (string) ( $params[0] ?? '' ), '%' );
+			foreach ( $rows as $index => $row ) {
+				if ( ! str_starts_with( (string) ( $row['slug'] ?? '' ), $needle ) ) {
+					continue;
+				}
+				$live = str_contains( $where, 'is_active' )
+					? 1 === (int) ( $row['is_active'] ?? 0 )
+					: 'active' === (string) ( $row['status'] ?? '' );
+				if ( $live ) {
+					$out[ $index ] = $row;
+				}
+			}
+
+			return $out;
 		}
 		foreach ( $rows as $index => $row ) {
 			if ( 'cpms_jobs' === $short ) {
