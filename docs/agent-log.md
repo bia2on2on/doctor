@@ -2884,3 +2884,37 @@ The Mission-F drills did not pass on the first attempt. Every failure below was 
 - **That assertion was mine and it was wrong, not the product.** A teardown archives its own anchor Clinic **in place** instead of deleting it (the audit log holds a production foreign key to `cpms_clinics`), which is documented in `ScopedManifest::PRIVATE_HOST_OPTION` and is the exact +1 the administrator accepts as a private-host consequence. So the site correctly ends one Clinic higher than before parking, and comparing totals proved nothing about the parked row. The drill now proves the parked Clinic **by id** (exactly one row survives) and asserts the total is exactly `before + 1` (the fresh fixture's archived Clinic), with both numbers in the evidence and in the failure message.
 - **Also fixed:** my new diagnostics step could itself fail (a `grep` with no match under `pipefail`), which is worse than useless in a failure path; it is now `{ grep ... || true; }`.
 - **NOT RUN at this head:** the incident `finish` step still (that is what these two fixes target), WPCS on the new head, and both database jobs end to end.
+
+### [2026-10-30 UTC] — Green: all twelve workflows pass on the same head, both database engines
+
+Head `c4d465275c1767f40b91f49f924052a9ab753b62`. This is the first run of this branch in
+which every workflow completed successfully. The evidence, as read back from the API
+rather than inferred:
+
+| workflow | run | result |
+|---|---|---|
+| Scoped demo (static + real WordPress integration) | `41086474912` | **success** |
+| Standalone demo (real WordPress, no production plugin) | `41086474696` | **success** |
+| CI (incl. `WPCS (changed code)`, `Static Analysis`, `Integration (WP 7.1 + MySQL 8)`) | `41086474989` | **success** |
+| Closure Gate, Companion compatibility, Disposable Demo Installer, External Disposable Site Acceptance, Facility Onboarding Matrix, First-Practice Browser Acceptance, Persian five-plugin coexistence, Pilot/Staging Readiness, Real WordPress Acceptance | — | **success** |
+
+Inside the scoped workflow, on **both** `mysql-8` and `mariadb-11.4.13`, every step of
+`Real WordPress integration` is green, in order: scoped integration on the seeded
+non-empty site, runtime safety drills, the management-portal lifecycle drills (P1–P4),
+provision, tamper/restore, the six persona journeys, the incident *stage*, the repair
+phase, **the eight passwordless persona sessions with all their abuse cases**, the
+evidence aggregation, and the incident *finish* (the repair changed no data row, the
+fixture parked with its eight accounts and its Clinic intact, the audit chain verified).
+`Standalone on a non-empty site` and `A–J teardown data safety` are green on both
+engines as well, and the static job ran both new gates (workflow-YAML parse, embedded
+core sync at revision `c4d4652`, 330/330 files).
+
+What this does **not** claim: nothing here was merged, tagged, released or deployed, and
+Phase 20 was not started. The unit, integration and browser results come from CI; this
+sandbox still has no PHP binary, database server, Docker or Chromium, so every number in
+the report that came from here is php-wasm, Python or a parse — never a real WordPress
+run. The permanent limitations stay stated in the PR: a parked fixture's rows and its
+eight accounts remain (attribution, not deletion), a teardown leaves its own anchor
+Clinic row behind (the audit table's production foreign key, accepted explicitly for a
+private host), and one browser holds one WordPress session, so real isolation needs a
+private window.

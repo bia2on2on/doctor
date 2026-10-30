@@ -713,3 +713,14 @@ value, which contradicts the documented archive-in-place behaviour (the audit lo
 production foreign key makes a teardown leave its own Clinic behind, +1 for ever). The
 drill now proves the parked Clinic by id and expects exactly +1. Nothing else in the
 lane is known to be red; nothing past that step has run.
+
+### Status of the CI evidence (head `c4d4652`)
+
+All twelve workflows completed successfully, including `Scoped demo` (both database
+engines, every step from the P1–P4 lifecycle drills through the eight passwordless
+persona sessions, the evidence aggregation and the incident finish), `Standalone demo`
+(both `Standalone on a non-empty site` jobs and both `A–J teardown data safety` jobs),
+and `CI` with its `WPCS (changed code)` job green. The static job ran both new gates:
+workflow-YAML parse (16/16 files) and embedded-core sync at that exact revision
+(330/330 files). Earlier red rounds and their causes are recorded above and are not
+retroactively softened: each was a real defect, three of them mine.
