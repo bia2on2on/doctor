@@ -128,6 +128,14 @@ final class GenericApiSmsProvider implements SmsProviderInterface
             ];
         }
 
+        if ($httpCode < 200 || $httpCode >= 300) {
+            return [
+                'ok' => false,
+                'message' => '✗ پنل پیامک پاسخ موفق تأیید نکرد (HTTP ' . $httpCode . ').',
+                'technical' => 'http_' . $httpCode,
+            ];
+        }
+
         return [
             'ok' => true,
             'message' => '✓ اتصال برقرار شد (HTTP ' . $httpCode . ').',

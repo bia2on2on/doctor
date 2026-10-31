@@ -81,6 +81,7 @@ jobs:
           mkdir -p /tmp/classic-v1/baseline/clinic-practice-management
           git archive "$BASELINE_SHA" clinic-practice-management | tar -x --strip-components=1 -C /tmp/classic-v1/baseline/clinic-practice-management
           cp -a tests/. /tmp/classic-v1/baseline/clinic-practice-management/tests/
+          mkdir -p /tmp/classic-v1/baseline/clinic-practice-management/vendor
           cp -a vendor/. /tmp/classic-v1/baseline/clinic-practice-management/vendor/
           # Regenerate Composer paths against the archived production source;
           # never load candidate src through a copied autoload map.
