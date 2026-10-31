@@ -185,7 +185,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
     public function testReceptionRecoveryRegistersItsHooksDuringBootstrap(): void
     {
         self::assertNotFalse(has_action('admin_menu', [ClinicReceptionRecoveryPage::class, 'menu']));
-        self::assertNotFalse(has_action('admin_post_cpms_reception_recovery_assign', [ClinicReceptionRecoveryPage::class, 'handleAssign']));
+        self::assertNotFalse(has_action('admin_post_cpms_reception_recovery_assign', [ClinicReceptionRecoveryPage::class, 'handle_assign']));
     }
 
     public function testExactlyOneCpmsTopLevelMenuExists(): void

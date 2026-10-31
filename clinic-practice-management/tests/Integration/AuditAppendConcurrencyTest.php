@@ -9,24 +9,14 @@ use ClinicCore\Infrastructure\Audit\HashChain;
 use WP_UnitTestCase;
 
 /**
- * Classic V1 audit integrity under genuine concurrent booking (installer reproduction).
+ * Synthetic concurrent SQL checks, not production booking acceptance.
  *
- * Replays the installer observation: MariaDB 11.4.13, synchronized 25-way and
- * 50-way booking against the real OTP→Hold→Confirm→Auth→Persistence path,
- * and independently verifies every stored prev_hash and row_hash (complete chain
- * and suffix). The previous last-row lock (`SELECT ... ORDER BY id DESC LIMIT 1 FOR UPDATE`)
- * allowed two transactions to read the same committed tail and both link to it —
- * unexpected genesis prev_hash values at IDs 88,103,140,141,143 among 674 rows.
- *
- * The fix under test is the singleton guard row `cpms_audit_seq` (id=1) locked
- * inside the same outer transaction before reading the tail (migration 0031).
- * Evidence is collected on real MySQL 8 and MariaDB 11.4.13 via the CI matrix;
- * this file runs on the MySQL lane by default and the same suite is re-executed
- * on MariaDB in the dedicated workflow step (WP_TESTS_DIR=/tmp/wordpress-test-lib-mariadb).
- *
- * Lock evidence: each worker holds the guard row (FOR UPDATE) while inserting;
- * the second worker's guard wait is observable as `LOCK WAIT` in
- * performance_schema / SHOW ENGINE INNODB STATUS.
+ * Workers use independent mysqli connections and hand-written audit inserts or
+ * slot-counter updates. There is no simultaneous-launch barrier, no OTP, hold
+ * record, confirmation, idempotency, clinical, finance or SMS service call, and
+ * no independent verifier or lock-wait/deadlock/latency measurement. The
+ * production verifier is checked against the resulting synthetic rows. A pass
+ * here must not be described as the requested end-to-end concurrency proof.
  */
 final class AuditAppendConcurrencyTest extends WP_UnitTestCase
 {
@@ -53,9 +43,9 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        // Manual cleanup is not needed for wpdb transactional tests, but the
-        // audit rows committed via independent mysqli connections survive the
-        // parent rollback and must be removed for isolation.
+        // Child connections commit synthetic audit rows to this disposable test
+        // database; those append-only rows survive the parent rollback. Do not
+        // run this test against a real site's audit history.
         if ($this->slotId > 0) {
             App::db()->query('DELETE FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d', [$this->slotId]);
         }
@@ -88,12 +78,10 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
         $this->assertSame($initialCount + 85, $after50, '50-way: total 85 concurrent rows added');
     }
 
-    public function testConcurrentBookingThroughRealPathsKeepsAuditIntact(): void
+    public function testConcurrentSqlCapacityUpdatesLeaveProductionVerifierIntact(): void
     {
-        // This test exercises the real booking audit path (BookingService hold path
-        // which calls AuditLogger inside the Slot+Location locks). It uses the
-        // same guard serialization as the direct audit test, but also proves that
-        // business locks + guard do not deadlock under mixed load.
+        // This is only a direct conditional slot-counter UPDATE: no hold row,
+        // production BookingService, audit append or deadlock observation.
         $this->prepareSlot(capacity: 1);
         $initial = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
 
@@ -111,16 +99,14 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
         $this->assertTrue($suffix['ok'], 'suffix verification must pass: ' . wp_json_encode($suffix));
     }
 
-    public function testAuditIntegrityUnderMixedClinicalFinancialSmsOperations(): void
+    public function testSyntheticAuditRowsLeaveProductionVerifierIntact(): void
     {
         $initial = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
-        // Simulate mixed load: 5 concurrent workers each doing a different audited operation
-        // via direct audit log (clinical note, invoice, SMS) — the guard must serialize all.
+        // Five hand-written audit rows; this does not invoke any clinical,
+        // financial or SMS production writer.
         $this->assertConcurrentAuditInsertsPreserveChain(5, $initial);
 
-        // Also trigger a clinical audit via ClinicalService (if available) and a finance audit.
-        // We keep this best-effort: if the service requires additional fixtures, the direct
-        // audit inserts above already prove the guard works under mixed operation types.
+        // Check these synthetic rows with the production verifier only.
         $chain = App::audit()->verifyFullChain();
         $this->assertTrue($chain['ok'], 'mixed operations must not break chain');
     }
@@ -384,11 +370,8 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
                 $mysqli = null;
                 try {
                     $mysqli = $this->freshMysqli();
-                    // Simulate BookingService hold path: lock clinic prefix, slot FOR UPDATE, atomic hold, insert audit via guard.
+                    // Direct conditional UPDATE only; neither BookingService nor AuditLogger runs.
                     $mysqli->begin_transaction();
-                    // Lock guard first (our fix forces this ordering inside AuditLogger, but here we simulate the outer booking tx that then calls audit).
-                    // For this booking race test we directly test Slot atomic hold (capacity check) — the audit guard is tested separately.
-                    // So we just attempt the atomic hold UPDATE.
                     $now = gmdate('Y-m-d H:i:s') . '.000';
                     $stmt = $mysqli->prepare('UPDATE ' . $this->table('cpms_schedule_slots') . ' SET held_count = held_count + 1, updated_at = ? WHERE id = ? AND is_open = 1 AND capacity - booked_count - held_count > 0');
                     if ($stmt !== false) {

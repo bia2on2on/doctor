@@ -67,7 +67,7 @@ final class HashChain
      *
      * هر گره هم `prev_hash` ذخیره‌شده و هم `row_hash` را تأیید می‌کند: `prev_hash` باید
      * دقیقاً برابر `row_hash` گرهٔ قبلی باشد و `row_hash` باید از `prev_hash` ذخیره‌شده
-     * + فیلدهای کانونی بازمحاسبه شود. این همان منطق `tools/audit-chain/verify.py` است.
+     * + فیلدهای کانونی بازمحاسبه شود. این هم‌ارزِ منطقِ بررسی مستقل در `tests/audit-chain/verify.py` است.
      *
      * @param list<array<string, mixed>> $rows هر ردیف: prev_hash, row_hash + فیلدهای fieldsFor
      * @param string|null $anchor هشِ واقعیِ پیش از نخستین ردیف؛ null = GENESIS برای زنجیر کامل.
@@ -96,7 +96,7 @@ final class HashChain
     }
 
     /**
-     * صحت‌سنجی کامل از GENESIS (برای تصدیق مستقل کل تاریخچه).
+     * صحت‌سنجی کامل از GENESIS (توسط verifier تولیدی، نه بررسی مستقل).
      *
      * @param list<array<string, mixed>> $rows ترتیب صعودی id، بدون جاافتادگی.
      *

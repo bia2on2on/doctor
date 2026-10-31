@@ -12,16 +12,11 @@ use WP_UnitTestCase;
 /**
  * Reception onboarding recovery — Persian Clinic Manager UI for clinician↔Location assignment.
  *
- * Validates the reported empty-assignment failure (eligible_clinicians inner-join on
- * cpms_clinician_locations returns empty when that table is empty, making every walk-in
- * and booking path recheck fail) and the authorized recovery flow:
- *
- * - Clinic Manager (active membership + cpms_config) can select a verified active clinician
- *   and active Location(s) in the SAME Clinic, using existing membership validation and
- *   atomic audit. WordPress Administrator status alone never confers clinical authority.
- * - Covers empty assignments, 0/1/multiple locations, suspended memberships,
- *   cross-tenant selection, duplicate/retry idempotency, audit failure rollback,
- *   and both browser and mobile/RTL workflow (via HTML assertions).
+ * These tests exercise an eligibility query, the legacy global membership
+ * primitive, selector authorization and captured HTML. They do not submit the
+ * recovery handler, invoke a failing AuditLogger, or run a real browser/mobile
+ * viewport. The separate disposable WP-CLI and Playwright proofs exercise the
+ * new Clinic-local boundary, failure rollback and actual admin form.
  */
 final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
 {
@@ -42,13 +37,10 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         $this->clinicId = 1;
         $now = App::db()->nowUtcSql();
 
-        // Two active locations for the clinic.
-        $locA = App::db()->fetchValue('SELECT id FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC LIMIT 1', [$this->clinicId]);
-        if ($locA === null) {
-            App::db()->insert('cpms_locations', ['clinic_id' => $this->clinicId, 'name' => 'Recovery Loc A', 'slug' => 'recovery-a-' . bin2hex(random_bytes(3)), 'is_active' => 1, 'is_primary' => 1, 'timezone' => 'Asia/Tehran', 'created_at' => $now, 'updated_at' => $now]);
-            $locA = App::db()->wpdb_last_insert_id();
-        }
-        $this->locationA = (int) $locA;
+        // Two fresh fixture Locations; a pre-existing default Location may
+        // already have other eligible clinicians in the full test suite.
+        App::db()->insert('cpms_locations', ['clinic_id' => $this->clinicId, 'name' => 'Recovery Loc A', 'slug' => 'recovery-a-' . bin2hex(random_bytes(3)), 'is_active' => 1, 'is_primary' => 0, 'timezone' => 'Asia/Tehran', 'created_at' => $now, 'updated_at' => $now]);
+        $this->locationA = (int) App::db()->wpdb_last_insert_id();
         App::db()->insert('cpms_locations', ['clinic_id' => $this->clinicId, 'name' => 'Recovery Loc B', 'slug' => 'recovery-b-' . bin2hex(random_bytes(3)), 'is_active' => 1, 'is_primary' => 0, 'timezone' => 'Asia/Tehran', 'created_at' => $now, 'updated_at' => $now]);
         $this->locationB = (int) App::db()->wpdb_last_insert_id();
 
@@ -87,7 +79,7 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinician_locations') . ' WHERE clinician_id = %d', [$this->clinicianId]);
         App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d', [$this->clinicianId]);
         App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE wp_user_id IN (%d, %d)', [$this->managerId, $this->suspendedManagerId]);
-        App::db()->query('DELETE FROM ' . App::db()->table('cpms_locations') . ' WHERE id = %d', [$this->locationB]);
+        App::db()->query('DELETE FROM ' . App::db()->table('cpms_locations') . ' WHERE id IN (%d, %d)', [$this->locationA, $this->locationB]);
         App::resetScope();
         parent::tearDown();
     }
@@ -143,7 +135,7 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         $this->assertCount(1, $this->eligibleClinicians($this->clinicId, $this->locationA));
     }
 
-    public function testCrossTenantSelectionIsDenied(): void
+    public function testLegacyPrimitiveRejectsLocationWithoutClinicianMembership(): void
     {
         wp_set_current_user($this->managerId);
         // Create foreign clinic + location.
@@ -165,27 +157,24 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         }
     }
 
-    public function testAuditFailureRollsBackAssignment(): void
+    public function testExceptionRollsBackWrappedLegacyAssignment(): void
     {
-        // This test proves the recovery audit is mandatory: we inject a failure
-        // into the audit insert and ensure the location assignment does not
-        // survive (no partial state). We use the same fault-injection pattern
-        // as OtpAuditAtomicityTest — mock the audit table to fail.
+        // This exercises a generic outer-transaction rollback, not a failure
+        // in AuditLogger or the actual recovery service.
         wp_set_current_user($this->managerId);
         $this->assertNotNull(\ClinicCore\Admin\AdminClinicSelector::establish($this->managerId, $this->clinicId, RolesAndCapabilities::CONFIG));
 
         // Ensure clean state.
         App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinician_locations') . ' WHERE clinician_id = %d', [$this->clinicianId]);
 
-        // Directly test the transactional boundary in ClinicReceptionRecoveryPage::handleAssign
-        // would require HTTP; here we test the service boundary: assign + audit share
-        // one transaction. We simulate audit failure by wrapping assign and audit together.
+        // A deliberate exception follows the legacy assignment. It does not
+        // prove that the actual audit or HTTP handler was called.
         $auditFailed = false;
         try {
             App::db()->transactional(function () {
                 App::membership_service()->assign_clinician_locations($this->clinicianId, [$this->locationA], $this->locationA);
-                // Mandatory audit — inject failure.
-                throw new \RuntimeException('audit injection failure');
+                // Test-only exception, not an AuditLogger failure.
+                throw new \RuntimeException('simulated outer failure');
             });
         } catch (\Throwable) {
             $auditFailed = true;
@@ -232,7 +221,7 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         $this->assertStringContainsString('بازیابی پذیرش', $html);
         $this->assertStringContainsString('انتساب پزشک به محل', $html);
         $this->assertStringContainsString('dir="rtl"', $html);
-        // Verify narrow-viewport containment: no overflow:hidden that would hide guidance.
+        // This is only an HTML string assertion, not a viewport/layout test.
         $this->assertStringNotContainsString('overflow: hidden', strtolower($html));
     }
 
@@ -253,10 +242,4 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         return is_array($rows) ? $rows : [];
     }
 
-    private function assertNotWPError($value): void
-    {
-        if (is_wp_error($value)) {
-            $this->fail('WP_Error: ' . $value->get_error_message());
-        }
-    }
 }

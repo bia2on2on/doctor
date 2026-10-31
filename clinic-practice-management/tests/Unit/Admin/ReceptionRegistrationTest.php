@@ -26,7 +26,7 @@ final class ReceptionRegistrationTest extends TestCase
             $GLOBALS['cpms_reception_test_hooks']['admin_menu'] ?? null
         );
         self::assertSame(
-            [[ClinicReceptionRecoveryPage::class, 'handleAssign']],
+            [[ClinicReceptionRecoveryPage::class, 'handle_assign']],
             $GLOBALS['cpms_reception_test_hooks']['admin_post_cpms_reception_recovery_assign'] ?? null
         );
     }
