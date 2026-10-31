@@ -100,7 +100,7 @@ jobs:
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
           tail -35 /tmp/classic-v1/baseline-${{ matrix.database }}.log | while IFS= read -r line; do echo "::warning::BASELINE LOG ${line}"; done
-          python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY'
+          python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY' || true
           import sys, xml.etree.ElementTree as ET
           for case in ET.parse(sys.argv[1]).iter('testcase'):
           for bad in list(case.findall('failure')) + list(case.findall('error')):

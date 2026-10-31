@@ -46,7 +46,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         $membership = $this->iv1_membership($this->doctor, $this->clinic, RolesAndCapabilities::ROLE_DOCTOR);
         $this->iv1_restrict_to_location($membership, $this->locationA);
         $this->clinician = $this->iv1_clinician($this->clinic, $this->doctor);
-        App::memberships()->replace_clinician_locations($this->clinician, [$this->locationA, $this->locationB], $this->locationA);
+        (new \ClinicCore\Infrastructure\Repository\MembershipRepository(App::db()))->replace_clinician_locations($this->clinician, [$this->locationA, $this->locationB], $this->locationA);
         $this->patient = $this->iv1_patient($this->clinic);
         $this->visit = $this->iv1_visit($this->clinic, $this->locationA, $this->patient, $this->clinician, 'in_consultation');
         $this->provider = new RecordingSmsProvider();
