@@ -486,8 +486,8 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                                     </label>
                                 </div>
                                 <div class="cpms-doc-ws-field">
-                                    <label for="cpms-doc-ws-fu-date">تاریخ پیشنهادی (YYYY-MM-DD)</label>
-                                    <input id="cpms-doc-ws-fu-date" type="text" inputmode="numeric" placeholder="2026-04-10" autocomplete="off" data-role="workspace-fu-date">
+                                    <label for="cpms-doc-ws-fu-date">تاریخ پیشنهادی</label>
+                                    <input id="cpms-doc-ws-fu-date" type="date" dir="ltr" autocomplete="off" data-role="workspace-fu-date">
                                 </div>
                                 <div class="cpms-doc-ws-field">
                                     <label for="cpms-doc-ws-fu-interval-days">یا بازه (روز)</label>
@@ -784,7 +784,7 @@ function renderToday(){
         return;
     }
     show(sec);
-    dateEl.textContent = 'تاریخ عملیاتی (بر اساس شعبه): ' + (state.today.date || '');
+    dateEl.textContent = 'تاریخ عملیاتی (بر اساس شعبه): ' + (state.today.jalali || state.today.date || '');
     var s = state.today.stats || {};
     var fields = [
         ['waiting','در انتظار'],
@@ -1272,7 +1272,7 @@ function renderWorkspaceHeader(data){
     if ( p.mrn ) meta.push('<span class="cpms-doc-ws-meta-item">MRN: <b>' + esc(p.mrn) + '</b></span>');
     if ( p.age != null && p.age !== '' ) meta.push('<span class="cpms-doc-ws-meta-item">سن: <b>' + esc(p.age) + '</b></span>');
     if ( p.gender ) meta.push('<span class="cpms-doc-ws-meta-item">جنسیت: <b>' + esc(genderLabel(p.gender)) + '</b></span>');
-    if ( v.visit_date ) meta.push('<span class="cpms-doc-ws-meta-item">تاریخ ویزیت: <b>' + esc(v.visit_date) + '</b></span>');
+    if ( v.visit_date ) meta.push('<span class="cpms-doc-ws-meta-item">تاریخ ویزیت: <b>' + esc(v.jalali_date || v.visit_date) + '</b></span>');
     var statusBadge = v.status
         ? '<span class="cpms-doc-badge status-' + esc(v.status) + '">' + esc(visitStatusLabel(v.status)) + '</span>'
         : '';
@@ -1310,7 +1310,7 @@ function renderWorkspaceNotes(){
             '<div class="cpms-doc-ws-note-head">' +
                 (n.category === 'chief_complaint' ? '<span class="cpms-doc-badge" data-role="workspace-note-cc">شکایت اصلی</span>' : '') +
                 '<span class="cpms-doc-badge ' + esc(noteVisibilityClass(n.visibility)) + '">' + esc(noteVisibilityLabel(n.visibility)) + '</span>' +
-                '<span class="cpms-doc-ws-note-date">' + esc(n.created_at || '') + '</span>' +
+                '<span class="cpms-doc-ws-note-date">' + esc(n.created_at_jalali || n.created_at || '') + '</span>' +
             '</div>' +
             '<p class="cpms-doc-ws-note-text">' + esc(n.content_text || '') + '</p>' +
         '</li>';
@@ -1882,7 +1882,7 @@ function renderWorkspaceRec(){
                     (rec.is_patient_visible ? 'قابل مشاهده برای بیمار' : 'خصوصی') +
                 '</span>' +
                 '<span class="cpms-doc-ws-rec-type">' + recTypeLabel(rec.type) + '</span>' +
-                '<span class="cpms-doc-ws-rec-date">' + esc(rec.created_at || '') + '</span>' +
+                '<span class="cpms-doc-ws-rec-date">' + esc(rec.created_at_jalali || rec.created_at || '') + '</span>' +
             '</div>' +
             '<p class="cpms-doc-ws-rec-text">' + esc(rec.text || '') + '</p>' +
         '</li>';
@@ -1904,7 +1904,7 @@ function renderWorkspaceFu(){
     hide(empty);
     list.innerHTML = followUps.map(function(fu){
         var when = [];
-        if ( fu.suggested_date ) when.push('تاریخ: ' + esc(fu.suggested_date));
+        if ( fu.suggested_date ) when.push('تاریخ: ' + esc(fu.suggested_date_jalali || fu.suggested_date));
         if ( fu.interval_days != null && fu.interval_days !== '' ) when.push('بازه: ' + esc(fu.interval_days) + ' روز');
         if ( when.length === 0 ) when.push('بدون تاریخ/بازه');
         return '<li class="cpms-doc-ws-fu-item" data-role="workspace-fu-item" data-fu-id="' + esc(fu.id) + '" data-needed="' + (fu.is_needed ? '1' : '0') + '">' +
@@ -2078,7 +2078,7 @@ function renderWorkspaceFiles(){
                 esc(String(noteVisibilityLabel(f.visibility))) + ' · ' +
                 esc(String(fileSizeLabel(f.file_size))) + ' · ' +
                 esc(String(f.mime_type || '')) + ' · ' +
-                esc(String(f.created_at || '')) +
+                esc(String(f.created_at_jalali || f.created_at || '')) +
             '</span>' +
             '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-visit-file-open" data-file-id="' + esc(id) + '" data-file-name="' + esc(label) + '">باز کردن / دانلود</button>' +
         '</li>';

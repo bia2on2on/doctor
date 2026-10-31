@@ -162,25 +162,52 @@ final class ClinicalService
         );
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
+        // Location IANA timezone is the operational truth for datetime
+        // presentation (same resolver already used by presentPrescription()).
+        $location_tz = $this->resolve_location_timezone( [ 'visit_id' => $visit_id ] );
+
         return [
             'visit' => [
                 'id' => (int) $visit['id'],
                 'status' => (string) $visit['status'],
                 'source' => (string) $visit['source'],
                 'visit_date' => (string) $visit['visit_date'],
+                // Persian/Jalali presentation of the SAME Location-local visit
+                // date. Storage/comparisons stay Gregorian (Owner B).
+                'jalali_date' => Jalali::formatYmd( (string) $visit['visit_date'] ),
                 'clinician_id' => (int) $visit['clinician_id'],
                 'appointment_id' => $visit['appointment_id'] !== null ? (int) $visit['appointment_id'] : null,
                 'consultation_started_at' => $visit['consultation_started_at'],
                 'consultation_completed_at' => $visit['consultation_completed_at'],
             ],
             'patient' => $this->patientMedicalView($patient),
-            'notes' => array_map( [ $this, 'presentNote' ], $this->notes->forVisit( $visit_id, $note_visibility ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy array alignment and parameter naming preserved.
+            'notes' => array_map( function ( array $note ) use ( $location_tz ): array {
+                $presented = $this->presentNote( $note );
+                $presented['created_at_jalali'] = $this->format_utc_to_jalali( (string) ( $note['created_at'] ?? '' ), $location_tz );
+                return $presented;
+            }, $this->notes->forVisit( $visit_id, $note_visibility ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy array alignment and parameter naming preserved.
             'prescriptions' => $rxList,
-            'recommendations' => array_map( [ $this, 'presentRecommendation' ], $this->recommendations->forVisit( $visit_id ) ),
-            'follow_ups' => array_map( [ $this, 'presentFollowUp' ], $this->followUps->forVisit( $visit_id ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy alignment/property.
+            'recommendations' => array_map( function ( array $rec ) use ( $location_tz ): array {
+                $presented = $this->presentRecommendation( $rec );
+                $presented['created_at_jalali'] = $this->format_utc_to_jalali( (string) ( $rec['created_at'] ?? '' ), $location_tz );
+                return $presented;
+            }, $this->recommendations->forVisit( $visit_id ) ),
+            'follow_ups' => array_map( function ( array $fu ) use ( $location_tz ): array {
+                $presented = $this->presentFollowUp( $fu );
+                $presented['created_at_jalali'] = $this->format_utc_to_jalali( (string) ( $fu['created_at'] ?? '' ), $location_tz );
+                // Persian/Jalali presentation of the SAME suggested date. Added
+                // here (not in presentFollowUp) so the established E13
+                // presenter key set stays byte-identical for the create
+                // response and shared payloads.
+                if ( ! empty( $fu['suggested_date'] ) ) {
+                    $presented['suggested_date_jalali'] = Jalali::formatYmd( (string) $fu['suggested_date'] );
+                }
+                return $presented;
+            }, $this->followUps->forVisit( $visit_id ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy alignment/property.
             // E7: patient_visible stays Visit/Clinic-scoped; doctor_private also requires
             // the Visit-owner file authority.
-            'files' => array_map(static fn (array $f): array => [
+            'files' => array_map( function ( array $f ) use ( $location_tz ): array {
+                $file = [
                 'id' => (int) $f['id'],
                 'original_filename' => (string) $f['original_filename'],
                 'category' => (string) $f['category'],
@@ -189,7 +216,12 @@ final class ClinicalService
                 'file_size' => (int) $f['file_size'],
                 'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
                 'created_at' => (string) $f['created_at'],
-                ],
+                ];
+                // Persian/Jalali presentation of the SAME Location-local upload
+                // timestamp (Owner B). Storage/comparisons stay UTC/Gregorian.
+                $file['created_at_jalali'] = $this->format_utc_to_jalali( (string) $f['created_at'], $location_tz );
+                return $file;
+                },
                 $visit_files
             ),
             'past_visits' => array_map(static fn (array $v): array => [

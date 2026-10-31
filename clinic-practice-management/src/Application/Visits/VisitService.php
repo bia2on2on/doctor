@@ -15,6 +15,7 @@ use ClinicCore\Domain\Machine\AppointmentMachine;
 use ClinicCore\Domain\Machine\InvalidTransitionException;
 use ClinicCore\Domain\Machine\VisitMachine;
 use ClinicCore\Domain\Notifications\NotificationEvents;
+use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
@@ -514,6 +515,10 @@ final class VisitService
 
         return [
             'date'          => $operational_date,
+            // Persian/Jalali presentation of the SAME Location-local operational
+            // day. Storage, comparisons and cutoff rules stay Gregorian; this is
+            // presentation only (Owner B — Persian/Jalali date UX).
+            'jalali'        => Jalali::formatYmd( $operational_date ),
             'stats'         => $stats,
             'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
@@ -547,6 +552,7 @@ final class VisitService
             $date = $this->nowUtc()->format( 'Y-m-d' );
             return [
                 'date'          => $date,
+                'jalali'        => Jalali::formatYmd( $date ),
                 'stats'         => $this->emptyStats(),
                 'queue'         => [],
                 'last_event_id' => 0,
@@ -590,6 +596,9 @@ final class VisitService
 
         return [
             'date'          => $operational_date,
+            // Persian/Jalali presentation of the SAME Location-local operational
+            // day (presentation only; Gregorian storage/comparisons untouched).
+            'jalali'        => Jalali::formatYmd( $operational_date ),
             'stats'         => $stats,
             'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
             'appointments'  => $doctor_appointments,

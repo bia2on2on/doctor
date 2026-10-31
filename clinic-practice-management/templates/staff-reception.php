@@ -467,6 +467,7 @@ $cpms_reception_cfg = [
         locationName: '',
         locations: [],
         date: null,
+        jalali: null,
         busy: false
     };
 
@@ -602,7 +603,7 @@ $cpms_reception_cfg = [
 
         var dateNode = el('sr-date');
         if (dateNode) {
-            dateNode.textContent = state.date ? ('تاریخ عملیاتی: ' + state.date) : 'تاریخ عملیاتی: —';
+            dateNode.textContent = state.date ? ('تاریخ عملیاتی: ' + (state.jalali || state.date)) : 'تاریخ عملیاتی: —';
         }
     }
 
@@ -856,6 +857,7 @@ $cpms_reception_cfg = [
         doctorsIndex(data);
         syncScheduleClinicianOptions();
         state.date = data.date || null;
+        state.jalali = data.jalali || null;
         renderScope();
         renderStats(data.stats);
         renderAppointments(data.appointments || []);
