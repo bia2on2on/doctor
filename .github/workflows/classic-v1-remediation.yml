@@ -256,6 +256,7 @@ jobs:
             tail -25 /tmp/classic-http/fixture.log | while IFS= read -r line; do echo "::error::FIXTURE $line"; done
             exit 1
           fi
+          echo "::notice::HTTP seed fixture-ok"
           cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
           python3 - <<'PY'
           import shlex
@@ -265,7 +266,9 @@ jobs:
                       k,v=line.rstrip('\n').split('=',1)
                       out.write('export '+k+'='+shlex.quote(v)+'\n')
           PY
+          echo "::notice::HTTP seed env-ok"
           source /tmp/classic-http/fixture-env.sh
+          echo "::notice::HTTP seed source-ok"
           if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
             tail -25 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
             exit 1
