@@ -67,7 +67,7 @@ final class OtpPolicy
     /**
      * ثبت ارسال موفق.
      */
-    public function registerSend(OtpState $state, DateTimeImmutable $now): OtpState
+    public function registerSend(OtpState $state, DateTimeImmutable $now): OtpState {
     {
         $state->lastSentAt = $now;
         $state->sentToday += 1;
@@ -78,7 +78,7 @@ final class OtpPolicy
     /**
      * ثبت تلاش نادرست — در صورت رسیدن به حد، قفل.
      */
-    public function registerFailedAttempt(OtpState $state, DateTimeImmutable $now): OtpState
+    public function registerFailedAttempt(OtpState $state, DateTimeImmutable $now): OtpState {
     {
         $state->resetIfUnlocked($now);
         $state->attempts += 1;
@@ -91,12 +91,12 @@ final class OtpPolicy
         return $state;
     }
 
-    public function isCodeExpired(DateTimeImmutable $codeIssuedAt, DateTimeImmutable $now): bool
+    public function isCodeExpired(DateTimeImmutable $codeIssuedAt, DateTimeImmutable $now): bool {
     {
         return $now->getTimestamp() - $codeIssuedAt->getTimestamp() >= $this->ttlSeconds;
     }
 
-    public function remainingAttempts(OtpState $state): int
+    public function remainingAttempts(OtpState $state): int {
     {
         return max(0, $this->maxAttempts - $state->attempts);
     }
@@ -125,7 +125,7 @@ final class OtpPolicy
     }
 
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC.
-    public function remainingLockout( OtpState $state, DateTimeImmutable $now ): int
+    public function remainingLockout( OtpState $state, DateTimeImmutable $now ): int {
     {
         return $this->remaining_lockout( $state, $now );
     }
