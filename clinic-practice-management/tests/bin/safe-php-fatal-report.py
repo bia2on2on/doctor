@@ -21,8 +21,10 @@ FATAL = re.compile(
     r"There has been a critical error|"
     r"Call to undefined function add_submenu_page\(\)", re.IGNORECASE
 )
-# This exact standard PHP message contains only a fixed public WP API name.
-UNDEFINED_MENU = re.compile(r"Call to undefined function add_submenu_page\(\)")
+SYMBOL = r"[A-Za-z_][A-Za-z_0-9\\]*"
+UNDEFINED_FUNCTION = re.compile(r"Call to undefined function (" + SYMBOL + r")\(\)")
+UNDEFINED_METHOD = re.compile(r"Call to undefined method (" + SYMBOL + r")::([A-Za-z_][A-Za-z_0-9]*)\(\)")
+MISSING_CLASS = re.compile(r"(?:Class|Interface|Trait) [\"']?(" + SYMBOL + r")[\"']? not found")
 EXCEPTION = re.compile(r"\bUncaught\s+(Error|TypeError|ParseError|ArgumentCountError|RuntimeException):")
 PLUGIN_FILE = re.compile(
     r"clinic-practice-management/(?P<path>(?:src/[A-Za-z0-9_./-]+|clinic-practice-management)\.php)"
@@ -52,18 +54,42 @@ def source_location(line: str, plugin_root: Path) -> str:
     return f" in clinic-practice-management/{rel} on line {number}"
 
 
+def source_symbols(plugin_root: Path) -> set[str]:
+    # Only identifiers already present in checked-out source may be published;
+    # this prevents exception text from turning dynamic values into CI evidence.
+    symbols: set[str] = set()
+    for source in (plugin_root / "src").rglob("*.php"):
+        try:
+            symbols.update(re.findall(r"\b[A-Za-z_][A-Za-z_0-9]*\b", source.read_text(encoding="utf-8")))
+        except (OSError, UnicodeError):
+            continue
+    return symbols
+
+
+def known(symbol: str, source_tokens: set[str]) -> bool:
+    parts = symbol.split("\\")
+    return bool(parts) and all(part and part in source_tokens for part in parts)
+
+
 def signatures(lines: Iterable[str], plugin_root: Path) -> list[str]:
     findings: list[str] = []
+    tokens = source_symbols(plugin_root)
     for line in lines:
         if not FATAL.search(line):
             continue
         loc = source_location(line, plugin_root)
-        if UNDEFINED_MENU.search(line):
-            # No arbitrary exception text or stack values are printed.
-            report = "PHP Fatal error: Uncaught Error: Call to undefined function add_submenu_page()" + loc
+        kind = EXCEPTION.search(line)
+        label = kind.group(1) if kind else "fatal or critical error"
+        function = UNDEFINED_FUNCTION.search(line)
+        method = UNDEFINED_METHOD.search(line)
+        missing = MISSING_CLASS.search(line)
+        if function and known(function.group(1), tokens):
+            report = "PHP Fatal error: Uncaught Error: Call to undefined function " + function.group(1) + "()" + loc
+        elif method and known(method.group(1), tokens) and known(method.group(2), tokens):
+            report = "PHP Fatal error: Uncaught Error: Call to undefined method " + method.group(1) + "::" + method.group(2) + "()" + loc
+        elif missing and known(missing.group(1), tokens):
+            report = "PHP Fatal error: Uncaught " + label + ": Class " + missing.group(1) + " not found" + loc
         else:
-            kind = EXCEPTION.search(line)
-            label = kind.group(1) if kind else "fatal or critical error"
             report = f"PHP {label}{loc}; exception message and stack redacted"
         if report not in findings:
             findings.append(report)
