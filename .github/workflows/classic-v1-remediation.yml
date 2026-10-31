@@ -99,6 +99,7 @@ jobs:
           CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
+          tail -35 /tmp/classic-v1/baseline-${{ matrix.database }}.log | while IFS= read -r line; do echo "::warning::BASELINE LOG ${line}"; done
           python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY'
           import sys, xml.etree.ElementTree as ET
           for case in ET.parse(sys.argv[1]).iter('testcase'):
@@ -115,6 +116,7 @@ jobs:
       - name: Expose candidate regression failures
         if: failure()
         run: |
+          tail -35 /tmp/classic-v1/candidate-${{ matrix.database }}.log 2>/dev/null | while IFS= read -r line; do echo "::error::CANDIDATE LOG ${line}"; done
           python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml <<'PY' || true
           import sys, xml.etree.ElementTree as ET
           for case in ET.parse(sys.argv[1]).iter('testcase'):
@@ -210,6 +212,7 @@ jobs:
         run: |
           set -euo pipefail
           profile_rc=0
+          trap 'rc=$?; echo "::error::HTTP setup/profile shell failed at line $LINENO (exit $rc)"' ERR
           for label in baseline candidate; do
             if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
             zip=$(find "$root/dist" -name '*.zip' | head -1)
