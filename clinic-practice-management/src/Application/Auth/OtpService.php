@@ -162,14 +162,36 @@ final class OtpService
         $state = $this->loadState($mobile, $purpose);
         $send = $policy->canSend($state, $this->now());
         if (!$send['ok']) {
-            $code = match ($send['reason']) {
-                OtpPolicy::REASON_LOCKED => 'CLINIC_OTP_LOCKED',
-                OtpPolicy::REASON_DAILY_LIMIT => 'CLINIC_OTP_DAILY_LIMIT',
-                default => 'CLINIC_OTP_COOLDOWN',
-            };
+            $now = $this->now();
+            $reason = (string) $send['reason'];
+            $auditCode = 'OTP_DENIED_' . strtoupper($reason);
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
-            $this->audit( 'OTP_DENIED_' . strtoupper( $send['reason'] ), $userId, $mobile, $ip, [], $clinicId );
-            throw new OtpException($code, 'هنوز زود است — بعداً تلاش کنید');
+            $this->audit($auditCode, $userId, $mobile, $ip, [], $clinicId);
+            if ($reason === OtpPolicy::REASON_LOCKED) {
+                $retryAfter = $policy->remainingLockout($state, $now);
+                throw new OtpException(
+                    'CLINIC_OTP_LOCKED',
+                    'تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید',
+                    ['retry_after' => $retryAfter > 0 ? $retryAfter : $policy->lockoutSeconds, 'remaining' => 0]
+                );
+            }
+            if ($reason === OtpPolicy::REASON_DAILY_LIMIT) {
+                // Daily limit via OtpState is a secondary guard — the primary daily gate is
+                // the RateLimiter `otp-day` window above. Keep the message identical so
+                // policy and rate-limiter daily denials are indistinguishable to the client.
+                throw new OtpException(
+                    'CLINIC_OTP_DAILY_LIMIT',
+                    'محدودیت ارسال کد در روز به پایان رسیده است',
+                    ['retry_after' => 86400 - (time() % 86400)]
+                );
+            }
+            // Cooldown — include exact remaining seconds so the client can show a consistent TTL.
+            $retryAfter = $policy->remainingCooldown($state, $now);
+            throw new OtpException(
+                'CLINIC_OTP_COOLDOWN',
+                'هنوز زود است — بعداً تلاش کنید',
+                ['retry_after' => $retryAfter > 0 ? $retryAfter : $policy->cooldown_seconds(), 'ttl' => (int) $settings->get('otp.ttl_sec')]
+            );
         }
 
         // ساخت Token (فقط Hash). Phase 8 Slice 2: وقتی Clinic از دادهٔ persisted
@@ -326,12 +348,17 @@ final class OtpService
             (int) $row['attempts'],
             $row['locked_until'] !== null ? $this->toDateTime($row['locked_until']) : null,
             $this->toDateTime($row['created_at']),
-            (int) $row['attempts']
+            0
         );
         if ($state->isLocked($now)) {
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
             $this->audit( 'CLINIC_OTP_LOCKED', null, $mobile, $ip, [], $clinicId );
-            throw new OtpException('CLINIC_OTP_LOCKED', 'تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید');
+            $retryAfter = $policy->remainingLockout($state, $now);
+            throw new OtpException(
+                'CLINIC_OTP_LOCKED',
+                'تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید',
+                ['retry_after' => $retryAfter > 0 ? $retryAfter : $policy->lockoutSeconds, 'remaining' => 0]
+            );
         }
 
         if (!hash_equals(OtpPolicy::hashCode($code, $this->pepper()), (string) $row['code_hash'])) {

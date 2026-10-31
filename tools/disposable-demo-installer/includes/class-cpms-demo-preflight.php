@@ -71,6 +71,7 @@ class Preflight {
 		'cpms_message_threads',
 		'cpms_notifications',
 		'cpms_audit_logs',
+		'cpms_audit_seq',
 		'cpms_drug_reference',
 	);
 
@@ -92,6 +93,7 @@ class Preflight {
 	public const KNOWN_TABLES = array(
 		'cpms_appointments',
 		'cpms_audit_logs',
+		'cpms_audit_seq',
 		'cpms_clinic_memberships',
 		'cpms_clinical_note_versions',
 		'cpms_clinical_notes',

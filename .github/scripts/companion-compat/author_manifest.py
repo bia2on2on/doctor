@@ -330,6 +330,7 @@ PRESERVED_ANCHORS = {
 }
 RUNNER_MANAGED = {
     "cpms_schema_migrations": "Migration bookkeeping written by MigrationRunner; always preserved.",
+    "cpms_audit_seq": "Singleton InnoDB guard row for audit append serialization; bookkeeping only, never tenant data.",
 }
 
 # Verified deletion-key rules for tables that have NO surrogate `id` column.
