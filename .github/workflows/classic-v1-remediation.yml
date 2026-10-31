@@ -124,7 +124,7 @@ jobs:
           set -o pipefail
           python3 - <<'PY'
           import os
-          files=[os.path.join(os.getcwd(),'tests/Integration/'+f) for f in ['ClassicV1CriticalRemediationTest.php','ClassicV1PerformanceProbeTest.php','SmsOtpDispatchTest.php','OtpSecurityTest.php','SmsClinicAuthorizationTest.php','ClinicalFlowTest.php','Phase11ReceptionAppointmentCancelRedTest.php']]
+          files=[os.path.join(os.getcwd(),'tests/Integration/'+f) for f in ['ClassicV1CriticalRemediationTest.php','ClassicV1PerformanceProbeTest.php','SmsOtpDispatchTest.php','OtpSecurityTest.php','SmsClinicAuthorizationTest.php','ClinicalFlowTest.php','Phase11ReceptionAppointmentCancelRedTest.php','Phase2JobScopeRedFoundationTest.php','MigrationTest.php','OtpFlowTest.php','OtpAuditAtomicityTest.php']]
           open('/tmp/classic-v1/candidate-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
           PY
           CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --configuration /tmp/classic-v1/candidate-suite.xml --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
