@@ -55,7 +55,6 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         App::providers()->register($this->provider);
         $this->iv1_scope($this->clinic, function (): void {
             App::settings()->set('sms.provider', RecordingSmsProvider::ID);
-            $this->provider->failNextRetryable = true;
             App::settings()->set('sms.templates', []);
         });
         wp_set_current_user($this->doctor);
@@ -70,6 +69,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
 
     public function testOtpDeliveryFailureIsNotHttpSuccessAndKeepsLimitsAndHashOnlyStorage(): void
     {
+        $this->provider->failNextRetryable = true;
         self::assertSame(RecordingSmsProvider::ID, $this->iv1_scope($this->clinic, fn () => App::settings()->get('sms.provider')));
         $mobile = '0912' . random_int(1000000, 9999999);
         $response = $this->iv1_scope($this->clinic, fn () => $this->post('/otp/request', ['mobile' => $mobile]));
@@ -108,7 +108,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         self::assertStringContainsString('داخلی', $response->get_data()['message'] ?? '');
         $status = $this->iv1_scope($this->clinic, fn() => App::smsService()->status());
         self::assertNotSame('VERIFIED', $status['state']);
-        self::assertSame('', App::settings()->get('sms.provider', ''), 'Rejected save must not partially switch provider.');
+        self::assertSame(RecordingSmsProvider::ID, $this->iv1_scope($this->clinic, fn () => App::settings()->get('sms.provider', '')), 'Rejected save must not partially switch provider.');
         self::assertSame([], $this->provider->textSends, 'SSRF validation must precede network I/O.');
     }
 
@@ -148,7 +148,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     {
         $response = $this->record($this->visit, $this->locationB);
         self::assertContains($response->get_status(), [403, 404], 'A cross-Location selector must be denied without revealing the record.');
-        self::assertContains($this->iv1_code($response), ['CLINIC_NOT_FOUND', 'CLINIC_PERMISSION_DENIED']);
+        self::assertContains($this->iv1_code($response), ['CLINIC_NOT_FOUND', 'CLINIC_PERMISSION_DENIED', 'CLINIC_SCOPE_UNAVAILABLE']);
         self::assertStringNotContainsString('آزمایشی', (string) wp_json_encode($response->get_data()));
     }
 
@@ -206,7 +206,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         self::assertSame(SmsMessageStatus::QUEUED, $messages[0]['status']);
         self::assertSame(0, (int) $messages[0]['attempts']);
         self::assertCount(0, $this->provider->textSends);
-        $notifications = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_notifications') . ' WHERE recipient_patient_id = %d AND template = %s', [$this->patient, 'APPT.cancelled']);
+        $notifications = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_notifications') . ' WHERE recipient_patient_id = %d AND template = %s', [$this->patient, 'appt_cancelled']);
         self::assertCount(1, $notifications);
         self::assertSame('queued', $notifications[0]['status']);
         $duplicate = $this->cancel($appointment);

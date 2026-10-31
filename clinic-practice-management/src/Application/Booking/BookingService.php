@@ -2027,9 +2027,17 @@ final class BookingService
         }
         // Both durable channel rows and the SMS job commit together. Existing
         // SMS/internal dedupe keys make a repeated worker attempt harmless.
-        $this->db->transactional(function () use ($appt, $patient): void {
-            $this->sendAppointmentSms(SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt, true);
-        });
+        // The worker is scope-neutral: bind the persisted appointment Clinic
+        // for the internal notification publisher, then restore the caller.
+        $previous = \ClinicCore\Application\Scope\ScopeContext::tryGet();
+        App::replaceExplicitScope(\ClinicCore\Application\Scope\ClinicScope::forClinic((int) $appt['clinic_id']));
+        try {
+            $this->db->transactional(function () use ($appt, $patient): void {
+                $this->sendAppointmentSms(SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt, true);
+            });
+        } finally {
+            App::replaceExplicitScope($previous);
+        }
     }
 
     private function machineCheck(string $from, string $event, string $actor): string
