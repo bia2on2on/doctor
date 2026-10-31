@@ -99,12 +99,12 @@ jobs:
           CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
-          tail -35 /tmp/classic-v1/baseline-${{ matrix.database }}.log | while IFS= read -r line; do echo "::warning::BASELINE LOG ${line}"; done
+          tail -35 /tmp/classic-v1/baseline-${{ matrix.database }}.log | while IFS= read -r line; do echo "::notice::BASELINE LOG ${line}"; done
           python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY' || true
           import sys, xml.etree.ElementTree as ET
           for case in ET.parse(sys.argv[1]).iter('testcase'):
           for bad in list(case.findall('failure')) + list(case.findall('error')):
-          print('::warning::BASELINE ' + case.get('name','') + ': ' + (bad.get('message','')[:350].replace('\n',' ')))
+          print('::notice::BASELINE ' + case.get('name','') + ': ' + (bad.get('message','')[:350].replace('\n',' ')))
           PY
       - name: Reset database before candidate on the same runner
         run: |
