@@ -153,8 +153,8 @@ class DefectCSchema0030Coverage(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.state = cs.load(COMPANION)
 
-    def test_schema_pin_is_0030(self) -> None:
-        self.assertEqual("2026_10_27_0030", self.state.schema_version)
+    def test_schema_pin_is_0031(self) -> None:
+        self.assertEqual("2026_10_31_0031", self.state.schema_version)
 
     def test_tables_are_known_and_operational(self) -> None:
         self.assertTrue(self.TABLES.issubset(set(self.state.known_tables)))

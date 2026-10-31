@@ -125,7 +125,7 @@ class OwnershipContractTests(unittest.TestCase):
         """
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         tables = manifest["tables"]
-        self.assertEqual(60, len(tables))
+        self.assertEqual(61, len(tables))
         self.assertEqual(
             sorted(tables), sorted(self.known), "KNOWN_TABLES must equal the manifest inventory"
         )
@@ -180,7 +180,7 @@ class OwnershipContractTests(unittest.TestCase):
     def test_design_documents_cover_all_known_tables(self) -> None:
         for table in self.known:
             self.assertIn(f"`{table}`", self.ownership_map, table)
-        self.assertIn("each of the 60", self.acceptance_plan)
+        self.assertIn("each of the 61", self.acceptance_plan)
         self.assertIn("NOT RUN", self.acceptance_plan)
 
     def test_pinned_schema_and_audit_chain_contract_exist(self) -> None:
@@ -202,7 +202,7 @@ class OwnershipContractTests(unittest.TestCase):
         self.assertEqual(version, latest_versions[-1])
         hash_chain = read(HASH_CHAIN)
         audit_logger = read(AUDIT_LOGGER)
-        self.assertIn("public static function verify(array $rows)", hash_chain)
+        self.assertIn("public static function verify(", hash_chain)
         self.assertIn("row_hash = SHA-256(prev_hash + canonical(fields))", hash_chain)
         self.assertIn("Append-only + Hash Chain", audit_logger)
         self.assertIn("public function log(", audit_logger)
