@@ -97,7 +97,9 @@ if ( $cpms_doctor_mod ) {
 // The doctor stylesheet is scoped to these existing classes; carrying them when
 // the doctor module is mounted reuses the delivered design without copying CSS.
 $cpms_wrap_class = $cpms_doctor_mod ? 'cpms-staff-portal-shell cpms-doctor-portal-shell' : 'cpms-staff-portal-shell';
-$cpms_body_class = $cpms_doctor_mod ? 'cpms-staff-portal-shell-body cpms-doctor-portal-shell-body' : 'cpms-staff-portal-shell-body';
+$cpms_body_class = $cpms_doctor_mod
+    ? 'cpms-staff-portal-shell-body cpms-doctor-portal-shell-body cpms-jalali-scope'
+    : 'cpms-staff-portal-shell-body cpms-jalali-scope';
 $cpms_shell_user = 'anonymous';
 if ( $cpms_doctor_mod ) {
     $cpms_shell_user = 'doctor';
