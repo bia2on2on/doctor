@@ -1,0 +1,119 @@
+name: Classic V1 remediation evidence
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'clinic-practice-management/**'
+      - '.github/workflows/classic-v1-remediation.yml'
+      - 'standalone-demo/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: classic-v1-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regressions:
+    name: Regressions (${{ matrix.database }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - database: mysql
+            image: mysql:8
+            port: 3306
+          - database: mariadb
+            image: mariadb:11.4.13
+            port: 3307
+    services:
+      mysql:
+        image: mysql:8
+        env:
+          MYSQL_ROOT_PASSWORD: root
+        ports: ['3306:3306']
+        options: --health-cmd="mysqladmin ping -h 127.0.0.1" --health-interval=10s --health-timeout=5s --health-retries=20
+      mariadb:
+        image: mariadb:11.4.13
+        env:
+          MARIADB_ROOT_PASSWORD: root
+        ports: ['3307:3306']
+        options: --health-cmd="healthcheck.sh --connect --innodb_initialized" --health-interval=10s --health-timeout=5s --health-retries=20
+    defaults:
+      run:
+        working-directory: clinic-practice-management
+    env:
+      WP_TESTS_DIR: /tmp/wordpress-test-lib
+      WP_CORE_DIR: /tmp/wordpress
+      BASELINE_SHA: 9bf84304b2b143138c638fa1ca1d71869aa1e244
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, xml, mysqli, curl, sodium
+          coverage: none
+      - name: Record exact server and source versions
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/classic-v1
+          mysql --protocol=TCP -h 127.0.0.1 -P ${{ matrix.port }} -uroot -proot -NBe 'SELECT VERSION()' | tee /tmp/classic-v1/db-version.txt
+          if [ "${{ matrix.database }}" = mariadb ]; then grep -q '^11\.4\.13-MariaDB' /tmp/classic-v1/db-version.txt; else grep -q '^8\.' /tmp/classic-v1/db-version.txt; fi
+          git rev-parse HEAD > /tmp/classic-v1/candidate-sha.txt
+          php -v | head -1 > /tmp/classic-v1/php-version.txt
+      - name: Install locked test dependencies and WordPress
+        run: |
+          composer install --prefer-dist --no-progress --no-interaction
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+          bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3 ${{ matrix.port }}
+      - name: Prepare archived baseline with identical regression tests
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/classic-v1/baseline/clinic-practice-management
+          git archive "$BASELINE_SHA" clinic-practice-management | tar -x --strip-components=1 -C /tmp/classic-v1/baseline/clinic-practice-management
+          cp -a tests /tmp/classic-v1/baseline/clinic-practice-management/
+          cp -a vendor /tmp/classic-v1/baseline/clinic-practice-management/
+          # Regenerate Composer paths against the archived production source;
+          # never load candidate src through a copied autoload map.
+          cd /tmp/classic-v1/baseline/clinic-practice-management
+          composer dump-autoload --no-interaction
+      - name: Execute baseline regressions (failures are evidence, not a pass)
+        run: |
+          set -o pipefail
+          cd /tmp/classic-v1/baseline/clinic-practice-management
+          rc=0
+          CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
+          echo "$rc" > /tmp/classic-v1/baseline-exit.txt
+          grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
+      - name: Reset database before candidate on the same runner
+        run: |
+          mysql --protocol=TCP -h 127.0.0.1 -P ${{ matrix.port }} -uroot -proot -e 'DROP DATABASE wordpress_test; CREATE DATABASE wordpress_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
+      - name: Execute candidate regressions and adjacent workflow coverage
+        run: |
+          set -o pipefail
+          CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php tests/Integration/SmsOtpDispatchTest.php tests/Integration/OtpSecurityTest.php tests/Integration/SmsClinicAuthorizationTest.php tests/Integration/ClinicalFlowTest.php tests/Integration/Phase11ReceptionAppointmentCancelRedTest.php 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
+      - name: Evidence summary
+        if: always()
+        run: |
+          {
+            echo '### Classic V1 remediation — ${{ matrix.database }}'
+            echo "Baseline: $BASELINE_SHA; candidate: $(git rev-parse HEAD)"
+            echo "DB: $(cat /tmp/classic-v1/db-version.txt 2>/dev/null || echo unavailable)"
+            echo 'Baseline exit:' "$(cat /tmp/classic-v1/baseline-exit.txt 2>/dev/null || echo not-run)"
+            grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/*-${{ matrix.database }}.log 2>/dev/null || true
+            echo 'In-process REST measurements are not HTTP page timings. Artifacts retain every sample.'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: classic-v1-${{ matrix.database }}
+          path: /tmp/classic-v1/
+          include-hidden-files: false
+          retention-days: 14
