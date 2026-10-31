@@ -176,8 +176,8 @@ final class ClinicalService
             'patient' => $this->patientMedicalView($patient),
             'notes' => array_map( [ $this, 'presentNote' ], $this->notes->forVisit( $visit_id, $note_visibility ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy array alignment and parameter naming preserved.
             'prescriptions' => $rxList,
-            'recommendations' => array_map([$this, 'presentRecommendation'], $this->recommendations->forVisit($visit_id)),
-            'follow_ups'     => array_map( [ $this, 'presentFollowUp' ], $this->followUps->forVisit( $visit_id ) ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy property.
+            'recommendations' => array_map( [ $this, 'presentRecommendation' ], $this->recommendations->forVisit( $visit_id ) ),
+            'follow_ups' => array_map( [ $this, 'presentFollowUp' ], $this->followUps->forVisit( $visit_id ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy alignment/property.
             // E7: patient_visible stays Visit/Clinic-scoped; doctor_private also requires
             // the Visit-owner file authority.
             'files' => array_map(static fn (array $f): array => [
