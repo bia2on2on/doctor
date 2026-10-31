@@ -337,7 +337,7 @@ final class ClinicReceptionRecoveryPage {
         return null;
     }
 
-    private static function redirect( int $clinic_id = 0 ): void {
+    private static function redirect( int $clinic_id = 0 ): never {
         $url = \admin_url( 'admin.php?page=' . self::PAGE_SLUG );
         if ( $clinic_id > 0 ) {
             $url .= '&clinic_id=' . $clinic_id;

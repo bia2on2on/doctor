@@ -25,7 +25,7 @@ final class MigrationTest extends WP_UnitTestCase
     use RealTableMigrations;
 
     /** آخرین Migration موجود در src/Migrations (با افزودن Migration جدید به‌روز شود). */
-    private const LATEST_VERSION = '2026_10_27_0030';
+    private const LATEST_VERSION = '2026_10_31_0031';
 
     private const EXPECTED_TABLES = [
         'cpms_clinics', 'cpms_clinicians', 'cpms_patients', 'cpms_patient_user_links',
@@ -36,7 +36,7 @@ final class MigrationTest extends WP_UnitTestCase
         'cpms_ocr_jobs', 'cpms_prescriptions', 'cpms_prescription_items', 'cpms_drug_reference',
         'cpms_recommendations', 'cpms_follow_ups', 'cpms_medical_attachments', 'cpms_services',
         'cpms_invoices', 'cpms_invoice_items', 'cpms_payments', 'cpms_payment_adjustments',
-        'cpms_notifications', 'cpms_jobs', 'cpms_audit_logs', 'cpms_operational_logs',
+        'cpms_notifications', 'cpms_jobs', 'cpms_audit_logs', 'cpms_audit_seq', 'cpms_operational_logs',
         'cpms_settings', 'cpms_rate_limits',
         'cpms_license_install', 'cpms_license_state',
         'cpms_organizations', 'cpms_locations', 'cpms_clinic_memberships',

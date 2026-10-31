@@ -59,6 +59,24 @@ class VerifyTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             verify.verify(export([first]))
 
+    def test_suffix_is_anchored_to_real_predecessor_and_fails_on_tampering(self):
+        rows = []
+        previous = verify.GENESIS
+        for identifier in range(1, 14):
+            row = make_row(identifier, previous)
+            rows.append(row)
+            previous = row["row_hash"]
+        result = verify.verify(export(rows), 10)
+        self.assertEqual(result["suffix"], {"ok": True, "checked": 10, "anchor": "predecessor", "broken": []})
+        rows[3]["prev_hash"] = "a" * 64
+        rows[3]["row_hash"] = verify.row_hash(rows[3]["prev_hash"], rows[3])
+        broken = verify.verify(export(rows), 10)
+        self.assertFalse(broken["suffix"]["ok"])
+        self.assertEqual(broken["suffix"]["broken"][0]["errors"], ["prev_hash"])
+        self.assertEqual(verify.verify(export(rows[:2]), 10)["suffix"]["anchor"], "genesis")
+        with self.assertRaises(ValueError):
+            verify.verify(export(rows), 0)
+
     def test_canonical_php_json_line_separators_and_numeric_ids(self):
         row = make_row(1, verify.GENESIS, action='الف/ب\u2028\u2029', resource_id="42")
         fields = '{"action":"الف/ب\\u2028\\u2029","actor_role":"system","actor_wp_user_id":null,"clinic_id":1,"created_at":"2026-10-31 12:00:00.000","ip_hash":null,"patient_id":null,"request_id":null,"resource_id":42,"resource_type":"test","session_id":null}'

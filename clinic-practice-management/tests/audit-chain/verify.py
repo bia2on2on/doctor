@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Independently verify a complete snapshot from export.php; never alters data."""
+import argparse
+from collections import deque
 import hashlib
 import json
 import re
@@ -36,7 +38,10 @@ def row_hash(prev, row):
     return hashlib.sha256((prev + canonical).encode("utf-8")).hexdigest()
 
 
-def verify(stream):
+def verify(stream, suffix_limit=None):
+    if suffix_limit is not None and (type(suffix_limit) is not int or not 1 <= suffix_limit <= 100000):
+        raise ValueError("invalid suffix limit")
+    suffix = deque(maxlen=suffix_limit + 1) if suffix_limit is not None else None
     header = None
     ended = False
     count = 0
@@ -80,14 +85,41 @@ def verify(stream):
         previous = actual
         last_id = rid
         count += 1
+        if suffix is not None:
+            suffix.append(row)
     if header is None or not ended:
         raise ValueError("missing header or end marker")
-    return {"ok": not failures, "checked": count, "max_id": last_id, "broken": failures}
+    result = {"ok": not failures, "checked": count, "max_id": last_id, "broken": failures}
+    if suffix is not None:
+        rows = list(suffix)
+        has_predecessor = len(rows) > suffix_limit
+        anchor = rows.pop(0)["row_hash"] if has_predecessor else GENESIS
+        suffix_failures = []
+        for row in rows:
+            reasons = []
+            if row["prev_hash"] != anchor:
+                reasons.append("prev_hash")
+            if row_hash(row["prev_hash"], row) != row["row_hash"]:
+                reasons.append("row_hash")
+            if reasons:
+                suffix_failures.append({"id": php_int(row["id"]), "errors": reasons})
+            anchor = row["row_hash"]
+        result["suffix"] = {
+            "ok": not suffix_failures,
+            "checked": len(rows),
+            "anchor": "predecessor" if has_predecessor else "genesis",
+            "broken": suffix_failures,
+        }
+        result["ok"] = result["ok"] and result["suffix"]["ok"]
+    return result
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--suffix", type=int, help="also verify this many final rows against their real predecessor")
+    args = parser.parse_args()
     try:
-        result = verify(sys.stdin)
+        result = verify(sys.stdin, args.suffix)
     except (ValueError, KeyError, TypeError, UnicodeError, OverflowError) as exc:
         print(json.dumps({"ok": False, "error": str(exc)}), file=sys.stderr)
         return 2

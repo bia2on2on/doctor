@@ -132,8 +132,13 @@ final class OtpFlowTest extends WP_UnitTestCase
             } catch (OtpException $e) {
                 if ($i < 5) {
                     $this->assertSame('CLINIC_OTP_INVALID', $e->apiCode());
+                    $this->assertSame(5 - $i, $e->getData()['remaining']);
                 } else {
                     $this->assertSame('CLINIC_OTP_LOCKED', $e->apiCode());
+                    $this->assertSame(0, $e->getData()['remaining']);
+                    $this->assertGreaterThanOrEqual(1, $e->getData()['retry_after']);
+                    $this->assertLessThanOrEqual(900, $e->getData()['retry_after']);
+                    $this->assertStringContainsString('تلاش', $e->getMessage());
                 }
             }
         }
@@ -154,6 +159,45 @@ final class OtpFlowTest extends WP_UnitTestCase
             $this->assertSame('CLINIC_OTP_EXPIRED', $e->apiCode());
             throw $e;
         }
+    }
+
+    public function testZeroAffectedConsumeDoesNotIssueASessionOrAuditSuccess(): void
+    {
+        $this->issueKnownCode('424242');
+        $db = App::db();
+        $successBefore = (int) $db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_audit_logs') . ' WHERE action = %s',
+            ['OTP_VERIFY_OK']
+        );
+        $intercepted = false;
+        $prefix = 'UPDATE ' . $db->table('cpms_otp_tokens') . ' SET consumed_at =';
+        $filter = static function (string $query) use ($prefix, &$intercepted): string {
+            if (str_starts_with($query, $prefix)) {
+                $intercepted = true;
+                // Valid SQL that returns zero affected rows, modeling a token
+                // already consumed between the initial read and this update.
+                return $query . ' AND 1 = 0';
+            }
+            return $query;
+        };
+        add_filter('query', $filter);
+        try {
+            $this->service()->verify(self::MOBILE, '424242');
+            self::fail('a zero-row consume must not authenticate');
+        } catch (OtpException $error) {
+            self::assertSame('CLINIC_OTP_INVALID', $error->apiCode());
+        } finally {
+            remove_filter('query', $filter);
+        }
+        self::assertTrue($intercepted, 'the conditional consume must be exercised');
+        self::assertSame($successBefore, (int) $db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_audit_logs') . ' WHERE action = %s',
+            ['OTP_VERIFY_OK']
+        ));
+        self::assertNull($db->fetchValue(
+            'SELECT consumed_at FROM ' . $db->table('cpms_otp_tokens') . ' WHERE mobile = %s ORDER BY id DESC LIMIT 1',
+            [self::MOBILE]
+        ));
     }
 
     public function testSecondUseOfSameCodeRejected(): void
@@ -313,6 +357,22 @@ final class OtpFlowTest extends WP_UnitTestCase
         $this->assertNull($defaultLink, 'بیمار کلینیک دیگر نباید در این نصبِ مقید لینک بخورد.');
     }
 
+    public function testCooldownReturnsPersianMessageRetryAfterAndTtl(): void
+    {
+        $issued = $this->service()->request(self::MOBILE);
+        $this->assertSame(120, $issued['expires_in']);
+        try {
+            $this->service()->request(self::MOBILE);
+            $this->fail('a second immediate request must be denied');
+        } catch (OtpException $e) {
+            $this->assertSame('CLINIC_OTP_COOLDOWN', $e->apiCode());
+            $this->assertStringContainsString('زود', $e->getMessage());
+            $this->assertSame(120, $e->getData()['ttl']);
+            $this->assertGreaterThanOrEqual(1, $e->getData()['retry_after']);
+            $this->assertLessThanOrEqual(60, $e->getData()['retry_after']);
+        }
+    }
+
     public function testDailyLimitBlocksNewRequests(): void
     {
         // سناریوی Daily-Limit: Cooldown را صفر می‌کنیم تا چهار درخواستِ پشت‌سرهم
@@ -330,6 +390,11 @@ final class OtpFlowTest extends WP_UnitTestCase
             $service->request(self::MOBILE); // دعوای چهارم
         } catch (OtpException $e) {
             $this->assertSame('CLINIC_OTP_DAILY_LIMIT', $e->apiCode());
+            $data = $e->getData();
+            $this->assertGreaterThanOrEqual(1, $data['retry_after']);
+            $this->assertLessThanOrEqual(86400, $data['retry_after']);
+            $this->assertLessThanOrEqual(1, abs($data['reset_at'] - time() - $data['retry_after']));
+            $this->assertStringContainsString('محدودیت', $e->getMessage());
             throw $e;
         }
     }

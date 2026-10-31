@@ -25,8 +25,10 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
 {
     use RealTableMigrations;
 
-    /** The custom-role persistence migration (Slice 1). */
+    /** The custom-role persistence migration (Slice 1) and its dependent changes. */
     private const NEW_VERSION = '2026_10_10_0024';
+    private const DISPLAY_VERSION = '2026_10_11_0025';
+    private const ARCHIVAL_VERSION = '2026_10_13_0027';
 
     /**
      * Slice 2 adds a forward-only follow-up migration (display_name column) and
@@ -35,7 +37,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
      * assertions below still target 0024 explicitly; "head" assertions target
      * this version.
      */
-    private const HEAD_VERSION = '2026_10_27_0030';
+    private const HEAD_VERSION = '2026_10_31_0031';
 
     protected function setUp(): void
     {
@@ -62,8 +64,10 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         self::assertSame([], $appliedSecond, 'second migrate() must be a no-op (idempotent)');
         $applied_versions = implode(',', App::migrations()->applied());
         self::assertStringContainsString(self::NEW_VERSION, $applied_versions, 'migration 2026_10_10_0024 must be applied');
-        self::assertStringContainsString(self::HEAD_VERSION, $applied_versions, 'migration 2026_10_27_0030 must be applied');
-        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'the custom-role migrations must be the current head');
+        self::assertStringContainsString(self::DISPLAY_VERSION, $applied_versions, 'the display-name migration must be applied');
+        self::assertStringContainsString(self::ARCHIVAL_VERSION, $applied_versions, 'the archival migration must be applied');
+        self::assertStringContainsString(self::HEAD_VERSION, $applied_versions, 'migration 2026_10_31_0031 must be applied');
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion(), 'all migrations must advance to the current head');
 
         foreach (['cpms_custom_role_defs', 'cpms_custom_role_capabilities'] as $short) {
             $table = App::db()->table($short);
@@ -150,7 +154,9 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
 
                 $applied = App::migrations()->migrate();
                 self::assertContains(self::NEW_VERSION, $applied, 'normal fresh migration must apply 0024');
-                self::assertContains(self::HEAD_VERSION, $applied, 'normal fresh migration must apply the display-name migration too');
+                self::assertContains(self::DISPLAY_VERSION, $applied, 'normal fresh migration must apply the display-name migration too');
+                self::assertContains(self::ARCHIVAL_VERSION, $applied, 'normal fresh migration must apply the archival migration too');
+                self::assertContains(self::HEAD_VERSION, $applied, 'normal fresh migration must apply the audit guard too');
                 self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion());
 
                 // Repeat migration is safe (idempotent no-op).
@@ -205,7 +211,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                 self::assertSame(1, (int) $wpdb->get_var("SELECT COUNT(*) FROM {$caps}"), 'exactly the valid capability must remain'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
             } finally {
                 // Deterministic cleanup: fresh empty tables at 0024 again.
-                $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::HEAD_VERSION . "')"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::DISPLAY_VERSION . "', '" . self::ARCHIVAL_VERSION . "', '" . self::HEAD_VERSION . "')"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $wpdb->query("DROP TABLE IF EXISTS {$caps}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $wpdb->query("DROP TABLE IF EXISTS {$defs}"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 App::migrations()->migrate();
@@ -856,7 +862,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
                     if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                         $cleanupError = $wpdb->last_error;
                     }
-                    $ok = $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::HEAD_VERSION . "')" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $ok = $wpdb->query( "DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::DISPLAY_VERSION . "', '" . self::ARCHIVAL_VERSION . "', '" . self::HEAD_VERSION . "')" ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                     if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                         $cleanupError = $wpdb->last_error;
                     }
@@ -883,9 +889,10 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
     }
 
     /**
-     * Deterministic suite-state restore: drop both custom-role tables, unrecord
-     * 0024 and re-run the migration so later tests always see a complete,
-     * freshly-created schema (independent of what a failing test left behind).
+     * Deterministic suite-state restore: drop both custom-role tables and
+     * reapply 0024 and the dependent 0025/0027 changes. A migration marker
+     * alone cannot restore columns or archival semantics after a table drop.
+     * Later tests must see the complete schema even after a failing probe.
      */
     private function restoreFreshSchema(): void
     {
@@ -896,7 +903,7 @@ final class CustomRoleMigrationSafetyTest extends WP_UnitTestCase
         $cleanupError = '';
         try {
             $this->withRealTables(function () use ($wpdb, $defs, $caps, &$cleanupError): void {
-                $ok = $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::HEAD_VERSION . "')"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $ok = $wpdb->query("DELETE FROM {$wpdb->prefix}cpms_schema_migrations WHERE version IN ('" . self::NEW_VERSION . "', '" . self::DISPLAY_VERSION . "', '" . self::ARCHIVAL_VERSION . "', '" . self::HEAD_VERSION . "')"); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 if ( false === $ok && '' !== $wpdb->last_error && '' === $cleanupError ) {
                     $cleanupError = $wpdb->last_error;
                 }

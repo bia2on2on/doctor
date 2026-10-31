@@ -367,6 +367,25 @@ jobs:
           fi
           wp user get "$ORG_MANAGER_USER" --field=roles --path="$WP_DIR" --allow-root | tee /tmp/mtx/org-manager-role.txt
 
+      - name: Stress real OTP and production booking services
+        run: |
+          set -euo pipefail
+          # The private test adapter captures generated synthetic OTP codes in
+          # process memory; no production provider or live site is involved.
+          # Workers synchronize at real WP service boundaries on separate DB
+          # connections; only aggregate outcomes, latencies and global DB status
+          # deltas are published. Raw worker output remains in /tmp, not artifacts.
+          if ! python3 clinic-practice-management/tests/bin/production-race-proof.py \
+              | tee /tmp/mtx/production-race-proof.txt; then
+            python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+              /tmp/cpms-production-proof/setup.private /tmp/cpms-production-proof/boundaries.private \
+              /tmp/cpms-production-proof/rollback.private /tmp/cpms-production-proof/worker-*.private \
+              /home/runner/mtx-upgrade/wp-content/debug.log \
+              --summary "$GITHUB_STEP_SUMMARY"
+            echo '::error title=CPMS production race::Synthetic service contention proof failed'
+            exit 1
+          fi
+
       - name: Assert pristine tenant tables before the browser matrix
         run: |
           set -euo pipefail

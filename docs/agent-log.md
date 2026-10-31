@@ -3113,3 +3113,45 @@ limits, candidate design and outstanding acceptance; this is not a fix or releas
   Local PHPCS on the recovery page/service and migration passed with only the
   WASM-unspawnable PHP syntax sniff omitted; separate PHP syntax lint passed.
   Full WPCS, PHPStan and PHP unit/integration checks remain CI requirements.
+
+### 2026-10-31 UTC — session evidence and OTP/migration follow-up
+
+- Targeted [facility run 41217916386](https://github.com/bia2on2on/doctor/actions/runs/41217916386)
+  at session SHA `d683161daafd43ff88605e293d6f15d0517428f7` passed both MySQL
+  `8.4.13` and MariaDB `11.4.13-MariaDB-ubu2404`: fresh/repeated activation,
+  0030 upgrade, synthetic reception authorization/tenant denial/idempotence,
+  audit and SQL-fault rollback, Persian RTL desktop/mobile UI, independent
+  reception audit snapshot and the 12-type facility matrix. These results are
+  limited to that SHA; no booking contention was exercised by this run.
+- [Quality run 41217916500](https://github.com/bia2on2on/doctor/actions/runs/41217916500)
+  at the same SHA passed WPCS and PHP 8.1–8.5 units; PHPStan, Tenant Tripwire and
+  the integration job failed. Integration stopped in the focused MariaDB archival
+  migration test; its artifact download returned EOF, so the precise failure text
+  is unavailable. Source inspection found a likely stale test setup: rollback omitted
+  the new 0031 head. Updated head assertions and ordered rollback sequences, kept
+  the targeted 0030 upgrade checks, and restored dependent custom-role migrations
+  during table-rebuilding cleanup. These changes have not yet been run against WP.
+- OTP source review found `query()` returned SQL success even for a zero-row
+  conditional consume; two verifiers could therefore both proceed. The candidate
+  now requires exactly one affected row and serializes verification/failure
+  counters on the challenge row, with post-lock expiry/lock checks and atomic
+  failure-counter/audit writes. Daily and newly locked responses include relative
+  retry values. Added test-only regressions, including fault-injected audit rollback.
+  The pre-fix vulnerability and candidate concurrency behavior have **not yet been
+  reproduced on the real engines**; the implementation is not release evidence.
+- Added an independent predecessor-anchored suffix mode to the audit checker and a
+  disposable real-WP proof harness for 10-way OTP consume/failed-attempt races,
+  deterministic fixture-clock boundaries, 10/25/50-way production booking,
+  idempotence/mandatory-audit rollback, and synchronized actual clinical-note,
+  payment-capture and SMS-test audit writers. It uses a synthetic in-memory SMS
+  provider and private files; only aggregate results are intended for CI. None of
+  these new harness paths has yet run against WordPress/MySQL/MariaDB. Concurrent
+  requests for a fresh OTP challenge remain a separate unproven case.
+- Local checks after these edits: PHP/WASM syntax lint passed modified PHP files;
+  independent verifier 6/6 and fatal-reporter 9/9 synthetic tests passed; tenant
+  tripwire self-tests 59/59 and the production scan had zero hardcodes (three
+  reviewed suspects). Targeted PHPStan 2.2.16 level 3 on the changed production
+  files ran under PHP/WASM with manual WP stubs/autoload; a local PHPCS 3.13.6 /
+  WPCS 3.4.1 changed-line check found no findings with only the WASM-unspawnable
+  syntax sniff omitted. These are not substitutes for full CI. The companion
+  schema/audit-guard compatibility gate remains genuinely blocked; no waiver.

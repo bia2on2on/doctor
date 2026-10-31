@@ -856,7 +856,7 @@ final class Phase10DoctorPortalRecommendationFollowUpWriteRedTest extends WP_Uni
         $latestMigration = (string) App::db()->fetchValue(
             'SELECT version FROM ' . App::db()->table('cpms_schema_migrations') . ' ORDER BY version DESC LIMIT 1'
         );
-        self::assertSame('2026_10_27_0030', $latestMigration, 'G7.E: the schema head is the Iran V1 messaging/pricing migration');
+        self::assertSame('2026_10_31_0031', $latestMigration, 'G7.E: the current schema head includes the audit guard');
     }
 
     // ============ Group 8 — PORTAL UI / BROWSER CONTRACT (intended RED: composer missing) ============

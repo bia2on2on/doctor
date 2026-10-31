@@ -699,7 +699,7 @@ final class FinanceAuthorizationPolicyRegressionTest extends WP_UnitTestCase
         }
         self::assertNotEmpty($names, 'premise: the timestamped migration set is discoverable');
         sort($names);
-        self::assertSame('2026_10_27_0030_staff_messaging_visit_pricing.php', end($names), 'the latest schema version is the Iran V1 messaging/pricing migration');
+        self::assertSame('2026_10_31_0031_audit_append_serialization.php', end($names), 'the latest schema version is the audit guard migration');
 
         // Cross-Clinic isolation is unchanged on an upgraded install.
         [$clinicB, $locationB, , $invoiceB, ] = $this->financeFixture();

@@ -295,34 +295,50 @@ jobs:
           # exception messages. Purely additive: the strict verdict below is
           # unchanged and the original PHPUnit exit code is propagated verbatim.
           if [ "$phpunit_status" -ne 0 ]; then
+            # Publish a source-checked fatal signature separately from the
+            # existing PHPUnit log, without echoing arbitrary exception text.
+            python3 tests/bin/safe-php-fatal-report.py /tmp/custom-role-mariadb.log --summary "$GITHUB_STEP_SUMMARY"
             python3 - "$phpunit_status" <<'PY' || true
           import os
+          import re
           import subprocess
           import sys
           import xml.etree.ElementTree as ET
+          from pathlib import Path
 
           status = sys.argv[1]
           categories = {}
+          failed_names = set()
           cases_total = 0
           try:
+              source = Path('tests/Integration/CustomRoleArchivalMigrationTest.php').read_text(encoding='utf-8')
+              allowed_names = set(re.findall(r'function\s+(test[A-Za-z0-9_]+)\s*\(', source))
               cases = ET.parse('/tmp/custom-role-mariadb-junit.xml').getroot().findall('.//testcase')
               cases_total = len(cases)
               for case in cases:
                   for tag in ('error', 'failure'):
                       node = case.find(tag)
                       if node is not None:
-                          category = (node.get('type') or tag).split('\\')[-1]
+                          category = (node.get('type') or tag).rsplit(chr(92), 1)[-1]
+                          if not re.fullmatch(r'[A-Za-z0-9_]{1,80}', category):
+                              category = 'other'
                           categories[category] = categories.get(category, 0) + 1
+                          name = case.get('name', '')
+                          if name in allowed_names:
+                              failed_names.add(name)
           except Exception:
               categories['junit_unavailable'] = 1
 
           summary = ' '.join('{}={}'.format(k, v) for k, v in sorted(categories.items())) or 'none'
+          names = ','.join(sorted(failed_names)) or 'unavailable'
+          print('::notice title=MariaDB migration diagnostics::phpunit_exit={} junit_cases={} categories={} failed_tests={}'.format(status, cases_total, summary, names))
           body = (
               '### MariaDB archival migration - sanitized error categories '
               '(run {}, attempt {})\n'
               '```\n'
               'stage=focused_custom_role_mariadb phpunit_exit={} junit_cases={}\n'
               'error_categories={}\n'
+              'failed_tests={}\n'
               '```\n'
           ).format(
               os.environ.get('GITHUB_RUN_ID', '?'),
@@ -330,6 +346,7 @@ jobs:
               status,
               cases_total,
               summary,
+              names,
           )
           pr = os.environ.get('PR_NUMBER', '')
           if pr:
