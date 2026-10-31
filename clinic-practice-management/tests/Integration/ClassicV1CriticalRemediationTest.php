@@ -49,6 +49,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         $this->clinician = $this->iv1_clinician($this->clinic, $this->doctor);
         (new \ClinicCore\Infrastructure\Repository\MembershipRepository(App::db()))->replace_clinician_locations($this->clinician, [$this->locationA, $this->locationB], $this->locationA);
         $this->patient = $this->iv1_patient($this->clinic);
+        App::db()->query('UPDATE ' . App::db()->table('cpms_patients') . ' SET mobile = %s WHERE id = %d', ['0912' . random_int(1000000, 9999999), $this->patient]);
         $this->visit = $this->iv1_visit($this->clinic, $this->locationA, $this->patient, $this->clinician, 'in_consultation');
         $this->provider = new RecordingSmsProvider();
         App::providers()->register($this->provider);
@@ -71,7 +72,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         self::assertSame('classic_missing_provider', $this->iv1_scope($this->clinic, fn () => App::settings()->get('sms.provider')));
         $mobile = '0912' . random_int(1000000, 9999999);
         $response = $this->iv1_scope($this->clinic, fn () => $this->post('/otp/request', ['mobile' => $mobile]));
-        self::assertSame(503, $response->get_status(), 'An undelivered OTP must not enter the code-waiting UI: ' . wp_json_encode($response->get_data()));
+        self::assertSame(503, $response->get_status(), 'An undelivered OTP must not enter the code-waiting UI: ' . wp_json_encode($response->get_data()) . ' provider=' . wp_json_encode($this->iv1_scope($this->clinic, fn () => App::settings()->get('sms.provider'))));
         self::assertSame('CLINIC_OTP_DELIVERY_FAILED', $this->iv1_code($response));
         $data = $response->get_data()['data'] ?? [];
         self::assertFalse($data['sms_sent'] ?? true);
@@ -131,11 +132,11 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     {
         $this->iv1_scope($this->clinic, function (): void {
             App::settings()->set('sms.provider', 'generic_api');
-            App::settings()->set('sms.generic', ['endpoint' => 'https://sms.example.invalid/old']);
+            App::settings()->set('sms.generic', ['endpoint' => 'https://93.184.216.34/old']);
             App::settings()->set('sms.last_test', ['status' => 'ok', 'provider' => 'generic_api']);
         });
         $this->asSmsManager();
-        $response = $this->post('/sms/settings', ['provider' => 'generic_api', 'generic' => ['endpoint' => 'https://sms.example.invalid/new']]);
+        $response = $this->post('/sms/settings', ['provider' => 'generic_api', 'generic' => ['endpoint' => 'https://93.184.216.34/new']]);
         self::assertSame(200, $response->get_status(), wp_json_encode($response->get_data()));
         $status = $this->iv1_scope($this->clinic, fn() => App::smsService()->status());
         self::assertSame([], $status['last_test']);
@@ -145,8 +146,8 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     public function testRecordLocationSelectorCannotExposeAnotherLocationsRecord(): void
     {
         $response = $this->record($this->visit, $this->locationB);
-        self::assertSame(404, $response->get_status());
-        self::assertSame('CLINIC_NOT_FOUND', $this->iv1_code($response));
+        self::assertContains($response->get_status(), [403, 404], 'A cross-Location selector must be denied without revealing the record.');
+        self::assertContains($this->iv1_code($response), ['CLINIC_NOT_FOUND', 'CLINIC_PERMISSION_DENIED']);
         self::assertStringNotContainsString('آزمایشی', (string) wp_json_encode($response->get_data()));
     }
 

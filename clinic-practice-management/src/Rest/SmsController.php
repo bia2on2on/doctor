@@ -182,7 +182,10 @@ final class SmsController extends RestBase
         } catch (SmsTemplateException $ex) {
             return $this->error($ex->apiCode(), 400, $ex->getMessage());
         } catch (SmsSendException $ex) {
-            return $this->error($ex->apiCode(), 400, 'تنظیمات اتصال پیامک معتبر نیست؛ نشانی و روش اتصال را بررسی کنید.');
+            $message = $ex->apiCode() === 'CLINIC_SSRF_BLOCKED'
+                ? 'اتصال به آدرس داخلی/خصوصی مجاز نیست (SSRF)'
+                : 'تنظیمات اتصال پیامک معتبر نیست؛ نشانی و روش اتصال را بررسی کنید.';
+            return $this->error($ex->apiCode(), 400, $message);
         }
     }
 
@@ -205,7 +208,13 @@ final class SmsController extends RestBase
             return $rl;
         }
 
-        return $this->success($this->sms->testConnection($request->get_json_params() ?: [], $this->userId()));
+        try {
+            return $this->success($this->sms->testConnection($request->get_json_params() ?: [], $this->userId()));
+        } catch (SmsTemplateException $ex) {
+            return $this->error($ex->apiCode(), 400, $ex->getMessage());
+        } catch (SmsSendException $ex) {
+            return $this->error($ex->apiCode(), 400, 'تست اتصال پیامک ناموفق بود. تنظیمات اتصال را بررسی کنید.');
+        }
     }
 
     private function testSend(WP_REST_Request $request): \WP_REST_Response|\WP_Error
