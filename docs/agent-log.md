@@ -3281,3 +3281,26 @@ limits, candidate design and outstanding acceptance; this is not a fix or releas
   into `cpms_audit_logs`. Added an explicit `COMMIT` on the parent session
   immediately before forking workers, used 1-based `resource_id`, and made
   `tearDown()` cleanup assertion-free.
+
+### 2026-10-31 UTC — full quality suite green at 98e78ef (except genuine companion gate); temporary runners removed
+
+- [Quality run 41228691296](https://github.com/bia2on2on/doctor/actions/runs/41228691296)
+  at `98e78ef1b75b0777592f07e49718a5bb7420ecb6` **passed** WPCS (`124618131069`),
+  PHPStan (`124618130837`), Unit Tests on PHP 8.1 (`124618131019`), 8.2
+  (`124618131126`), 8.3 (`124618131154`), 8.4 (`124618131064`) and 8.5
+  (`124618131244`), and **Integration (WP 7.1 + MySQL 8 + MariaDB 11.4.13)**
+  (`124618272655` — every MariaDB 11.4.13 focused suite, every MySQL race/schema
+  suite, the full 2,481-test integration suite, `AuthorizationService` PCOV
+  coverage + fail-closed coverage guard, and the process-fresh multi-Clinic REST
+  bootstrap probe).
+- The only non-passing CI check is `Tenant Tripwire`'s `Workflow evidence and
+  acceptance contract tests` (`124618131114`), where `71/72` contracts pass and
+  `test_the_gate_command_fails_on_an_injected_gap` fails its baseline
+  precondition because production adds migration `2026_10_31_0031` (`cpms_audit_seq`),
+  while `companion-isolation.py` strictly forbids modifying companion/demo files
+  in the same PR as production (`docs/scoped-demo/companion-sync.md`). Production
+  runtime tenant-hardcode scan itself has `0 hardcodes` across 275 files.
+- Removed the temporary session-branch wrapper workflows
+  (`.github/workflows/session-{activation,quality}-proof.yml`) and restored
+  `ci.yml`'s triggers after collecting exact-SHA evidence. `companion-isolation.py`
+  passes (`production-only change (46 file(s)); companion untouched`).
