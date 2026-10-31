@@ -101,10 +101,16 @@ jobs:
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
           tail -35 /tmp/classic-v1/baseline-${{ matrix.database }}.log | while IFS= read -r line; do echo "::notice::BASELINE LOG ${line}"; done
           python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY' || true
-          import sys, xml.etree.ElementTree as ET
-          for case in ET.parse(sys.argv[1]).iter('testcase'):
-          for bad in list(case.findall('failure')) + list(case.findall('error')):
-          print('::notice::BASELINE ' + case.get('name','') + ': ' + (bad.get('message','')[:350].replace('\n',' ')))
+          import os, sys, xml.etree.ElementTree as ET
+          p=sys.argv[1]
+          if os.path.isfile(p):
+              root=ET.parse(p).getroot()
+              for case in root.iter('testcase'):
+                  for tag in ('failure','error'):
+                      node=case.find(tag)
+                      if node is not None:
+                          text=(node.get('message') or node.text or '').replace('%','%25').replace('\r','%0D').replace('\n','%0A')[:900]
+                          print('::notice::BASELINE '+case.get('name','test')+' '+text)
           PY
       - name: Reset database before candidate on the same runner
         run: |
@@ -118,10 +124,16 @@ jobs:
         run: |
           tail -35 /tmp/classic-v1/candidate-${{ matrix.database }}.log 2>/dev/null | while IFS= read -r line; do echo "::error::CANDIDATE LOG ${line}"; done
           python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml <<'PY' || true
-          import sys, xml.etree.ElementTree as ET
-          for case in ET.parse(sys.argv[1]).iter('testcase'):
-              for bad in list(case.findall('failure')) + list(case.findall('error')):
-                  print('::error::CANDIDATE ' + case.get('name','') + ': ' + (bad.get('message','')[:500].replace('\n',' ')))
+          import os, sys, xml.etree.ElementTree as ET
+          p=sys.argv[1]
+          if os.path.isfile(p):
+              root=ET.parse(p).getroot()
+              for case in root.iter('testcase'):
+                  for tag in ('failure','error'):
+                      node=case.find(tag)
+                      if node is not None:
+                          text=(node.get('message') or node.text or '').replace('%','%25').replace('\r','%0D').replace('\n','%0A')[:900]
+                          print('::error::CANDIDATE '+case.get('name','test')+' '+text)
           PY
       - name: Evidence summary
         if: always()
@@ -213,6 +225,8 @@ jobs:
       - name: Sequential authenticated HTTP profiles
         run: |
           set -euo pipefail
+          exec 9>/tmp/classic-http/trace.log; BASH_XTRACEFD=9; set -x
+          trap 'rc=$?; set +x; if [ "$rc" -ne 0 ]; then tail -12 /tmp/classic-http/trace.log | while IFS= read -r line; do echo "::error::TRACE $line"; done; fi' EXIT
           profile_rc=0
           for label in baseline candidate; do
             if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi

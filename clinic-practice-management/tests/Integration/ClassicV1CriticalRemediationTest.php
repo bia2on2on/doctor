@@ -38,6 +38,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     {
         parent::setUp();
         $this->iv1_boot();
+        \ClinicCore\Settings\Settings::flushCache();
         $this->org = $this->iv1_org('classic');
         $this->clinic = $this->iv1_clinic($this->org);
         $this->locationA = $this->iv1_location($this->clinic, 'A');
@@ -61,6 +62,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         $this->iv1_reset();
+        \ClinicCore\Settings\Settings::flushCache();
         parent::tearDown();
     }
 
