@@ -86,7 +86,11 @@ jobs:
           # Regenerate Composer paths against the archived production source;
           # never load candidate src through a copied autoload map.
           cd /tmp/classic-v1/baseline/clinic-practice-management
-          composer dump-autoload --no-interaction
+          composer dump-autoload --no-interaction 2>&1 | tee /tmp/classic-v1/baseline-prepare.log
+      - name: Expose baseline preparation failure
+        if: failure()
+        run: |
+          { echo '### Baseline preparation failed'; echo '```'; tail -60 /tmp/classic-v1/baseline-prepare.log 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Execute baseline regressions (failures are evidence, not a pass)
         run: |
           set -o pipefail
@@ -123,4 +127,102 @@ jobs:
             /tmp/classic-v1/*.log
             /tmp/classic-v1/*.txt
           include-hidden-files: false
+          retention-days: 14
+
+  http-profile:
+    name: Real HTTP profile (MySQL 8, same runner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mysql:
+        image: mysql:8
+        env: {MYSQL_ROOT_PASSWORD: root}
+        ports: ['3306:3306']
+        options: --health-cmd="mysqladmin ping -h 127.0.0.1" --health-interval=10s --health-timeout=5s --health-retries=20
+    env:
+      WP_DIR: /home/runner/www
+      WP_URL: http://localhost:8080
+      BASELINE_SHA: 9bf84304b2b143138c638fa1ca1d71869aa1e244
+    steps:
+      - uses: actions/checkout@v4
+        with: {fetch-depth: 0}
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mysqli, curl, mbstring, xml, zip, gd, sodium
+          tools: composer:v2
+      - name: Apache and WP-CLI
+        uses: ./.github/actions/wp-stack-tooling
+        with:
+          apt-packages: mysql-client apache2 libapache2-mod-php php-mysql php-mbstring php-xml php-curl php-zip php-gd
+          apt-log-dir: /tmp/classic-http
+      - name: Install WordPress and Apache
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/classic-http
+          mysql --protocol=TCP -h127.0.0.1 -uroot -proot -NBe 'SELECT VERSION()' | tee /tmp/classic-http/db-version.txt
+          grep -q '^8\.' /tmp/classic-http/db-version.txt
+          curl -fsSL https://wordpress.org/wordpress-7.1.3.tar.gz | tar -xz -C /home/runner
+          mv /home/runner/wordpress "$WP_DIR"
+          mysql --protocol=TCP -h127.0.0.1 -uroot -proot -e 'CREATE DATABASE cpms_http CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
+          cd "$WP_DIR"
+          wp config create --dbname=cpms_http --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --allow-root
+          wp config set DISABLE_WP_CRON true --raw --allow-root
+          wp core install --url="$WP_URL" --title='Synthetic Classic V1' --admin_user=ci_admin --admin_password='Synthetic-Only-2026!' --admin_email=ci@example.invalid --skip-email --allow-root
+          wp rewrite structure '/%postname%/' --allow-root
+          sudo tee /etc/apache2/sites-available/cpms.conf >/dev/null <<CONF
+          <VirtualHost *:8080>
+            DocumentRoot $WP_DIR
+            <Directory $WP_DIR>
+              AllowOverride All
+              Require all granted
+            </Directory>
+          </VirtualHost>
+          CONF
+          sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
+          sudo a2dissite 000-default && sudo a2ensite cpms && sudo a2enmod rewrite
+          sudo chmod a+rx /home/runner
+          sudo chown -R www-data:www-data "$WP_DIR/wp-content"
+          sudo apache2ctl configtest && sudo service apache2 start
+      - name: Build baseline and candidate official ZIPs
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/classic-http/baseline/clinic-practice-management
+          git archive "$BASELINE_SHA" clinic-practice-management | tar -x --strip-components=1 -C /tmp/classic-http/baseline/clinic-practice-management
+          (cd /tmp/classic-http/baseline/clinic-practice-management && bash bin/build-release.sh)
+          (cd clinic-practice-management && bash bin/build-release.sh)
+      - name: Sequential authenticated HTTP profiles
+        run: |
+          set -euo pipefail
+          for label in baseline candidate; do
+            if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
+            zip=$(find "$root/dist" -name '*.zip' | head -1)
+            wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root
+            sudo cp "$GITHUB_WORKSPACE/clinic-practice-management/tests/fixtures/classic-v1-http-profiler-mu.php" "$WP_DIR/wp-content/mu-plugins/classic-v1-profiler.php"
+            sudo service apache2 restart
+            if [ "$label" = baseline ]; then
+              WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php
+              cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
+              set -a; . /tmp/doctor-portal.env; set +a
+              WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php
+            fi
+            set -a; . /tmp/doctor-portal.env; set +a
+            ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[0 if __import__("os").environ["LABEL"]=="baseline" else 12:][:12]))' LABEL="$label")
+            PROFILE_LABEL="$label" LABEL="$label" PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT="/tmp/classic-http/$label.json" python3 clinic-practice-management/bin/classic-v1-http-profile.py
+          done
+          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          a=json.load(open('/tmp/classic-http/baseline.json'))['summary']
+          b=json.load(open('/tmp/classic-http/candidate.json'))['summary']
+          print('### Real authenticated HTTP, MySQL 8, sequential on one runner/DB')
+          print('| Operation | Baseline ms / queries | Candidate ms / queries |')
+          print('|---|---|---|')
+          for k in a: print(f"| {k} | {a[k]['median_ms']} / {a[k]['median_queries']} | {b[k]['median_ms']} / {b[k]['median_queries']} |")
+          print('Synthetic data; medians of 12. POSTs use distinct equivalent pre-seeded visits. No real SMS provider.')
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: classic-v1-http
+          path: /tmp/classic-http/*.json
           retention-days: 14
