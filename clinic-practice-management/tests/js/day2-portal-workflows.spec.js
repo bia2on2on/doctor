@@ -605,9 +605,10 @@ async function testPublicBookingOtpAndTripwires() {
       '</script>' +
     '</section>';
 
+  var otpResponse = { ok: true, data: { sms_sent: true, expires_in: 120 } };
   var env = createDomEnv(html, function (url, opts) {
     calls.push({ url: url, opts: opts || {} });
-    return jsonResponse(200, { ok: true, data: {} });
+    return jsonResponse(200, otpResponse);
   });
 
   vm.runInContext(pbCode, env.context);
@@ -620,12 +621,23 @@ async function testPublicBookingOtpAndTripwires() {
   assert.strictEqual(calls.length, 0, 'Invalid mobile number does not trigger network request');
   assert.strictEqual(mobileInput.getAttribute('aria-invalid'), 'true', 'Sets aria-invalid on invalid mobile');
 
+  // Classic V1: an HTTP 200 envelope without affirmative SMS acceptance must
+  // not advance to the code step (misleading-success trap).
+  otpResponse = { ok: true, data: { sms_sent: false, retry_enqueued: false, expires_in: 120 } };
+  mobileInput.value = '09123456789';
+  reqBtn.dispatch('click');
+  await flushPromises();
+  assert.strictEqual(calls.length, 1, 'Undelivered OTP still posts the request once');
+  assert.strictEqual(env.doc.querySelector('[data-auth-step="otp-code"]').hidden, true, 'Undelivered OTP keeps the mobile step visible');
+  assert.strictEqual(mobileInput.getAttribute('aria-invalid'), 'true', 'Undelivered OTP marks the mobile input invalid');
+
   // Persian digits normalize cleanly to 09123456789
+  otpResponse = { ok: true, data: { sms_sent: true, expires_in: 120 } };
   mobileInput.value = '۰۹۱۲۳۴۵۶۷۸۹';
   reqBtn.dispatch('click');
   await flushPromises();
-  assert.strictEqual(calls.length, 1, 'Valid Persian-digit mobile posts to /otp/request');
-  assert.strictEqual(JSON.parse(calls[0].opts.body).mobile, '09123456789', 'Normalizes Persian digits to ASCII');
+  assert.strictEqual(calls.length, 2, 'Valid Persian-digit mobile posts to /otp/request');
+  assert.strictEqual(JSON.parse(calls[1].opts.body).mobile, '09123456789', 'Normalizes Persian digits to ASCII');
   assert.strictEqual(mobileInput.getAttribute('aria-invalid'), null, 'Clears aria-invalid on valid mobile');
 
   var stepMobile = env.doc.querySelector('[data-auth-step="otp-mobile"]');

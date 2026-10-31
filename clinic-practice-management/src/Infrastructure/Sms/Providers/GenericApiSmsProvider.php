@@ -128,6 +128,14 @@ final class GenericApiSmsProvider implements SmsProviderInterface
             ];
         }
 
+        if ( $httpCode < 200 || $httpCode >= 300 ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
+            return [
+                'ok'        => false,
+                'message'   => '✗ پنل پیامک پاسخ موفق تأیید نکرد (HTTP ' . $httpCode . ').', // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
+                'technical' => 'http_' . $httpCode, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
+            ];
+        }
+
         return [
             'ok' => true,
             'message' => '✓ اتصال برقرار شد (HTTP ' . $httpCode . ').',

@@ -25,7 +25,7 @@
 | `APPT.confirmed` | SMS+Internal | فوری |
 | `APPT.reminder` | SMS+Internal | Job: شب قبل (21:00) + صبح (08:00) — Setting |
 | `APPT.changed` (لغو/جابه‌جا) | SMS+Internal | فوری |
-| `APPT.cancelled` | Internal (مطب) | فوری |
+| `APPT.cancelled` | SMS + Internal (لغو توسط مطب یا بیمار) | فوری؛ صف پایدار، نه تأیید تحویل |
 | `QUEUE.called` | Internal (منشی) + Real-time | فوری (حتی قبل از Job) |
 | `QUEUE.ready_payment` | Internal (منشی) | فوری |
 | `FOLLOWUP.reminder` | SMS+Internal | Job روی `suggested_date - 1d` |

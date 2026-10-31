@@ -353,9 +353,7 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
         banner.style.display = '';
         banner.innerHTML = '<p>' + esc(item[0]) + '</p>';
         el('cpms-sms-state').textContent = s.state;
-        if (s.last_test && s.last_test.message) {
-            el('cpms-sms-test-conn-result').textContent = ' (آخرین تست: ' + s.last_test.message + ')';
-        }
+        el('cpms-sms-test-conn-result').textContent = (s.last_test && s.last_test.message) ? ' (آخرین تست: ' + s.last_test.message + ')' : '';
     }
 
     function loadTemplates() {
@@ -451,7 +449,7 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
         api('POST', 'test-connection', body).then(function (r) {
             result('cpms-sms-test-conn-result', r.message, r.ok);
             loadStatus();
-        }).catch(function (err) { result('cpms-sms-test-conn-result', 'خطا: ' + err.message, false); });
+        }).catch(function (err) { result('cpms-sms-test-conn-result', 'خطا: ' + err.message, false); loadStatus(); });
     };
 
     el('cpms-sms-test-send').onclick = function () {
@@ -505,7 +503,7 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
         chain.then(function () {
             result('cpms-sms-save-result', '✓ ذخیره شد.', true);
             return loadStatus().then(loadTemplates);
-        }).catch(function (err) { result('cpms-sms-save-result', 'خطا: ' + err.message, false); });
+        }).catch(function (err) { result('cpms-sms-save-result', 'خطا: ' + err.message, false); loadStatus(); });
     };
 
     function collectCreds() {

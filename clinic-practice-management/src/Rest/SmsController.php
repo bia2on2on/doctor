@@ -8,6 +8,7 @@ use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Sms\SmsTemplateException;
+use ClinicCore\Infrastructure\Sms\SmsSendException;
 use WP_REST_Request;
 use WP_REST_Server;
 
@@ -178,8 +179,13 @@ final class SmsController extends RestBase
         }
         try {
             return $this->success($this->sms->saveSettings($request->get_json_params() ?: [], $this->userId()));
-        } catch (SmsTemplateException $ex) {
-            return $this->error($ex->apiCode(), 400, $ex->getMessage());
+        } catch ( SmsTemplateException $ex ) {
+            return $this->error( $ex->apiCode(), 400, $ex->getMessage() );
+        } catch ( SmsSendException $ex ) {
+            $message = $ex->apiCode() === 'CLINIC_SSRF_BLOCKED'
+                ? 'اتصال به آدرس داخلی/خصوصی مجاز نیست (SSRF)'
+                : 'تنظیمات اتصال پیامک معتبر نیست؛ نشانی و روش اتصال را بررسی کنید.';
+            return $this->error( $ex->apiCode(), 400, $message );
         }
     }
 
@@ -202,7 +208,14 @@ final class SmsController extends RestBase
             return $rl;
         }
 
-        return $this->success($this->sms->testConnection($request->get_json_params() ?: [], $this->userId()));
+        try {
+            $params = $request->get_json_params();
+            return $this->success( $this->sms->testConnection( $params ? $params : [], $this->userId() ) );
+        } catch ( SmsTemplateException $ex ) {
+            return $this->error( $ex->apiCode(), 400, $ex->getMessage() );
+        } catch ( SmsSendException $ex ) {
+            return $this->error( $ex->apiCode(), 400, 'تست اتصال پیامک ناموفق بود. تنظیمات اتصال را بررسی کنید.' );
+        }
     }
 
     private function testSend(WP_REST_Request $request): \WP_REST_Response|\WP_Error
@@ -231,8 +244,8 @@ final class SmsController extends RestBase
                     $this->userId()
                 )
             );
-        } catch (SmsTemplateException $ex) {
-            return $this->error($ex->apiCode(), 400, $ex->getMessage());
+        } catch ( SmsTemplateException $ex ) {
+            return $this->error( $ex->apiCode(), 400, $ex->getMessage() );
         }
     }
 
@@ -273,8 +286,8 @@ final class SmsController extends RestBase
         $templateId = (string) ($params['template_id'] ?? '');
         try {
             return $this->success($this->sms->saveTemplate($event, $templateId, $this->userId()));
-        } catch (SmsTemplateException $ex) {
-            return $this->error($ex->apiCode(), 400, $ex->getMessage());
+        } catch ( SmsTemplateException $ex ) {
+            return $this->error( $ex->apiCode(), 400, $ex->getMessage() );
         }
     }
 
@@ -305,8 +318,8 @@ final class SmsController extends RestBase
                     $this->userId()
                 )
             );
-        } catch (SmsTemplateException $ex) {
-            return $this->error($ex->apiCode(), 400, $ex->getMessage());
+        } catch ( SmsTemplateException $ex ) {
+            return $this->error( $ex->apiCode(), 400, $ex->getMessage() );
         }
     }
 

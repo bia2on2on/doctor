@@ -69,10 +69,18 @@ final class MigrationRunner
     {
         $this->ensureSchemaTable();
 
+        // One bounded ledger read instead of one SELECT per shipped migration
+        // on every admin/REST request. The ledger remains authoritative: a new
+        // code version is discovered immediately, without a stale cache.
+        $applied = [];
+        $ledger  = $this->db->fetchAll( 'SELECT version FROM ' . $this->db->table( self::SCHEMA_TABLE ) );
+        foreach ( $ledger ? $ledger : [] as $row ) {
+            $applied[ (string) $row['version'] ] = true;
+        }
         $appliedNow = [];
         foreach ($this->migrationFiles() as $file) {
             $version = $this->versionOf($file['name']);
-            if ($this->isApplied($version)) {
+            if ( isset( $applied[ $version ] ) ) {
                 continue;
             }
 

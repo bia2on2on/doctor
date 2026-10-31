@@ -67,7 +67,7 @@
  *      (control, was PASS) Reads the inventory from the PUBLIC production
  *      contracts — `JobsDispatcher::registeredTypes()` and
  *      `App::RECURRING_JOBS` — with no Reflection, and pins the canonical
- *      counts 15 / 13 (§A-3).
+ *      counts 16 / 13 (§A-3 + Classic V1 cancellation outbox).
  *      RT-12 `testEveryRegisteredJobTypeHasAnExplicitScopeClassification`
  *      (was RED) Consumes the new production contract `JobScopeRegistry`:
  *      every registered type has exactly one of T/S/W, an unknown type is
@@ -561,9 +561,9 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         $recurring = self::recurringJobTypesFromProduction();
 
         self::assertCount(
-            15,
+            16,
             $registered,
-            'canonical design §A-3 records exactly 15 registered job types; actual: ' . implode(', ', $registered)
+            'canonical design §A-3 plus Classic V1 cancellation outbox records exactly 16 registered job types; actual: ' . implode(', ', $registered)
         );
         self::assertCount(
             13,
@@ -579,9 +579,9 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         $eventDriven = array_values(array_diff($registered, $recurring));
         sort($eventDriven);
         self::assertSame(
-            ['report.export', 'sms.send'],
+            ['appointment.cancel_notify', 'report.export', 'sms.send'],
             $eventDriven,
-            'the two event-driven (non-recurring) registered types per canonical design §A-3'
+            'the three event-driven (non-recurring) registered types per canonical design §A-3 plus Classic V1 cancellation outbox'
         );
     }
 
@@ -622,11 +622,11 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
             'RT-12: JobScopeRegistry must classify exactly the job types App::dispatcher() registers (no drift)'
         );
 
-        // (c) canonical §A-3 distribution: 2 T / 6 S / 7 W.
+        // (c) canonical §A-3 distribution plus cancellation outbox: 3 T / 6 S / 7 W.
         // (M-2 RESOLVED: handwriting.gc — S → W؛ مالکیتِ پر-ردیفِ
         //  versions→pages→documents.clinic_id + سیاستِ Clinic-owned.)
         self::assertSame(
-            [JobScopeClass::TENANT => 2, JobScopeClass::SYSTEM => 6, JobScopeClass::SWEEP => 7],
+            [JobScopeClass::TENANT => 3, JobScopeClass::SYSTEM => 6, JobScopeClass::SWEEP => 7],
             JobScopeRegistry::countsByClass(),
             'RT-12: the T/S/W distribution must match canonical design §A-3'
         );
@@ -956,7 +956,7 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         );
         self::assertNotContains('rt.not.in.production.registry', $dispatcher->registeredTypes());
 
-        // The 15 production types are all still classified (RT-12 unchanged).
+        // The 16 production types are all still classified (RT-12 unchanged).
         self::assertSame(JobScopeRegistry::types(), $dispatcher->registeredTypes());
     }
 

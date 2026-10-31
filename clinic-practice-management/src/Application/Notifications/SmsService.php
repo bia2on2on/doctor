@@ -550,6 +550,12 @@ final class SmsService
             throw new SmsTemplateException('CLINIC_SMS_AUTH_METHOD_INVALID', 'روش اتصال انتخابی برای این Provider پشتیبانی نمی‌شود');
         }
 
+        // Validate the complete proposed generic mapping before any setting or
+        // credential mutation. SSRF checks perform no HTTP request.
+        $generic_next = is_array( $in['generic'] ?? null )
+            ? $this->prepare_generic_config( $in['generic'] )
+            : null;
+
         // Credentials (الزام §4/§27)
         $fields = is_array($in['credentials'] ?? null) ? $in['credentials'] : [];
         $newFields = $current['fields'];
@@ -578,7 +584,7 @@ final class SmsService
             }
         }
 
-        if ($providerId !== $prevProvider || $method !== (string) ($current['method'] ?? '')) {
+        if ( $providerId !== $prevProvider || $method !== (string) ( $current['method'] ?? '' ) || $changedCreds || $generic_next !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals in this method.
             $settings->set('sms.last_test', [], $userId);
         }
 
@@ -593,8 +599,9 @@ final class SmsService
             $settings->set('sms.advanced', $advanced, $userId);
         }
 
-        if (is_array($in['generic'] ?? null)) {
-            $this->saveGenericConfig($in['generic'], $userId);
+        if ( $generic_next !== null ) {
+            $settings->set( 'sms.generic', $generic_next, $userId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
+            $this->auditSms( 'SMS_PROVIDER_CHANGED', $userId, [ 'provider' => 'generic_api', 'scope' => 'config' ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
         }
 
         if ($providerId !== $prevProvider) {
@@ -623,7 +630,14 @@ final class SmsService
         }
 
         $creds = $this->mergedCredentials($provider, (array) ($in['credentials'] ?? []), $settings);
-        $result = $provider->testConnection($creds);
+        try {
+            $result = $provider->testConnection( $creds );
+        } catch ( SmsSendException $ex ) {
+            $safe = $this->safe_connection_error( $ex );
+            $settings->set( 'sms.last_test', [ 'status' => 'failed', 'at' => time(), 'provider' => $providerId, 'message' => $safe ], $userId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals.
+            $this->auditSms( 'SMS_CONNECTION_TESTED', $userId, [ 'provider' => $providerId, 'ok' => false ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals.
+            throw new SmsTemplateException( $ex->apiCode(), $safe );
+        }
 
         $settings->set('sms.last_test', [
             'status' => $result['ok'] ? 'ok' : 'failed',
@@ -1022,10 +1036,8 @@ final class SmsService
      *
      * @throws SmsTemplateException
      */
-    private function saveGenericConfig(array $in, int $userId): void
-    {
-        $settings = $this->currentSettings();
-        $current = (array) $settings->get('sms.generic', []);
+    private function prepare_generic_config( array $in ): array {
+        $current = (array) $this->currentSettings()->get( 'sms.generic', [] );
         $next = $current;
 
         if (isset($in['endpoint'])) {
@@ -1073,8 +1085,16 @@ final class SmsService
             $next['response'] = $response;
         }
 
-        $settings->set('sms.generic', $next, $userId);
-        $this->auditSms('SMS_PROVIDER_CHANGED', $userId, ['provider' => 'generic_api', 'scope' => 'config']);
+        return $next;
+    }
+
+    private function safe_connection_error( SmsSendException $ex ): string {
+        return match ( $ex->apiCode() ) {
+            'CLINIC_SSRF_BLOCKED' => 'اتصال به آدرس داخلی/خصوصی مجاز نیست (SSRF)',
+            'CLINIC_SMS_ENDPOINT_INVALID' => 'نشانی پنل پیامک معتبر نیست',
+            'CLINIC_SMS_ENDPOINT_UNRESOLVABLE' => 'نشانی پنل پیامک قابل شناسایی نیست',
+            default => 'تست اتصال پیامک ناموفق بود. تنظیمات اتصال را بررسی کنید.',
+        };
     }
 
     private function sanitizeSender(string $sender): string
