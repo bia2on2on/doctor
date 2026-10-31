@@ -214,7 +214,6 @@ jobs:
         run: |
           set -euo pipefail
           profile_rc=0
-          trap 'rc=$?; echo "::error::HTTP shell failed at line $LINENO (exit $rc): $BASH_COMMAND"' ERR
           for label in baseline candidate; do
             if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
             zip=$(find "$root/dist" -name '*.zip' | head -1)
@@ -224,12 +223,21 @@ jobs:
             fi
             sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
             sudo cp "$GITHUB_WORKSPACE/clinic-practice-management/tests/fixtures/classic-v1-http-profiler-mu.php" "$WP_DIR/wp-content/mu-plugins/classic-v1-profiler.php"
-            sudo service apache2 restart
+            if ! sudo service apache2 restart > /tmp/classic-http/apache-$label.log 2>&1; then
+              cat /tmp/classic-http/apache-$label.log | while IFS= read -r line; do echo "::error::APACHE $line"; done
+              exit 1
+            fi
             if [ "$label" = baseline ]; then
-              WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php
+              if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php > /tmp/classic-http/fixture.log 2>&1; then
+                tail -30 /tmp/classic-http/fixture.log | while IFS= read -r line; do echo "::error::FIXTURE $line"; done
+                exit 1
+              fi
               cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
               set -a; . /tmp/doctor-portal.env; set +a
-              WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php
+              if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
+                tail -30 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
+                exit 1
+              fi
             fi
             set -a; . /tmp/doctor-portal.env; set +a
             ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[0 if __import__("os").environ["LABEL"]=="baseline" else 12:][:12]))' LABEL="$label")

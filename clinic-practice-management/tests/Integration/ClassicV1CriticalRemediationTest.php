@@ -52,7 +52,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         $this->provider = new RecordingSmsProvider();
         App::providers()->register($this->provider);
         $this->iv1_scope($this->clinic, function (): void {
-            App::settings()->set('sms.provider', '');
+            App::settings()->set('sms.provider', 'classic_missing_provider');
             App::settings()->set('sms.templates', []);
         });
         wp_set_current_user($this->doctor);
