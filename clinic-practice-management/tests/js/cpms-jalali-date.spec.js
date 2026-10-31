@@ -132,6 +132,21 @@ assertEqual(
   'toJalali(2027-02-21) matches the 1405/12/3 entry used above'
 );
 
+// ===================== Scope: standalone Staff Portal shell (Owner B) =====================
+// enhanceAll must ALSO match real calendar-date inputs mounted on the
+// plugin-owned Staff Portal shell (<html dir="rtl">), not only CPMS admin
+// `.wrap[dir="rtl"]` screens. Both scopes share ONE enhancement pass.
+var capturedSelector = null;
+var stubRoot = {
+  querySelectorAll: function (sel) { capturedSelector = sel; return []; }
+};
+CpmsJalali.enhanceAll(stubRoot);
+assertEqual(
+  capturedSelector,
+  '.wrap[dir="rtl"] input[type="date"], html[dir="rtl"] input[type="date"]',
+  'enhanceAll covers the admin .wrap[dir=rtl] scope AND the standalone portal html[dir=rtl] scope'
+);
+
 if (failures.length > 0) {
   console.error('FAIL (' + failures.length + '):');
   failures.forEach(function (f) { console.error(' - ' + f); });
