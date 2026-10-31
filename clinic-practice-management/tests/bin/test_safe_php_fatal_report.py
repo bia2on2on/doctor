@@ -36,6 +36,26 @@ class SafePhpFatalReportTest(unittest.TestCase):
         self.assertNotIn("OTP_SECRET_123456", result.stdout + summary)
         self.assertNotIn("/synthetic/wp-content", result.stdout + summary)
 
+    def test_known_missing_method_is_reported_without_its_arguments(self):
+        result, summary = self.run_report(
+            "PHP Fatal error: Uncaught Error: Call to undefined method HashChain::verify_chain() "
+            "in /tmp/clinic-practice-management/src/Infrastructure/Audit/HashChain.php:42\n"
+            "#0 PASSWORD_123456\n"
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("Call to undefined method HashChain::verify_chain()", result.stdout)
+        self.assertIn("HashChain.php on line 42", summary)
+        self.assertNotIn("PASSWORD_123456", result.stdout + summary)
+
+    def test_dynamic_function_name_is_redacted_unless_it_is_a_source_symbol(self):
+        secret = "PRIVATEPATIENT_OTP_123456"
+        result, summary = self.run_report(
+            "PHP Fatal error: Uncaught Error: Call to undefined function " + secret + "()"
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertNotIn(secret, result.stdout + summary)
+        self.assertIn("redacted", result.stdout)
+
     def test_unknown_exception_and_stack_values_are_not_published(self):
         secret = "PASSWORD_secret_PATIENT_009_OTP_123456"
         result, summary = self.run_report(
