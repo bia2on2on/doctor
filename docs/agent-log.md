@@ -3055,3 +3055,12 @@ and both render paths return the page untouched if anything throws.
 - Local PHP-wasm lint and focused frontend source tests ran; the earlier broad wasm unit run was not green (missing native/locked dependencies and path assumptions) and is not claimed as DB evidence. Native PHP/MySQL/Docker are unavailable locally.
 - Focused evidence at implementation head `ca8079044e7ed21ee2677f29ef07dd32db4a953b` (run `41180393141`, PR #288): MySQL 8 and MariaDB 11.4.13 each executed 120 candidate tests with 0 failures/errors; the archived baseline executed the 12 new regressions/probe with 3 failures and 4 errors. The same-run authenticated MySQL HTTP profile reduced REST queries by 29/request (queue 98→69, record 101→73, note 91→62, prescription 98→69, complete 108→79). Staff Portal HTML stayed 115 queries; the reported 214–235 query and 2.2–4.0 s production symptoms were not reproduced in this synthetic CI workload. Initial workflow setup failures were corrected and are not counted as product test passes. Exact-head PR CI: all 48 checks passed (CI run `41180393127`, standalone-demo `41180393282`); full MySQL integration suite 2465 tests, 0 failures/errors. WPCS/PHPStan gates are green after changed-line style cleanup. No merge/release/tag/deploy performed.
 - No merge, release, tag, deployment, Modern skin, or Theme Adaptive work performed.
+
+### 2026-10-31 — Classic V1 audit/reception investigation (draft)
+
+Installer report unavailable locally; inspected audit logger, transaction nesting,
+reception eligibility and clinical prescription paths. Added a read-only independent
+snapshot checker and synthetic tests; no production history or business logic
+changed. No real MySQL/MariaDB, concurrency, clinical or financial acceptance was
+run. See `docs/testing/classic-v1-audit-reception-assessment-2026-10-31.md` for
+limits, candidate design and outstanding acceptance; this is not a fix or release.
