@@ -20,13 +20,14 @@ use WP_UnitTestCase;
  */
 final class AuditAppendConcurrencyTest extends WP_UnitTestCase
 {
-    private int $clinicId = 1;
+    private int $organizationId = 0;
+    private int $clinicId = 0;
     private int $locationId = 0;
     private int $clinicianId = 0;
+    private int $clinicianUserId = 0;
     private int $slotId = 0;
-
-    /** @var list<int> Committed audit ids created by this test (cleanup). */
-    private array $auditIds = [];
+    private int $auditBaselineId = 0;
+    private int $auditBaselineCount = 0;
 
     protected function setUp(): void
     {
@@ -39,42 +40,91 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
         if ($guard === null) {
             $this->fail('audit guard row missing — migration 0031 not applied');
         }
+        $this->auditBaselineId = (int) App::db()->fetchValue(
+            'SELECT COALESCE(MAX(id), 0) FROM ' . App::db()->table('cpms_audit_logs')
+        );
+        $this->auditBaselineCount = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs')
+        );
+        self::assertTrue(App::audit()->verifyFullChain()['ok'], 'precondition: global audit chain is valid before this test');
     }
 
     protected function tearDown(): void
     {
-        // Child connections commit synthetic audit rows to this disposable test
-        // database; those append-only rows survive the parent rollback. Do not
-        // run this test against a real site's audit history.
-        if ($this->slotId > 0) {
-            App::db()->query('DELETE FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d', [$this->slotId]);
+        global $wpdb;
+        // Independent worker connections required committed fixtures and wrote
+        // committed suffix rows. Clean up only this test's isolated tenant and
+        // verified suffix, then COMMIT the removal so later suites continue to
+        // see the untouched seed Clinic and prefix chain.
+        try {
+            if ($this->clinicId > 0) {
+                $auditTable = App::db()->table('cpms_audit_logs');
+                $suffix = App::db()->fetchAll(
+                    'SELECT id, clinic_id FROM ' . $auditTable . ' WHERE id > %d ORDER BY id ASC FOR UPDATE',
+                    [$this->auditBaselineId]
+                );
+                if ($suffix !== []) {
+                    $globalMax = (int) App::db()->fetchValue('SELECT COALESCE(MAX(id), 0) FROM ' . $auditTable . ' FOR UPDATE');
+                    self::assertSame($globalMax, (int) $suffix[count($suffix) - 1]['id'], 'cleanup precondition: test audit rows are the global suffix');
+                    foreach ($suffix as $row) {
+                        self::assertSame($this->clinicId, (int) $row['clinic_id'], 'cleanup precondition: every audit suffix row belongs to this fixture Clinic');
+                    }
+                    self::assertTrue(App::audit()->verifyFullChain()['ok'], 'cleanup precondition: append-only audit chain verifies before suffix cleanup');
+                    App::db()->query('DELETE FROM ' . $auditTable . ' WHERE id > %d', [$this->auditBaselineId]);
+                    $newTail = (int) App::db()->fetchValue('SELECT COALESCE(MAX(id), 0) FROM ' . $auditTable);
+                    App::db()->query(
+                        'UPDATE ' . App::db()->table('cpms_audit_seq') . ' SET last_audit_id = %d, updated_at = %s WHERE id = 1',
+                        [$newTail, App::db()->nowUtcSql()]
+                    );
+                }
+                $remaining = App::audit()->verifyFullChain();
+                self::assertTrue($remaining['ok'], 'cleanup: preserved global audit prefix remains valid');
+                self::assertSame($this->auditBaselineCount, $remaining['checked'], 'cleanup: only the pre-existing audit prefix remains');
+            }
+            if ($this->slotId > 0) {
+                App::db()->query('DELETE FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d', [$this->slotId]);
+            }
+            if ($this->clinicianId > 0) {
+                App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinician_locations') . ' WHERE clinician_id = %d', [$this->clinicianId]);
+                App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d', [$this->clinicianId]);
+            }
+            if ($this->clinicId > 0) {
+                App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d', [$this->clinicId]);
+                App::db()->query('DELETE FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d', [$this->clinicId]);
+                App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d', [$this->clinicId]);
+            }
+            if ($this->organizationId > 0) {
+                App::db()->query('DELETE FROM ' . App::db()->table('cpms_organizations') . ' WHERE id = %d', [$this->organizationId]);
+            }
+            if ($this->clinicianUserId > 0) {
+                $wpdb->delete($wpdb->usermeta, ['user_id' => $this->clinicianUserId], ['%d']);
+                $wpdb->delete($wpdb->users, ['ID' => $this->clinicianUserId], ['%d']);
+            }
+            $wpdb->query('COMMIT');
+        } finally {
+            App::resetScope();
+            parent::tearDown();
         }
-        if ($this->clinicianId > 0) {
-            // Only delete the fixture clinician created here (is_active test marker).
-            App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d AND full_name = %s', [$this->clinicianId, 'Dr Audit Concurrency']);
-        }
-        App::resetScope();
-        parent::tearDown();
     }
 
     public function testGuardSerializesConcurrentAuditAppendsAndChainRemainsIntact(): void
     {
         $this->prepareSlot(capacity: 50);
-        $initialCount = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
+        $initialCount = $this->lockedAuditCount();
 
         // 10-way
         $this->assertConcurrentAuditInsertsPreserveChain(10, $initialCount);
-        $after10 = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
+        $after10 = $this->lockedAuditCount();
         $this->assertSame($initialCount + 10, $after10, '10-way: exactly 10 audit rows must be added');
 
         // 25-way
         $this->assertConcurrentAuditInsertsPreserveChain(25, $after10);
-        $after25 = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
+        $after25 = $this->lockedAuditCount();
         $this->assertSame($initialCount + 35, $after25, '25-way: exactly 25 more rows');
 
         // 50-way
         $this->assertConcurrentAuditInsertsPreserveChain(50, $after25);
-        $after50 = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
+        $after50 = $this->lockedAuditCount();
         $this->assertSame($initialCount + 85, $after50, '50-way: total 85 concurrent rows added');
     }
 
@@ -83,17 +133,19 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
         // This is only a direct conditional slot-counter UPDATE: no hold row,
         // production BookingService, audit append or deadlock observation.
         $this->prepareSlot(capacity: 1);
-        $initial = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
 
         $successes = $this->forkBookingHolds(25, $this->slotId);
         $this->assertSame(1, $successes, 'capacity 1 with 25-way hold: exactly one must succeed');
+        App::db()->wpdb()->query('COMMIT');
 
-        $after = App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
-        $this->assertIsNumeric($after);
+        $after = $this->lockedAuditCount();
+        $this->assertIsInt($after);
         $chain = App::audit()->verifyFullChain();
         $this->assertTrue($chain['ok'], 'audit chain must be intact after 25-way booking race: ' . wp_json_encode($chain));
         // No unexpected genesis: only the first row in the entire history may have GENESIS.
-        $this->assertNoUnexpectedGenesis();
+        if ($after > 0) {
+            $this->assertNoUnexpectedGenesis();
+        }
         // Suffix verification (last 10) must also pass via predecessor anchor.
         $suffix = App::audit()->verifyChain(10);
         $this->assertTrue($suffix['ok'], 'suffix verification must pass: ' . wp_json_encode($suffix));
@@ -101,7 +153,8 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
 
     public function testSyntheticAuditRowsLeaveProductionVerifierIntact(): void
     {
-        $initial = (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs'));
+        $this->prepareTenantOnly();
+        $initial = $this->lockedAuditCount();
         // Five hand-written audit rows; this does not invoke any clinical,
         // financial or SMS production writer.
         $this->assertConcurrentAuditInsertsPreserveChain(5, $initial);
@@ -112,74 +165,91 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
     }
 
     // ------------------------------------------------------------------
-    // Helpers: committed slot fixture
+    // Helpers: isolated committed tenant + slot fixture
     // ------------------------------------------------------------------
+
+    private function prepareTenantOnly(): void
+    {
+        global $wpdb;
+        if ($this->clinicId > 0) {
+            return;
+        }
+        $now = App::db()->nowUtcSql();
+        $unique = bin2hex(random_bytes(4));
+        App::db()->insert('cpms_organizations', [
+            'name' => 'Audit Race Org ' . $unique,
+            'slug' => 'audit-race-org-' . $unique,
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $this->organizationId = (int) App::db()->wpdb_last_insert_id();
+        self::assertGreaterThan(0, $this->organizationId);
+
+        App::db()->insert('cpms_clinics', [
+            'organization_id' => $this->organizationId,
+            'name' => 'Audit Race Clinic ' . $unique,
+            'slug' => 'audit-race-clinic-' . $unique,
+            'timezone' => 'Asia/Tehran',
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $this->clinicId = (int) App::db()->wpdb_last_insert_id();
+        self::assertGreaterThan(0, $this->clinicId);
+        // Commit so independent mysqli workers can reference clinic_id via FK.
+        $wpdb->query('COMMIT');
+    }
 
     private function prepareSlot(int $capacity): void
     {
         global $wpdb;
+        $this->prepareTenantOnly();
         $now = App::db()->nowUtcSql();
+        $unique = bin2hex(random_bytes(4));
 
-        // Ensure one active location for clinic 1.
-        $loc = App::db()->fetchValue('SELECT id FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1 LIMIT 1', [$this->clinicId]);
-        if ($loc === null) {
-            // Create a fallback active location (should already exist from seed).
-            App::db()->insert('cpms_locations', [
-                'clinic_id' => $this->clinicId,
-                'name' => 'Audit Test Location',
-                'slug' => 'audit-test-loc-' . bin2hex(random_bytes(3)),
-                'is_active' => 1,
-                'is_primary' => 1,
-                'timezone' => 'Asia/Tehran',
-                'created_at' => $now,
-                'updated_at' => $now,
-            ]);
-            $loc = App::db()->wpdb_last_insert_id();
-        }
-        $this->locationId = (int) $loc;
+        App::db()->insert('cpms_locations', [
+            'clinic_id' => $this->clinicId,
+            'name' => 'Audit Test Location',
+            'slug' => 'audit-test-loc-' . $unique,
+            'is_active' => 1,
+            'is_primary' => 1,
+            'timezone' => 'Asia/Tehran',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $this->locationId = (int) App::db()->wpdb_last_insert_id();
 
-        // Ensure one active clinician for clinic 1.
-        $existing = App::db()->fetchValue('SELECT id FROM ' . App::db()->table('cpms_clinicians') . ' WHERE clinic_id = %d AND full_name = %s LIMIT 1', [$this->clinicId, 'Dr Audit Concurrency']);
-        if ($existing !== null && (int) $existing > 0) {
-            $this->clinicianId = (int) $existing;
-        } else {
-            $wpdb->query(
-                $wpdb->prepare(
-                    'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians (clinic_id, full_name, is_active, created_at, updated_at) VALUES (%d, %s, 1, %s, %s)',
-                    $this->clinicId,
-                    'Dr Audit Concurrency',
-                    $now,
-                    $now
-                )
-            );
-            $this->clinicianId = (int) $wpdb->insert_id;
-        }
+        $userId = wp_create_user('audit_clin_' . $unique, wp_generate_password(12), 'audit_' . $unique . '@example.com');
+        $this->assertNotWPError($userId);
+        $this->clinicianUserId = (int) $userId;
 
-        // Assign clinician to location (required for booking eligibility).
-        App::db()->query(
-            'INSERT IGNORE INTO ' . App::db()->table('cpms_clinician_locations') . ' (clinician_id, location_id, is_primary, created_at) VALUES (%d, %d, 1, %s)',
-            [$this->clinicianId, $this->locationId, $now]
-        );
-        // Ensure active membership for the clinician's wp_user placeholder (booking service checks it via clinician_id, but reception checks membership).
-        // We create a dummy wp_user for the clinician if needed.
-        $wpUserId = (int) App::db()->fetchValue('SELECT wp_user_id FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d', [$this->clinicianId]);
-        if ($wpUserId <= 0) {
-            $userId = wp_create_user('audit_clin_' . bin2hex(random_bytes(4)), wp_generate_password(12), 'audit_' . bin2hex(random_bytes(4)) . '@example.com');
-            if (!is_wp_error($userId)) {
-                App::db()->query('UPDATE ' . App::db()->table('cpms_clinicians') . ' SET wp_user_id = %d WHERE id = %d', [(int) $userId, $this->clinicianId]);
-                // Also create membership for this clinician user.
-                App::db()->insert('cpms_clinic_memberships', [
-                    'clinic_id' => $this->clinicId,
-                    'wp_user_id' => (int) $userId,
-                    'role_key' => 'cpms_doctor',
-                    'status' => 'active',
-                    'scope_mode' => 'clinic',
-                    'is_primary' => 0,
-                    'created_at' => $now,
-                    'updated_at' => $now,
-                ]);
-            }
-        }
+        App::db()->insert('cpms_clinicians', [
+            'clinic_id' => $this->clinicId,
+            'wp_user_id' => $this->clinicianUserId,
+            'full_name' => 'Dr Audit Concurrency',
+            'is_active' => 1,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
+        $this->clinicianId = (int) App::db()->wpdb_last_insert_id();
+
+        App::db()->insert('cpms_clinician_locations', [
+            'clinician_id' => $this->clinicianId,
+            'location_id' => $this->locationId,
+            'is_primary' => 1,
+            'created_at' => $now,
+        ]);
+        App::db()->insert('cpms_clinic_memberships', [
+            'clinic_id' => $this->clinicId,
+            'wp_user_id' => $this->clinicianUserId,
+            'role_key' => 'cpms_doctor',
+            'status' => 'active',
+            'scope_mode' => 'clinic',
+            'is_primary' => 0,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ]);
 
         // Create a future slot with given capacity.
         $date = gmdate('Y-m-d', time() + 86400 * 2);
@@ -200,6 +270,11 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
         $this->slotId = (int) $wpdb->insert_id;
         // Commit fixture so independent mysqli workers can see it.
         $wpdb->query('COMMIT');
+    }
+
+    private function lockedAuditCount(): int
+    {
+        return count(App::db()->fetchAll('SELECT 1 AS hit FROM ' . App::db()->table('cpms_audit_logs') . ' FOR UPDATE'));
     }
 
     // ------------------------------------------------------------------
@@ -343,6 +418,9 @@ final class AuditAppendConcurrencyTest extends WP_UnitTestCase
 
         $this->assertSame($count, $success, $count . '-way concurrent audit inserts must all succeed (failed=' . $failed . ')');
         $this->assertSame(0, $failed);
+        // End any open REPEATABLE READ snapshot before non-locking verifier reads
+        // so rows committed by forked child connections are visible here.
+        App::db()->wpdb()->query('COMMIT');
 
         // Verify chain integrity after this batch.
         $chain = App::audit()->verifyFullChain();
