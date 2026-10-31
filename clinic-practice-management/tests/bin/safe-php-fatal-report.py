@@ -25,6 +25,7 @@ SYMBOL = r"[A-Za-z_][A-Za-z_0-9\\]*"
 UNDEFINED_FUNCTION = re.compile(r"Call to undefined function (" + SYMBOL + r")\(\)")
 UNDEFINED_METHOD = re.compile(r"Call to undefined method (" + SYMBOL + r")::([A-Za-z_][A-Za-z_0-9]*)\(\)")
 MISSING_CLASS = re.compile(r"(?:Class|Interface|Trait) [\"']?(" + SYMBOL + r")[\"']? not found")
+STRICT_TYPES = re.compile(r"\bstrict_types declaration must be the very first statement in the script\b")
 EXCEPTION = re.compile(r"\bUncaught\s+(Error|TypeError|ParseError|ArgumentCountError|RuntimeException):")
 PLUGIN_FILE = re.compile(
     r"clinic-practice-management/(?P<path>(?:src/[A-Za-z0-9_./-]+|clinic-practice-management)\.php)"
@@ -89,6 +90,8 @@ def signatures(lines: Iterable[str], plugin_root: Path) -> list[str]:
             report = "PHP Fatal error: Uncaught Error: Call to undefined method " + method.group(1) + "::" + method.group(2) + "()" + loc
         elif missing and known(missing.group(1), tokens):
             report = "PHP Fatal error: Uncaught " + label + ": Class " + missing.group(1) + " not found" + loc
+        elif STRICT_TYPES.search(line):
+            report = "PHP Fatal error: strict_types declaration must be the very first statement in the script" + loc
         else:
             report = f"PHP {label}{loc}; exception message and stack redacted"
         if report not in findings:
