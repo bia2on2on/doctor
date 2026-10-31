@@ -22,12 +22,15 @@ def request(url, data=None, headers=None, expected=200):
     if body is not None:
         h['Content-Type'] = 'application/json'
     start = time.monotonic()
-    with opener.open(urllib.request.Request(url, data=body, headers=h), timeout=60) as response:
-        payload = response.read()
-        elapsed = (time.monotonic() - start) * 1000
-        if response.status != expected:
-            raise RuntimeError(f'HTTP {response.status}, expected {expected}')
-        return response.headers, payload, elapsed
+    try:
+        with opener.open(urllib.request.Request(url, data=body, headers=h), timeout=60) as response:
+            payload = response.read()
+            elapsed = (time.monotonic() - start) * 1000
+            if response.status != expected:
+                raise RuntimeError(f'HTTP {response.status}, expected {expected}')
+            return response.headers, payload, elapsed
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f'HTTP {exc.code} for {urllib.parse.urlparse(url).path}, expected {expected}') from None
 
 request(BASE + '/wp-login.php', {})
 form = urllib.parse.urlencode({'log': login, 'pwd': password, 'wp-submit': 'Log In', 'redirect_to': BASE + '/wp-admin/', 'testcookie': '1'}).encode()

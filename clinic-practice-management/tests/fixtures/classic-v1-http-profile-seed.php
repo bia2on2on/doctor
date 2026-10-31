@@ -1,6 +1,7 @@
 <?php
 /** CI-only synthetic visits for comparable HTTP POST profiles. */
-if (!defined('ABSPATH') || PHP_SAPI !== 'cli') { exit(1); }
+if (PHP_SAPI !== 'cli') { exit(1); }
+require getenv('WP_HOME') . '/wp-load.php';
 $parts = explode('|', (string) getenv('DOCTOR_ONE'));
 if (count($parts) < 6) { exit(1); }
 [, , , $clinician, $clinic, $location] = $parts;

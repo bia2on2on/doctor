@@ -1,6 +1,6 @@
 <?php
 /** CI-only synthetic HTTP observer. Never included in the release ZIP. */
-if (!defined('ABSPATH')) { exit; }
+if (!defined('ABSPATH') || !defined('CPMS_CI_HTTP_PROFILER') || !CPMS_CI_HTTP_PROFILER) { return; }
 $GLOBALS['cpms_ci_start'] = microtime(true);
 add_filter('query', static function ($sql) {
     $GLOBALS['cpms_ci_queries'] = (int) ($GLOBALS['cpms_ci_queries'] ?? 0) + 1;
