@@ -279,7 +279,11 @@ jobs:
           set -euo pipefail
           source /tmp/classic-http/fixture-env.sh
           ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[:12]))')
-          PROFILE_LABEL=baseline PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/baseline.json python3 clinic-practice-management/bin/classic-v1-http-profile.py
+          if ! PROFILE_LABEL=baseline PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/baseline.json python3 clinic-practice-management/bin/classic-v1-http-profile.py > /tmp/classic-http/profile-baseline.log 2>&1; then
+            tail -25 /tmp/classic-http/profile-baseline.log | while IFS= read -r line; do echo "::error::PROFILE baseline $line"; done
+            exit 1
+          fi
+          cat /tmp/classic-http/profile-baseline.log
       - name: Install candidate over the same database
         run: |
           set -euo pipefail
@@ -291,7 +295,11 @@ jobs:
           set -euo pipefail
           source /tmp/classic-http/fixture-env.sh
           ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[12:24]))')
-          PROFILE_LABEL=candidate PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/candidate.json python3 clinic-practice-management/bin/classic-v1-http-profile.py
+          if ! PROFILE_LABEL=candidate PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/candidate.json python3 clinic-practice-management/bin/classic-v1-http-profile.py > /tmp/classic-http/profile-candidate.log 2>&1; then
+            tail -25 /tmp/classic-http/profile-candidate.log | while IFS= read -r line; do echo "::error::PROFILE candidate $line"; done
+            exit 1
+          fi
+          cat /tmp/classic-http/profile-candidate.log
       - name: HTTP comparison summary
         if: always()
         run: |
