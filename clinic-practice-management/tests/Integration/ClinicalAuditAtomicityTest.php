@@ -120,6 +120,40 @@ final class ClinicalAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame(1, $this->latestAuditClinicId('NOTE_CREATED'), 'tenant attribution must name the trusted Clinic');
     }
 
+    public function testNoteInsertFailureNeverCreatesFalseSuccessOrAudit(): void
+    {
+        $visit_id = $this->makeConsultation();
+        $depth_before = $this->savepointDepth();
+        $audits_before = $this->auditCount('NOTE_CREATED');
+        $intercepted = false;
+        $fault = static function (string $query) use (&$intercepted): string {
+            if (preg_match('/\A\s*INSERT\s+INTO\s+(\S+)/i', $query, $match) === 1
+                && str_contains($match[1], 'cpms_clinical_notes')) {
+                $intercepted = true;
+                return 'INSERT INTO ' . $match[1] . ' (`cpms_fault_injection_no_such_column`) VALUES (1)';
+            }
+            return $query;
+        };
+        global $wpdb;
+        $previous = $wpdb->suppress_errors(true);
+        add_filter('query', $fault, 5);
+        try {
+            App::clinicalService()->addNote($this->doctorUserId, $visit_id, [
+                'category' => 'clinical_note', 'visibility' => 'patient_visible', 'content_text' => 'آزمایش',
+            ]);
+            self::fail('an unsuccessful note INSERT must not report success');
+        } catch (\RuntimeException $error) {
+            self::assertSame('clinical note insert failed', $error->getMessage());
+        } finally {
+            remove_filter('query', $fault, 5);
+            $wpdb->suppress_errors($previous);
+        }
+        self::assertTrue($intercepted);
+        self::assertSame(0, $this->tableCount('cpms_clinical_notes'));
+        self::assertSame($audits_before, $this->auditCount('NOTE_CREATED'));
+        self::assertSame($depth_before, $this->savepointDepth());
+    }
+
     public function testCreatePrescriptionAuditFailureRollsBackPrescriptionAndItems(): void
     {
         $visit_id = $this->makeConsultation();

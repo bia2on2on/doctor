@@ -148,6 +148,47 @@ final class OtpFlowTest extends WP_UnitTestCase
         $this->service()->verify(self::MOBILE, '424242');
     }
 
+    public function testConfiguredLockoutReturnsConsistentPersianMessageAndRetry(): void
+    {
+        App::settings()->set('otp.lockout_sec', 90);
+        $this->issueKnownCode('424242');
+        $locked = null;
+        for ($i = 0; $i < 5; ++$i) {
+            try {
+                $this->service()->verify(self::MOBILE, '000000');
+                self::fail('wrong OTP must fail');
+            } catch (OtpException $error) {
+                if ($i === 4) {
+                    $locked = $error;
+                } else {
+                    self::assertSame('CLINIC_OTP_INVALID', $error->apiCode());
+                }
+            }
+        }
+        self::assertInstanceOf(OtpException::class, $locked);
+        self::assertSame('CLINIC_OTP_LOCKED', $locked->apiCode());
+        self::assertGreaterThanOrEqual(1, $locked->getData()['retry_after']);
+        self::assertLessThanOrEqual(90, $locked->getData()['retry_after']);
+        self::assertStringContainsString('قفل', $locked->getMessage());
+        self::assertStringNotContainsString('15', $locked->getMessage());
+
+        foreach (['verify', 'request'] as $operation) {
+            try {
+                if ($operation === 'verify') {
+                    $this->service()->verify(self::MOBILE, '424242');
+                } else {
+                    $this->service()->request(self::MOBILE);
+                }
+                self::fail('a locked challenge must reject both operations');
+            } catch (OtpException $error) {
+                self::assertSame('CLINIC_OTP_LOCKED', $error->apiCode());
+                self::assertSame($locked->getMessage(), $error->getMessage());
+                self::assertGreaterThanOrEqual(1, $error->getData()['retry_after']);
+                self::assertLessThanOrEqual(90, $error->getData()['retry_after']);
+            }
+        }
+    }
+
     public function testExpiredTokenRejected(): void
     {
         $this->issueKnownCode('424242', ttlSec: -10); // منقضی

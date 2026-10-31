@@ -110,21 +110,41 @@ try {
         $accountant = (int) $accountant;
         get_userdata($accountant)->set_role('cpms_accountant');
         $now = $db->nowUtcSql();
+        // Finance exclusively locks its Clinic to allocate a payment number.
+        // Put it in Clinic B so the explicit audit-guard barrier does not hold
+        // that lock while A's clinical/SMS FK inserts wait for it. The audit
+        // chain/guard itself remains genuinely shared across both Clinics.
+        $finance_clinic = (int) $fixture['clinic_b'];
+        $finance_location = (int) $fixture['b1'];
+        $require($finance_clinic > 0 && $finance_clinic !== $clinic && $finance_location > 0, 'mixed-finance-scope');
         $require($db->insert('cpms_clinic_memberships', [
-            'clinic_id' => $clinic, 'wp_user_id' => $accountant, 'role_key' => 'cpms_accountant',
+            'clinic_id' => $finance_clinic, 'wp_user_id' => $accountant, 'role_key' => 'cpms_accountant',
             'scope_mode' => 'clinic', 'status' => 'active', 'is_primary' => 0,
             'created_at' => $now, 'updated_at' => $now,
         ]), 'mixed-membership');
-        $require($db->insert('cpms_patients', [
-            'clinic_id' => $clinic, 'mrn' => 'CI-MIXED-PATIENT', 'first_name' => 'نمونه', 'last_name' => 'آزمایشی',
-            'mobile' => '09128000000', 'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
-        ]), 'mixed-patient');
-        $patient = (int) $db->wpdb_last_insert_id();
-        $require($patient > 0, 'mixed-patient-id');
+        $require($db->insert('cpms_clinicians', [
+            'clinic_id' => $finance_clinic, 'full_name' => 'پزشک مالی آزمایشی', 'is_active' => 1,
+            'created_at' => $now, 'updated_at' => $now,
+        ]), 'mixed-finance-clinician');
+        $finance_clinician = (int) $db->wpdb_last_insert_id();
+        $require($finance_clinician > 0, 'mixed-finance-clinician-id');
+        $patients = [];
+        foreach (['clinical' => $clinic, 'finance' => $finance_clinic] as $kind => $patient_clinic) {
+            $require($db->insert('cpms_patients', [
+                'clinic_id' => $patient_clinic, 'mrn' => 'CI-MIXED-' . $kind,
+                'first_name' => 'نمونه', 'last_name' => 'آزمایشی', 'mobile' => '09128000000',
+                'status' => 'active', 'created_at' => $now, 'updated_at' => $now,
+            ]), 'mixed-patient');
+            $patients[$kind] = (int) $db->wpdb_last_insert_id();
+            $require($patients[$kind] > 0, 'mixed-patient-id');
+        }
         $visits = [];
         foreach (['clinical' => 'in_consultation', 'finance' => 'awaiting_payment'] as $kind => $status) {
             $require($db->insert('cpms_visits', [
-                'clinic_id' => $clinic, 'location_id' => $location, 'clinician_id' => $clinician, 'patient_id' => $patient,
+                'clinic_id' => $kind === 'clinical' ? $clinic : $finance_clinic,
+                'location_id' => $kind === 'clinical' ? $location : $finance_location,
+                'clinician_id' => $kind === 'clinical' ? $clinician : $finance_clinician,
+                'patient_id' => $patients[$kind],
                 'source' => 'walk_in', 'status' => $status, 'visit_date' => gmdate('Y-m-d'), 'check_in_at' => $now,
                 'active' => 1, 'created_at' => $now, 'updated_at' => $now,
             ]), 'mixed-visit');
@@ -132,7 +152,7 @@ try {
             $require($visits[$kind] > 0, 'mixed-visit-id');
         }
         $require($db->insert('cpms_invoices', [
-            'clinic_id' => $clinic, 'invoice_number' => 'CI-MIXED-INV', 'patient_id' => $patient,
+            'clinic_id' => $finance_clinic, 'invoice_number' => 'CI-MIXED-INV', 'patient_id' => $patients['finance'],
             'visit_id' => $visits['finance'], 'status' => 'open', 'subtotal' => '100.00', 'total' => '100.00',
             'currency' => 'IRR', 'paid_amount' => '0.00', 'balance' => '100.00',
             'issued_by_wp_user_id' => $accountant, 'created_at' => $now, 'updated_at' => $now,
@@ -159,7 +179,7 @@ try {
             'wrong_mobile' => $wrong_mobile, 'wrong_code' => $wrong_code, 'wrong_id' => $wrong_id,
             'mixed' => [
                 'doctor' => $doctor_id, 'accountant' => $accountant, 'manager' => (int) $manager->ID,
-                'clinical_visit' => $visits['clinical'], 'invoice' => $invoice,
+                'clinical_visit' => $visits['clinical'], 'invoice' => $invoice, 'finance_clinic' => $finance_clinic,
             ],
         ]);
         echo "PRODUCTION_RACE_SETUP ok\n";
@@ -282,24 +302,35 @@ try {
     $elapsed_ms = 0.0;
 
     if ($mode === 'otp-issue' && preg_match('/^issue([0-4])$/D', $round, $issue_match) === 1 && $index < 3) {
-        // Synchronize before the entire request, not inside a token insert or
-        // lock: a correctly serialized implementation must not deadlock here.
+        // Synchronize immediately before acquiring the per-mobile issuance
+        // guard, after the rate counters pass and before any row lock is held.
         $mobile = '09129991' . str_pad($issue_match[1], 3, '0', STR_PAD_LEFT);
-        $await($round);
-        $start = hrtime(true);
+        $guard_prefix = 'INSERT INTO ' . App::db()->table('cpms_rate_limits');
+        $reached = false;
+        $start = null;
+        $filter = static function (string $query) use ($guard_prefix, $await, $round, &$reached, &$start): string {
+            if (str_starts_with($query, $guard_prefix) && str_contains($query, 'otp-send-guard:') && !$reached) {
+                $reached = true;
+                $await($round);
+                $start = hrtime(true);
+            }
+            return $query;
+        };
+        add_filter('query', $filter);
         try {
             $request = App::otpService()->request($mobile, OtpService::PURPOSE_LOGIN, null, null, $clinic);
-            $require($request['sms_sent'] && is_string($provider->code), 'otp-issue-delivery');
+            $require($reached && $request['sms_sent'] && is_string($provider->code), 'otp-issue-delivery');
             $status = 'issued';
             $code = 'OK';
         } catch (OtpException $error) {
             $code = $error->apiCode();
-            $status = $code === 'CLINIC_OTP_COOLDOWN' ? 'cooldown' : 'error';
+            $status = $reached && $code === 'CLINIC_OTP_COOLDOWN' ? 'cooldown' : 'error';
             $persian = preg_match('/[\x{0600}-\x{06FF}]/u', $error->getMessage()) === 1;
             $retry = $error->getData()['retry_after'] ?? 0;
             $retry_valid = is_int($retry) && $retry >= 1 && $retry <= 60;
         } finally {
-            $elapsed_ms = (hrtime(true) - $start) / 1000000;
+            remove_filter('query', $filter);
+            $elapsed_ms = $start !== null ? (hrtime(true) - $start) / 1000000 : 0.0;
         }
     } elseif (($mode === 'otp-verify' && $round === 'otp') || ($mode === 'otp-wrong' && $round === 'wrong')) {
         $prefix = 'SELECT * FROM ' . App::db()->table('cpms_otp_tokens') . ' WHERE id = ';
@@ -399,6 +430,7 @@ try {
                 }
                 $status = 'clinical';
             } elseif ($index === 1) {
+                App::replaceExplicitScope(ClinicScope::forClinic((int) $mixed['finance_clinic']));
                 wp_set_current_user((int) $mixed['accountant']);
                 $payment = App::financeService()->recordPayment((int) $mixed['accountant'], (int) $mixed['invoice'], [
                     'amount' => 5, 'method' => 'cash',
