@@ -131,6 +131,7 @@ jobs:
       - name: Expose candidate regression failures
         if: failure()
         run: |
+          tail -25 /tmp/classic-v1/candidate-${{ matrix.database }}.log 2>/dev/null | while IFS= read -r line; do echo "::error::CANDIDATE LOG ${line}"; done
           python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml <<'PY' || true
           import os, sys, xml.etree.ElementTree as ET
           p=sys.argv[1]
@@ -251,10 +252,16 @@ jobs:
       - name: Seed synthetic authenticated HTTP workload
         run: |
           set -euo pipefail
-          WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php
+          if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php > /tmp/classic-http/fixture.log 2>&1; then
+            tail -25 /tmp/classic-http/fixture.log | while IFS= read -r line; do echo "::error::FIXTURE $line"; done
+            exit 1
+          fi
           cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
           eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
-          WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php
+          if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
+            tail -25 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
+            exit 1
+          fi
       - name: Profile baseline over real HTTP
         run: |
           set -euo pipefail
