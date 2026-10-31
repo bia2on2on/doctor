@@ -127,11 +127,12 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     public function testChangingCredentialsOrEndpointInvalidatesPreviousConnectionVerification(): void
     {
         $this->iv1_scope($this->clinic, function (): void {
-            App::settings()->set('sms.provider', RecordingSmsProvider::ID);
-            App::settings()->set('sms.last_test', ['status' => 'ok', 'provider' => RecordingSmsProvider::ID]);
+            App::settings()->set('sms.provider', 'generic_api');
+            App::settings()->set('sms.generic', ['endpoint' => 'https://sms.example.invalid/old']);
+            App::settings()->set('sms.last_test', ['status' => 'ok', 'provider' => 'generic_api']);
         });
         $this->asSmsManager();
-        $response = $this->post('/sms/settings', ['provider' => RecordingSmsProvider::ID, 'auth_method' => 'api_key', 'credentials' => ['api_key' => 'synthetic-new-key']]);
+        $response = $this->post('/sms/settings', ['provider' => 'generic_api', 'generic' => ['endpoint' => 'https://sms.example.invalid/new']]);
         self::assertSame(200, $response->get_status());
         $status = $this->iv1_scope($this->clinic, fn() => App::smsService()->status());
         self::assertSame('CONFIGURED', $status['state']);

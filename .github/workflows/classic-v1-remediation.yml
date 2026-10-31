@@ -199,7 +199,9 @@ jobs:
           sudo sed -i 's/^Listen 80$/Listen 8080/' /etc/apache2/ports.conf
           sudo a2dissite 000-default && sudo a2ensite cpms && sudo a2enmod rewrite
           sudo chmod a+rx /home/runner
+          sudo mkdir -p "$WP_DIR/wp-content/upgrade" "$WP_DIR/wp-content/mu-plugins"
           sudo chown -R www-data:www-data "$WP_DIR/wp-content"
+          sudo chmod -R a+rwX "$WP_DIR/wp-content"
           sudo apache2ctl configtest && sudo service apache2 start
       - name: Build baseline and candidate official ZIPs
         run: |
