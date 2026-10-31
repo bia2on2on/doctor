@@ -110,7 +110,7 @@ final class AuditLogger
             ];
 
             $row['prev_hash'] = $prev_hash;
-            $row['row_hash'] = HashChain::computeRowHash($prev_hash, HashChain::fieldsFor($row));
+            $row['row_hash'] = HashChain::computeRowHash( $prev_hash, HashChain::fieldsFor($row));
 
             // F2-1: یک رویداد Audit که ذخیره نشده باشد هرگز نباید «موفق» به
             // نظر برسد. wpdb در حالت non-strict فقط false برمی‌گرداند؛ قبلاً
