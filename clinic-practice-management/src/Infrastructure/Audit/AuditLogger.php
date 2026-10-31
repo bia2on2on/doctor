@@ -89,7 +89,13 @@ final class AuditLogger
             $last = $this->db->fetchRowForUpdate(
                 'SELECT row_hash FROM ' . $this->db->table( 'cpms_audit_logs' ) . ' ORDER BY id DESC LIMIT 1'
             );
-            $prev_hash = ( isset( $last['row_hash'] ) && is_string( $last['row_hash'] ) && '' !== $last['row_hash'] ) ? (string) $last['row_hash'] : HashChain::GENESIS;
+            if ( $this->db->wpdb()->last_error !== '' ) {
+                throw new \RuntimeException( 'audit tail read failed' );
+            }
+            if ( $last !== null && ( ! isset( $last['row_hash'] ) || ! is_string( $last['row_hash'] ) || ! preg_match( '/^[a-f0-9]{64}$/D', $last['row_hash'] ) ) ) {
+                throw new \RuntimeException( 'audit tail hash invalid' );
+            }
+            $prev_hash = $last === null ? HashChain::GENESIS : $last['row_hash'];
 
             $now = $this->db->nowUtcSql();
             $row = [
@@ -126,10 +132,12 @@ final class AuditLogger
 
             // Bookkeeping for diagnostics — part of the same transaction, so a
             // rolled-back audit never advances the guard.
-            $this->db->query(
+            if ( ! $this->db->query(
                 'UPDATE ' . $this->db->table( 'cpms_audit_seq' ) . ' SET last_audit_id = %d, updated_at = %s WHERE id = 1',
                 [$audit_id, $now]
-            );
+            ) ) {
+                throw new \RuntimeException( 'audit guard update failed' );
+            }
 
             return $audit_id;
         });
@@ -150,6 +158,9 @@ final class AuditLogger
             'SELECT * FROM ' . $this->db->table( 'cpms_audit_logs' ) . ' ORDER BY id DESC LIMIT %d',
             [$limit]
         );
+        if ( $this->db->wpdb()->last_error !== '' ) {
+            throw new \RuntimeException( 'audit verification read failed' );
+        }
         $rows = array_reverse($rows);
 
         if ($rows === []) {
@@ -164,6 +175,9 @@ final class AuditLogger
                 'SELECT row_hash FROM ' . $this->db->table( 'cpms_audit_logs' ) . ' WHERE id < %d ORDER BY id DESC LIMIT 1',
                 [$first_id]
             );
+            if ( $this->db->wpdb()->last_error !== '' ) {
+                throw new \RuntimeException( 'audit predecessor read failed' );
+            }
             if ($predecessor !== null && isset($predecessor['row_hash']) && is_string($predecessor['row_hash']) && $predecessor['row_hash'] !== '') {
                 $anchor = (string) $predecessor['row_hash'];
             } elseif ($first_id !== 1) {
@@ -198,6 +212,9 @@ final class AuditLogger
         $rows = $this->db->fetchAll(
             'SELECT * FROM ' . $this->db->table( 'cpms_audit_logs' ) . ' ORDER BY id ASC'
         );
+        if ( $this->db->wpdb()->last_error !== '' ) {
+            throw new \RuntimeException( 'audit verification read failed' );
+        }
 
         // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC HashChain alias.
         $result = HashChain::verify_full_chain( $rows );

@@ -9,6 +9,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   # PR runs are keyed by PR number; non-PR runs by their full ref. Event names

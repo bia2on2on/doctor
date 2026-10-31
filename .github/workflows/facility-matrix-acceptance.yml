@@ -9,9 +9,10 @@ name: Facility Onboarding Matrix (12 types · MySQL 8 + MariaDB 11.4.13)
 # evidence on BOTH supported database engines. It is isolated so its runtime can
 # never starve the established acceptance lanes.
 #
-# Business users only: the Organization Manager and the designated Clinic
-# Managers are WordPress Subscribers driving the frontend Management Portal.
-# No wp-admin page is opened by the harness. Synthetic data only.
+# The 12-type facility matrix itself uses business users driving the frontend
+# Management Portal, without wp-admin. The separate reception recovery proof
+# uses synthetic manager/admin identities and wp-admin on the isolated upgrade
+# database; it never seeds authority into the pristine facility-matrix site.
 
 on:
   pull_request:
@@ -291,6 +292,61 @@ jobs:
           PY
           grep '^ACTIVATION_PROOF ' /tmp/mtx-upgrade-proof.raw | tee /tmp/mtx/upgrade-proof.txt
           while IFS= read -r line; do echo "::notice title=CPMS upgrade proof::$line"; done < /tmp/mtx/upgrade-proof.txt
+
+      - name: Prove Clinic-local reception authorization and rollback
+        env:
+          RECOVERY_PROOF_PASSWORD: Acceptance-2026!
+        run: |
+          set -euo pipefail
+          UPGRADE_DIR=/home/runner/mtx-upgrade
+          RAW=/tmp/mtx-reception-service.raw
+          if ! wp eval-file "$GITHUB_WORKSPACE/clinic-practice-management/tests/bin/wp-reception-security-proof.php" \
+              --path="$UPGRADE_DIR" --allow-root > "$RAW" 2>&1; then
+            python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+              "$RAW" "$UPGRADE_DIR/wp-content/debug.log" --summary "$GITHUB_STEP_SUMMARY"
+            while IFS= read -r code; do echo "::error title=CPMS reception service::$code"; done \
+              < <(grep -oE 'reception proof failed: [a-z0-9-]+' "$RAW" || true)
+            echo '::error title=CPMS reception service::Isolated security proof failed'
+            exit 1
+          fi
+          grep '^RECEPTION_SERVICE_PROOF ' "$RAW" | tee /tmp/mtx/reception-service-proof.txt
+          while IFS= read -r line; do echo "::notice title=CPMS reception service::$line"; done < /tmp/mtx/reception-service-proof.txt
+
+      - name: Prove Persian RTL wp-admin recovery on desktop and mobile
+        run: |
+          set -euo pipefail
+          UPGRADE_DIR=/home/runner/mtx-upgrade
+          sudo chmod -R a+rX "$UPGRADE_DIR"
+          sudo chmod 777 "$UPGRADE_DIR/wp-content"
+          sudo touch "$UPGRADE_DIR/wp-content/debug.log" && sudo chmod 666 "$UPGRADE_DIR/wp-content/debug.log"
+          sudo tee /etc/apache2/conf-available/cpms-upgrade-proof.conf >/dev/null <<CONF
+          Alias /upgrade-only "$UPGRADE_DIR"
+          <Directory "$UPGRADE_DIR">
+            Options FollowSymLinks
+            AllowOverride All
+            Require all granted
+          </Directory>
+          CONF
+          sudo a2enconf cpms-upgrade-proof >/dev/null
+          sudo apache2ctl configtest && sudo service apache2 reload
+          python3 clinic-practice-management/tests/bin/reception-browser-proof.py | tee /tmp/mtx/reception-browser-proof.txt
+          while IFS= read -r line; do echo "::notice title=CPMS reception browser::$line"; done < /tmp/mtx/reception-browser-proof.txt
+          # Verify the whole chain again after the actual admin action, without
+          # logging the snapshot, hashes, identifiers or request details.
+          if ! wp eval-file "$GITHUB_WORKSPACE/clinic-practice-management/tests/audit-chain/export.php" --path="$UPGRADE_DIR" --allow-root \
+              2>/tmp/mtx-reception-export.raw | python3 clinic-practice-management/tests/audit-chain/verify.py \
+              > /tmp/mtx-reception-chain.json 2>/tmp/mtx-reception-verify.raw; then
+            echo '::error title=CPMS reception audit::Independent snapshot verification failed'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          with open('/tmp/mtx-reception-chain.json', encoding='utf-8') as stream:
+              result = json.load(stream)
+          if result.get('ok') is not True or result.get('checked', 0) < 4:
+              raise SystemExit('::error title=CPMS reception audit::Insufficient or broken chain')
+          print('::notice title=CPMS reception audit::full snapshot verified; rows=' + str(result['checked']))
+          PY
 
       - name: Verify schema + no PHP fatal
         run: |

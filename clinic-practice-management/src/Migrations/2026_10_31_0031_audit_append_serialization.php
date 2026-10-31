@@ -3,12 +3,12 @@
 /**
  * Migration 0031 — Audit append serialization guard (Classic V1 remediation).
  *
- * The original AuditLogger read the tail with `SELECT row_hash ... ORDER BY id DESC LIMIT 1 FOR UPDATE`
- * inside a nested transactional savepoint. That row lock does NOT serialize concurrent appends:
- * under REPEATABLE READ, two transactions can read the same committed tail, compute the
- * same prev_hash, and insert two children with an unexpected genesis linkage and five
- * broken links among 674 rows (installer report on MariaDB 11.4.13 IDs 88,103,140,141,143).
- * The failure is a moving-tail race, not a missing index or a transient deadlock.
+ * The original AuditLogger read the moving tail with `SELECT row_hash ... ORDER BY
+ * id DESC LIMIT 1 FOR UPDATE` inside a nested transactional savepoint. A moving-tail
+ * race is a plausible cause of the installer-reported broken links, but the report
+ * and actual failure mechanism have not been independently reproduced. The guard
+ * is a candidate serialization strategy; production-path contention and lock
+ * ordering must still be measured on both supported engines.
  *
  * This migration adds a singleton InnoDB guard row (id=1) that every audit append must
  * lock **inside the same outer transaction** before reading the current tail. The guard

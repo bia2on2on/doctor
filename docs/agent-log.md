@@ -3064,3 +3064,52 @@ snapshot checker and synthetic tests; no production history or business logic
 changed. No real MySQL/MariaDB, concurrency, clinical or financial acceptance was
 run. See `docs/testing/classic-v1-audit-reception-assessment-2026-10-31.md` for
 limits, candidate design and outstanding acceptance; this is not a fix or release.
+
+### 2026-10-31 UTC — PR #291 investigation on the Arena session branch
+
+- Branch restriction: this session may write/push only `arena/c9c7a855-doctor`,
+  not PR #291's `arena/1209b21e-doctor-prod`; the PR head remained
+  `3bd48d9cb5ef53fcb9b1cfb2fef57a02b7cabf8a`. No merge, force-push, release,
+  tag, deployment, historical-branch modification or companion sync was made.
+- Targeted run [41216071526](https://github.com/bia2on2on/doctor/actions/runs/41216071526)
+  captured the actual facility activation fatal on both engines: `PHP Fatal error:
+  Uncaught Error: Call to undefined function wp_get_current_user()`. The separate
+  integration bootstrap exposed `add_submenu_page()` unavailable at early boot.
+  WordPress's menu function invokes the current-user capability API; deferring
+  submenu creation to `admin_menu` addresses the shared early-hook cause.
+- At tested session SHA `b143d26ceecdfe6ad6a64b7d9ab5e585c01ab807`, targeted
+  [run 41216640301](https://github.com/bia2on2on/doctor/actions/runs/41216640301)
+  passed both facility jobs: MySQL `8.4.13` and MariaDB
+  `11.4.13-MariaDB-ubu2404`, WordPress `7.1.3`. Both fresh activation and repeat,
+  pinned-main schema `0030` to `0031` upgrade and repeat, synthetic history
+  preservation, audit rollback and real-predecessor suffix checks passed. The
+  independent Python checker validated both complete synthetic two-row snapshots.
+  The 12-type facility browser matrix also passed on both. These results do not
+  prove concurrent production booking, mixed clinical/finance/SMS writers or
+  reception/OTP acceptance, and do not apply to later commits.
+- Local privacy reporter tests 9/9 and independent-checker synthetic tests 5/5
+  passed; workflow YAML parsed with PyYAML. PHP 8.3 WASM lint and a boot-hook probe
+  passed. WASM cannot spawn the separate PHPUnit process, so this is not a native
+  PHPUnit/WordPress result. No native local PHP, database or Docker was available.
+- A source review found the former recovery handler authorized Clinic A but called
+  a global replacement primitive that could accept a clinician's Clinic B locations
+  and replace B's assignments. A scoped additive service and synthetic WP/real
+  browser probes are being prepared; they are **not yet validated** by the above
+  run. The old integration test's HTML and synthetic SQL do not prove mobile or
+  production concurrent booking. The installer report's root cause remains a
+  hypothesis; no historical audit rows were repaired or rewritten.
+- Companion compatibility currently fails closed: schema `0031` and the new audit
+  guard require a separate production-first companion sync. Workflow contract test
+  failure due that real mismatch remains open; no gate has been weakened.
+- Additional unverified changes after that tested SHA make failed audit-tail,
+  guard-update and chain-verification SQL fail closed instead of reporting an
+  empty chain or successful append, and add narrowly scoped SQL-fault probes.
+  An integration-test method that illegally narrowed WordPress's inherited
+  `assertNotWPError` was removed after checking the upstream test framework.
+  These changes, the reception service and the added probes need real execution.
+- Re-run before this bundle: tenant tripwire self-tests **59/59**; workflow
+  contracts **70 pass / 1 failure / 1 skipped** (72 total). The failure is the
+  known live companion-compatibility precondition, not a waived tenant check.
+  Local PHPCS on the recovery page/service and migration passed with only the
+  WASM-unspawnable PHP syntax sniff omitted; separate PHP syntax lint passed.
+  Full WPCS, PHPStan and PHP unit/integration checks remain CI requirements.

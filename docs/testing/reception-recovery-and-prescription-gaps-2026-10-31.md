@@ -1,5 +1,18 @@
 # Reception recovery (fix) + clinical gaps — 2026-10-31, PR #289
 
+> **Correction, session branch `arena/c9c7a855-doctor`:** The text below is a
+> historical draft, not accepted evidence. The earlier recovery handler called
+> a global replacement primitive after authorizing only one Clinic; its
+> multi-Clinic safety was not established. The integration test checked HTML
+> strings, not a browser or mobile layout; its forced exception was not a real
+> `AuditLogger` failure. The purported 10/25/50 booking and mixed clinical,
+> financial and SMS tests are hand-written SQL without a launch barrier and do
+> not exercise those production paths. The installer report and moving-tail
+> root cause remain unverified. The independent checker has been preserved at
+> `clinic-practice-management/tests/audit-chain/`. Exact-commit real-WordPress
+> results and remaining gaps are recorded in the append-only agent log; no
+> missing test or unverified historical assertion is a pass.
+
 Status: fix shipped on branch `arena/1209b21e-doctor` head `pending` (see git log), pending exact-head CI replication on MySQL 8 and MariaDB 11.4.13. No merge, no release, no Modern/Theme Adaptive.
 
 ## 1. Genuine single-practice reception failure reproduced (code evidence + regression)
