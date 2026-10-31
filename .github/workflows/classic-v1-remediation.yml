@@ -223,7 +223,8 @@ jobs:
       - name: Sequential authenticated HTTP profiles
         run: |
           set -euo pipefail
-          command -v php; php -v | head -1; command -v wp
+          echo "::notice::HTTP tools php=$(command -v php || echo missing) wp=$(command -v wp || echo missing)"
+          php -v | head -1
           profile_rc=0
           for label in baseline candidate; do
             if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
