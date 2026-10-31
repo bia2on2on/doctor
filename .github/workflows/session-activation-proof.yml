@@ -11,6 +11,9 @@ on:
       - 'clinic-practice-management/src/**'
       - 'clinic-practice-management/tests/bin/safe-php-fatal-report.py'
       - 'clinic-practice-management/tests/bin/test_safe_php_fatal_report.py'
+      - 'clinic-practice-management/tests/bin/production-race-proof.py'
+      - 'clinic-practice-management/tests/bin/wp-production-race-proof.php'
+      - 'clinic-practice-management/tests/audit-chain/**'
 
 permissions:
   contents: read
