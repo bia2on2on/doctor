@@ -271,6 +271,7 @@ jobs:
           echo "::notice::HTTP seed env-ok"
           source /tmp/classic-http/fixture-env.sh
           echo "::notice::HTTP seed source-ok"
+          wp rewrite flush --hard --path="$WP_DIR" --allow-root
           if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
             tail -25 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
             exit 1
