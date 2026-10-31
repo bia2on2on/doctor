@@ -23,9 +23,10 @@ final class ClassicV1PerformanceProbeTest extends WP_UnitTestCase
         $user = $this->iv1_user(RolesAndCapabilities::ROLE_DOCTOR, 'perf_doctor');
         $this->iv1_membership($user, $clinic, RolesAndCapabilities::ROLE_DOCTOR);
         $clinician = $this->iv1_clinician($clinic, $user);
+        (new \ClinicCore\Infrastructure\Repository\MembershipRepository(App::db()))->replace_clinician_locations($clinician, [$location], $location);
         $patient = $this->iv1_patient($clinic);
         wp_set_current_user($user);
-        $headers = $this->iv1_headers($clinic);
+        $headers = $this->iv1_headers($clinic, $location);
         $samples = [];
         $measure = function (string $name, callable $fn) use (&$samples): void {
             global $wpdb;
