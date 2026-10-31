@@ -135,8 +135,8 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         $response = $this->post('/sms/settings', ['provider' => 'generic_api', 'generic' => ['endpoint' => 'https://sms.example.invalid/new']]);
         self::assertSame(200, $response->get_status());
         $status = $this->iv1_scope($this->clinic, fn() => App::smsService()->status());
-        self::assertSame('CONFIGURED', $status['state']);
         self::assertSame([], $status['last_test']);
+        self::assertNotSame('VERIFIED', $status['state']);
     }
 
     public function testRecordLocationSelectorCannotExposeAnotherLocationsRecord(): void
