@@ -212,12 +212,12 @@ jobs:
         run: |
           set -euo pipefail
           mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot "$DB_NAME" -e "SELECT version, applied_at FROM wp_cpms_schema_migrations ORDER BY version;" | tee /tmp/fp/schema-migrations.txt
-          grep -q '2026_10_27_0030' /tmp/fp/schema-migrations.txt || { echo 'migration 0030 head missing'; exit 1; }
+          grep -q '2026_10_31_0031' /tmp/fp/schema-migrations.txt || { echo 'migration 0031 head missing'; exit 1; }
           cat > /tmp/fp/check-schema.php <<'PHPEOF'
           <?php
           $v = \ClinicCore\Bootstrap\App::migrations()->currentVersion();
           echo "schema: $v\n";
-          exit($v === '2026_10_27_0030' ? 0 : 1);
+          exit($v === '2026_10_31_0031' ? 0 : 1);
           PHPEOF
           wp eval-file /tmp/fp/check-schema.php --path="$WP_DIR" --allow-root
           if [ -f "$WP_DIR/wp-content/debug.log" ]; then

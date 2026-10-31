@@ -3055,3 +3055,295 @@ and both render paths return the page untouched if anything throws.
 - Local PHP-wasm lint and focused frontend source tests ran; the earlier broad wasm unit run was not green (missing native/locked dependencies and path assumptions) and is not claimed as DB evidence. Native PHP/MySQL/Docker are unavailable locally.
 - Focused evidence at implementation head `ca8079044e7ed21ee2677f29ef07dd32db4a953b` (run `41180393141`, PR #288): MySQL 8 and MariaDB 11.4.13 each executed 120 candidate tests with 0 failures/errors; the archived baseline executed the 12 new regressions/probe with 3 failures and 4 errors. The same-run authenticated MySQL HTTP profile reduced REST queries by 29/request (queue 98→69, record 101→73, note 91→62, prescription 98→69, complete 108→79). Staff Portal HTML stayed 115 queries; the reported 214–235 query and 2.2–4.0 s production symptoms were not reproduced in this synthetic CI workload. Initial workflow setup failures were corrected and are not counted as product test passes. Exact-head PR CI: all 48 checks passed (CI run `41180393127`, standalone-demo `41180393282`); full MySQL integration suite 2465 tests, 0 failures/errors. WPCS/PHPStan gates are green after changed-line style cleanup. No merge/release/tag/deploy performed.
 - No merge, release, tag, deployment, Modern skin, or Theme Adaptive work performed.
+
+### 2026-10-31 — Classic V1 audit/reception investigation (draft)
+
+Installer report unavailable locally; inspected audit logger, transaction nesting,
+reception eligibility and clinical prescription paths. Added a read-only independent
+snapshot checker and synthetic tests; no production history or business logic
+changed. No real MySQL/MariaDB, concurrency, clinical or financial acceptance was
+run. See `docs/testing/classic-v1-audit-reception-assessment-2026-10-31.md` for
+limits, candidate design and outstanding acceptance; this is not a fix or release.
+
+### 2026-10-31 UTC — PR #291 investigation on the Arena session branch
+
+- Branch restriction: this session may write/push only `arena/c9c7a855-doctor`,
+  not PR #291's `arena/1209b21e-doctor-prod`; the PR head remained
+  `3bd48d9cb5ef53fcb9b1cfb2fef57a02b7cabf8a`. No merge, force-push, release,
+  tag, deployment, historical-branch modification or companion sync was made.
+- Targeted run [41216071526](https://github.com/bia2on2on/doctor/actions/runs/41216071526)
+  captured the actual facility activation fatal on both engines: `PHP Fatal error:
+  Uncaught Error: Call to undefined function wp_get_current_user()`. The separate
+  integration bootstrap exposed `add_submenu_page()` unavailable at early boot.
+  WordPress's menu function invokes the current-user capability API; deferring
+  submenu creation to `admin_menu` addresses the shared early-hook cause.
+- At tested session SHA `b143d26ceecdfe6ad6a64b7d9ab5e585c01ab807`, targeted
+  [run 41216640301](https://github.com/bia2on2on/doctor/actions/runs/41216640301)
+  passed both facility jobs: MySQL `8.4.13` and MariaDB
+  `11.4.13-MariaDB-ubu2404`, WordPress `7.1.3`. Both fresh activation and repeat,
+  pinned-main schema `0030` to `0031` upgrade and repeat, synthetic history
+  preservation, audit rollback and real-predecessor suffix checks passed. The
+  independent Python checker validated both complete synthetic two-row snapshots.
+  The 12-type facility browser matrix also passed on both. These results do not
+  prove concurrent production booking, mixed clinical/finance/SMS writers or
+  reception/OTP acceptance, and do not apply to later commits.
+- Local privacy reporter tests 9/9 and independent-checker synthetic tests 5/5
+  passed; workflow YAML parsed with PyYAML. PHP 8.3 WASM lint and a boot-hook probe
+  passed. WASM cannot spawn the separate PHPUnit process, so this is not a native
+  PHPUnit/WordPress result. No native local PHP, database or Docker was available.
+- A source review found the former recovery handler authorized Clinic A but called
+  a global replacement primitive that could accept a clinician's Clinic B locations
+  and replace B's assignments. A scoped additive service and synthetic WP/real
+  browser probes are being prepared; they are **not yet validated** by the above
+  run. The old integration test's HTML and synthetic SQL do not prove mobile or
+  production concurrent booking. The installer report's root cause remains a
+  hypothesis; no historical audit rows were repaired or rewritten.
+- Companion compatibility currently fails closed: schema `0031` and the new audit
+  guard require a separate production-first companion sync. Workflow contract test
+  failure due that real mismatch remains open; no gate has been weakened.
+- Additional unverified changes after that tested SHA make failed audit-tail,
+  guard-update and chain-verification SQL fail closed instead of reporting an
+  empty chain or successful append, and add narrowly scoped SQL-fault probes.
+  An integration-test method that illegally narrowed WordPress's inherited
+  `assertNotWPError` was removed after checking the upstream test framework.
+  These changes, the reception service and the added probes need real execution.
+- Re-run before this bundle: tenant tripwire self-tests **59/59**; workflow
+  contracts **70 pass / 1 failure / 1 skipped** (72 total). The failure is the
+  known live companion-compatibility precondition, not a waived tenant check.
+  Local PHPCS on the recovery page/service and migration passed with only the
+  WASM-unspawnable PHP syntax sniff omitted; separate PHP syntax lint passed.
+  Full WPCS, PHPStan and PHP unit/integration checks remain CI requirements.
+
+### 2026-10-31 UTC — session evidence and OTP/migration follow-up
+
+- Targeted [facility run 41217916386](https://github.com/bia2on2on/doctor/actions/runs/41217916386)
+  at session SHA `d683161daafd43ff88605e293d6f15d0517428f7` passed both MySQL
+  `8.4.13` and MariaDB `11.4.13-MariaDB-ubu2404`: fresh/repeated activation,
+  0030 upgrade, synthetic reception authorization/tenant denial/idempotence,
+  audit and SQL-fault rollback, Persian RTL desktop/mobile UI, independent
+  reception audit snapshot and the 12-type facility matrix. These results are
+  limited to that SHA; no booking contention was exercised by this run.
+- [Quality run 41217916500](https://github.com/bia2on2on/doctor/actions/runs/41217916500)
+  at the same SHA passed WPCS and PHP 8.1–8.5 units; PHPStan, Tenant Tripwire and
+  the integration job failed. Integration stopped in the focused MariaDB archival
+  migration test; its artifact download returned EOF, so the precise failure text
+  is unavailable. Source inspection found a likely stale test setup: rollback omitted
+  the new 0031 head. Updated head assertions and ordered rollback sequences, kept
+  the targeted 0030 upgrade checks, and restored dependent custom-role migrations
+  during table-rebuilding cleanup. These changes have not yet been run against WP.
+- OTP source review found `query()` returned SQL success even for a zero-row
+  conditional consume; two verifiers could therefore both proceed. The candidate
+  now requires exactly one affected row and serializes verification/failure
+  counters on the challenge row, with post-lock expiry/lock checks and atomic
+  failure-counter/audit writes. Daily and newly locked responses include relative
+  retry values. Added test-only regressions, including fault-injected audit rollback.
+  The pre-fix vulnerability and candidate concurrency behavior have **not yet been
+  reproduced on the real engines**; the implementation is not release evidence.
+- Added an independent predecessor-anchored suffix mode to the audit checker and a
+  disposable real-WP proof harness for 10-way OTP consume/failed-attempt races,
+  deterministic fixture-clock boundaries, 10/25/50-way production booking,
+  idempotence/mandatory-audit rollback, and synchronized actual clinical-note,
+  payment-capture and SMS-test audit writers. It uses a synthetic in-memory SMS
+  provider and private files; only aggregate results are intended for CI. None of
+  these new harness paths has yet run against WordPress/MySQL/MariaDB. Concurrent
+  requests for a fresh OTP challenge remain a separate unproven case.
+- Local checks after these edits: PHP/WASM syntax lint passed modified PHP files;
+  independent verifier 6/6 and fatal-reporter 9/9 synthetic tests passed; tenant
+  tripwire self-tests 59/59 and the production scan had zero hardcodes (three
+  reviewed suspects). Targeted PHPStan 2.2.16 level 3 on the changed production
+  files ran under PHP/WASM with manual WP stubs/autoload; a local PHPCS 3.13.6 /
+  WPCS 3.4.1 changed-line check found no findings with only the WASM-unspawnable
+  syntax sniff omitted. These are not substitutes for full CI. The companion
+  schema/audit-guard compatibility gate remains genuinely blocked; no waiver.
+
+### 2026-10-31 UTC — real contention run at acf733c
+
+- [Facility run 41223852638](https://github.com/bia2on2on/doctor/actions/runs/41223852638)
+  at `acf733c97da4eb595b5fe1634f4e447293b5cecb` passed fresh/repeat activation,
+  0030 upgrade, reception security/rollback and Persian RTL browser checks on
+  MySQL 8.4.13 and MariaDB 11.4.13. Both jobs **failed** in the later mixed-writer
+  proof; the full facility browser matrix was consequently skipped at this SHA.
+- Before that failure, both engines ran the production OTP and booking services:
+  a synchronized shared-code race had one success and nine rejected; ten wrong
+  codes produced four invalid and six locked outcomes with five persisted failures,
+  Persian errors and retry metadata; adjusted-fixture-clock cooldown, daily, TTL,
+  lockout and unlock checks and booking audit rollback passed. Each 10/25/50-way
+  booking race had exactly one winner, one appointment, one converted hold, no
+  active hold, and an idempotent replay. The independent complete chain and an
+  independently predecessor-anchored ten-row suffix verified after every round.
+  These used synthetic accounts and an in-memory SMS transport; they did not
+  exercise a real external SMS gateway.
+- At 50 contenders, hold-through-replay p95/max were 405.7/430.2 ms on MySQL
+  and 514.0/531.7 ms on MariaDB; global row-lock wait deltas were 171 and 180.
+  MariaDB reported zero deadlock delta; MySQL's `Innodb_deadlocks` status was
+  unavailable in this run, so a zero is **not** asserted. These are isolated CI
+  samples, not production latency/SLO evidence. Subsequent diagnostics try the
+  enabled MySQL `INNODB_METRICS` counter without changing server configuration.
+- Mixed clinical/finance/SMS writers reached the shared audit barrier but failed
+  clinical result assertions on both engines, and the SMS assertion also failed
+  on MySQL. The cause is not yet established; no mixed-write or final chain pass
+  is claimed. Added fixed, source-allowlisted error classifications without
+  exposing raw SQL, private exception text, synthetic identities or OTPs.
+- [Quality run 41223852647](https://github.com/bia2on2on/doctor/actions/runs/41223852647)
+  passed WPCS, PHPStan and PHP 8.1–8.5 units; focused MariaDB custom-role migration
+  tests now passed. The next focused MariaDB messaging/pricing migration suite
+  failed; raw artifacts/logs remain inaccessible (EOF) and its precise cause is
+  unknown. Full integration/coverage was skipped and the fail-closed coverage
+  guard reported missing inputs. Tenant Tripwire's acceptance-contract step
+  remains failed on the genuine companion compatibility prerequisite. Added
+  source-allowlisted JUnit diagnostics to the messaging/pricing step; no check
+  was suppressed.
+- Added five three-way OTP-issuance rounds with a pre-request barrier and distinct
+  synthetic numbers. These are not yet run: their synchronization can reveal a
+  check-then-insert race but a passing sample cannot prove its absence.
+
+### 2026-10-31 UTC — diagnostic runs at 4e53183 and 022adcc, and proven fixes
+
+- [Quality run 41224466384](https://github.com/bia2on2on/doctor/actions/runs/41224466384)
+  at `4e53183779441275623967da122d24e6a0c472fa` passed WPCS, PHPStan, PHP 8.1–8.5
+  units and focused MariaDB custom-role migrations. Focused MariaDB Iran V1
+  migration diagnostics reported `testSevenAdditiveTablesExistWithPortableColumnsAndNoForeignKeys`:
+  `MigrationRunner::applied()` used `GROUP_CONCAT`, returning a single comma-joined
+  string cast to a one-element array instead of individual version elements.
+  Fixed `MigrationRunner::applied()` to return an ordered `list<string>` via
+  `fetchAll()` and added an explicit regression in `MigrationTest`.
+- [Facility run 41224495708](https://github.com/bia2on2on/doctor/actions/runs/41224495708)
+  at `022adccb357087929e75f6bc67682dcefb92bdf7`: MySQL `INNODB_METRICS.lock_deadlocks`
+  reported `db_global_deadlocks=0` across 10/25/50-way booking and OTP races on
+  both MySQL 8 and MariaDB 11.4.13. Two concrete defects were exposed:
+  1. Five 3-way OTP issuance rounds reproduced a real check-then-insert race on
+     both engines (MySQL issued 2, 2, 3, 1, 3 challenges across the five rounds;
+     MariaDB issued 1, 2, 1, 3, 2). Fixed `OtpService::request()` by acquiring an
+     exclusive InnoDB row lock via an upsert on a hashed `otp-send-guard:<sha256>`
+     row in `cpms_rate_limits` (`window_id=0, window_sec=1`) inside the challenge
+     transaction, re-reading/locking latest token state under that guard, keeping
+     denial and request audits durable, and dispatching SMS only after commit.
+     Also replaced the misleading hard-coded 15-minute Persian lockout string with
+     a duration-neutral message backed by configurable `retry_after`.
+  2. Sanitized mixed-writer diagnostics reported `mixed-clinical-lock-error` on
+     both engines (and `mixed-sms-send-failed` on MariaDB): `FinanceService::recordPayment()`
+     exclusively locks `cpms_clinics` to allocate a payment number, so holding all
+     three writers at an artificial audit-guard barrier inside the same Clinic
+     caused same-Clinic FK inserts to hit InnoDB lock wait timeouts, and
+     `ClinicalNoteRepository::insert()` previously ignored a failed `insert()`
+     under default non-strict `CpmsDb`, returning `id=0` and attempting a bogus
+     audit. Fixed `ClinicalNoteRepository::insert()` to fail closed on SQL failure
+     (with a fault-injection regression in `ClinicalAuditAtomicityTest`), and put
+     the mixed-writer finance fixture in Clinic B so the shared global audit
+     guard/hash-chain contention is tested without an artificial single-Clinic
+     barrier deadlock.
+- None of the fixes in this commit has yet run on real CI MySQL/MariaDB; exact-SHA
+  CI runs follow immediately. Companion compatibility remains genuinely blocked.
+
+### 2026-10-31 UTC — full two-engine facility matrix green at cf86f92; suite-isolation cleanup
+
+- [Facility run 41226361113](https://github.com/bia2on2on/doctor/actions/runs/41226361113)
+  at `cf86f92789d65c836d2aff3ea071d6cf3ebf5eb6` **passed completely** on both
+  `mysql 8.4.13` (job `124611224522`) and `mariadb 11.4.13-MariaDB-ubu2404`
+  (job `124611224504`): fresh/repeat activation, 0030→0031 upgrade, Clinic-local
+  reception authorization/rollback, Persian RTL desktop/mobile wp-admin proof,
+  10-way OTP verify race (`1 success / 9 rejected`, `db_global_deadlocks=0`),
+  10-way wrong-code race (`4 invalid / 6 locked`, `attempts=5`), adjusted-clock
+  OTP boundaries, mandatory-audit booking rollback, 10/25/50-way production
+  booking races (`1 winner`, `active_holds=0`, idempotent replay, independent
+  full + predecessor-anchored suffix chain, `db_global_deadlocks=0` on both
+  engines; 50-way p50/p95/max `391.8/569.0/580.7 ms` on MySQL and
+  `239.9/369.9/392.3 ms` on MariaDB), all five 3-way OTP issuance races
+  (`issued=1, cooldown=2`, `challenges=1, sent=1, req_audits=1, denial_audits=2`,
+  Persian + retry metadata verified), synchronized real clinical-note /
+  payment-capture / SMS-test mixed audit writers, pristine tenant-table check,
+  and all 12 facility browser journeys plus medical-building structure.
+- [Quality run 41226361114](https://github.com/bia2on2on/doctor/actions/runs/41226361114)
+  at `cf86f92789d65c836d2aff3ea071d6cf3ebf5eb6` passed WPCS, PHPStan, PHP 8.1–8.5
+  units, and **every focused MariaDB 11.4.13 and MySQL 8 integration step**
+  (custom-role MariaDB, Iran V1 MariaDB, first-practice MariaDB, heartbeat
+  recovery MySQL+MariaDB, custom-role lock-wait race, archival contract, archival
+  schema/downgrade, archival independent races, returning-patient enrollment,
+  and patient enrollment options/UI). The full MySQL integration suite reached
+  `2481 tests, 70787 assertions` and failed due to test-fixture pollution from
+  `AuditAppendConcurrencyTest` (which called `$wpdb->query('COMMIT')` on seed
+  Clinic 1 without cleaning up the committed membership or suffix audit rows,
+  breaking `FirstPracticeSetupTest`'s zero-membership precondition) and string-id
+  / membership cleanup bugs in `ClinicReceptionRecoveryTest`.
+- Isolated `AuditAppendConcurrencyTest` to its own temporary Organization/Clinic
+  with verified suffix-audit cleanup and guard reset, and fixed type/cleanup
+  defects in `ClinicReceptionRecoveryTest`. Re-running quality CI next.
+- [Quality run 41227858364](https://github.com/bia2on2on/doctor/actions/runs/41227858364)
+  at `a5ec1d50f6bbcd119ca5c12d3cebebb42c3e2164` reduced full MySQL integration
+  failures from 61 to 2 (`Tests: 2481, Assertions: 71276, Failures: 2` —
+  `FirstPracticeSetupTest`, `ClinicReceptionRecoveryTest`, `OtpFlowTest`,
+  `ClinicalAuditAtomicityTest` and `MigrationTest` all passed). The remaining two
+  failures were both inside `AuditAppendConcurrencyTest` (`testGuardSerializesConcurrentAuditAppendsAndChainRemainsIntact`
+  and `testSyntheticAuditRowsLeaveProductionVerifierIntact`), caused by the
+  parent session's `lockedAuditCount()` (`SELECT 1 FROM cpms_audit_logs FOR UPDATE`)
+  holding a table-wide InnoDB exclusive record+gap lock under `autocommit = 0`
+  while forked child connections tried to `SELECT ... FOR UPDATE` and `INSERT`
+  into `cpms_audit_logs`. Added an explicit `COMMIT` on the parent session
+  immediately before forking workers, used 1-based `resource_id`, and made
+  `tearDown()` cleanup assertion-free.
+
+### 2026-10-31 UTC — full quality suite green at 98e78ef (except genuine companion gate); temporary runners removed
+
+- [Quality run 41228691296](https://github.com/bia2on2on/doctor/actions/runs/41228691296)
+  at `98e78ef1b75b0777592f07e49718a5bb7420ecb6` **passed** WPCS (`124618131069`),
+  PHPStan (`124618130837`), Unit Tests on PHP 8.1 (`124618131019`), 8.2
+  (`124618131126`), 8.3 (`124618131154`), 8.4 (`124618131064`) and 8.5
+  (`124618131244`), and **Integration (WP 7.1 + MySQL 8 + MariaDB 11.4.13)**
+  (`124618272655` — every MariaDB 11.4.13 focused suite, every MySQL race/schema
+  suite, the full 2,481-test integration suite, `AuthorizationService` PCOV
+  coverage + fail-closed coverage guard, and the process-fresh multi-Clinic REST
+  bootstrap probe).
+- The only non-passing CI check is `Tenant Tripwire`'s `Workflow evidence and
+  acceptance contract tests` (`124618131114`), where `71/72` contracts pass and
+  `test_the_gate_command_fails_on_an_injected_gap` fails its baseline
+  precondition because production adds migration `2026_10_31_0031` (`cpms_audit_seq`),
+  while `companion-isolation.py` strictly forbids modifying companion/demo files
+  in the same PR as production (`docs/scoped-demo/companion-sync.md`). Production
+  runtime tenant-hardcode scan itself has `0 hardcodes` across 275 files.
+- Removed the temporary session-branch wrapper workflows
+  (`.github/workflows/session-{activation,quality}-proof.yml`) and restored
+  `ci.yml`'s triggers after collecting exact-SHA evidence. `companion-isolation.py`
+  passes (`production-only change (46 file(s)); companion untouched`).
+
+## Successor PR — production-only consolidation of PR #291 + stabilization
+
+Built the single successor branch on `arena/318116a6-doctor` by fast-forwarding to
+the validated stabilization tree `7efe5563135bfc3ee6a398c1f7d751e3e4bc2396`
+(`arena/c9c7a855-doctor`). That tree descends from `e36f7d1` ("Preserve PR 291
+snapshot for independent verification"), whose Git tree is byte-identical to PR
+#291's head `3bd48d9cb5ef53fcb9b1cfb2fef57a02b7cabf8a` — so it already carries
+the complete PR #291 production work plus the stabilization hardening. Verified
+`git diff-tree` equality of `e36f7d1` vs `3bd48d9` before proceeding.
+
+Applied the five approved corrections on top:
+
+- **(a) Injected-gap fixture scoped to the manifest baseline.** `link_production_at_baseline()`
+  in `.github/workflows/test_workflow_contracts.py` now materialises
+  `clinic-practice-management/src/Migrations` truncated at the manifest's
+  `companion_schema_pin`, so the fixture's derived schema head equals the baseline
+  the companion declares. `test_the_gate_command_fails_on_an_injected_gap` now
+  passes (`72/72` contract tests OK, 1 skipped) and still fails `--gate all` for
+  the injected journey gap while `--gate compatibility` passes.
+- **(b) Companion gate kept fail-closed.** `evaluate.py --gate compatibility` on
+  the real tree still exits 1 with 7 blockers (schema head 0030 vs production
+  0031, `cpms_audit_seq` unclassified, two schema-pin lane findings). No gate
+  weakening.
+- **(c) Premature companion workflow/documentation changes reverted** to `main`:
+  `.github/workflows/disposable-demo-installer.yml`, `.github/workflows/scoped-demo.yml`,
+  `docs/scoped-demo/acceptance-plan.md`, `docs/scoped-demo/ownership-map.md`.
+- **(d) Legitimate production current-head schema assertions bumped 0030 → 0031**:
+  `closure-gate.yml`, `pilot-gate.yml`, `real-wp-acceptance.yml`,
+  `first-practice-acceptance.yml`, `disposable-site-acceptance.yml`,
+  `standalone-demo.yml`, `mariadb-10.11-compat.yml`,
+  `MariaDb1011CompatibilityTest.php`, and `upgrade-path-fixture.php`
+  (`expectedCandidateVersion`). Baseline/upgrade-path assertions (facility-matrix
+  0030 base, `rwp-first-practice.py` baseline, `wp-activation-schema-proof.php`,
+  rollback boundaries, `StaffMessagingPricingMigrationTest`) were deliberately left
+  at 0030.
+- **(e) Strict production/companion isolation preserved.** `companion-isolation.py`
+  on the full change set reports `companion-isolation: PASS`.
+- **(d, continued)** The first-practice browser harness also pinned the installed schema
+  head: `clinic-practice-management/bin/rwp-first-practice.py` asserted
+  `precondition.schema_0030` against `App::migrations()->currentVersion()`. Bumped to
+  `precondition.schema_0031` / `2026_10_31_0031`. This was the cause of the
+  `First-Practice Browser Acceptance` failure on the first successor-PR CI pass.

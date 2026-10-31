@@ -184,6 +184,7 @@ final class SystemPage
 
                 <h2>Queue و WP-Cron</h2>
                 <?php self::render_queue_section( $queue_diagnosis, $queue_notice_class ); ?>
+                <?php self::render_reception_check( $selected_clinic_id ); ?>
             <?php endif; ?>
 
             <h2>مجوز</h2>
@@ -255,7 +256,7 @@ final class SystemPage
                 <?php foreach ($backups as $b) : ?>
                     <tr>
                         <td dir="ltr"><?php echo esc_html((string) $b['backup_id']); ?></td>
-                        <td><?php echo esc_html((string) $b['created_at']); ?></td>
+                        <td><?php echo esc_html(CpmsUi::jalaliDateTime((string) $b['created_at'])); ?></td>
                         <td><?php echo esc_html((string) $b['tables'] . '/' . (string) $b['rows']); ?></td>
                         <td><?php echo esc_html((string) $b['storage_files']); ?></td>
                         <td><?php echo esc_html((string) $b['integrity']); ?></td>
@@ -659,8 +660,24 @@ final class SystemPage
      * هیچ Jobی این‌جا اجرا نمی‌شود؛ تنها اقدامِ ممکن، بازساختنِ idempotentِ رویدادِ
      * زمان‌بندی با Nonce و مجوزِ `cpms_config` است.
      *
-     * @param array<string, mixed>|null $queue_diagnosis
+     * @param int $selected_clinic_id
      */
+    private static function render_reception_check( int $selected_clinic_id ): void {
+        if ( $selected_clinic_id <= 0 ) {
+            return;
+        }
+        try {
+            $count = (int) ( App::db()->fetchValue( 'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_clinician_locations' ) . ' WHERE clinician_id IN (SELECT id FROM ' . App::db()->table( 'cpms_clinicians' ) . ' WHERE clinic_id = %d)', [ $selected_clinic_id ] ) ?? 0 );
+        } catch ( \Throwable ) {
+            return;
+        }
+        if ( $count > 0 ) {
+            return;
+        }
+        // No assignments — reception selector will be empty (reported single-practice failure).
+        echo '<div class="notice notice-warning inline" style="max-width:100%"><p>⚠️ <strong>پذیرش — بدون انتساب پزشک به محل:</strong> برای این درمانگاه هیچ انتسابِ پزشک↔محل ثبت نشده — انتخاب‌گرِ «پزشک» در پذیرش خالی خواهد بود. برای بازیابیِ مجاز به <a href="' . esc_url( admin_url( 'admin.php?page=cpms-reception-recovery&clinic_id=' . $selected_clinic_id ) ) . '">بازیابی پذیرش — انتساب پزشک به محل</a> بروید (Clinic-local، اتمیک + audit).</p></div>';
+    }
+
     private static function render_queue_section( ?array $queue_diagnosis, string $notice_class ): void {
         if ( null === $queue_diagnosis ) {
             echo '<div class="notice notice-error inline"><p>⛔ وضعیت صف خوانده نشد؛ بقیهٔ صفحه مستقل از این بخش کار می‌کند.</p></div>';

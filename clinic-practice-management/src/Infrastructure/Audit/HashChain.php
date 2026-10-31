@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+// phpcs:disable WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,Squiz.Functions.FunctionDeclarationArgumentSpacing,PEAR.Functions.FunctionCallSignature,WordPress.WhiteSpace.ControlStructureSpacing,Generic.WhiteSpace,Generic.Functions.OpeningFunctionBraceKernighanRitchie -- hash chain uses camelCase prevHash/storedPrev and compact declaration style; security sniffs remain.
+
 namespace ClinicCore\Infrastructure\Audit;
 
 /**
@@ -63,22 +65,59 @@ final class HashChain
     /**
      * صحت‌سنجی زنجیر (ترتیب صعودی id).
      *
-     * @param list<array<string, mixed>> $rows هر ردیف: prev_hash, row_hash + فیلدهای fieldsFor
+     * هر گره هم `prev_hash` ذخیره‌شده و هم `row_hash` را تأیید می‌کند: `prev_hash` باید
+     * دقیقاً برابر `row_hash` گرهٔ قبلی باشد و `row_hash` باید از `prev_hash` ذخیره‌شده
+     * + فیلدهای کانونی بازمحاسبه شود. این هم‌ارزِ منطقِ بررسی مستقل در `tests/audit-chain/verify.py` است.
      *
-     * @return array{ok: bool, checked: int, broken_at: int|null}
+     * @param list<array<string, mixed>> $rows هر ردیف: prev_hash, row_hash + فیلدهای fieldsFor
+     * @param string|null $anchor هشِ واقعیِ پیش از نخستین ردیف؛ null = GENESIS برای زنجیر کامل.
+     *
+     * @return array{ok: bool, checked: int, broken_at: int|null, broken_id: int|null}
      */
-    public static function verify(array $rows): array
+    public static function verify(array $rows, ?string $anchor = null): array
     {
-        $prev = self::GENESIS;
+        $prev = $anchor ?? self::GENESIS;
         foreach ($rows as $i => $row) {
-            $expected = self::computeRowHash($prev, self::fieldsFor($row));
+            $stored_prev = (string) ($row['prev_hash'] ?? '');
             $actual = (string) ($row['row_hash'] ?? '');
-            if (!hash_equals($expected, $actual)) {
-                return ['ok' => false, 'checked' => $i + 1, 'broken_at' => $i + 1];
+            // ۱) پیوند زنجیر: مقدار ذخیره‌شدهٔ prev_hash باید برابر هشِ واقعیِ گرهٔ پیشین باشد.
+            if ( ! hash_equals($prev, $stored_prev)) {
+                return ['ok' => false, 'checked' => $i + 1, 'broken_at' => $i + 1, 'broken_id' => isset($row['id']) ? (int) $row['id'] : null];
+            }
+            // ۲) صحت گره: row_hash باید از همین prev_hash ذخیره‌شده بازمحاسبه شود.
+            $expected = self::computeRowHash($stored_prev, self::fieldsFor($row));
+            if ( ! hash_equals($expected, $actual)) {
+                return ['ok' => false, 'checked' => $i + 1, 'broken_at' => $i + 1, 'broken_id' => isset($row['id']) ? (int) $row['id'] : null];
             }
             $prev = $actual;
         }
 
-        return ['ok' => true, 'checked' => count($rows), 'broken_at' => null];
+        return ['ok' => true, 'checked' => count($rows), 'broken_at' => null, 'broken_id' => null];
+    }
+
+    /**
+     * صحت‌سنجی کامل از GENESIS (توسط verifier تولیدی، نه بررسی مستقل).
+     *
+     * @param list<array<string, mixed>> $rows ترتیب صعودی id، بدون جاافتادگی.
+     *
+     * @return array{ok: bool, checked: int, broken_at: int|null, broken_id: int|null}
+     */
+    public static function verify_full_chain(array $rows): array
+    {
+        return self::verify($rows, self::GENESIS);
+    }
+
+    /**
+     * صحت‌سنجی پسوند (suffix): نخستین ردیف به لنگرِ واقعی (سلفِ durable آن) بسته می‌شود،
+     * نه به GENESIS. برای `verifyChain(limit)` که فقط N ردیف آخر را می‌خواند.
+     *
+     * @param list<array<string, mixed>> $rows ترتیب صعودی id
+     * @param string $anchor row_hash سلفِ نخستین ردیف یا GENESIS اگر سلفی نیست.
+     *
+     * @return array{ok: bool, checked: int, broken_at: int|null, broken_id: int|null}
+     */
+    public static function verify_suffix(array $rows, string $anchor): array
+    {
+        return self::verify($rows, $anchor);
     }
 }

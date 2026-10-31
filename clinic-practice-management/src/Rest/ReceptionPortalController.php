@@ -740,11 +740,15 @@ final class ReceptionPortalController extends RestBase {
 			return $this->success( $this->empty_board() );
 		}
 
-		return $this->success(
-			[
-				'date'          => $date,
-				'clinic_id'     => $clinic_id,
-				'location_id'   => $location_id,
+        return $this->success(
+            [
+                'date'          => $date,
+                // Persian/Jalali presentation of the SAME Location-local
+                // operational day (presentation only; Gregorian storage and
+                // cutoff comparisons untouched). Owner B.
+                'jalali'        => Jalali::formatYmd( $date ),
+                'clinic_id'     => $clinic_id,
+                'location_id'   => $location_id,
 				'location_name' => $resolved['location_name'],
 				'appointments'  => $this->appointments->list_for_reception_operational_day( $clinic_id, $location_id, $date ),
 				// Phase 11 Slice 7 — اضافهٔ فقط‌خواندنی: نگاشتِ «نوبت → پزشک فعلی» برای

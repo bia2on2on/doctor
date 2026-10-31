@@ -21,6 +21,7 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
     use RealTableMigrations;
 
     private const VERSION = '2026_10_27_0030';
+    private const HEAD_VERSION = '2026_10_31_0031';
 
     private const TABLES = [
         'cpms_message_threads',
@@ -63,7 +64,8 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
     public function testSevenAdditiveTablesExistWithPortableColumnsAndNoForeignKeys(): void
     {
         $db = App::db();
-        self::assertSame(self::VERSION, App::migrations()->currentVersion());
+        self::assertSame(self::HEAD_VERSION, App::migrations()->currentVersion());
+        self::assertContains(self::VERSION, App::migrations()->applied());
         self::assertSame([], $this->withRealTables(static fn (): array => App::migrations()->migrate()));
 
         foreach (self::TABLES as $short) {
@@ -158,7 +160,9 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
         ];
 
         $this->withRealTables(function () use ($db): void {
-            // Simulate the exact 0029 baseline: no 0030 marker, no 0030 tables.
+            // Roll back the later guard before simulating the exact 0029
+            // baseline. This test only drops the disposable guard, not history.
+            self::assertSame(self::HEAD_VERSION, App::migrations()->rollbackOne());
             $db->query('DELETE FROM ' . $db->table('cpms_schema_migrations') . ' WHERE version = %s', [self::VERSION]);
             foreach (array_reverse(self::TABLES) as $short) {
                 $db->query('DROP TABLE IF EXISTS ' . $db->table($short));
@@ -167,6 +171,7 @@ final class StaffMessagingPricingMigrationTest extends WP_UnitTestCase
 
             $applied = App::migrations()->migrate();
             self::assertContains(self::VERSION, $applied, '0030 applies forward-only from 0029');
+            self::assertContains(self::HEAD_VERSION, $applied, 'the later guard is restored too');
             self::assertSame([], App::migrations()->migrate(), 'repeat migration is a no-op');
         });
 

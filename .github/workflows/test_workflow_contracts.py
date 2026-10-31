@@ -1080,6 +1080,39 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
         self.assertEqual(summary, "")
 
 
+_MIGRATION_VERSION_RE = re.compile(r"^(\d{4}_\d{2}_\d{2}_\d{4})_")
+
+
+def link_production_at_baseline(source: Path, target: Path, baseline: str) -> None:
+    """Symlink a production tree with its migrations truncated at `baseline`.
+
+    The evaluator derives the schema head from ``src/Migrations/**``. Linking the
+    live tree would make the fixture describe whatever ``main`` has advanced to
+    rather than the baseline the companion manifest declares, so the migrations
+    directory is materialised with only the versions up to (and including)
+    ``baseline``; every other entry is symlinked unchanged.
+    """
+    target.mkdir(parents=True, exist_ok=True)
+    for entry in source.iterdir():
+        if entry.name == "src":
+            continue
+        os.symlink(entry, target / entry.name)
+    src = target / "src"
+    src.mkdir(exist_ok=True)
+    for entry in (source / "src").iterdir():
+        if entry.name == "Migrations":
+            continue
+        os.symlink(entry, src / entry.name)
+    migrations = src / "Migrations"
+    migrations.mkdir(exist_ok=True)
+    for entry in (source / "src" / "Migrations").iterdir():
+        if not entry.name.endswith(".php"):
+            continue
+        match = _MIGRATION_VERSION_RE.match(entry.name[:-4])
+        if match is None or match.group(1) <= baseline:
+            os.symlink(entry, migrations / entry.name)
+
+
 class CompanionCompatibilityGateContractTests(unittest.TestCase):
     """The demo-coverage gate must be a REQUIRED, fail-closed check.
 
@@ -1145,15 +1178,19 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
     def test_the_gate_command_fails_on_an_injected_gap(self):
         """Executable negative contract: the gate the workflow runs fails on a GAP.
 
-        A temporary root is assembled by symlinking the real sources and copying
-        the manifest with one demo-required feature stripped of its journeys. The
-        same evaluator the workflow calls must then exit non-zero for `--gate all`
+        A temporary root is assembled at the schema baseline the companion
+        manifest declares: the production tree is linked with its migrations
+        directory materialised only up to that baseline, and the manifest is
+        copied with one demo-required feature stripped of its journeys. The same
+        evaluator the workflow calls must then exit non-zero for `--gate all`
         while `--gate compatibility` still passes - so the failure really is the
-        demo-coverage gap, not a broken tree.
+        demo-coverage gap, not a broken tree or a schema the companion never
+        declared.
         """
         evaluator = ROOT / ".github" / "scripts" / "companion-compat" / "evaluate.py"
         manifest_path = ROOT / "tools" / "disposable-demo-installer" / "compatibility.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        baseline = str(manifest["compatibility"]["companion_schema_pin"])
         feature = next(f for f in manifest["features"] if f.get("journeys"))
         stripped = dict(feature)
         stripped["journeys"] = []
@@ -1162,9 +1199,15 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / "repo"
             root.mkdir()
-            # The heavy production tree is only READ, so it is symlinked; the
-            # companion tree is copied so its manifest can be mutated.
-            for name in ("clinic-practice-management", ".github", "tests", "docs"):
+            # The heavy production tree is only READ, so it is symlinked; only the
+            # migrations directory is materialised, truncated at the manifest's
+            # declared baseline so the derived schema head is the one the
+            # companion actually declares. The companion tree is copied so its
+            # manifest can be mutated.
+            link_production_at_baseline(
+                ROOT / "clinic-practice-management", root / "clinic-practice-management", baseline
+            )
+            for name in (".github", "tests", "docs"):
                 target = ROOT / name
                 if target.exists():
                     os.symlink(target, root / name)
