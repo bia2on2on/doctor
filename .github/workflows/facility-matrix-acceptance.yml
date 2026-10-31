@@ -273,6 +273,22 @@ jobs:
           run_proof wp plugin deactivate clinic-practice-management --path="$UPGRADE_DIR" --allow-root
           run_proof wp plugin activate clinic-practice-management --path="$UPGRADE_DIR" --allow-root
           run_proof wp eval-file "$PROOF" candidate-repeat --path="$UPGRADE_DIR" --allow-root
+          # Stream the complete consistent snapshot directly to the independent
+          # Python verifier: never retain or print rows, identifiers or hashes.
+          if ! wp eval-file "$GITHUB_WORKSPACE/clinic-practice-management/tests/audit-chain/export.php" --path="$UPGRADE_DIR" --allow-root \
+              2>/tmp/mtx-audit-export.raw | python3 clinic-practice-management/tests/audit-chain/verify.py \
+              > /tmp/mtx-independent-audit.json 2>/tmp/mtx-audit-verify.raw; then
+            echo '::error title=CPMS independent audit::Snapshot/export verification failed or was incomplete'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          with open('/tmp/mtx-independent-audit.json', encoding='utf-8') as stream:
+              result = json.load(stream)
+          if result.get('ok') is not True or result.get('checked', 0) < 2:
+              raise SystemExit('::error title=CPMS independent audit::Insufficient or broken chain')
+          print('::notice title=CPMS independent audit::full snapshot verified; rows=' + str(result['checked']))
+          PY
           grep '^ACTIVATION_PROOF ' /tmp/mtx-upgrade-proof.raw | tee /tmp/mtx/upgrade-proof.txt
           while IFS= read -r line; do echo "::notice title=CPMS upgrade proof::$line"; done < /tmp/mtx/upgrade-proof.txt
 

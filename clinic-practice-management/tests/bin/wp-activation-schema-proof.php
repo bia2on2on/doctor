@@ -4,7 +4,10 @@
  * Executed on real MySQL and MariaDB by the facility-matrix workflow.
  */
 
-declare(strict_types=1);
+// WP-CLI evaluates this file with a closing-PHP-tag prefix. PHP requires
+// declare(strict_types=1) to be the first statement, which is incompatible
+// with that eval mode. Keep this disposable harness usable on all supported
+// WP-CLI versions without relying on --use-include.
 
 use ClinicCore\Bootstrap\App;
 

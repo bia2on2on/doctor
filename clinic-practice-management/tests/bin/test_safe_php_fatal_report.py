@@ -36,6 +36,15 @@ class SafePhpFatalReportTest(unittest.TestCase):
         self.assertNotIn("OTP_SECRET_123456", result.stdout + summary)
         self.assertNotIn("/synthetic/wp-content", result.stdout + summary)
 
+    def test_strict_types_eval_fatal_is_reported_without_private_arguments(self):
+        result, summary = self.run_report(
+            "PHP Fatal error: strict_types declaration must be the very first statement in the script "
+            "in /tmp/PRIVATEPATIENT_OTP_123456.php on line 1\n"
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("strict_types declaration must be the very first statement in the script", result.stdout)
+        self.assertNotIn("PRIVATEPATIENT_OTP_123456", result.stdout + summary)
+
     def test_known_missing_method_is_reported_without_its_arguments(self):
         result, summary = self.run_report(
             "PHP Fatal error: Uncaught Error: Call to undefined method HashChain::verify_chain() "
