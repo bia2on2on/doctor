@@ -2,7 +2,8 @@
 
 Date: 2026-10-31  
 Baseline: `9bf84304b2b143138c638fa1ca1d71869aa1e244`  
-Implementation/evidence head: `c9ff05c387e6c77568ff132d6508112eafaff889` (documentation-only follow-up may be the PR head)
+PR: <https://github.com/bia2on2on/doctor/pull/288>
+Exact PR head: `ca8079044e7ed21ee2677f29ef07dd32db4a953b`
 
 The independent installer report was unavailable. The supplied findings were treated as leads and tested against the actual production plugin. No claim is made to have inspected that report.
 
@@ -16,7 +17,7 @@ The independent installer report was unavailable. The supplied findings were tre
 
 ## Executed runtime evidence
 
-Focused workflow run: <https://github.com/bia2on2on/doctor/actions/runs/41176806530>
+Focused workflow run at the exact PR head: <https://github.com/bia2on2on/doctor/actions/runs/41180393141>
 
 - MySQL 8: **120 tests, 0 failures, 0 errors, 0 skipped**.
 - MariaDB 11.4.13: **120 tests, 0 failures, 0 errors, 0 skipped**.
@@ -30,12 +31,12 @@ Baseline and candidate official ZIPs were installed sequentially on the same Wor
 
 | Operation | Baseline queries | Candidate queries | Baseline median ms | Candidate median ms |
 |---|---:|---:|---:|---:|
-| Staff Portal HTML | 115 | 115 | 94.890 | 93.759 |
-| Doctor queue REST | 98 | 69 | 83.445 | 75.268 |
-| Visit record REST | 101 | 73 | 84.663 | 77.041 |
-| Clinical note POST | 91 | 62 | 83.891 | 74.384 |
-| Prescription POST | 98 | 69 | 85.487 | 77.354 |
-| Complete consultation POST | 108 | 79 | 86.914 | 79.550 |
+| Staff Portal HTML | 115 | 115 | 91.040 | 89.944 |
+| Doctor queue REST | 98 | 69 | 79.785 | 70.843 |
+| Visit record REST | 101 | 73 | 80.715 | 72.187 |
+| Clinical note POST | 91 | 62 | 77.743 | 70.313 |
+| Prescription POST | 98 | 69 | 80.191 | 72.598 |
+| Complete consultation POST | 108 | 79 | 82.528 | 74.916 |
 
 The 29-query REST reduction is the measured effect of removing repeated migration-ledger reads. The reported production 214–235 queries/portal request and 2.2–4.0 s clinical POSTs were **not reproduced** in this synthetic CI environment; HTML query count did not improve. Timing differences are small CI medians, not production SLA claims.
 
@@ -49,4 +50,4 @@ The 29-query REST reduction is the measured effect of removing repeated migratio
 
 ## Propagation and CI
 
-Production changes are under `clinic-practice-management/**`, which already triggers the standalone-demo workflow on pull requests to `main`; that lane rebuilds the embedded core and verifies the standalone package. The PR triggers the repository's remaining pull-request gates. Exact-head PR CI results are recorded in the PR checks and linked from the final handoff.
+Production changes are under `clinic-practice-management/**`, which already triggers the standalone-demo workflow on pull requests to `main`; that lane rebuilds the embedded core and verifies the standalone package. The PR triggers the repository's remaining pull-request gates. Exact-head PR CI at `ca80790`: all 48 checks passed, including CI (`41180393127`), standalone-demo (`41180393282`), Classic V1 evidence (`41180393141`), closure, compatibility, external disposable-site, and coexistence lanes. The full MySQL integration suite executed 2465 tests with 0 failures/errors. A seasonal New York DST fixture was made horizon-aware (it skips only when no fall-back exists inside the supported 365-day generation horizon); the Day-2 public-booking JS spec was aligned with the affirmative `sms_sent` gate.
