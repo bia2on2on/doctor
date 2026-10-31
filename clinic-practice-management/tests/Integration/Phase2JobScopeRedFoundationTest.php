@@ -579,9 +579,9 @@ final class Phase2JobScopeRedFoundationTest extends WP_UnitTestCase
         $eventDriven = array_values(array_diff($registered, $recurring));
         sort($eventDriven);
         self::assertSame(
-            ['report.export', 'sms.send'],
+            ['appointment.cancel_notify', 'report.export', 'sms.send'],
             $eventDriven,
-            'the two event-driven (non-recurring) registered types per canonical design §A-3'
+            'the three event-driven (non-recurring) registered types per canonical design §A-3 plus Classic V1 cancellation outbox'
         );
     }
 
