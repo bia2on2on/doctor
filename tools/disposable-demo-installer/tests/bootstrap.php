@@ -17,7 +17,7 @@ define( 'CPMS_DEMO_FILE', __DIR__ . '/../cpms-disposable-demo.php' );
 define( 'CPMS_DEMO_DIR', __DIR__ . '/../' );
 define( 'CPMS_DEMO_URL', 'https://example.test/wp-content/plugins/cpms-disposable-demo/' );
 define( 'CPMS_DEMO_CORE_PLUGIN', 'clinic-practice-management/clinic-practice-management.php' );
-define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_27_0030' );
+define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_31_0031' );
 
 // --- Minimal WordPress functions used by the tested code paths. -------------
 function add_action( string $hook, $callback, int $priority = 10, int $accepted_args = 1 ): bool {
@@ -680,7 +680,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 	public array $tables_data = array();
 	public array $calls       = array();
 	public bool $available_flag = true;
-	public string $schema     = '2026_10_27_0030';
+	public string $schema     = '2026_10_31_0031';
 	public array $settings    = array();
 	/** Actor id => capability => allowed, for the production-engine stand-in. */
 	public array $clinical_authority = array();
@@ -718,7 +718,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 				),
 			),
 			'cpms_schema_migrations' => array(
-				array( 'version' => '2026_10_27_0030', 'description' => 'baseline' ),
+				array( 'version' => '2026_10_31_0031', 'description' => 'baseline' ),
 			),
 			'cpms_license_install'   => array(
 				array( 'id' => 1, 'install_id' => '0123456789abcdef0123456789abcdef', 'environment' => 'production' ),
@@ -815,7 +815,7 @@ class Cpdd_Fake_Platform extends CpmsDemo\Platform {
 			'cpms_audit_logs'                           => array( 'id', 'clinic_id', 'action', 'resource_type', 'resource_id', 'actor_wp_user_id', 'meta_json', 'request_id', 'ip_hash' ),
 			'cpms_rate_limits'                          => array( 'window_key', 'window_id', 'hits' ),
 			'cpms_drug_reference'                       => array( 'id', 'clinic_id', 'generic_name' ),
-			// Schema 2026_10_27_0030. The three messaging/pricing tables without a
+			// Schema 2026_10_31_0031. The three messaging/pricing tables without a
 			// surrogate `id` are modelled explicitly so composite-key teardown is
 			// exercised rather than silently skipped.
 			'cpms_message_threads'                      => array( 'id', 'clinic_id', 'organization_id', 'location_id', 'patient_id', 'visit_id', 'created_by_wp_user_id' ),

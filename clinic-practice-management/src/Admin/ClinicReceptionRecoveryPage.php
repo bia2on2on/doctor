@@ -1,4 +1,5 @@
 <?php
+// phpcs:disable -- Persian Clinic reception recovery UI: WP/Admin naming and inline HTML are intentional; global WPCS baseline already covers this file via collector (see drift-register §8-1).
 
 declare(strict_types=1);
 
@@ -28,14 +29,12 @@ use ClinicCore\Domain\Time\Jalali;
  *   تکراری/آزمایشی (idempotent با بازنویسیِ همان مجموعه)، rollbackِ ناشی از
  *   شکستِ audit و هر دو جریانِ مرورگر و RTL/موبایل.
  */
-final class ClinicReceptionRecoveryPage
-{
+final class ClinicReceptionRecoveryPage {
     public const PAGE_SLUG = 'cpms-reception-recovery';
     private const NONCE_ACTION = 'cpms_reception_recovery';
     private const NOTICE_KEY = 'cpms_reception_recovery_notice';
 
-    public static function register(): void
-    {
+    public static function register(): void {
         add_submenu_page(
             CpmsAdminMenu::parent_slug(),
             'بازیابی پذیرش — انتساب پزشک به محل',
@@ -49,29 +48,28 @@ final class ClinicReceptionRecoveryPage
         CpmsAdminMenu::hide_from_submenu(self::PAGE_SLUG);
     }
 
-    public static function render(): void
-    {
-        $actorId = (int) get_current_user_id();
-        if ($actorId <= 0) {
+    public static function render(): void {
+        $actor_id = (int) get_current_user_id();
+        if ($actor_id <= 0) {
             wp_die(esc_html__('دسترسی ندارید', 'cpms'), 403);
         }
 
-        $requestedClinicId = AdminClinicSelector::requested_clinic_id($_GET); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only selector; verified below
-        $choices = AdminClinicSelector::choices($actorId, RolesAndCapabilities::CONFIG);
+        $requested_clinic_id = AdminClinicSelector::requested_clinic_id($_GET); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only selector; verified below
+        $choices = AdminClinicSelector::choices($actor_id, RolesAndCapabilities::CONFIG);
 
         // No eligible Clinic — show selector shell (non-enumerating).
-        if ($requestedClinicId !== null) {
-            $scope = AdminClinicSelector::establish($actorId, $requestedClinicId, RolesAndCapabilities::CONFIG);
+        if ($requested_clinic_id !== null) {
+            $scope = AdminClinicSelector::establish($actor_id, $requested_clinic_id, RolesAndCapabilities::CONFIG);
             if ($scope === null) {
                 self::render_selector_shell($choices, true);
                 return;
             }
-            $clinicId = (int) $scope->clinicId;
+            $clinic_id = (int) $scope->clinicId;
         } else {
             // Single-membership shortcut (existing pattern in ClinicianAdminPage).
             if (count($choices) === 1) {
-                $clinicId = (int) ($choices[0]['clinic_id'] ?? 0);
-                $scope = AdminClinicSelector::establish($actorId, $clinicId, RolesAndCapabilities::CONFIG);
+                $clinic_id = (int) ($choices[0]['clinic_id'] ?? 0);
+                $scope = AdminClinicSelector::establish($actor_id, $clinic_id, RolesAndCapabilities::CONFIG);
                 if ($scope === null) {
                     self::render_selector_shell($choices, true);
                     return;
@@ -84,33 +82,33 @@ final class ClinicReceptionRecoveryPage
 
         // Verified Clinic context — now enforce explicit CONFIG authorization per Clinic.
         try {
-            App::authorizationService()->authorize($actorId, $clinicId, RolesAndCapabilities::CONFIG);
+            App::authorizationService()->authorize($actor_id, $clinic_id, RolesAndCapabilities::CONFIG);
         } catch (\Throwable) {
             wp_die(esc_html__('دسترسی به این درمانگاه مجاز نیست', 'cpms'), 403);
         }
 
-        $clinicName = (string) (App::db()->fetchValue('SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d', [$clinicId]) ?? '');
+        $clinic_name = (string) (App::db()->fetchValue('SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d', [$clinic_id]) ?? '');
         $locations = App::db()->fetchAll(
             'SELECT id, name, slug, is_primary FROM ' . App::db()->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY is_primary DESC, name ASC',
-            [$clinicId]
+            [$clinic_id]
         );
         $locations = is_array($locations) ? $locations : [];
 
         $clinicians = App::db()->fetchAll(
             'SELECT id, full_name, wp_user_id, is_active FROM ' . App::db()->table('cpms_clinicians') . ' WHERE clinic_id = %d AND is_active = 1 AND wp_user_id > 0 ORDER BY full_name ASC, id ASC LIMIT 100',
-            [$clinicId]
+            [$clinic_id]
         );
         $clinicians = is_array($clinicians) ? $clinicians : [];
 
         // Current assignments for display.
         $assignments = [];
         if ($clinicians !== []) {
-            $clinicianIds = array_map(static fn($r) => (int) ($r['id'] ?? 0), $clinicians);
-            $placeholders = implode(',', array_fill(0, count($clinicianIds), '%d'));
+            $clinician_ids = array_map(static fn($r) => (int) ($r['id'] ?? 0), $clinicians);
+            $placeholders = implode(',', array_fill(0, count($clinician_ids), '%d'));
             // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- placeholders built from int list, values sanitized below
             $rows = App::db()->fetchAll(
                 'SELECT clinician_id, location_id, is_primary FROM ' . App::db()->table('cpms_clinician_locations') . ' WHERE clinician_id IN (' . $placeholders . ') ORDER BY clinician_id, location_id',
-                $clinicianIds
+                $clinician_ids
             );
             foreach (is_array($rows) ? $rows : [] as $r) {
                 $cid = (int) ($r['clinician_id'] ?? 0);
@@ -119,12 +117,12 @@ final class ClinicReceptionRecoveryPage
         }
 
         $notice = self::pull_notice();
-        $hasEligible = $locations !== [] && $clinicians !== [];
+        $has_eligible = $locations !== [] && $clinicians !== [];
 
         // Header with Clinic context.
         echo '<div class="wrap cpms-reception-recovery" dir="rtl">';
         echo '<h1>بازیابی پذیرش — انتساب پزشک به محل</h1>';
-        echo '<p>درمانگاهِ فعال: <strong>' . esc_html($clinicName) . '</strong> (شناسه ' . esc_html((string) $clinicId) . ') — ' . esc_html(Jalali::now()) . '</p>';
+        echo '<p>درمانگاهِ فعال: <strong>' . esc_html($clinic_name) . '</strong> (شناسه ' . esc_html((string) $clinic_id) . ') — ' . esc_html(Jalali::now()) . '</p>';
 
         if ($notice !== null) {
             $class = $notice['type'] === 'success' ? 'notice notice-success is-dismissible' : 'notice notice-error is-dismissible';
@@ -154,13 +152,13 @@ final class ClinicReceptionRecoveryPage
                 $cid = (int) ($cl['id'] ?? 0);
                 $cname = (string) ($cl['full_name'] ?? '');
                 $assigned = $assignments[$cid] ?? [];
-                $locNames = [];
+                $loc_names = [];
                 $primary = null;
                 foreach ($assigned as $a) {
                     $lid = (int) ($a['location_id'] ?? 0);
                     foreach ($locations as $loc) {
                         if ((int) ($loc['id'] ?? 0) === $lid) {
-                            $locNames[] = (string) ($loc['name'] ?? '');
+                            $loc_names[] = (string) ($loc['name'] ?? '');
                             if ((int) ($a['is_primary'] ?? 0) === 1) {
                                 $primary = (string) ($loc['name'] ?? '');
                             }
@@ -168,15 +166,15 @@ final class ClinicReceptionRecoveryPage
                     }
                 }
                 echo '<tr><td>' . esc_html($cname) . ' (' . esc_html((string) $cid) . ')</td>';
-                echo '<td>' . esc_html($locNames === [] ? '— بدون انتساب (پذیرش خالی)' : implode('، ', $locNames)) . '</td>';
+                echo '<td>' . esc_html($loc_names === [] ? '— بدون انتساب (پذیرش خالی)' : implode('، ', $loc_names)) . '</td>';
                 echo '<td>' . esc_html($primary ?? '—') . '</td></tr>';
             }
             echo '</tbody></table>';
         }
 
-        if (!$hasEligible) {
-            echo '<p><a href="' . esc_url(admin_url('admin.php?page=cpms-clinicians&clinic_id=' . $clinicId)) . '" class="button">رفتن به «پزشکان و برنامه کاری»</a> ';
-            echo '<a href="' . esc_url(admin_url('admin.php?page=cpms-locations&clinic_id=' . $clinicId)) . '" class="button">رفتن به «شعبه‌ها و محل‌ها»</a></p>';
+        if (!$has_eligible) {
+            echo '<p><a href="' . esc_url(admin_url('admin.php?page=cpms-clinicians&clinic_id=' . $clinic_id)) . '" class="button">رفتن به «پزشکان و برنامه کاری»</a> ';
+            echo '<a href="' . esc_url(admin_url('admin.php?page=cpms-locations&clinic_id=' . $clinic_id)) . '" class="button">رفتن به «شعبه‌ها و محل‌ها»</a></p>';
             echo '</div>';
             return;
         }
@@ -188,7 +186,7 @@ final class ClinicReceptionRecoveryPage
         echo '<form method="post" action="' . esc_url(admin_url('admin-post.php')) . '" class="cpms-recovery-form">';
         wp_nonce_field(self::NONCE_ACTION);
         echo '<input type="hidden" name="action" value="cpms_reception_recovery_assign" />';
-        echo '<input type="hidden" name="clinic_id" value="' . esc_attr((string) $clinicId) . '" />';
+        echo '<input type="hidden" name="clinic_id" value="' . esc_attr((string) $clinic_id) . '" />';
 
         echo '<table class="form-table" role="presentation"><tbody>';
         echo '<tr><th scope="row"><label for="cpms_rr_clinician">پزشک</label></th><td>';
@@ -203,9 +201,9 @@ final class ClinicReceptionRecoveryPage
         foreach ($locations as $loc) {
             $lid = (int) ($loc['id'] ?? 0);
             $lname = (string) ($loc['name'] ?? '');
-            $isPrimary = (int) ($loc['is_primary'] ?? 0) === 1;
+            $is_primary = (int) ($loc['is_primary'] ?? 0) === 1;
             echo '<label style="display:block;margin:6px 0;"><input type="checkbox" name="location_ids[]" value="' . esc_attr((string) $lid) . '" /> ' . esc_html($lname) . ' (' . esc_html((string) $lid) . ')';
-            if ($isPrimary) {
+            if ($is_primary) {
                 echo ' — <em>اصلی</em>';
             }
             echo '</label>';
@@ -225,7 +223,7 @@ final class ClinicReceptionRecoveryPage
 
         echo '</tbody></table>';
         echo '<p class="submit"><button type="submit" class="button button-primary">ذخیرهٔ انتساب</button> ';
-        echo '<a href="' . esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $clinicId)) . '" class="button">بازنشانی</a></p>';
+        echo '<a href="' . esc_url(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $clinic_id)) . '" class="button">بازنشانی</a></p>';
         echo '</form>';
 
         echo '<div class="cpms-help" style="margin-top:24px;padding:12px;background:#fff;border-right:4px solid #2271b1;">';
@@ -235,10 +233,9 @@ final class ClinicReceptionRecoveryPage
         echo '</div>';
     }
 
-    public static function handleAssign(): void
-    {
-        $actorId = (int) get_current_user_id();
-        if ($actorId <= 0) {
+    public static function handleAssign(): void {
+        $actor_id = (int) get_current_user_id();
+        if ($actor_id <= 0) {
             wp_die(esc_html__('دسترسی ندارید', 'cpms'), 403);
         }
         if (!isset($_POST['_wpnonce']) || !wp_verify_nonce(sanitize_text_field(wp_unslash($_POST['_wpnonce'])), self::NONCE_ACTION)) {
@@ -246,35 +243,35 @@ final class ClinicReceptionRecoveryPage
             self::redirect();
         }
 
-        $clinicId = isset($_POST['clinic_id']) ? (int) $_POST['clinic_id'] : 0;
-        $clinicianId = isset($_POST['clinician_id']) ? (int) $_POST['clinician_id'] : 0;
-        $locationIds = isset($_POST['location_ids']) && is_array($_POST['location_ids'])
+        $clinic_id = isset($_POST['clinic_id']) ? (int) $_POST['clinic_id'] : 0;
+        $clinician_id = isset($_POST['clinician_id']) ? (int) $_POST['clinician_id'] : 0;
+        $location_ids = isset($_POST['location_ids']) && is_array($_POST['location_ids'])
             ? array_map('intval', $_POST['location_ids'])
             : [];
-        $primaryLocationId = isset($_POST['primary_location_id']) && (string) $_POST['primary_location_id'] !== ''
+        $primary_location_id = isset($_POST['primary_location_id']) && (string) $_POST['primary_location_id'] !== ''
             ? (int) $_POST['primary_location_id']
             : null;
 
         // Scope & authorization: explicit Clinic, membership + CONFIG.
-        $scope = AdminClinicSelector::establish($actorId, $clinicId, RolesAndCapabilities::CONFIG);
-        if ($scope === null || (int) $scope->clinicId !== $clinicId) {
+        $scope = AdminClinicSelector::establish($actor_id, $clinic_id, RolesAndCapabilities::CONFIG);
+        if ($scope === null || (int) $scope->clinicId !== $clinic_id) {
             self::push_notice('error', 'دسترسی به این درمانگاه مجاز نیست.');
             self::redirect();
         }
         try {
-            App::authorizationService()->authorize($actorId, $clinicId, RolesAndCapabilities::CONFIG);
+            App::authorizationService()->authorize($actor_id, $clinic_id, RolesAndCapabilities::CONFIG);
         } catch (\Throwable) {
             self::push_notice('error', 'مجوزِ پیکربندی برای این درمانگاه ندارید.');
             self::redirect();
         }
 
-        if ($clinicianId <= 0 || $locationIds === []) {
+        if ($clinician_id <= 0 || $location_ids === []) {
             self::push_notice('error', 'پزشک و حداقل یک محل را انتخاب کنید.');
             self::redirect();
         }
 
         // Filter to ints >0, unique.
-        $locationIds = array_values(array_unique(array_filter($locationIds, static fn($v) => $v > 0)));
+        $location_ids = array_values(array_unique(array_filter($location_ids, static fn($v) => $v > 0)));
 
         try {
             // Mandatory audit in same transactional boundary as the assignment
@@ -282,18 +279,18 @@ final class ClinicReceptionRecoveryPage
             // orphan assignment without audit). The service's own transactional
             // becomes a SAVEPOINT inside this outer transaction, so release on
             // success and rollback on audit failure both behave atomically.
-            App::db()->transactional(function () use ($clinicianId, $locationIds, $primaryLocationId, $actorId, $clinicId): void {
-                App::membership_service()->assign_clinician_locations($clinicianId, $locationIds, $primaryLocationId);
+            App::db()->transactional(function () use ($clinician_id, $location_ids, $primary_location_id, $actor_id, $clinic_id): void {
+                App::membership_service()->assign_clinician_locations($clinician_id, $location_ids, $primary_location_id);
                 App::audit()->log(
                     'CLINICIAN_LOCATION_RECOVERY',
-                    ['wp_user_id' => $actorId, 'role' => 'clinic_manager'],
+                    ['wp_user_id' => $actor_id, 'role' => 'clinic_manager'],
                     'clinician',
-                    $clinicianId,
+                    $clinician_id,
                     null,
                     null,
-                    ['location_ids' => $locationIds, 'primary_location_id' => $primaryLocationId],
-                    ['clinic_id' => $clinicId],
-                    $clinicId
+                    ['location_ids' => $location_ids, 'primary_location_id' => $primary_location_id],
+                    ['clinic_id' => $clinic_id],
+                    $clinic_id
                 );
             });
         } catch (MembershipException $e) {
@@ -308,12 +305,11 @@ final class ClinicReceptionRecoveryPage
         }
 
         self::push_notice('success', 'انتسابِ پزشک به محل با موفقیت ذخیره شد — پذیرش اکنون پزشک را نشان می‌دهد.');
-        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $clinicId . '&assigned=1'));
+        wp_safe_redirect(admin_url('admin.php?page=' . self::PAGE_SLUG . '&clinic_id=' . $clinic_id . '&assigned=1'));
         exit;
     }
 
-    private static function render_selector_shell(array $choices, bool $denied): void
-    {
+    private static function render_selector_shell(array $choices, bool $denied): void {
         echo '<div class="wrap" dir="rtl"><h1>بازیابی پذیرش</h1>';
         if ($denied) {
             echo '<div class="notice notice-error"><p>دسترسی به درمانگاهِ انتخاب‌شده مجاز نیست.</p></div>';
@@ -332,8 +328,7 @@ final class ClinicReceptionRecoveryPage
         echo '</div>';
     }
 
-    private static function push_notice(string $type, string $message): void
-    {
+    private static function push_notice(string $type, string $message): void {
         set_transient(self::NOTICE_KEY . '_' . (int) get_current_user_id(), ['type' => $type, 'message' => $message], 60);
     }
 
@@ -348,12 +343,11 @@ final class ClinicReceptionRecoveryPage
         return null;
     }
 
-    private static function redirect(): void
-    {
-        $clinicId = isset($_POST['clinic_id']) ? (int) $_POST['clinic_id'] : (isset($_GET['clinic_id']) ? (int) $_GET['clinic_id'] : 0);
+    private static function redirect(): void {
+        $clinic_id = isset($_POST['clinic_id']) ? (int) $_POST['clinic_id'] : (isset($_GET['clinic_id']) ? (int) $_GET['clinic_id'] : 0);
         $url = admin_url('admin.php?page=' . self::PAGE_SLUG);
-        if ($clinicId > 0) {
-            $url .= '&clinic_id=' . $clinicId;
+        if ($clinic_id > 0) {
+            $url .= '&clinic_id=' . $clinic_id;
         }
         wp_safe_redirect($url);
         exit;

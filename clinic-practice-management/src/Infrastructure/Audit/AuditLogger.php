@@ -87,7 +87,7 @@ final class AuditLogger
             $last = $this->db->fetchRowForUpdate(
                 'SELECT row_hash FROM ' . $this->db->table('cpms_audit_logs') . ' ORDER BY id DESC LIMIT 1'
             );
-            $prevHash = $last['row_hash'] ?? HashChain::GENESIS;
+            $prevHash = ( isset( $last['row_hash'] ) && is_string( $last['row_hash'] ) && '' !== $last['row_hash'] ) ? (string) $last['row_hash'] : HashChain::GENESIS;
 
             $now = $this->db->nowUtcSql();
             $row = [

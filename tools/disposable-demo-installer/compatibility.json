@@ -31,10 +31,10 @@
   },
   "compatibility": {
     "companion_plugin_version": "1.0.0",
-    "companion_schema_pin": "2026_10_27_0030",
+    "companion_schema_pin": "2026_10_31_0031",
     "core_plugin": "clinic-practice-management/clinic-practice-management.php",
-    "migration_count": 30,
-    "production_schema_head": "2026_10_27_0030"
+    "migration_count": 31,
+    "production_schema_head": "2026_10_31_0031"
   },
   "contract_version": 1,
   "critical_options": {
@@ -3042,6 +3042,27 @@
       "surrogate_id": true,
       "teardown_class": "deletable",
       "teardown_mode": "surrogate_id"
+    },
+    "cpms_audit_seq": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "runner-owned audit serialization guard"
+      },
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Singleton InnoDB guard row for audit append serialization; bookkeeping only, never tenant data.",
+      "since": "2026_10_31_0031",
+      "surrogate_id": false,
+      "teardown_class": "runner_managed",
+      "teardown_mode": "never"
     }
   },
   "volatile_options": {

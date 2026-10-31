@@ -173,7 +173,9 @@ final class OtpPolicyTest extends TestCase
         $this->assertSame(OtpPolicy::REASON_LOCKED, $this->policy->canSend($locked, $this->at('2026-09-05T10:01:00+00:00'))['reason']);
         $daily = new OtpState();
         for ($i = 0; $i < 3; $i++) {
-            $daily = $this->policy->registerSend($daily, $this->at('2026-09-05T0' . (8 + $i) . ':00:00+00:00'));
+            // Use proper zero-padded hour to avoid T010 malformed ISO string.
+            $hour = 8 + $i;
+            $daily = $this->policy->registerSend($daily, $this->at(sprintf('2026-09-05T%02d:00:00+00:00', $hour)));
         }
         $this->assertSame(OtpPolicy::REASON_DAILY_LIMIT, $this->policy->canSend($daily, $this->at(self::T0))['reason']);
     }
