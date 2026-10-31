@@ -144,6 +144,14 @@ jobs:
             grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/*-${{ matrix.database }}.log 2>/dev/null || true
             echo 'In-process REST measurements are not HTTP page timings. Artifacts retain every sample.'
           } | tee -a "$GITHUB_STEP_SUMMARY"
+          python3 - "${{ matrix.database }}" <<'PY' || true
+          import json,sys
+          for label in ('baseline','candidate'):
+              try:
+                  d=json.load(open('/tmp/classic-v1/'+label+'-'+sys.argv[1]+'.json'))
+                  print('::notice::PERF '+label+' '+json.dumps(d.get('summary',d),sort_keys=True))
+              except Exception as e: print('::notice::PERF '+label+' unavailable '+str(e))
+          PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -228,18 +236,22 @@ jobs:
           profile_rc=0
           for label in baseline candidate; do
             if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
+            echo "::notice::HTTP stage install-$label"
             zip=$(find "$root/dist" -name '*.zip' | head -1)
             if ! wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root > /tmp/classic-http/install-$label.log 2>&1; then
               tail -30 /tmp/classic-http/install-$label.log | while IFS= read -r line; do echo "::error::INSTALL $line"; done
               exit 1
             fi
+            echo "::notice::HTTP stage profiler-$label"
             sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
             sudo cp "$GITHUB_WORKSPACE/clinic-practice-management/tests/fixtures/classic-v1-http-profiler-mu.php" "$WP_DIR/wp-content/mu-plugins/classic-v1-profiler.php"
+            echo "::notice::HTTP stage apache-$label"
             if ! sudo service apache2 restart > /tmp/classic-http/apache-$label.log 2>&1; then
               cat /tmp/classic-http/apache-$label.log | while IFS= read -r line; do echo "::error::APACHE $line"; done
               exit 1
             fi
             if [ "$label" = baseline ]; then
+              echo "::notice::HTTP stage fixture"
               set +e
               WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php > /tmp/classic-http/fixture.log 2>&1
               fixture_rc=$?
@@ -248,15 +260,18 @@ jobs:
                 tail -30 /tmp/classic-http/fixture.log | while IFS= read -r line; do echo "::error::FIXTURE $line"; done
                 exit "$fixture_rc"
               fi
+              echo "::notice::HTTP stage env"
               cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
               set -a; . /tmp/doctor-portal.env; set +a
+              echo "::notice::HTTP stage seed"
               if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
                 tail -30 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
                 exit 1
               fi
             fi
             set -a; . /tmp/doctor-portal.env; set +a
-            ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[0 if __import__("os").environ["LABEL"]=="baseline" else 12:][:12]))' LABEL="$label")
+            echo "::notice::HTTP stage profile-$label"
+            ids=$(LABEL="$label" python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[0 if __import__("os").environ["LABEL"]=="baseline" else 12:][:12]))')
             PROFILE_LABEL="$label" LABEL="$label" PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT="/tmp/classic-http/$label.json" python3 clinic-practice-management/bin/classic-v1-http-profile.py || { profile_rc=$?; break; }
           done
           if [ "$profile_rc" -ne 0 ]; then
