@@ -3,7 +3,8 @@
  *
  * Scope (Phase 4 — Persian date UX):
  *  - Enhances ONLY real calendar-date inputs: `input[type="date"]` inside a
- *    CPMS admin `.wrap[dir="rtl"]` screen. It NEVER touches `input[type="time"]`
+ *    CPMS admin `.wrap[dir="rtl"]` screen or the plugin-owned Staff Portal
+ *    shell (`<html dir="rtl">`). It NEVER touches `input[type="time"]`
  *    (clock ranges) or weekday checkboxes/selects — weekly recurring
  *    schedules (weekday + time range) have no calendar date to convert, and
  *    this file intentionally has no code path that could misinterpret one.
@@ -736,7 +737,19 @@
 
   function enhanceAll(root) {
     var scope = root || document;
-    var nodes = scope.querySelectorAll('.wrap[dir="rtl"] input[type="date"]');
+    // Two RTL scopes share this enhancement:
+    //   1. CPMS wp-admin screens — real calendar-date inputs inside the
+    //      `.wrap[dir="rtl"]` container (Phase 4 baseline).
+    //   2. The plugin-owned Staff Portal shell — a standalone RTL document
+    //      (`<html dir="rtl">`) that mounts the reception/finance/reports
+    //      modules in embed mode. Those modules own real calendar-date
+    //      inputs (reception birth date, finance reconciliation range,
+    //      reports date) that must be Persian/Jalali too (Owner B).
+    // `enhanceField()` is idempotent per-input (`data-cpms-jalali-enhanced`),
+    // so an input matched by both selectors is still enhanced exactly once.
+    var nodes = scope.querySelectorAll(
+      '.wrap[dir="rtl"] input[type="date"], html[dir="rtl"] input[type="date"]'
+    );
     for (var i = 0; i < nodes.length; i += 1) {
       enhanceField(nodes[i]);
     }

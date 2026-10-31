@@ -107,6 +107,6 @@ final class CpmsAssets
             return $classes;
         }
 
-        return trim($classes . ' cpms-admin');
+        return trim($classes . ' cpms-admin cpms-jalali-scope');
     }
 }
