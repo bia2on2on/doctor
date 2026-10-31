@@ -256,10 +256,10 @@ if ( empty( $cpms_staff_embed ) ) {
         <h2 class="cpms-finance-board__heading">تطبیق روزانه و گزارش مالی همین موقعیت</h2>
         <p class="cpms-finance-board__hint">خلاصهٔ دریافتی‌ها به تفکیک روش پرداخت و وضعیت فاکتورهای صادرشده در منطقهٔ زمانی همین موقعیت عملیاتی (بدون دادهٔ هویتی بیمار).</p>
         <div class="cpms-finance-board__fields">
-            <label class="cpms-finance-board__field">از تاریخ (میلادی موقعیت)
+            <label class="cpms-finance-board__field">از تاریخ
                 <input type="date" data-role="finance-recon-from" dir="ltr" aria-label="از تاریخ">
             </label>
-            <label class="cpms-finance-board__field">تا تاریخ (میلادی موقعیت)
+            <label class="cpms-finance-board__field">تا تاریخ
                 <input type="date" data-role="finance-recon-to" dir="ltr" aria-label="تا تاریخ">
             </label>
             <div class="cpms-finance-board__form-actions">

@@ -526,7 +526,7 @@
 			{key:'first_name', label:'نام', type:'text', attrs:'autocomplete="given-name"'},
 			{key:'last_name', label:'نام خانوادگی', type:'text', attrs:'autocomplete="family-name"'},
 			{key:'national_id', label:'کد ملی', type:'text', attrs:'inputmode="numeric" autocomplete="off" dir="ltr"'},
-			{key:'birth_date', label:'تاریخ تولد', type:'text', attrs:'placeholder="YYYY-MM-DD" dir="ltr"'},
+			{key:'birth_date', label:'تاریخ تولد', type:'date', attrs:'dir="ltr"'},
 			{key:'gender', label:'جنسیت', type:'select', options:{'':'انتخاب کنید','male':'مرد','female':'زن','other':'سایر'}},
 			{key:'address', label:'آدرس', type:'textarea', full:true},
 			{key:'phone', label:'تلفن ثابت', type:'tel', attrs:'autocomplete="tel" dir="ltr"'},
