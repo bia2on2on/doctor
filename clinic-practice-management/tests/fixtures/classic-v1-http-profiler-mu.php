@@ -13,9 +13,15 @@ add_filter('rest_post_dispatch', static function ($response) {
     }
     return $response;
 }, 999);
-add_action('shutdown', static function () {
-    if (!headers_sent() && !defined('REST_REQUEST')) {
+// Buffer the CI-only HTML response so the final query count is known before
+// the first byte is emitted. This does not alter the response body.
+add_action('template_redirect', static function () {
+    if (defined('REST_REQUEST')) {
+        return;
+    }
+    ob_start(static function ($html) {
         header('X-CI-Queries: ' . (int) ($GLOBALS['cpms_ci_queries'] ?? 0));
         header('X-CI-Milliseconds: ' . sprintf('%.3f', (microtime(true) - $GLOBALS['cpms_ci_start']) * 1000));
-    }
-}, PHP_INT_MAX);
+        return $html;
+    });
+}, 0);

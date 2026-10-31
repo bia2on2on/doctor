@@ -164,6 +164,14 @@ jobs:
                   summary=d.get('summary') or {k:{'n':len(v),'median_ms':round(statistics.median(x['ms'] for x in v),3),'median_queries':statistics.median(x['queries'] for x in v)} for k,v in d['samples'].items()}
                   print('::notice::PERF '+label+' '+json.dumps(summary,sort_keys=True))
               except Exception as e: print('::notice::PERF '+label+' unavailable '+str(e))
+          import os, xml.etree.ElementTree as ET
+          for label in ('baseline','candidate'):
+              p='/tmp/classic-v1/'+label+'-'+sys.argv[1]+'.xml'
+              if os.path.isfile(p):
+                  r=ET.parse(p).getroot()
+                  suites=r.findall('testsuite') or [r]
+                  totals={k:sum(int(s.get(k,0)) for s in suites) for k in ('tests','failures','errors','skipped')}
+                  print('::notice::TESTS '+label+' '+json.dumps(totals,sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
