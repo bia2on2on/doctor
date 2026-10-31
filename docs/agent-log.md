@@ -3342,3 +3342,8 @@ Applied the five approved corrections on top:
   at 0030.
 - **(e) Strict production/companion isolation preserved.** `companion-isolation.py`
   on the full change set reports `companion-isolation: PASS`.
+- **(d, continued)** The first-practice browser harness also pinned the installed schema
+  head: `clinic-practice-management/bin/rwp-first-practice.py` asserted
+  `precondition.schema_0030` against `App::migrations()->currentVersion()`. Bumped to
+  `precondition.schema_0031` / `2026_10_31_0031`. This was the cause of the
+  `First-Practice Browser Acceptance` failure on the first successor-PR CI pass.
