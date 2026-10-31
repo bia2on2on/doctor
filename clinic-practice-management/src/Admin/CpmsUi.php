@@ -45,27 +45,26 @@ final class CpmsUi
      * site-wide, not clinic-scoped). Falls back to the raw string when the
      * input is not a parseable UTC datetime.
      */
-    public static function jalaliDateTime(string $utc_datetime, string $timezone = ''): string
-    {
-        $raw = trim($utc_datetime);
-        if ($raw === '') {
+    public static function jalali_date_time( string $utc_datetime, string $timezone = '' ): string {
+        $raw = trim( $utc_datetime );
+        if ( $raw === '' ) {
             return '';
         }
         try {
-            if ($timezone !== '') {
-                $tz = new \DateTimeZone($timezone);
-            } elseif (function_exists('wp_timezone') && wp_timezone() instanceof \DateTimeZone) {
+            if ( $timezone !== '' ) {
+                $tz = new \DateTimeZone( $timezone );
+            } elseif ( function_exists( 'wp_timezone' ) && wp_timezone() instanceof \DateTimeZone ) {
                 $tz = wp_timezone();
             } else {
-                $tz = new \DateTimeZone('UTC');
+                $tz = new \DateTimeZone( 'UTC' );
             }
-            $utc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $raw, new \DateTimeZone('UTC'));
-            if (false === $utc) {
+            $utc = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $raw, new \DateTimeZone( 'UTC' ) );
+            if ( false === $utc ) {
                 return $raw;
             }
-            $local = $utc->setTimezone($tz);
-            return \ClinicCore\Domain\Time\Jalali::formatYmd($local->format('Y-m-d')) . ' ' . $local->format('H:i');
-        } catch (\Throwable $e) {
+            $local = $utc->setTimezone( $tz );
+            return \ClinicCore\Domain\Time\Jalali::formatYmd( $local->format( 'Y-m-d' ) ) . ' ' . $local->format( 'H:i' );
+        } catch ( \Throwable $e ) {
             return $raw;
         }
     }
