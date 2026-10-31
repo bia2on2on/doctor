@@ -218,7 +218,7 @@ jobs:
           wp config set DISABLE_WP_CRON true --raw --allow-root
           wp config set CPMS_CI_HTTP_PROFILER true --raw --allow-root
           wp core install --url="$WP_URL" --title='Synthetic Classic V1' --admin_user=ci_admin --admin_password='Synthetic-Only-2026!' --admin_email=ci@example.invalid --skip-email --allow-root
-          wp rewrite structure '/%postname%/' --allow-root
+          wp rewrite structure '' --hard --allow-root
           sudo tee /etc/apache2/sites-available/cpms.conf >/dev/null <<CONF
           <VirtualHost *:8080>
             DocumentRoot $WP_DIR
