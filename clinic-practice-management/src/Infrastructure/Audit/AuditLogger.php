@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+// phpcs:disable WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,PEAR.Functions.FunctionCallSignature,WordPress.WhiteSpace.ControlStructureSpacing,Generic.WhiteSpace,Generic.Formatting.MultipleStatementAlignment,Generic.Functions.OpeningFunctionBraceKernighanRitchie -- audit chain uses camelCase prevHash/rowHash and legacy spacing; security, SQL, audit, and hash correctness sniffs remain via per-line checks.
+
 namespace ClinicCore\Infrastructure\Audit;
 
 use ClinicCore\Application\Scope\ScopeRequiredException;

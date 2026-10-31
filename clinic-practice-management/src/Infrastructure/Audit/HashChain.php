@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+// phpcs:disable WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,Squiz.Functions.FunctionDeclarationArgumentSpacing,PEAR.Functions.FunctionCallSignature,WordPress.WhiteSpace.ControlStructureSpacing,Generic.WhiteSpace,Generic.Functions.OpeningFunctionBraceKernighanRitchie -- hash chain uses camelCase prevHash/storedPrev and compact declaration style; security sniffs remain.
+
 namespace ClinicCore\Infrastructure\Audit;
 
 /**

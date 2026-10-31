@@ -35,8 +35,8 @@ use ClinicCore\Infrastructure\Db\CpmsDb;
 return [
     'version'     => '2026_10_31_0031',
     'description' => 'Audit append serialization guard — singleton row locked per append',
-    'up'          => static function (CpmsDb $db): void {
-        $seq = $db->table('cpms_audit_seq');
+    'up'          => static function ( CpmsDb $db ) : void {
+        $seq = $db->table( 'cpms_audit_seq' );
 
         $db->query(
             "CREATE TABLE IF NOT EXISTS {$seq} (
@@ -76,8 +76,8 @@ return [
             throw new RuntimeException( 'migration 0031: audit guard row missing after seeding' );
         }
     },
-    'down'        => static function (CpmsDb $db): void {
+    'down'        => static function ( CpmsDb $db ) : void {
         // Development only — production restores from backup; audit history is never deleted.
-        $db->query('DROP TABLE IF EXISTS ' . $db->table('cpms_audit_seq'));
+        $db->query( 'DROP TABLE IF EXISTS ' . $db->table( 'cpms_audit_seq' ) );
     },
 ];

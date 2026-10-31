@@ -101,8 +101,7 @@ final class OtpPolicy
         return max(0, $this->maxAttempts - $state->attempts);
     }
 
-    public function remaining_cooldown( OtpState $state, DateTimeImmutable $now ): int
-    {
+    public function remaining_cooldown( OtpState $state, DateTimeImmutable $now ): int {
         if ( $state->lastSentAt === null ) {
             return 0;
         }
@@ -113,13 +112,11 @@ final class OtpPolicy
 
     // BC alias — new code uses remaining_cooldown().
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase alias.
-    public function remainingCooldown( OtpState $state, DateTimeImmutable $now ): int
-    {
+    public function remainingCooldown( OtpState $state, DateTimeImmutable $now ): int {
         return $this->remaining_cooldown( $state, $now );
     }
 
-    public function remaining_lockout( OtpState $state, DateTimeImmutable $now ): int
-    {
+    public function remaining_lockout( OtpState $state, DateTimeImmutable $now ): int {
         if ( $state->lockedUntil === null || $state->lockedUntil <= $now ) {
             return 0;
         }
