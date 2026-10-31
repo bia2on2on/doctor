@@ -176,7 +176,7 @@ final class AuditLogger
 
         $result = HashChain::verify($rows, $anchor);
 
-        if (!$result['ok']) {
+        if ( ! $result['ok'] ) {
             $this->op->error('AUDIT_CHAIN_BROKEN', ['broken_at' => $result['broken_at'], 'broken_id' => $result['broken_id'] ?? null]);
         }
 
@@ -202,7 +202,7 @@ final class AuditLogger
         // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC HashChain alias.
         $result = HashChain::verify_full_chain( $rows );
 
-        if (!$result['ok']) {
+        if ( ! $result['ok'] ) {
             $this->op->error('AUDIT_CHAIN_BROKEN', ['broken_at' => $result['broken_at'], 'broken_id' => $result['broken_id'] ?? null]);
         }
 

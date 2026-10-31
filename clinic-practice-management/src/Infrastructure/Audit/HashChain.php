@@ -81,12 +81,12 @@ final class HashChain
             $stored_prev = (string) ($row['prev_hash'] ?? '');
             $actual = (string) ($row['row_hash'] ?? '');
             // ۱) پیوند زنجیر: مقدار ذخیره‌شدهٔ prev_hash باید برابر هشِ واقعیِ گرهٔ پیشین باشد.
-            if (!hash_equals($prev, $stored_prev)) {
+            if ( ! hash_equals($prev, $stored_prev)) {
                 return ['ok' => false, 'checked' => $i + 1, 'broken_at' => $i + 1, 'broken_id' => isset($row['id']) ? (int) $row['id'] : null];
             }
             // ۲) صحت گره: row_hash باید از همین prev_hash ذخیره‌شده بازمحاسبه شود.
             $expected = self::computeRowHash($stored_prev, self::fieldsFor($row));
-            if (!hash_equals($expected, $actual)) {
+            if ( ! hash_equals($expected, $actual)) {
                 return ['ok' => false, 'checked' => $i + 1, 'broken_at' => $i + 1, 'broken_id' => isset($row['id']) ? (int) $row['id'] : null];
             }
             $prev = $actual;

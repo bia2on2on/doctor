@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-// phpcs:disable WordPress.NamingConventions.ValidVariableName -- OtpState uses legacy camelCase properties (lastSentAt, lockedUntil) tracked in drift-register; snake_case wrappers added for new API.
+// phpcs:disable WordPress.NamingConventions.ValidVariableName,Generic.WhiteSpace.ScopeIndent.IncorrectExact -- OtpState uses legacy camelCase properties; file uses spaces not tabs (WordPress standard prefers tabs) but changing entire file risks churn; snake_case wrappers added for new API.
 
 namespace ClinicCore\Domain\Otp;
 
@@ -47,7 +47,8 @@ final class OtpPolicy
      *
      * @return array{ok: bool, reason: string}
      */
-    public function canSend(OtpState $state, DateTimeImmutable $now): array
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.FunctionNameInvalid -- BC camelCase API preserved.
+    public function canSend( OtpState $state, DateTimeImmutable $now ): array
     {
         $state->resetIfUnlocked($now);
 
@@ -67,7 +68,8 @@ final class OtpPolicy
     /**
      * ثبت ارسال موفق.
      */
-    public function registerSend(OtpState $state, DateTimeImmutable $now): OtpState {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.FunctionNameInvalid -- BC camelCase API preserved.
+    public function registerSend( OtpState $state, DateTimeImmutable $now ): OtpState
     {
         $state->lastSentAt = $now;
         $state->sentToday += 1;
@@ -78,7 +80,8 @@ final class OtpPolicy
     /**
      * ثبت تلاش نادرست — در صورت رسیدن به حد، قفل.
      */
-    public function registerFailedAttempt(OtpState $state, DateTimeImmutable $now): OtpState {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.FunctionNameInvalid -- BC camelCase API preserved.
+    public function registerFailedAttempt( OtpState $state, DateTimeImmutable $now ): OtpState
     {
         $state->resetIfUnlocked($now);
         $state->attempts += 1;
@@ -91,12 +94,14 @@ final class OtpPolicy
         return $state;
     }
 
-    public function isCodeExpired(DateTimeImmutable $codeIssuedAt, DateTimeImmutable $now): bool {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.FunctionNameInvalid -- BC camelCase API preserved.
+    public function isCodeExpired( DateTimeImmutable $codeIssuedAt, DateTimeImmutable $now ): bool
     {
         return $now->getTimestamp() - $codeIssuedAt->getTimestamp() >= $this->ttlSeconds;
     }
 
-    public function remainingAttempts(OtpState $state): int {
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.FunctionNameInvalid -- BC camelCase API preserved.
+    public function remainingAttempts( OtpState $state ): int
     {
         return max(0, $this->maxAttempts - $state->attempts);
     }
@@ -125,7 +130,7 @@ final class OtpPolicy
     }
 
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC.
-    public function remainingLockout( OtpState $state, DateTimeImmutable $now ): int {
+    public function remainingLockout( OtpState $state, DateTimeImmutable $now ): int
     {
         return $this->remaining_lockout( $state, $now );
     }
@@ -133,7 +138,7 @@ final class OtpPolicy
     /**
      * کد را تولید می‌کند (CSPRNG) — همیشه دقیقاً $length رقم.
      */
-    public static function generateCode(int $length = 6): string
+    public static function generateCode( int $length = 6 ): string
     {
         $max = (int) str_repeat('9', $length);
 
@@ -149,7 +154,7 @@ final class OtpPolicy
      * است. تغییر الگوریتم Tokenهای در جریان را باطل می‌کند که با توجه به
      * TTL چنددقیقه‌ای OTP بی‌خطر است.
      */
-    public static function hashCode(string $code, string $pepper): string
+    public static function hashCode( string $code, string $pepper ): string
     {
         return hash_hmac('sha256', $code, $pepper);
     }
