@@ -3268,3 +3268,16 @@ limits, candidate design and outstanding acceptance; this is not a fix or releas
 - Isolated `AuditAppendConcurrencyTest` to its own temporary Organization/Clinic
   with verified suffix-audit cleanup and guard reset, and fixed type/cleanup
   defects in `ClinicReceptionRecoveryTest`. Re-running quality CI next.
+- [Quality run 41227858364](https://github.com/bia2on2on/doctor/actions/runs/41227858364)
+  at `a5ec1d50f6bbcd119ca5c12d3cebebb42c3e2164` reduced full MySQL integration
+  failures from 61 to 2 (`Tests: 2481, Assertions: 71276, Failures: 2` —
+  `FirstPracticeSetupTest`, `ClinicReceptionRecoveryTest`, `OtpFlowTest`,
+  `ClinicalAuditAtomicityTest` and `MigrationTest` all passed). The remaining two
+  failures were both inside `AuditAppendConcurrencyTest` (`testGuardSerializesConcurrentAuditAppendsAndChainRemainsIntact`
+  and `testSyntheticAuditRowsLeaveProductionVerifierIntact`), caused by the
+  parent session's `lockedAuditCount()` (`SELECT 1 FROM cpms_audit_logs FOR UPDATE`)
+  holding a table-wide InnoDB exclusive record+gap lock under `autocommit = 0`
+  while forked child connections tried to `SELECT ... FOR UPDATE` and `INSERT`
+  into `cpms_audit_logs`. Added an explicit `COMMIT` on the parent session
+  immediately before forking workers, used 1-based `resource_id`, and made
+  `tearDown()` cleanup assertion-free.
