@@ -660,7 +660,7 @@ final class SystemPage
      * هیچ Jobی این‌جا اجرا نمی‌شود؛ تنها اقدامِ ممکن، بازساختنِ idempotentِ رویدادِ
      * زمان‌بندی با Nonce و مجوزِ `cpms_config` است.
      *
-     * @param array<string, mixed>|null $queue_diagnosis
+     * @param int $selected_clinic_id
      */
     private static function render_reception_check( int $selected_clinic_id ): void {
         if ( $selected_clinic_id <= 0 ) {

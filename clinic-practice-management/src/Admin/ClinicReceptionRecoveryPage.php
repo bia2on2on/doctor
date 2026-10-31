@@ -7,7 +7,7 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
-use ClinicCore\Application\Membership\MembershipException;
+use ClinicCore\Domain\Membership\MembershipException;
 use ClinicCore\Domain\Time\Jalali;
 
 /**
@@ -82,7 +82,7 @@ final class ClinicReceptionRecoveryPage {
 
         // Verified Clinic context — now enforce explicit CONFIG authorization per Clinic.
         try {
-            App::authorizationService()->authorize($actor_id, $clinic_id, RolesAndCapabilities::CONFIG);
+            App::authorization_service()->authorize($actor_id, $clinic_id, RolesAndCapabilities::CONFIG);
         } catch (\Throwable) {
             \wp_die(\esc_html__('دسترسی به این درمانگاه مجاز نیست', 'cpms'), 403);
         }
@@ -122,7 +122,7 @@ final class ClinicReceptionRecoveryPage {
         // Header with Clinic context.
         echo '<div class="wrap cpms-reception-recovery" dir="rtl">';
         echo '<h1>بازیابی پذیرش — انتساب پزشک به محل</h1>';
-        echo '<p>درمانگاهِ فعال: <strong>' . \esc_html($clinic_name) . '</strong> (شناسه ' . \esc_html((string) $clinic_id) . ') — ' . \esc_html(Jalali::now()) . '</p>';
+        echo '<p>درمانگاهِ فعال: <strong>' . \esc_html($clinic_name) . '</strong> (شناسه ' . \esc_html((string) $clinic_id) . ') — ' . \esc_html(Jalali::todayJalali()) . '</p>';
 
         if ($notice !== null) {
             $class = $notice['type'] === 'success' ? 'notice notice-success is-dismissible' : 'notice notice-error is-dismissible';
@@ -259,7 +259,7 @@ final class ClinicReceptionRecoveryPage {
             self::redirect();
         }
         try {
-            App::authorizationService()->authorize($actor_id, $clinic_id, RolesAndCapabilities::CONFIG);
+            App::authorization_service()->authorize($actor_id, $clinic_id, RolesAndCapabilities::CONFIG);
         } catch (\Throwable) {
             self::push_notice('error', 'مجوزِ پیکربندی برای این درمانگاه ندارید.');
             self::redirect();
