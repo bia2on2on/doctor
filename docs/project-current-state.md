@@ -1116,10 +1116,12 @@ The structurally tracked item was the background-job/tenant-context path. **Upda
 2026-09-15 (final Phase 2 reconciliation):** the approved T/S/W scope-classification
 **design is IMPLEMENTED**. The runtime truth is
 `clinic-practice-management/src/Application/Jobs/JobScopeRegistry.php` (+
-`JobScopeClass`): every one of the 15 registered job types carries an explicit
+`JobScopeClass`): every one of the 16 registered job types carries an explicit
 `T` (tenant) / `S` (installation) / `W` (installation-wide sweep) class, and
 `JobsDispatcher` enforces it fail-closed (`JOB_SCOPE_UNCLASSIFIED` for any
-unclassified type; permissive mode is test-only opt-in). The design rationale stays
+unclassified type; permissive mode is test-only opt-in). Classic V1 adds the
+event-driven `appointment.cancel_notify` tenant job (3 T / 6 S / 7 W; 13 recurring).
+The design rationale stays
 recorded in
 [`docs/architecture/phase2-tenant-context-remediation-design.md`](architecture/phase2-tenant-context-remediation-design.md).
 Two boundaries are **preserved exactly**: (a) per the documented decision, **no

@@ -3048,10 +3048,10 @@ buffer now exists only on `template_redirect`, so REST/AJAX/admin/login response
 never buffered, downloads are never decorated, persona pages are marked non-cacheable,
 and both render paths return the page untouched if anything throws.
 
-## Classic V1 remediation — 2026-10-31 (in progress)
+## Classic V1 remediation — 2026-10-31
 
 - Baseline authority: `9bf84304b2b143138c638fa1ca1d71869aa1e244`. The independent installer report was unavailable; supplied findings were treated as leads, not inspected evidence.
 - Added real-WordPress regressions for OTP failure envelopes, SMS preflight/SSRF/stale verification, persisted Visit Location membership, and staff cancellation outbox/idempotency. Added a focused MySQL 8 / MariaDB 11.4.13 comparison workflow and a CI-only authenticated HTTP observer.
 - Local PHP-wasm lint and focused frontend source tests ran; the earlier broad wasm unit run was not green (missing native/locked dependencies and path assumptions) and is not claimed as DB evidence. Native PHP/MySQL/Docker are unavailable locally.
-- Runtime evidence is being collected from GitHub Actions. Initial workflow setup failures (archive cwd, vendor destination, YAML indentation) were corrected; they are not product test passes. Final exact-head evidence and measurements will be recorded before the PR is finalized.
+- Focused evidence at `c9ff05c387e6c77568ff132d6508112eafaff889` (run `41176806530`): MySQL 8 and MariaDB 11.4.13 each executed 120 candidate tests with 0 failures/errors; the archived baseline executed the 12 new regressions/probe with 3 failures and 4 errors. The same-run authenticated MySQL HTTP profile reduced REST queries by 29/request (queue 98→69, record 101→73, note 91→62, prescription 98→69, complete 108→79). Staff Portal HTML stayed 115 queries; the reported 214–235 query and 2.2–4.0 s production symptoms were not reproduced in this synthetic CI workload. Initial workflow setup failures were corrected and are not counted as product test passes.
 - No merge, release, tag, deployment, Modern skin, or Theme Adaptive work performed.
