@@ -114,6 +114,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
             App::settings()->set('sms.generic', ['endpoint' => 'http://127.0.0.1/internal']);
             App::settings()->set('sms.last_test', ['status' => 'ok', 'provider' => 'generic_api', 'message' => 'old success']);
         });
+        $this->asSmsManager();
         $response = $this->post('/sms/test-connection', ['provider' => 'generic_api']);
         self::assertSame(400, $response->get_status());
         self::assertSame('CLINIC_SSRF_BLOCKED', $this->iv1_code($response));
@@ -129,6 +130,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
             App::settings()->set('sms.provider', RecordingSmsProvider::ID);
             App::settings()->set('sms.last_test', ['status' => 'ok', 'provider' => RecordingSmsProvider::ID]);
         });
+        $this->asSmsManager();
         $response = $this->post('/sms/settings', ['provider' => RecordingSmsProvider::ID, 'auth_method' => 'api_key', 'credentials' => ['api_key' => 'synthetic-new-key']]);
         self::assertSame(200, $response->get_status());
         $status = $this->iv1_scope($this->clinic, fn() => App::smsService()->status());
@@ -266,8 +268,16 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         return $this->iv1_dispatch('GET', '/clinic/v1/visits/' . $visit . '/record', $params, $this->iv1_headers($this->clinic));
     }
 
+    private function asSmsManager(): void
+    {
+        $manager = $this->iv1_user(RolesAndCapabilities::ROLE_MANAGER, 'classic_manager');
+        $this->iv1_membership($manager, $this->clinic, RolesAndCapabilities::ROLE_MANAGER);
+        wp_set_current_user($manager);
+    }
+
     private function saveUnsafeEndpoint(): WP_REST_Response
     {
+        $this->asSmsManager();
         return $this->post('/sms/settings', ['provider' => 'generic_api', 'auth_method' => 'api_key', 'generic' => ['endpoint' => 'http://127.0.0.1/internal']]);
     }
 
