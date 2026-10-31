@@ -45,6 +45,7 @@ final class CpmsAssets
         'cpms-finance-delegation',
         'cpms-facility-setup',
         'cpms-shortcodes',
+        'cpms-reception-recovery',
         // F — صفحه‌های مدیریتِ سازمان (ADR-0031) عمداً بیرونِ این allowlist
         // می‌مانند: قراردادِ `IranGeographyAddressFormsTest` این دو صفحه را
         // «بدونِ کنترلِ جغرافیایی/JSِ عمومی» تعریف کرده و افزودنشان آن تست را

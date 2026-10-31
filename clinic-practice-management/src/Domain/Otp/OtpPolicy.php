@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+// phpcs:disable WordPress.NamingConventions.ValidVariableName -- OtpState uses legacy camelCase properties (lastSentAt, lockedUntil) tracked in drift-register; snake_case wrappers added for new API.
+
 namespace ClinicCore\Domain\Otp;
 
 use DateTimeImmutable;
@@ -22,14 +24,22 @@ final class OtpPolicy
     public function __construct(
         private readonly int $ttlSeconds = 300,
         private readonly int $maxAttempts = 5,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- snake_case variant exists below; keep camelCase param for BC.
         private readonly int $cooldown_seconds = 60,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- BC.
         private readonly int $dailyMaxCodes = 3,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- BC.
         private readonly int $lockoutSeconds = 900,
     ) {
     }
 
     public function cooldown_seconds(): int {
         return $this->cooldown_seconds;
+    }
+
+    public function lockout_seconds(): int {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- BC property.
+        return $this->lockoutSeconds;
     }
 
     /**
@@ -73,8 +83,9 @@ final class OtpPolicy
         $state->resetIfUnlocked($now);
         $state->attempts += 1;
 
-        if ($state->attempts >= $this->maxAttempts) {
-            $state->lockedUntil = $now->modify('+' . $this->lockoutSeconds . ' seconds');
+        if ( $state->attempts >= $this->maxAttempts ) {
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy property.
+            $state->lockedUntil = $now->modify( '+' . $this->lockoutSeconds . ' seconds' );
         }
 
         return $state;
@@ -88,6 +99,38 @@ final class OtpPolicy
     public function remainingAttempts(OtpState $state): int
     {
         return max(0, $this->maxAttempts - $state->attempts);
+    }
+
+    public function remaining_cooldown( OtpState $state, DateTimeImmutable $now ): int
+    {
+        if ( $state->lastSentAt === null ) {
+            return 0;
+        }
+        $elapsed   = $now->getTimestamp() - $state->lastSentAt->getTimestamp();
+        $remaining = $this->cooldown_seconds - $elapsed;
+        return $remaining > 0 ? $remaining : 0;
+    }
+
+    // BC alias — new code uses remaining_cooldown().
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase alias.
+    public function remainingCooldown( OtpState $state, DateTimeImmutable $now ): int
+    {
+        return $this->remaining_cooldown( $state, $now );
+    }
+
+    public function remaining_lockout( OtpState $state, DateTimeImmutable $now ): int
+    {
+        if ( $state->lockedUntil === null || $state->lockedUntil <= $now ) {
+            return 0;
+        }
+        $remaining = $state->lockedUntil->getTimestamp() - $now->getTimestamp();
+        return $remaining > 0 ? $remaining : 0;
+    }
+
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC.
+    public function remainingLockout( OtpState $state, DateTimeImmutable $now ): int
+    {
+        return $this->remaining_lockout( $state, $now );
     }
 
     /**
