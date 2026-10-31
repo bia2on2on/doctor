@@ -19,6 +19,7 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && format('main-run-{0}', github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
