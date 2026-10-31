@@ -745,6 +745,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -o pipefail
+          python3 -m unittest discover -s "$GITHUB_WORKSPACE/bin" -p test_integration_diagnostics.py
           phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/phpunit-int-junit.xml \
@@ -764,6 +765,8 @@ jobs:
           import subprocess
           import sys
           import xml.etree.ElementTree as ET
+          sys.path.insert(0, os.path.join(os.environ['GITHUB_WORKSPACE'], 'bin'))
+          from integration_diagnostics import junit_stats, terminal_summary_printed
 
           status = sys.argv[1]
           identifier_re = re.compile(r'[^A-Za-z0-9_:\.\- ]')
@@ -772,11 +775,7 @@ jobs:
           categories = {}
           try:
               root = ET.parse('/tmp/phpunit-int-junit.xml').getroot()
-              for suite in root.iter('testsuite'):
-                  for key, attr in (('cases', 'tests'), ('assertions', 'assertions'), ('failures', 'failures'), ('errors', 'errors'), ('skipped', 'skipped')):
-                      value = suite.get(attr)
-                      if value is not None and suite.find('testsuite') is None:
-                          stats[key] += int(value)
+              stats = junit_stats(root)
               for case in root.findall('.//testcase'):
                   for tag in ('error', 'failure'):
                       node = case.find(tag)
@@ -793,9 +792,7 @@ jobs:
 
           completed = 'unknown'
           try:
-              with open('/tmp/phpunit-int.log', 'r', errors='ignore') as handle:
-                  tail = handle.read()[-4000:]
-              completed = 'yes' if re.search(r'(?m)^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!)', tail) else 'no'
+              completed = 'yes' if terminal_summary_printed('/tmp/phpunit-int.log') else 'no'
           except Exception:
               completed = 'log_unavailable'
 
