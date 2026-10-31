@@ -3347,3 +3347,11 @@ Applied the five approved corrections on top:
   `precondition.schema_0030` against `App::migrations()->currentVersion()`. Bumped to
   `precondition.schema_0031` / `2026_10_31_0031`. This was the cause of the
   `First-Practice Browser Acceptance` failure on the first successor-PR CI pass.
+
+## 2026-11-01 — PR #292 controlled successor (partial, draft)
+
+- Reconstructed the complete `d2c9f779..fcf2c69` history as forward-only commits on `arena/ad8e8aee-doctor`. At reconstruction commit `88b1d33` the tree was `a370b6adafdd2d205101fbff917d23b20c9d0948`, identical to PR #292's head tree; the tree diff was empty. PR #292 was not modified.
+- Restored the baseline recommendation, follow-up and file item structures in `ClinicalService::record`, retained the original Phase 10 contract tests from PR #292, and corrected reported admin/WPCS formatting. A source comparison found identical baseline recommendation/follow-up presenter bodies and file item key lists. This is not a substitute for the three WordPress integration tests, which were not executable locally.
+- The affected portal data are fetched dynamically after the PHP templates render. Server-side Jalali conversion of the restored canonical recommendation, follow-up and file fields has **not** been implemented or verified; the workspace falls back to the Gregorian values. This remains a blocker, not a completed regression fix. No new location timezone policy, REST authorization boundary or client-side substitute was invented.
+- Focused checks: three Node specs passed; PHP.wasm 8.5.10 lint passed on 62 changed PHP files; WPCS collector self-test 6/6 and authorization-coverage-guard self-test 14/14 passed. Local PHPCS 3.13.5 / WPCS 3.3.0 with PHP.wasm reported zero violations on the collected added lines against `2263ed673a8fdf4ab91e6a7fffae6d82252e4324`. This is local evidence, not an exact-head CI result. The real AuthorizationService coverage run requires WordPress/MySQL/PCOV and was not run locally.
+- The companion pin mismatch is outside this PR: production-first merge, then companion-only follow-up to bump `2026_10_27_0030` to `2026_10_31_0031` and register `cpms_audit_seq`. No green-CI claim is made; the five related workflows require exact-head verification.

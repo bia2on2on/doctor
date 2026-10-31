@@ -1141,7 +1141,7 @@ function loadWorkspaceMedHistory(){
                 return '<span class="cpms-doc-ws-med-entry">' + esc(rx.prescription_number || '') + (drugs ? ': ' + drugs : '') + '</span>';
             }).join(' · ') + '</div>') : '';
             var fuHtml = fus.length ? ('<div class="cpms-doc-ws-med-block"><strong>پیگیری:</strong> ' + fus.map(function(fu){
-                var when = fu.suggested_date_jalali || (fu.interval_days ? (fu.interval_days + ' روز بعد') : '');
+                var when = fu.suggested_date_jalali || fu.suggested_date || (fu.interval_days ? (fu.interval_days + ' روز بعد') : '');
                 return '<span class="cpms-doc-ws-med-entry">' + esc(when ? (when + (fu.reason ? ' — ' + fu.reason : '')) : (fu.reason || 'ثبت‌شده')) + '</span>';
             }).join(' · ') + '</div>') : '';
             var emptyDetail = (!notesHtml && !rxHtml && !fuHtml) ? '<div class="cpms-doc-ws-med-block cpms-doc-muted">جزئیات بالینی ثبت‌شده برای این مراجعه وجود ندارد.</div>' : '';
