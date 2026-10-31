@@ -232,7 +232,7 @@ final class OtpService
                 priority: 8
             );
             $sent = (string) $res['status'] === SmsMessageStatus::SENT;
-            $retry_enqueued = in_array($res['status'], [SmsMessageStatus::QUEUED, SmsMessageStatus::RETRYING], true);
+            $retry_enqueued = in_array( $res['status'], [ SmsMessageStatus::QUEUED, SmsMessageStatus::RETRYING ], true );
         } catch (\Throwable $e) {
             // OTP dispatch is always inline and never enqueues a recoverable
             // retry (the plaintext code exists only in this request's memory;
@@ -250,10 +250,10 @@ final class OtpService
         $this->audit( $sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip, [], $clinicId );
 
         return [
-            'expires_in' => $ttl,
-            'sms_sent' => $sent,
+            'expires_in'     => $ttl,
+            'sms_sent'       => $sent,
             'retry_enqueued' => $retry_enqueued,
-            'retry_after' => $policy->cooldown_seconds(),
+            'retry_after'    => $policy->cooldown_seconds(),
         ];
     }
 

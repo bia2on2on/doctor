@@ -1074,7 +1074,7 @@ final class BookingService
             ]
         );
 
-        $this->send_appointment_sms(SmsEvents::APPT_CONFIRMED, $mobile, $appt);
+        $this->send_appointment_sms( SmsEvents::APPT_CONFIRMED, $mobile, $appt );
 
         return $view;
     }

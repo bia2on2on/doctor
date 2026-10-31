@@ -75,9 +75,9 @@ final class ClinicalService
      * @return array<string, mixed>
      */
     public function record( int $actor_user_id, int $visit_id, ?int $requested_location_id = null ): array {
-        $this->requireCap($actor_user_id, RolesAndCapabilities::MEDICAL_READ, 'record');
+        $this->requireCap( $actor_user_id, RolesAndCapabilities::MEDICAL_READ, 'record' );
 
-        $visit = $this->requireVisit($visit_id);
+        $visit = $this->requireVisit( $visit_id );
         // C6-F: پروندهٔ کامل ویزیت هم Tenant-aware — ویزیت باید داخل Clinicِ
         // context مجاز باشد (context = Scope صریحِ درخواست یا «تنها Clinic»؛
         // مبهَم ⇒ 400 CLINIC_SCOPE_REQUIRED). رد ⇒ همان 404 امنِ «یافت نشد».
@@ -136,7 +136,7 @@ final class ClinicalService
         // Query-level visibility filter (FR-8.4 / P-6) — never a post-read PHP filter.
         $note_visibility = $can_read_private_notes ? null : [ 'patient_visible' ];
 
-        $rxRows = $this->prescriptions->forVisit($visit_id);
+        $rxRows = $this->prescriptions->forVisit( $visit_id ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
         $rxList = [];
         foreach ($rxRows as $rx) {
             $rxList[] = $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id']));
@@ -144,13 +144,13 @@ final class ClinicalService
 
         $this->audit->log(
             'MEDICAL_RECORD_VIEWED',
-            $this->actor($actor_user_id, 'doctor'),
+            $this->actor( $actor_user_id, 'doctor' ),
             'visit',
             $visit_id,
             (int) $visit['patient_id'],
             null,
             null,
-            ['via' => 'record_endpoint'],
+            [ 'via' => 'record_endpoint' ],
             (int) $visit['clinic_id']
         );
 
@@ -177,7 +177,7 @@ final class ClinicalService
             'notes' => array_map( [ $this, 'presentNote' ], $this->notes->forVisit( $visit_id, $note_visibility ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy array alignment and parameter naming preserved.
             'prescriptions' => $rxList,
             'recommendations' => array_map([$this, 'presentRecommendation'], $this->recommendations->forVisit($visit_id)),
-            'follow_ups' => array_map([$this, 'presentFollowUp'], $this->followUps->forVisit($visit_id)),
+            'follow_ups'     => array_map( [ $this, 'presentFollowUp' ], $this->followUps->forVisit( $visit_id ) ), // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy property.
             // E7: patient_visible stays Visit/Clinic-scoped; doctor_private also requires
             // the Visit-owner file authority.
             'files' => array_map(static fn (array $f): array => [

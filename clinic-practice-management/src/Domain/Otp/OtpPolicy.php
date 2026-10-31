@@ -47,7 +47,7 @@ final class OtpPolicy
         if ($state->sentToday >= $this->dailyMaxCodes) {
             return ['ok' => false, 'reason' => self::REASON_DAILY_LIMIT];
         }
-        if ($state->lastSentAt !== null && $now->getTimestamp() - $state->lastSentAt->getTimestamp() < $this->cooldown_seconds) {
+        if ( $state->lastSentAt !== null && $now->getTimestamp() - $state->lastSentAt->getTimestamp() < $this->cooldown_seconds ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy state property.
             return ['ok' => false, 'reason' => self::REASON_COOLDOWN];
         }
 
