@@ -131,7 +131,6 @@ jobs:
       - name: Expose candidate regression failures
         if: failure()
         run: |
-          tail -25 /tmp/classic-v1/candidate-${{ matrix.database }}.log 2>/dev/null | while IFS= read -r line; do echo "::error::CANDIDATE LOG ${line}"; done
           python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml <<'PY' || true
           import os, sys, xml.etree.ElementTree as ET
           p=sys.argv[1]
