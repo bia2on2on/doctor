@@ -3,7 +3,7 @@
 Date: 2026-10-31  
 Baseline: `9bf84304b2b143138c638fa1ca1d71869aa1e244`  
 PR: <https://github.com/bia2on2on/doctor/pull/288>
-Exact PR head: `ca8079044e7ed21ee2677f29ef07dd32db4a953b`
+Implementation head: `ca8079044e7ed21ee2677f29ef07dd32db4a953b` (the final PR head may add documentation-only commits; exact-head checks are on the PR)
 
 The independent installer report was unavailable. The supplied findings were treated as leads and tested against the actual production plugin. No claim is made to have inspected that report.
 
@@ -50,4 +50,4 @@ The 29-query REST reduction is the measured effect of removing repeated migratio
 
 ## Propagation and CI
 
-Production changes are under `clinic-practice-management/**`, which already triggers the standalone-demo workflow on pull requests to `main`; that lane rebuilds the embedded core and verifies the standalone package. The PR triggers the repository's remaining pull-request gates. Exact-head PR CI at `ca80790`: all 48 checks passed, including CI (`41180393127`), standalone-demo (`41180393282`), Classic V1 evidence (`41180393141`), closure, compatibility, external disposable-site, and coexistence lanes. The full MySQL integration suite executed 2465 tests with 0 failures/errors. A seasonal New York DST fixture was made horizon-aware (it skips only when no fall-back exists inside the supported 365-day generation horizon); the Day-2 public-booking JS spec was aligned with the affirmative `sms_sent` gate.
+Production changes are under `clinic-practice-management/**`, which already triggers the standalone-demo workflow on pull requests to `main`; that lane rebuilds the embedded core and verifies the standalone package. The PR triggers the repository's remaining pull-request gates. Exact-head PR CI at implementation head `ca80790`: all 48 checks passed, including CI (`41180393127`), standalone-demo (`41180393282`), Classic V1 evidence (`41180393141`), closure, compatibility, external disposable-site, and coexistence lanes. The full MySQL integration suite executed 2465 tests with 0 failures/errors. A seasonal New York DST fixture was made horizon-aware (it skips only when no fall-back exists inside the supported 365-day generation horizon); the Day-2 public-booking JS spec was aligned with the affirmative `sms_sent` gate.
