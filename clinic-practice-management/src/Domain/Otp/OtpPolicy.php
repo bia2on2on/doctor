@@ -90,6 +90,25 @@ final class OtpPolicy
         return max(0, $this->maxAttempts - $state->attempts);
     }
 
+    public function remainingCooldown(OtpState $state, DateTimeImmutable $now): int
+    {
+        if ($state->lastSentAt === null) {
+            return 0;
+        }
+        $elapsed = $now->getTimestamp() - $state->lastSentAt->getTimestamp();
+        $remaining = $this->cooldown_seconds - $elapsed;
+        return $remaining > 0 ? $remaining : 0;
+    }
+
+    public function remainingLockout(OtpState $state, DateTimeImmutable $now): int
+    {
+        if ($state->lockedUntil === null || $state->lockedUntil <= $now) {
+            return 0;
+        }
+        $remaining = $state->lockedUntil->getTimestamp() - $now->getTimestamp();
+        return $remaining > 0 ? $remaining : 0;
+    }
+
     /**
      * کد را تولید می‌کند (CSPRNG) — همیشه دقیقاً $length رقم.
      */
