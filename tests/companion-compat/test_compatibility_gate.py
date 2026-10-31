@@ -65,9 +65,9 @@ class DerivedProductionFacts(unittest.TestCase):
         cls.surface = pf.load(PLUGIN)
 
     def test_schema_head_matches_the_pinned_contract(self) -> None:
-        self.assertEqual("2026_10_27_0030", self.schema.head)
-        self.assertEqual(30, len(self.schema.versions))
-        self.assertEqual(60, len(self.schema.live_tables()))
+        self.assertEqual("2026_10_31_0031", self.schema.head)
+        self.assertEqual(31, len(self.schema.versions))
+        self.assertEqual(61, len(self.schema.live_tables()))
 
     def test_schema_0030_tables_are_discovered(self) -> None:
         live = self.schema.live_tables()
@@ -116,13 +116,13 @@ class CompanionDeclaredState(unittest.TestCase):
         cls.manifest = load_manifest()
 
     def test_schema_pin_is_current(self) -> None:
-        self.assertEqual("2026_10_27_0030", self.state.schema_version)
+        self.assertEqual("2026_10_31_0031", self.state.schema_version)
 
     def test_inventory_is_the_manifest_inventory(self) -> None:
         self.assertEqual(sorted(self.manifest["tables"]), sorted(self.state.known_tables))
-        self.assertEqual(50, len(self.state.operational_tables))
+        self.assertEqual(51, len(self.state.operational_tables))
         self.assertEqual(10, len(self.state.system_tables))
-        self.assertEqual(60, len(self.state.known_tables))
+        self.assertEqual(61, len(self.state.known_tables))
 
     def test_membership_id_sets_are_namespaced(self) -> None:
         self.assertNotIn("membership_id", self.state.scoped_column_map)
@@ -447,7 +447,7 @@ class DetectorsStillFail(unittest.TestCase):
         """A lane's hardcoded schema assertion must match the derived head.
 
         Both companion lanes asserted `2026_10_18_0029` long after production
-        moved to `2026_10_27_0030`. Because their path filters exclude the
+        moved to `2026_10_31_0031`. Because their path filters exclude the
         production subtree they only ran on a companion change, so the staleness
         surfaced as a red lane on an unrelated pull request instead of being
         evaluated here.
@@ -470,8 +470,8 @@ class DetectorsStillFail(unittest.TestCase):
         original = target.read_text(encoding="utf-8")
         try:
             target.write_text(
-                original.replace("2026_10_27_0030", "2026_10_18_0029").replace(
-                    "2026_10_27_0030", "2026_10_18_0029"
+                original.replace("2026_10_31_0031", "2026_10_18_0029").replace(
+                    "2026_10_31_0031", "2026_10_18_0029"
                 ),
                 encoding="utf-8",
             )

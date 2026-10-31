@@ -1070,6 +1070,27 @@
       "teardown_class": "global_never",
       "teardown_mode": "never"
     },
+    "cpms_audit_seq": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "operational",
+      "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "runner_managed"
+      },
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Singleton InnoDB guard row for audit append serialization; bookkeeping only, never tenant data.",
+      "since": "2026_10_31_0031",
+      "surrogate_id": true,
+      "teardown_class": "runner_managed",
+      "teardown_mode": "never"
+    },
     "cpms_clinic_memberships": {
       "deletion_key": [
         "id"
@@ -3042,27 +3063,6 @@
       "surrogate_id": true,
       "teardown_class": "deletable",
       "teardown_mode": "surrogate_id"
-    },
-    "cpms_audit_seq": {
-      "deletion_key": [
-        "id"
-      ],
-      "feeds_id_set": null,
-      "foreign_keys": [],
-      "inventory": "operational",
-      "ownership_columns": {},
-      "ownership_rule": {
-        "kind": "never",
-        "reason": "runner-owned audit serialization guard"
-      },
-      "primary_key": [
-        "id"
-      ],
-      "rationale": "Singleton InnoDB guard row for audit append serialization; bookkeeping only, never tenant data.",
-      "since": "2026_10_31_0031",
-      "surrogate_id": false,
-      "teardown_class": "runner_managed",
-      "teardown_mode": "never"
     }
   },
   "volatile_options": {
