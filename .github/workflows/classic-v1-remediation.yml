@@ -101,7 +101,7 @@ jobs:
           files=[os.path.join(os.getcwd(),'tests/Integration/ClassicV1CriticalRemediationTest.php'),os.path.join(os.getcwd(),'tests/Integration/ClassicV1PerformanceProbeTest.php')]
           open('/tmp/classic-v1/baseline-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
           PY
-          CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php /tmp/classic-v1/baseline-suite.xml 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
+          CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --configuration /tmp/classic-v1/baseline-suite.xml --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
           python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY' || true
@@ -127,7 +127,7 @@ jobs:
           files=[os.path.join(os.getcwd(),'tests/Integration/'+f) for f in ['ClassicV1CriticalRemediationTest.php','ClassicV1PerformanceProbeTest.php','SmsOtpDispatchTest.php','OtpSecurityTest.php','SmsClinicAuthorizationTest.php','ClinicalFlowTest.php','Phase11ReceptionAppointmentCancelRedTest.php']]
           open('/tmp/classic-v1/candidate-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
           PY
-          CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php /tmp/classic-v1/candidate-suite.xml 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
+          CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --configuration /tmp/classic-v1/candidate-suite.xml --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
       - name: Expose candidate regression failures
         if: failure()
         run: |
@@ -257,7 +257,15 @@ jobs:
             exit 1
           fi
           cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
-          eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
+          python3 - <<'PY'
+          import shlex
+          with open('/tmp/classic-http/fixture-env.sh','w') as out:
+              for line in open('/tmp/doctor-portal.env'):
+                  if '=' in line:
+                      k,v=line.rstrip('\n').split('=',1)
+                      out.write('export '+k+'='+shlex.quote(v)+'\n')
+          PY
+          source /tmp/classic-http/fixture-env.sh
           if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
             tail -25 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
             exit 1
@@ -265,7 +273,7 @@ jobs:
       - name: Profile baseline over real HTTP
         run: |
           set -euo pipefail
-          eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
+          source /tmp/classic-http/fixture-env.sh
           ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[:12]))')
           PROFILE_LABEL=baseline PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/baseline.json python3 clinic-practice-management/bin/classic-v1-http-profile.py
       - name: Install candidate over the same database
@@ -277,7 +285,7 @@ jobs:
       - name: Profile candidate over real HTTP
         run: |
           set -euo pipefail
-          eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
+          source /tmp/classic-http/fixture-env.sh
           ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[12:24]))')
           PROFILE_LABEL=candidate PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/candidate.json python3 clinic-practice-management/bin/classic-v1-http-profile.py
       - name: HTTP comparison summary
