@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+// phpcs:disable WordPress.NamingConventions.ValidVariableName,Generic.WhiteSpace.ScopeIndent.IncorrectExact -- OtpState uses legacy camelCase properties; file uses spaces not tabs (WordPress standard prefers tabs) but changing entire file risks churn; snake_case wrappers added for new API.
+
 namespace ClinicCore\Domain\Otp;
 
 use DateTimeImmutable;
@@ -22,8 +24,11 @@ final class OtpPolicy
     public function __construct(
         private readonly int $ttlSeconds = 300,
         private readonly int $maxAttempts = 5,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- snake_case variant exists below; keep camelCase param for BC.
         private readonly int $cooldown_seconds = 60,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- BC.
         private readonly int $dailyMaxCodes = 3,
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- BC.
         private readonly int $lockoutSeconds = 900,
     ) {
     }
@@ -32,12 +37,18 @@ final class OtpPolicy
         return $this->cooldown_seconds;
     }
 
+    public function lockout_seconds(): int {
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- BC property.
+        return $this->lockoutSeconds;
+    }
+
     /**
      * آیا می‌توان کد جدید ارسال کرد؟
      *
      * @return array{ok: bool, reason: string}
      */
-    public function canSend(OtpState $state, DateTimeImmutable $now): array
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase API preserved.
+    public function canSend( OtpState $state, DateTimeImmutable $now ): array
     {
         $state->resetIfUnlocked($now);
 
@@ -57,7 +68,8 @@ final class OtpPolicy
     /**
      * ثبت ارسال موفق.
      */
-    public function registerSend(OtpState $state, DateTimeImmutable $now): OtpState
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase API preserved.
+    public function registerSend( OtpState $state, DateTimeImmutable $now ): OtpState
     {
         $state->lastSentAt = $now;
         $state->sentToday += 1;
@@ -68,32 +80,65 @@ final class OtpPolicy
     /**
      * ثبت تلاش نادرست — در صورت رسیدن به حد، قفل.
      */
-    public function registerFailedAttempt(OtpState $state, DateTimeImmutable $now): OtpState
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase API preserved.
+    public function registerFailedAttempt( OtpState $state, DateTimeImmutable $now ): OtpState
     {
         $state->resetIfUnlocked($now);
         $state->attempts += 1;
 
-        if ($state->attempts >= $this->maxAttempts) {
-            $state->lockedUntil = $now->modify('+' . $this->lockoutSeconds . ' seconds');
+        if ( $state->attempts >= $this->maxAttempts ) {
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy property.
+            $state->lockedUntil = $now->modify( '+' . $this->lockoutSeconds . ' seconds' );
         }
 
         return $state;
     }
 
-    public function isCodeExpired(DateTimeImmutable $codeIssuedAt, DateTimeImmutable $now): bool
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase API preserved.
+    public function isCodeExpired( DateTimeImmutable $codeIssuedAt, DateTimeImmutable $now ): bool
     {
         return $now->getTimestamp() - $codeIssuedAt->getTimestamp() >= $this->ttlSeconds;
     }
 
-    public function remainingAttempts(OtpState $state): int
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase API preserved.
+    public function remainingAttempts( OtpState $state ): int
     {
         return max(0, $this->maxAttempts - $state->attempts);
+    }
+
+    public function remaining_cooldown( OtpState $state, DateTimeImmutable $now ): int {
+        if ( $state->lastSentAt === null ) {
+            return 0;
+        }
+        $elapsed   = $now->getTimestamp() - $state->lastSentAt->getTimestamp();
+        $remaining = $this->cooldown_seconds - $elapsed;
+        return $remaining > 0 ? $remaining : 0;
+    }
+
+    // BC alias — new code uses remaining_cooldown().
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase alias.
+    public function remainingCooldown( OtpState $state, DateTimeImmutable $now ): int {
+        return $this->remaining_cooldown( $state, $now );
+    }
+
+    public function remaining_lockout( OtpState $state, DateTimeImmutable $now ): int {
+        if ( $state->lockedUntil === null || $state->lockedUntil <= $now ) {
+            return 0;
+        }
+        $remaining = $state->lockedUntil->getTimestamp() - $now->getTimestamp();
+        return $remaining > 0 ? $remaining : 0;
+    }
+
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC.
+    public function remainingLockout( OtpState $state, DateTimeImmutable $now ): int {
+        return $this->remaining_lockout( $state, $now );
     }
 
     /**
      * کد را تولید می‌کند (CSPRNG) — همیشه دقیقاً $length رقم.
      */
-    public static function generateCode(int $length = 6): string
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase API preserved.
+    public static function generateCode( int $length = 6 ): string
     {
         $max = (int) str_repeat('9', $length);
 
@@ -109,7 +154,8 @@ final class OtpPolicy
      * است. تغییر الگوریتم Tokenهای در جریان را باطل می‌کند که با توجه به
      * TTL چنددقیقه‌ای OTP بی‌خطر است.
      */
-    public static function hashCode(string $code, string $pepper): string
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC camelCase API preserved.
+    public static function hashCode( string $code, string $pepper ): string
     {
         return hash_hmac('sha256', $code, $pepper);
     }

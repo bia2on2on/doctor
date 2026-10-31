@@ -85,6 +85,7 @@ final class CpmsAdminMenu {
 		'cpms-clinicians'                     => array( 'پزشکان و برنامه کاری', 'staff', RolesAndCapabilities::CONFIG, true ),
 		'cpms-roles'                          => array( 'مجوزهای پیشرفته', 'staff', 'manage_options', true ),
 		'cpms-custom-roles'                   => array( 'نقش‌های سفارشی', 'staff', 'read', false ),
+		'cpms-reception-recovery'             => array( 'بازیابی پذیرش', 'operations', RolesAndCapabilities::CONFIG, false ),
 		'cpms-sms'                            => array( 'پیامک و اعلان‌ها', 'tools', RolesAndCapabilities::SMS_CONFIG, true ),
 		'cpms-shortcodes'                     => array( 'کدهای کوتاه و نمایش در سایت', 'tools', 'manage_options', false ),
 		'cpms-system'                         => array( 'سلامت سیستم', 'system', RolesAndCapabilities::CONFIG, true ),

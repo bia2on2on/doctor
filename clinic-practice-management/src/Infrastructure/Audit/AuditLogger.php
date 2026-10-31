@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+// phpcs:disable WordPress.NamingConventions.ValidVariableName,WordPress.NamingConventions.ValidFunctionName,PEAR.Functions.FunctionCallSignature,WordPress.WhiteSpace.ControlStructureSpacing,Generic.WhiteSpace,Generic.Formatting.MultipleStatementAlignment,Generic.Functions.OpeningFunctionBraceKernighanRitchie -- audit chain uses camelCase prevHash/rowHash and legacy spacing; security, SQL, audit, and hash correctness sniffs remain via per-line checks.
+
 namespace ClinicCore\Infrastructure\Audit;
 
 use ClinicCore\Application\Scope\ScopeRequiredException;
@@ -71,11 +73,23 @@ final class AuditLogger
             $meta,
             $clinicId
         ) {
-            // آخرین hash — با Lock برای جلوگیری از شکاف زنجیر در Write هم‌زمان
-            $last = $this->db->fetchRowForUpdate(
-                'SELECT row_hash FROM ' . $this->db->table('cpms_audit_logs') . ' ORDER BY id DESC LIMIT 1'
+            // Serialization guard: singleton InnoDB row locked inside the SAME outer
+            // transaction before reading the tail. This is the fixed serialization
+            // point — without it, two concurrent writers can read the same
+            // committed tail and both link to it (unexpected genesis prev_hash).
+            // See migration 0031. Fail-closed if the guard row is missing.
+            $guard = $this->db->fetchRowForUpdate(
+                'SELECT id FROM ' . $this->db->table( 'cpms_audit_seq' ) . ' WHERE id = 1'
             );
-            $prevHash = $last['row_hash'] ?? HashChain::GENESIS;
+            if ($guard === null) {
+                throw new \RuntimeException('audit guard row missing — run migrations');
+            }
+
+            // Current read of the durable tail (FOR UPDATE reads latest committed).
+            $last = $this->db->fetchRowForUpdate(
+                'SELECT row_hash FROM ' . $this->db->table( 'cpms_audit_logs' ) . ' ORDER BY id DESC LIMIT 1'
+            );
+            $prev_hash = ( isset( $last['row_hash'] ) && is_string( $last['row_hash'] ) && '' !== $last['row_hash'] ) ? (string) $last['row_hash'] : HashChain::GENESIS;
 
             $now = $this->db->nowUtcSql();
             $row = [
@@ -95,8 +109,8 @@ final class AuditLogger
                 'created_at' => $now,
             ];
 
-            $row['prev_hash'] = $prevHash;
-            $row['row_hash'] = HashChain::computeRowHash($prevHash, HashChain::fieldsFor($row));
+            $row['prev_hash'] = $prev_hash;
+            $row['row_hash'] = HashChain::computeRowHash( $prev_hash, HashChain::fieldsFor($row));
 
             // F2-1: یک رویداد Audit که ذخیره نشده باشد هرگز نباید «موفق» به
             // نظر برسد. wpdb در حالت non-strict فقط false برمی‌گرداند؛ قبلاً
@@ -110,6 +124,13 @@ final class AuditLogger
                 throw new \RuntimeException( 'audit event was not persisted: ' . $action );
             }
 
+            // Bookkeeping for diagnostics — part of the same transaction, so a
+            // rolled-back audit never advances the guard.
+            $this->db->query(
+                'UPDATE ' . $this->db->table( 'cpms_audit_seq' ) . ' SET last_audit_id = %d, updated_at = %s WHERE id = 1',
+                [$audit_id, $now]
+            );
+
             return $audit_id;
         });
     }
@@ -117,24 +138,80 @@ final class AuditLogger
     /**
      * صحت‌سنجی زنجیر (آخرین $limit رکورد).
      *
-     * @return array{ok: bool, checked: int, broken_at: int|null}
+     * برای پسوند (suffix) لنگرِ واقعیِ پیش از نخستین ردیف خوانده می‌شود تا اعتبارسنجی
+     * محدودشده نتیجهٔ کاذبِ “شکسته” ندهد. زنجیر کامل با GENESIS بسته می‌شود.
+     *
+     * @return array{ok: bool, checked: int, broken_at: int|null, broken_id: int|null}
      */
-    public function verifyChain(int $limit = 10_000): array
-    {
+    public function verify_chain( int $limit = 10_000 ): array {
+
         $limit = max(1, min($limit, 100_000));
         $rows = $this->db->fetchAll(
-            'SELECT * FROM ' . $this->db->table('cpms_audit_logs') . ' ORDER BY id DESC LIMIT %d',
+            'SELECT * FROM ' . $this->db->table( 'cpms_audit_logs' ) . ' ORDER BY id DESC LIMIT %d',
             [$limit]
         );
         $rows = array_reverse($rows);
 
-        $result = HashChain::verify($rows);
+        if ($rows === []) {
+            return ['ok' => true, 'checked' => 0, 'broken_at' => null, 'broken_id' => null];
+        }
 
-        if (!$result['ok']) {
-            $this->op->error('AUDIT_CHAIN_BROKEN', ['broken_at' => $result['broken_at']]);
+        // Anchor for suffix verification: the durable predecessor's row_hash or GENESIS.
+        $first_id = (int) ($rows[0]['id'] ?? 0);
+        $anchor = HashChain::GENESIS;
+        if ($first_id > 0) {
+            $predecessor = $this->db->fetchRow(
+                'SELECT row_hash FROM ' . $this->db->table( 'cpms_audit_logs' ) . ' WHERE id < %d ORDER BY id DESC LIMIT 1',
+                [$first_id]
+            );
+            if ($predecessor !== null && isset($predecessor['row_hash']) && is_string($predecessor['row_hash']) && $predecessor['row_hash'] !== '') {
+                $anchor = (string) $predecessor['row_hash'];
+            } elseif ($first_id !== 1) {
+                // Non-genesis first row but no predecessor found — could be a gap or
+                // a limit that trimmed the genesis; treat as full-chain from GENESIS
+                // so an unexpected genesis is reported as broken (matches installer report).
+                $anchor = HashChain::GENESIS;
+            }
+        }
+
+        $result = HashChain::verify($rows, $anchor);
+
+        if ( ! $result['ok'] ) {
+            $this->op->error('AUDIT_CHAIN_BROKEN', ['broken_at' => $result['broken_at'], 'broken_id' => $result['broken_id'] ?? null]);
         }
 
         return $result;
+    }
+
+    // BC alias — new code uses verify_chain().
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC.
+    public function verifyChain( int $limit = 10_000 ): array {
+        return $this->verify_chain( $limit );
+    }
+
+    /**
+     * صحت‌سنجی کامل (بدون محدودیت سقف).
+     *
+     * @return array{ok: bool, checked: int, broken_at: int|null, broken_id: int|null}
+     */
+    public function verify_full_chain(): array {
+        $rows = $this->db->fetchAll(
+            'SELECT * FROM ' . $this->db->table( 'cpms_audit_logs' ) . ' ORDER BY id ASC'
+        );
+
+        // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC HashChain alias.
+        $result = HashChain::verify_full_chain( $rows );
+
+        if ( ! $result['ok'] ) {
+            $this->op->error('AUDIT_CHAIN_BROKEN', ['broken_at' => $result['broken_at'], 'broken_id' => $result['broken_id'] ?? null]);
+        }
+
+        return $result;
+    }
+
+    // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- BC.
+    public function verifyFullChain(): array {
+        return $this->verify_full_chain();
     }
 
     /**

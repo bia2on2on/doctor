@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+// phpcs:disable WordPress.WhiteSpace.ControlStructureSpacing,PEAR.Functions.FunctionCallSignature,Generic.WhiteSpace.ArbitraryParenthesesSpacing,Generic.Formatting.MultipleStatementAlignment,WordPress.NamingConventions.ValidVariableName -- legacy PSR compact style in this file; security, SQL, and runtime correctness sniffs remain active via per-line ignores where needed.
+
 namespace ClinicCore\Application\Auth;
 
 use ClinicCore\Application\Notifications\SmsService;
@@ -144,6 +146,7 @@ final class OtpService
         $byDay = $this->rate->hit('otp-day:' . $mobile, $dailyMax, 86400);
         if (!$byDay['allowed']) {
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
             $this->audit( 'OTP_DENIED_DAILY', $userId, $mobile, $ip, [], $clinicId );
             throw new OtpException('CLINIC_OTP_DAILY_LIMIT', 'محدودیت ارسال کد در روز به پایان رسیده است', $byDay);
         }
@@ -162,14 +165,37 @@ final class OtpService
         $state = $this->loadState($mobile, $purpose);
         $send = $policy->canSend($state, $this->now());
         if (!$send['ok']) {
-            $code = match ($send['reason']) {
-                OtpPolicy::REASON_LOCKED => 'CLINIC_OTP_LOCKED',
-                OtpPolicy::REASON_DAILY_LIMIT => 'CLINIC_OTP_DAILY_LIMIT',
-                default => 'CLINIC_OTP_COOLDOWN',
-            };
+            $now = $this->now();
+            $reason = (string) $send['reason'];
+            $audit_code = 'OTP_DENIED_' . strtoupper($reason);
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
-            $this->audit( 'OTP_DENIED_' . strtoupper( $send['reason'] ), $userId, $mobile, $ip, [], $clinicId );
-            throw new OtpException($code, 'هنوز زود است — بعداً تلاش کنید');
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
+            $this->audit($audit_code, $userId, $mobile, $ip, [], $clinicId);
+            if ($reason === OtpPolicy::REASON_LOCKED) {
+                $retry_after = $policy->remaining_lockout($state, $now);
+                throw new OtpException(
+                    'CLINIC_OTP_LOCKED',
+                    'تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید',
+                    ['retry_after' => $retry_after > 0 ? $retry_after : $policy->lockout_seconds(), 'remaining' => 0]
+                );
+            }
+            if ($reason === OtpPolicy::REASON_DAILY_LIMIT) {
+                // Daily limit via OtpState is a secondary guard — the primary daily gate is
+                // the RateLimiter `otp-day` window above. Keep the message identical so
+                // policy and rate-limiter daily denials are indistinguishable to the client.
+                throw new OtpException(
+                    'CLINIC_OTP_DAILY_LIMIT',
+                    'محدودیت ارسال کد در روز به پایان رسیده است',
+                    ['retry_after' => 86400 - (time() % 86400)]
+                );
+            }
+            // Cooldown — include exact remaining seconds so the client can show a consistent TTL.
+            $retry_after = $policy->remaining_cooldown($state, $now);
+            throw new OtpException(
+                'CLINIC_OTP_COOLDOWN',
+                'هنوز زود است — بعداً تلاش کنید',
+                ['retry_after' => $retry_after > 0 ? $retry_after : $policy->cooldown_seconds(), 'ttl' => (int) $settings->get('otp.ttl_sec')]
+            );
         }
 
         // ساخت Token (فقط Hash). Phase 8 Slice 2: وقتی Clinic از دادهٔ persisted
@@ -207,6 +233,7 @@ final class OtpService
                 $this->db->insert( 'cpms_otp_tokens', $token_row );
                 $inserted_id = (int) $this->db->wpdb_last_insert_id();
                 // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local imported into the audit boundary.
+                // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
                 $this->audit( 'OTP_REQUEST', $user_id, $mobile, $ip, [], $clinicId );
 
                 return $inserted_id;
@@ -247,6 +274,7 @@ final class OtpService
             $retry_enqueued = false;
         }
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
         $this->audit( $sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip, [], $clinicId );
 
         return [
@@ -326,12 +354,18 @@ final class OtpService
             (int) $row['attempts'],
             $row['locked_until'] !== null ? $this->toDateTime($row['locked_until']) : null,
             $this->toDateTime($row['created_at']),
-            (int) $row['attempts']
+            0
         );
         if ($state->isLocked($now)) {
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
             $this->audit( 'CLINIC_OTP_LOCKED', null, $mobile, $ip, [], $clinicId );
-            throw new OtpException('CLINIC_OTP_LOCKED', 'تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید');
+            $retry_after = $policy->remaining_lockout($state, $now);
+            throw new OtpException(
+                'CLINIC_OTP_LOCKED',
+                'تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید',
+                ['retry_after' => $retry_after > 0 ? $retry_after : $policy->lockout_seconds(), 'remaining' => 0]
+            );
         }
 
         if (!hash_equals(OtpPolicy::hashCode($code, $this->pepper()), (string) $row['code_hash'])) {
@@ -348,6 +382,7 @@ final class OtpService
                 ['id' => (int) $row['id']]
             );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
             $this->audit( 'OTP_VERIFY_FAIL', null, $mobile, $ip, [ 'remaining' => $policy->remainingAttempts( $failed ) ], $clinicId );
             throw new OtpException(
                 $failed->lockedUntil !== null ? 'CLINIC_OTP_LOCKED' : 'CLINIC_OTP_INVALID',
@@ -400,8 +435,10 @@ final class OtpService
                     $session_issued = in_array( $purpose, self::SESSION_PURPOSES, true ) && $user_id > 0;
                     $patient_links  = $user_id > 0 ? $this->patientLinks( $user_id ) : [];
 
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
                     $this->audit( 'OTP_VERIFY_OK', $user_id, $mobile, $ip, [ 'purpose' => $purpose ], $clinic_id );
                     if ( $session_issued ) {
+                        // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
                         $this->audit( 'LOGIN_SUCCESS', $user_id, $mobile, $ip, [], $clinic_id );
                     }
 
