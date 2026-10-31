@@ -449,6 +449,7 @@ final class App
         DoctorDashboardPage::register();
         DoctorHandwritingPage::register();
         PatientAdminPage::register(); // Chunk G — Patient Management Entry (operational, capability-driven)
+        \ClinicCore\Admin\ClinicReceptionRecoveryPage::register(); // Classic V1 — reception recovery (clinician-location assignment, Persian, Clinic-local)
         PublicShortcodeAdminPage::register(); // Classic shortcode helper (manage_options + authorized Clinic selector)
     }
 
