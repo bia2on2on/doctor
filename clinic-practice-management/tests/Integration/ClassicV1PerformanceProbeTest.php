@@ -41,7 +41,7 @@ final class ClassicV1PerformanceProbeTest extends WP_UnitTestCase
             $visit = $this->iv1_visit($clinic, $location, $patient, $clinician, 'in_consultation');
             $measure('queue', fn() => $this->iv1_dispatch('GET', '/clinic/v1/doctor/portal/today', [], $headers));
             $measure('record', fn() => $this->iv1_dispatch('GET', '/clinic/v1/visits/' . $visit . '/record', [], $headers));
-            $measure('note_post', fn() => $this->iv1_dispatch('POST', '/clinic/v1/visits/' . $visit . '/notes', [], $headers, ['category' => 'chief_complaint', 'visibility' => 'care_team', 'content_text' => 'Synthetic performance note']));
+            $measure('note_post', fn() => $this->iv1_dispatch('POST', '/clinic/v1/visits/' . $visit . '/notes', [], $headers, ['category' => 'chief_complaint', 'visibility' => 'patient_visible', 'content_text' => 'Synthetic performance note']));
             $measure('prescription_post', fn() => $this->iv1_dispatch('POST', '/clinic/v1/visits/' . $visit . '/prescriptions', [], $headers, ['items' => [['generic_name' => 'Synthetic', 'dose' => '1', 'frequency' => 'daily']]]));
             $measure('complete_post', fn() => $this->iv1_dispatch('POST', '/clinic/v1/visits/' . $visit . '/complete', [], $headers, []));
             $q = $GLOBALS['wpdb']->num_queries;

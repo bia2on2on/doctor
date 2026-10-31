@@ -1,6 +1,8 @@
 name: Classic V1 remediation evidence
 
 on:
+  push:
+    branches: [arena/9b3bd6a4-doctor]
   workflow_dispatch:
   pull_request:
     branches: [main]
@@ -114,6 +116,10 @@ jobs:
         if: always()
         with:
           name: classic-v1-${{ matrix.database }}
-          path: /tmp/classic-v1/
+          path: |
+            /tmp/classic-v1/*.json
+            /tmp/classic-v1/*.xml
+            /tmp/classic-v1/*.log
+            /tmp/classic-v1/*.txt
           include-hidden-files: false
           retention-days: 14
