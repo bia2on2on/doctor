@@ -1350,11 +1350,81 @@ async function testMessagesPlainPermalinkVm() {
   });
 }
 
+// Execute the actual render functions against a small DOM, with and without
+// the server-side presentation envelope. Canonical rows are never mutated.
+function testClinicalDatePresentationRenderers() {
+  function sourceFunction(source, name, indent) {
+    var start = source.indexOf(indent + 'function ' + name + '(');
+    assert.ok(start >= 0, 'function exists: ' + name);
+    var end = source.indexOf('\n' + indent + 'function ', start + 1);
+    assert.ok(end > start, 'next function bounds ' + name);
+    return source.slice(start, end);
+  }
+  var shell = readPluginFile('templates/doctor-portal-shell.php');
+  var nodes = {};
+  function node(selector) { return nodes[selector] || (nodes[selector] = { innerHTML: '', textContent: '' }); }
+  var context = {
+    state: {}, qs: node, show: function () {}, hide: function () {},
+    esc: function (v) { return String(v == null ? '' : v); },
+    recTypeLabel: String, noteVisibilityLabel: String, fileCategoryLabel: String,
+    renderWorkspaceHeader: function () {}, renderWorkspaceMedSummary: function () {},
+    renderWorkspaceNotes: function () {}, renderWorkspaceRx: function () {},
+    renderConsultComplete: function () {}
+  };
+  vm.createContext(context);
+  ['renderWorkspace', 'workspacePresentationDate', 'renderWorkspaceRec', 'renderWorkspaceFu', 'fileSizeLabel', 'renderWorkspaceFiles'].forEach(function (name) {
+    vm.runInContext(sourceFunction(shell, name, ''), context);
+  });
+  var data = {
+    recommendations: [{ id: 31, type: 'rest', text: 'ok', created_at: '2026-03-20 00:30:00' }],
+    follow_ups: [{ id: 32, suggested_date: '2026-03-20', reason: 'review' }],
+    files: [{ id: 33, original_filename: 'x.pdf', category: 'document', visibility: 'patient_visible', file_size: 1, mime_type: 'application/pdf', created_at: '2026-03-20 00:30:00' }],
+    presentation: { recommendations: { 31: { created_at_jalali: '1404/12/29' } }, follow_ups: { 32: { suggested_date_jalali: '1405/01/01' } }, files: { 33: { created_at_jalali: '1404/12/29' } } }
+  };
+  var before = JSON.stringify(data.recommendations) + JSON.stringify(data.follow_ups) + JSON.stringify(data.files);
+  context.renderWorkspace(data);
+  assert.ok(node('[data-role="workspace-rec-list"]').innerHTML.includes('1404/12/29'));
+  assert.ok(node('[data-role="workspace-fu-list"]').innerHTML.includes('1405/01/01'));
+  assert.ok(node('[data-role="workspace-visit-files-list"]').innerHTML.includes('1404/12/29'));
+  assert.strictEqual(JSON.stringify(data.recommendations) + JSON.stringify(data.follow_ups) + JSON.stringify(data.files), before);
+  delete data.presentation;
+  context.renderWorkspace(data);
+  assert.ok(node('[data-role="workspace-rec-list"]').innerHTML.includes('2026-03-20 00:30:00'));
+  assert.ok(node('[data-role="workspace-fu-list"]').innerHTML.includes('2026-03-20'));
+  assert.ok(node('[data-role="workspace-visit-files-list"]').innerHTML.includes('2026-03-20 00:30:00'));
+
+  var dashboard = readPluginFile('src/Admin/DoctorDashboardPage.php');
+  var elements = { 'cpms-doc-queue-view': { style: {} }, 'cpms-doc-visit-view': { style: {}, innerHTML: '' } };
+  var admin = { state: { record: { patient: { allergies: {} }, visit: {}, follow_ups: data.follow_ups, presentation: { follow_ups: { 32: { suggested_date_jalali: '1405/01/01' } } } } },
+    document: { getElementById: function (id) { return elements[id]; } }, window: {}, CFG: {},
+    esc: function (v) { return String(v == null ? '' : v); }, STATUS_LABELS: {}, NOTE_CATS: {}, REC_TYPES: {}, FILE_CATS: {} };
+  vm.createContext(admin);
+  vm.runInContext(sourceFunction(dashboard, 'renderVisit', '    '), admin);
+  admin.renderVisit();
+  assert.ok(elements['cpms-doc-visit-view'].innerHTML.includes('1405/01/01'));
+  delete admin.state.record.presentation;
+  admin.renderVisit();
+  assert.ok(elements['cpms-doc-visit-view'].innerHTML.includes('2026-03-20'));
+
+  var reception = readPluginFile('templates/staff-reception.php');
+  var dateNode = { textContent: '' };
+  var staff = { state: { clinics: [], locations: [], date: '2026-03-20', jalali: '1405/01/01' },
+    el: function (id) { return id === 'sr-date' ? dateNode : null; }, setSelectOptions: function () {}, escapeHtml: String };
+  vm.createContext(staff);
+  vm.runInContext(sourceFunction(reception, 'renderScope', '    '), staff);
+  staff.renderScope();
+  assert.ok(dateNode.textContent.includes('1405/01/01'));
+  staff.state.jalali = null;
+  staff.renderScope();
+  assert.ok(dateNode.textContent.includes('2026-03-20'));
+}
+
 (async function main() {
   try {
     await testPatientPortalReschedule();
     await testPublicBookingOtpAndTripwires();
     testStaffTemplatesContracts();
+    testClinicalDatePresentationRenderers();
     testPatientPortalCompletionTemplateContracts();
     await testFinanceReconciliationVm();
     await testFinanceSubmitSurvivesInFlightRead();

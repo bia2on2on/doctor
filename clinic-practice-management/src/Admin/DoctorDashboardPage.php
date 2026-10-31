@@ -321,6 +321,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
 
     function renderVisit() {
         var d = state.record;
+        var followUpDates = (d.presentation && d.presentation.follow_ups) || {};
         document.getElementById('cpms-doc-queue-view').style.display = 'none';
         var view = document.getElementById('cpms-doc-visit-view');
         view.style.display = 'block';
@@ -391,7 +392,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         }).join('') || '<p class="cpms-doc-muted">توصیه‌ای ثبت نشده است.</p>';
 
         var fuHtml = (d.follow_ups || []).map(function (f) {
-            return '<li>' + (f.suggested_date ? 'تاریخ: ' + esc(f.suggested_date_jalali || f.suggested_date) : 'بازه: ' + esc(f.interval_days) + ' روز') +
+            return '<li>' + (f.suggested_date ? 'تاریخ: ' + esc((followUpDates[String(f.id)] || {}).suggested_date_jalali || f.suggested_date) : 'بازه: ' + esc(f.interval_days) + ' روز') +
                 ' — ' + esc(f.reason || '') + ' <span class="cpms-doc-badge status-' + esc(f.status) + '">' + esc(f.status) + '</span></li>';
         }).join('') || '<p class="cpms-doc-muted">پیگیری ثبت نشده است.</p>';
 

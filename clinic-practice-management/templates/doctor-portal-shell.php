@@ -640,6 +640,7 @@ var state = {
     workspaceBusy: false,
     workspaceRx: [],
     workspaceRxBusy: false,
+    workspacePresentation: {},
     workspaceRec: [],
     workspaceRecBusy: false,
     workspaceFu: [],
@@ -1245,6 +1246,7 @@ function genderLabel(value){
 function renderWorkspace(data){
     var body = qs('[data-role="workspace-body"]');
     if ( !body ) return;
+    state.workspacePresentation = (data && data.presentation) || {};
     renderWorkspaceHeader(data);
     renderWorkspaceMedSummary(data);
     state.workspaceNotes = (data && data.notes) || [];
@@ -1862,6 +1864,12 @@ function recFuFeedbackError(r, fallback){
     return fallback;
 }
 
+function workspacePresentationDate(group, id, field){
+    var items = state.workspacePresentation[group] || {};
+    var item = items[String(id)] || {};
+    return item[field] || '';
+}
+
 function renderWorkspaceRec(){
     var list = qs('[data-role="workspace-rec-list"]');
     var empty = qs('[data-role="workspace-rec-empty"]');
@@ -1882,7 +1890,7 @@ function renderWorkspaceRec(){
                     (rec.is_patient_visible ? 'قابل مشاهده برای بیمار' : 'خصوصی') +
                 '</span>' +
                 '<span class="cpms-doc-ws-rec-type">' + recTypeLabel(rec.type) + '</span>' +
-                '<span class="cpms-doc-ws-rec-date">' + esc(rec.created_at_jalali || rec.created_at || '') + '</span>' +
+                '<span class="cpms-doc-ws-rec-date">' + esc(workspacePresentationDate('recommendations', rec.id, 'created_at_jalali') || rec.created_at || '') + '</span>' +
             '</div>' +
             '<p class="cpms-doc-ws-rec-text">' + esc(rec.text || '') + '</p>' +
         '</li>';
@@ -1904,7 +1912,7 @@ function renderWorkspaceFu(){
     hide(empty);
     list.innerHTML = followUps.map(function(fu){
         var when = [];
-        if ( fu.suggested_date ) when.push('تاریخ: ' + esc(fu.suggested_date_jalali || fu.suggested_date));
+        if ( fu.suggested_date ) when.push('تاریخ: ' + esc(workspacePresentationDate('follow_ups', fu.id, 'suggested_date_jalali') || fu.suggested_date));
         if ( fu.interval_days != null && fu.interval_days !== '' ) when.push('بازه: ' + esc(fu.interval_days) + ' روز');
         if ( when.length === 0 ) when.push('بدون تاریخ/بازه');
         return '<li class="cpms-doc-ws-fu-item" data-role="workspace-fu-item" data-fu-id="' + esc(fu.id) + '" data-needed="' + (fu.is_needed ? '1' : '0') + '">' +
@@ -2078,7 +2086,7 @@ function renderWorkspaceFiles(){
                 esc(String(noteVisibilityLabel(f.visibility))) + ' · ' +
                 esc(String(fileSizeLabel(f.file_size))) + ' · ' +
                 esc(String(f.mime_type || '')) + ' · ' +
-                esc(String(f.created_at_jalali || f.created_at || '')) +
+                esc(String(workspacePresentationDate('files', f.id, 'created_at_jalali') || f.created_at || '')) +
             '</span>' +
             '<button type="button" class="cpms-doc-btn cpms-doc-btn--ghost" data-role="workspace-visit-file-open" data-file-id="' + esc(id) + '" data-file-name="' + esc(label) + '">باز کردن / دانلود</button>' +
         '</li>';

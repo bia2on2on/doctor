@@ -174,7 +174,7 @@ final class ClinicalService
             $this->notes->forVisit( $visit_id, $note_visibility )
         );
 
-        return [
+        $record = [
             'visit' => [
                 'id' => (int) $visit['id'],
                 'status' => (string) $visit['status'],
@@ -216,6 +216,9 @@ final class ClinicalService
                 'clinician_name' => $v['clinician_name'],
             ], $pastVisits),
         ];
+
+        $record['presentation'] = $this->record_date_presentation( $record, $location_tz );
+        return $record;
     }
 
     // ================= E8/E9 — یادداشت‌ها + نسخه‌بندی =================
@@ -2228,6 +2231,43 @@ final class ClinicalService
         }
 
         return $tz;
+    }
+
+    /**
+     * Build display-only dates from the already-authorized record items. The
+     * item arrays stay unchanged; no additional clinical rows are fetched.
+     *
+     * @param array<string, mixed> $record Authorized canonical record.
+     * @return array<string, array<int, array<string, string>>>
+     */
+    private function record_date_presentation( array $record, string $location_tz ): array {
+        $presentation = [
+            'recommendations' => [],
+            'follow_ups'      => [],
+            'files'           => [],
+        ];
+        foreach ( $record['recommendations'] as $item ) {
+            $presentation['recommendations'][ (int) $item['id'] ] = [
+                'created_at_jalali' => $this->format_utc_to_jalali( (string) $item['created_at'], $location_tz ),
+            ];
+        }
+        foreach ( $record['follow_ups'] as $item ) {
+            $date = (string) ( $item['suggested_date'] ?? '' );
+            try {
+                $jalali = $date !== '' ? Jalali::formatYmd( $date ) : '';
+            } catch ( \DomainException $e ) {
+                $jalali = '';
+            }
+            $presentation['follow_ups'][ (int) $item['id'] ] = [
+                'suggested_date_jalali' => $jalali,
+            ];
+        }
+        foreach ( $record['files'] as $item ) {
+            $presentation['files'][ (int) $item['id'] ] = [
+                'created_at_jalali' => $this->format_utc_to_jalali( (string) $item['created_at'], $location_tz ),
+            ];
+        }
+        return $presentation;
     }
 
     /**
