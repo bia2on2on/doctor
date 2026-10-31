@@ -120,7 +120,7 @@ final class OtpService
      * (بدون انتخاب)، رفتار تثبیت‌شدهٔ resolver (Scope محیطی/تک-Clinic) عیناً
      * حفظ می‌شود و روی Challenge Clinic مُهر نمی‌شود (NULL تاریخی).
      *
-     * @return array{expires_in: int, sms_sent: bool, retry_enqueued: bool}
+     * @return array{expires_in: int, sms_sent: bool, retry_enqueued: bool, retry_after: int}
      *
      * @throws OtpException
      */
@@ -217,7 +217,7 @@ final class OtpService
         // OTP Service مستقل از Provider است — کد فقط به‌عنوان متغیر قالب می‌رود (§25).
         $sent = false;
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
-        $retryEnqueued = false;
+        $retry_enqueued = false;
         try {
             // Phase 8 Slice 2: Clinicِ ارسال = Clinicِ Challenge (از انتخابِ
             // persisted مشتق‌شده) یا resolver تثبیت‌شده در مسیر بدون انتخاب.
@@ -232,7 +232,7 @@ final class OtpService
                 priority: 8
             );
             $sent = (string) $res['status'] === SmsMessageStatus::SENT;
-            $retryEnqueued = in_array($res['status'], [SmsMessageStatus::QUEUED, SmsMessageStatus::RETRYING], true);
+            $retry_enqueued = in_array($res['status'], [SmsMessageStatus::QUEUED, SmsMessageStatus::RETRYING], true);
         } catch (\Throwable $e) {
             // OTP dispatch is always inline and never enqueues a recoverable
             // retry (the plaintext code exists only in this request's memory;
@@ -244,12 +244,17 @@ final class OtpService
             // request, which mints a new code through the normal path.
             $this->op->error( 'OTP_SMS_FAILED', [ 'token_id' => $token_id, 'error' => $e->getMessage() ] );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
-            $retryEnqueued = false;
+            $retry_enqueued = false;
         }
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
         $this->audit( $sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip, [], $clinicId );
 
-        return ['expires_in' => $ttl, 'sms_sent' => $sent, 'retry_enqueued' => $retryEnqueued, 'retry_after' => $policy->cooldownSeconds()];
+        return [
+            'expires_in' => $ttl,
+            'sms_sent' => $sent,
+            'retry_enqueued' => $retry_enqueued,
+            'retry_after' => $policy->cooldown_seconds(),
+        ];
     }
 
     /**

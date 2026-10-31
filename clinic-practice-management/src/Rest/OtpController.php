@@ -98,9 +98,10 @@ final class OtpController extends RestBase
                 $clinic_id
             );
 
-            if (!$result['sms_sent'] && !$result['retry_enqueued']) {
+            if ( ! $result['sms_sent'] && ! $result['retry_enqueued'] ) {
                 return $this->error(
-                    'CLINIC_OTP_DELIVERY_FAILED', 503,
+                    'CLINIC_OTP_DELIVERY_FAILED',
+                    503,
                     'ارسال کد پیامکی انجام نشد. پس از مدت اعلام‌شده دوباره تلاش کنید یا با پذیرش تماس بگیرید.',
                     ['sms_sent' => false, 'retry_enqueued' => false, 'retry_after' => $result['retry_after']]
                 );

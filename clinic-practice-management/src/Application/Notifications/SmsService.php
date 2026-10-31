@@ -552,8 +552,8 @@ final class SmsService
 
         // Validate the complete proposed generic mapping before any setting or
         // credential mutation. SSRF checks perform no HTTP request.
-        $genericNext = is_array($in['generic'] ?? null)
-            ? $this->prepareGenericConfig($in['generic'])
+        $generic_next = is_array( $in['generic'] ?? null )
+            ? $this->prepare_generic_config( $in['generic'] )
             : null;
 
         // Credentials (الزام §4/§27)
@@ -584,7 +584,7 @@ final class SmsService
             }
         }
 
-        if ($providerId !== $prevProvider || $method !== (string) ($current['method'] ?? '') || $changedCreds || $genericNext !== null) {
+        if ( $providerId !== $prevProvider || $method !== (string) ( $current['method'] ?? '' ) || $changedCreds || $generic_next !== null ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals in this method.
             $settings->set('sms.last_test', [], $userId);
         }
 
@@ -599,9 +599,9 @@ final class SmsService
             $settings->set('sms.advanced', $advanced, $userId);
         }
 
-        if ($genericNext !== null) {
-            $settings->set('sms.generic', $genericNext, $userId);
-            $this->auditSms('SMS_PROVIDER_CHANGED', $userId, ['provider' => 'generic_api', 'scope' => 'config']);
+        if ( $generic_next !== null ) {
+            $settings->set( 'sms.generic', $generic_next, $userId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
+            $this->auditSms( 'SMS_PROVIDER_CHANGED', $userId, [ 'provider' => 'generic_api', 'scope' => 'config' ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
         }
 
         if ($providerId !== $prevProvider) {
@@ -631,12 +631,12 @@ final class SmsService
 
         $creds = $this->mergedCredentials($provider, (array) ($in['credentials'] ?? []), $settings);
         try {
-            $result = $provider->testConnection($creds);
-        } catch (SmsSendException $ex) {
-            $safe = $this->safeConnectionError($ex);
-            $settings->set('sms.last_test', ['status' => 'failed', 'at' => time(), 'provider' => $providerId, 'message' => $safe], $userId);
-            $this->auditSms('SMS_CONNECTION_TESTED', $userId, ['provider' => $providerId, 'ok' => false]);
-            throw new SmsTemplateException($ex->apiCode(), $safe);
+            $result = $provider->testConnection( $creds );
+        } catch ( SmsSendException $ex ) {
+            $safe = $this->safe_connection_error( $ex );
+            $settings->set( 'sms.last_test', [ 'status' => 'failed', 'at' => time(), 'provider' => $providerId, 'message' => $safe ], $userId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals.
+            $this->auditSms( 'SMS_CONNECTION_TESTED', $userId, [ 'provider' => $providerId, 'ok' => false ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals.
+            throw new SmsTemplateException( $ex->apiCode(), $safe );
         }
 
         $settings->set('sms.last_test', [
@@ -1036,9 +1036,8 @@ final class SmsService
      *
      * @throws SmsTemplateException
      */
-    private function prepareGenericConfig(array $in): array
-    {
-        $current = (array) $this->currentSettings()->get('sms.generic', []);
+    private function prepare_generic_config( array $in ): array {
+        $current = (array) $this->currentSettings()->get( 'sms.generic', [] );
         $next = $current;
 
         if (isset($in['endpoint'])) {
@@ -1089,9 +1088,8 @@ final class SmsService
         return $next;
     }
 
-    private function safeConnectionError(SmsSendException $ex): string
-    {
-        return match ($ex->apiCode()) {
+    private function safe_connection_error( SmsSendException $ex ): string {
+        return match ( $ex->apiCode() ) {
             'CLINIC_SSRF_BLOCKED' => 'اتصال به آدرس داخلی/خصوصی مجاز نیست (SSRF)',
             'CLINIC_SMS_ENDPOINT_INVALID' => 'نشانی پنل پیامک معتبر نیست',
             'CLINIC_SMS_ENDPOINT_UNRESOLVABLE' => 'نشانی پنل پیامک قابل شناسایی نیست',

@@ -74,11 +74,10 @@ final class ClinicalService
     /**
      * @return array<string, mixed>
      */
-    public function record(int $actorUserId, int $visitId, ?int $requestedLocationId = null): array
-    {
-        $this->requireCap($actorUserId, RolesAndCapabilities::MEDICAL_READ, 'record');
+    public function record( int $actor_user_id, int $visit_id, ?int $requested_location_id = null ): array {
+        $this->requireCap($actor_user_id, RolesAndCapabilities::MEDICAL_READ, 'record');
 
-        $visit = $this->requireVisit($visitId);
+        $visit = $this->requireVisit($visit_id);
         // C6-F: پروندهٔ کامل ویزیت هم Tenant-aware — ویزیت باید داخل Clinicِ
         // context مجاز باشد (context = Scope صریحِ درخواست یا «تنها Clinic»؛
         // مبهَم ⇒ 400 CLINIC_SCOPE_REQUIRED). رد ⇒ همان 404 امنِ «یافت نشد».
@@ -86,25 +85,25 @@ final class ClinicalService
         // Phase 3 Slice 5 — پروندهٔ بالینی فقط با عضویت فعال + مجوز
         // `cpms_medical_read` روی **همان** Clinicِ پایدارِ ویزیت.
         $this->authorizeScoped(
-            $actorUserId,
+            $actor_user_id,
             (int) $visit['clinic_id'],
             RolesAndCapabilities::MEDICAL_READ,
             'visit',
-            $visitId,
+            $visit_id,
             (int) $visit['patient_id']
         );
         // A selector is a consistency hint, never authority. Omitting it must
         // not bypass a location-restricted membership; clinic-wide memberships
         // intentionally retain shared care across their own Clinic Locations.
-        $visitLocationId = (int) ($visit['location_id'] ?? 0);
-        if (($requestedLocationId !== null && $requestedLocationId !== $visitLocationId) || $visitLocationId <= 0) {
-            $this->auditAndThrow($actorUserId, 'visit', $visitId, (int) $visit['patient_id'], 'پرونده یافت نشد');
+        $visit_location_id = (int) ( $visit['location_id'] ?? 0 );
+        if ( ( $requested_location_id !== null && $requested_location_id !== $visit_location_id ) || $visit_location_id <= 0 ) {
+            $this->auditAndThrow( $actor_user_id, 'visit', $visit_id, (int) $visit['patient_id'], 'پرونده یافت نشد' );
         }
-        $memberships = new MembershipRepository($this->db);
-        $membership = $memberships->find_active((int) $visit['clinic_id'], $actorUserId);
-        if ($membership !== null && (string) ($membership['scope_mode'] ?? '') === 'location'
-            && !in_array($visitLocationId, $memberships->location_ids_for((int) $membership['id']), true)) {
-            $this->auditAndThrow($actorUserId, 'visit', $visitId, (int) $visit['patient_id'], 'پرونده یافت نشد');
+        $memberships = new MembershipRepository( $this->db );
+        $membership  = $memberships->find_active( (int) $visit['clinic_id'], $actor_user_id );
+        if ( $membership !== null && (string) ( $membership['scope_mode'] ?? '' ) === 'location'
+            && ! in_array( $visit_location_id, $memberships->location_ids_for( (int) $membership['id'] ), true ) ) {
+            $this->auditAndThrow( $actor_user_id, 'visit', $visit_id, (int) $visit['patient_id'], 'پرونده یافت نشد' );
         }
 
         $patient = $this->db->fetchRow(
@@ -132,12 +131,12 @@ final class ClinicalService
          * capability AND the Clinic-scoped permission). No inter-doctor sharing policy
          * is approved today, so nothing broader is invented here.
          */
-        $can_read_private_notes = $this->can_read_private_notes( $actorUserId, $visit ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
+        $can_read_private_notes = $this->can_read_private_notes( $actor_user_id, $visit ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
 
         // Query-level visibility filter (FR-8.4 / P-6) — never a post-read PHP filter.
         $note_visibility = $can_read_private_notes ? null : [ 'patient_visible' ];
 
-        $rxRows = $this->prescriptions->forVisit($visitId);
+        $rxRows = $this->prescriptions->forVisit($visit_id);
         $rxList = [];
         foreach ($rxRows as $rx) {
             $rxList[] = $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id']));
@@ -145,9 +144,9 @@ final class ClinicalService
 
         $this->audit->log(
             'MEDICAL_RECORD_VIEWED',
-            $this->actor($actorUserId, 'doctor'),
+            $this->actor($actor_user_id, 'doctor'),
             'visit',
-            $visitId,
+            $visit_id,
             (int) $visit['patient_id'],
             null,
             null,
@@ -157,9 +156,9 @@ final class ClinicalService
 
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host variables
         $visit_files = $this->visit_owned_files(
-            $this->files->forVisit( $visitId ),
+            $this->files->forVisit( $visit_id ),
             $visit,
-            $actorUserId
+            $actor_user_id
         );
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
@@ -175,10 +174,10 @@ final class ClinicalService
                 'consultation_completed_at' => $visit['consultation_completed_at'],
             ],
             'patient' => $this->patientMedicalView($patient),
-            'notes' => array_map( [ $this, 'presentNote' ], $this->notes->forVisit( $visitId, $note_visibility ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy array alignment and parameter naming preserved.
+            'notes' => array_map( [ $this, 'presentNote' ], $this->notes->forVisit( $visit_id, $note_visibility ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy array alignment and parameter naming preserved.
             'prescriptions' => $rxList,
-            'recommendations' => array_map([$this, 'presentRecommendation'], $this->recommendations->forVisit($visitId)),
-            'follow_ups' => array_map([$this, 'presentFollowUp'], $this->followUps->forVisit($visitId)),
+            'recommendations' => array_map([$this, 'presentRecommendation'], $this->recommendations->forVisit($visit_id)),
+            'follow_ups' => array_map([$this, 'presentFollowUp'], $this->followUps->forVisit($visit_id)),
             // E7: patient_visible stays Visit/Clinic-scoped; doctor_private also requires
             // the Visit-owner file authority.
             'files' => array_map(static fn (array $f): array => [

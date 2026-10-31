@@ -22,15 +22,14 @@ final class OtpPolicy
     public function __construct(
         private readonly int $ttlSeconds = 300,
         private readonly int $maxAttempts = 5,
-        private readonly int $cooldownSeconds = 60,
+        private readonly int $cooldown_seconds = 60,
         private readonly int $dailyMaxCodes = 3,
         private readonly int $lockoutSeconds = 900,
     ) {
     }
 
-    public function cooldownSeconds(): int
-    {
-        return $this->cooldownSeconds;
+    public function cooldown_seconds(): int {
+        return $this->cooldown_seconds;
     }
 
     /**
@@ -48,7 +47,7 @@ final class OtpPolicy
         if ($state->sentToday >= $this->dailyMaxCodes) {
             return ['ok' => false, 'reason' => self::REASON_DAILY_LIMIT];
         }
-        if ($state->lastSentAt !== null && $now->getTimestamp() - $state->lastSentAt->getTimestamp() < $this->cooldownSeconds) {
+        if ($state->lastSentAt !== null && $now->getTimestamp() - $state->lastSentAt->getTimestamp() < $this->cooldown_seconds) {
             return ['ok' => false, 'reason' => self::REASON_COOLDOWN];
         }
 

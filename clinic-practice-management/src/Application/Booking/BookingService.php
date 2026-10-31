@@ -1074,7 +1074,7 @@ final class BookingService
             ]
         );
 
-        $this->sendAppointmentSms(SmsEvents::APPT_CONFIRMED, $mobile, $appt);
+        $this->send_appointment_sms(SmsEvents::APPT_CONFIRMED, $mobile, $appt);
 
         return $view;
     }
@@ -1594,7 +1594,7 @@ final class BookingService
 
         $patient = $this->patients->find( (int) $old_appt['patient_id'] );
         if ($patient !== null) {
-            $this->sendAppointmentSms( SmsEvents::APPT_RESCHEDULED, (string) $patient['mobile'], $new_appt );
+            $this->send_appointment_sms( SmsEvents::APPT_RESCHEDULED, (string) $patient['mobile'], $new_appt );
         }
 
         return $response;
@@ -1986,11 +1986,15 @@ final class BookingService
             // Transactional outbox: a committed cancellation cannot lose its
             // patient notification if PHP exits immediately after COMMIT. The
             // worker only queues SMS/internal rows; it never claims delivery.
-            if ($actor === 'staff' && (string) $appt['status'] === 'confirmed') {
-                App::jobs()->enqueue('appointment.cancel_notify', [
-                    'clinic_id' => (int) $appt['clinic_id'],
-                    'appointment_id' => $appointmentId,
-                ], priority: 8);
+            if ( $actor === 'staff' && (string) $appt['status'] === 'confirmed' ) {
+                App::jobs()->enqueue(
+                    'appointment.cancel_notify',
+                    [
+                        'clinic_id'      => (int) $appt['clinic_id'],
+                        'appointment_id' => $appointmentId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy method parameter.
+                    ],
+                    priority: 8
+                );
             }
 
             return [$appt, $toState, $slotId];
@@ -2004,10 +2008,10 @@ final class BookingService
         // (یادآوری‌های queued همان نوبت — apt:{id}).
         $this->notifications?->cancelQueuedForAppointment($appointmentId);
 
-        if ($actor === 'patient' && (string) $appt['status'] === 'confirmed') {
-            $patient = $this->patients->find((int) $appt['patient_id']);
-            if ($patient !== null) {
-                $this->sendAppointmentSms(SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt);
+        if ( $actor === 'patient' && (string) $appt['status'] === 'confirmed' ) {
+            $patient = $this->patients->find( (int) $appt['patient_id'] );
+            if ( $patient !== null ) {
+                $this->send_appointment_sms( SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt );
             }
         }
 
@@ -2015,28 +2019,29 @@ final class BookingService
     }
 
     /** Durable cancellation outbox worker; safe to retry after a crash. */
-    public function dispatchCancellationNotification(int $appointmentId): void
-    {
-        $appt = $this->appointments->find($appointmentId);
-        if ($appt === null || (string) $appt['status'] !== 'cancelled_by_staff') {
+    public function dispatch_cancellation_notification( int $appointment_id ): void {
+        $appt = $this->appointments->find( $appointment_id );
+        if ( $appt === null || (string) $appt['status'] !== 'cancelled_by_staff' ) {
             return;
         }
-        $patient = $this->patients->find((int) $appt['patient_id']);
-        if ($patient === null) {
-            throw new \RuntimeException('CANCELLATION_PATIENT_MISSING');
+        $patient = $this->patients->find( (int) $appt['patient_id'] );
+        if ( $patient === null ) {
+            throw new \RuntimeException( 'CANCELLATION_PATIENT_MISSING' );
         }
         // Both durable channel rows and the SMS job commit together. Existing
         // SMS/internal dedupe keys make a repeated worker attempt harmless.
         // The worker is scope-neutral: bind the persisted appointment Clinic
         // for the internal notification publisher, then restore the caller.
         $previous = \ClinicCore\Application\Scope\ScopeContext::tryGet();
-        App::replaceExplicitScope(\ClinicCore\Application\Scope\ClinicScope::forClinic((int) $appt['clinic_id']));
+        App::replaceExplicitScope( \ClinicCore\Application\Scope\ClinicScope::forClinic( (int) $appt['clinic_id'] ) );
         try {
-            $this->db->transactional(function () use ($appt, $patient): void {
-                $this->sendAppointmentSms(SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt, true);
-            });
+            $this->db->transactional(
+                function () use ( $appt, $patient ): void {
+                    $this->send_appointment_sms( SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt, true );
+                }
+            );
         } finally {
-            App::replaceExplicitScope($previous);
+            App::replaceExplicitScope( $previous );
         }
     }
 
@@ -2925,8 +2930,7 @@ final class BookingService
      *
      * @param array<string, mixed> $appt
      */
-    private function sendAppointmentSms(string $event, string $mobile, array $appt, bool $rethrow = false): void
-    {
+    private function send_appointment_sms( string $event, string $mobile, array $appt, bool $rethrow = false ): void {
         try {
             $doctor = $this->db->fetchRow(
                 'SELECT full_name FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
@@ -2975,7 +2979,7 @@ final class BookingService
         } catch (Throwable $e) {
             // SMS هرگز نباید Booking را شکست بدهد — Job/Retry خودش مدیریت می‌کند
             $this->op->warning('booking.sms_failed', ['event' => $event, 'appointment_id' => (int) $appt['id'], 'error' => $e->getMessage()]);
-            if ($rethrow) {
+            if ( $rethrow ) {
                 throw $e;
             }
         }

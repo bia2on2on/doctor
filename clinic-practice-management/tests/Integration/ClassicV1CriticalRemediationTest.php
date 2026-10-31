@@ -199,7 +199,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         self::assertSame('cancelled_by_staff', $this->iv1_data($response)['status']);
         self::assertArrayNotHasKey('sms_sent', $this->iv1_data($response));
         self::assertCount(0, App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_sms_messages')));
-        App::bookingService()->dispatchCancellationNotification($appointment);
+        App::bookingService()->dispatch_cancellation_notification($appointment);
         $messages = App::db()->fetchAll('SELECT * FROM ' . App::db()->table('cpms_sms_messages') . ' WHERE context_type = %s AND context_id = %d', ['appointment', $appointment]);
         self::assertCount(1, $messages);
         self::assertSame(SmsEvents::APPT_CANCELLED, $messages[0]['event']);
@@ -240,7 +240,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         });
         $appointment = $this->appointment();
         self::assertSame(200, $this->cancel($appointment)->get_status());
-        App::bookingService()->dispatchCancellationNotification($appointment);
+        App::bookingService()->dispatch_cancellation_notification($appointment);
         $message = App::db()->fetchRow('SELECT * FROM ' . App::db()->table('cpms_sms_messages'));
         (new SmsSendJobHandler(App::smsService()))(['message_id' => (int) $message['id']]);
         $after = App::db()->fetchRow('SELECT * FROM ' . App::db()->table('cpms_sms_messages') . ' WHERE id = %d', [(int) $message['id']]);

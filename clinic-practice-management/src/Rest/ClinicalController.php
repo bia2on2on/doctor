@@ -39,7 +39,8 @@ final class ClinicalController extends RestBase
             [
                 'methods' => WP_REST_Server::READABLE,
                 'callback' => fn (WP_REST_Request $r) => $this->doctor($r, RolesAndCapabilities::MEDICAL_READ,
-                    fn () => $this->clinical->record($this->userId($r), (int) $r['id'], isset($r['location_id']) ? (int) $r['location_id'] : null)),
+                    fn () => $this->clinical->record( $this->userId( $r ), (int) $r['id'], isset( $r['location_id'] ) ? (int) $r['location_id'] : null )
+                ),
                 'permission_callback' => fn (WP_REST_Request $r)
                     => $this->permCap($r, RolesAndCapabilities::MEDICAL_READ),
             ],
