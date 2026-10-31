@@ -35,6 +35,13 @@ final class ClinicReceptionRecoveryPage {
     private const NOTICE_KEY = 'cpms_reception_recovery_notice';
 
     public static function register(): void {
+        // App::boot() runs before WordPress loads the admin menu functions,
+        // including on frontend, REST, CLI and activation requests.
+        \add_action('admin_menu', [self::class, 'menu']);
+        \add_action('admin_post_cpms_reception_recovery_assign', [self::class, 'handleAssign']);
+    }
+
+    public static function menu(): void {
         \add_submenu_page(
             CpmsAdminMenu::parent_slug(),
             'بازیابی پذیرش — انتساب پزشک به محل',
@@ -43,7 +50,6 @@ final class ClinicReceptionRecoveryPage {
             self::PAGE_SLUG,
             [self::class, 'render']
         );
-        \add_action('admin_post_cpms_reception_recovery_assign', [self::class, 'handleAssign']);
         // Hidden from submenu by default — discovered via SystemPage guidance and direct URL.
         CpmsAdminMenu::hide_from_submenu(self::PAGE_SLUG);
     }

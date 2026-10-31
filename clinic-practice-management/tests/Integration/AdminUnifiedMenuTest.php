@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Admin\ClinicManagementPage;
+use ClinicCore\Admin\ClinicReceptionRecoveryPage;
 use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsSetupWizard;
@@ -143,6 +144,7 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
         DoctorDashboardPage::menu();
         DoctorHandwritingPage::menu();
         PatientAdminPage::menu();
+        ClinicReceptionRecoveryPage::menu();
         PublicShortcodeAdminPage::menu();
         CpmsAdminMenu::order_submenu();
         // پنهان‌سازیِ نمایشی در محیطِ واقعی روی `admin_head` انجام می‌شود؛ همان
@@ -179,6 +181,12 @@ final class AdminUnifiedMenuTest extends WP_UnitTestCase
     // ------------------------------------------------------------------
     // 1) یک Top-Level
     // ------------------------------------------------------------------
+
+    public function testReceptionRecoveryRegistersItsHooksDuringBootstrap(): void
+    {
+        self::assertNotFalse(has_action('admin_menu', [ClinicReceptionRecoveryPage::class, 'menu']));
+        self::assertNotFalse(has_action('admin_post_cpms_reception_recovery_assign', [ClinicReceptionRecoveryPage::class, 'handleAssign']));
+    }
 
     public function testExactlyOneCpmsTopLevelMenuExists(): void
     {
