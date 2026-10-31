@@ -96,7 +96,11 @@ jobs:
           set -o pipefail
           cd /tmp/classic-v1/baseline/clinic-practice-management
           rc=0
-          CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
+          python3 - <<'PY'
+          files=['tests/Integration/ClassicV1CriticalRemediationTest.php','tests/Integration/ClassicV1PerformanceProbeTest.php']
+          open('/tmp/classic-v1/baseline-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
+          PY
+          CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php /tmp/classic-v1/baseline-suite.xml 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
           python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY' || true
@@ -117,7 +121,11 @@ jobs:
       - name: Execute candidate regressions and adjacent workflow coverage
         run: |
           set -o pipefail
-          CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php tests/Integration/SmsOtpDispatchTest.php tests/Integration/OtpSecurityTest.php tests/Integration/SmsClinicAuthorizationTest.php tests/Integration/ClinicalFlowTest.php tests/Integration/Phase11ReceptionAppointmentCancelRedTest.php 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
+          python3 - <<'PY'
+          files=['tests/Integration/ClassicV1CriticalRemediationTest.php','tests/Integration/ClassicV1PerformanceProbeTest.php','tests/Integration/SmsOtpDispatchTest.php','tests/Integration/OtpSecurityTest.php','tests/Integration/SmsClinicAuthorizationTest.php','tests/Integration/ClinicalFlowTest.php','tests/Integration/Phase11ReceptionAppointmentCancelRedTest.php']
+          open('/tmp/classic-v1/candidate-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
+          PY
+          CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php /tmp/classic-v1/candidate-suite.xml 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
       - name: Expose candidate regression failures
         if: failure()
         run: |
@@ -149,7 +157,9 @@ jobs:
           for label in ('baseline','candidate'):
               try:
                   d=json.load(open('/tmp/classic-v1/'+label+'-'+sys.argv[1]+'.json'))
-                  print('::notice::PERF '+label+' '+json.dumps(d.get('summary',d),sort_keys=True))
+                  import statistics
+                  summary=d.get('summary') or {k:{'n':len(v),'median_ms':round(statistics.median(x['ms'] for x in v),3),'median_queries':statistics.median(x['queries'] for x in v)} for k,v in d['samples'].items()}
+                  print('::notice::PERF '+label+' '+json.dumps(summary,sort_keys=True))
               except Exception as e: print('::notice::PERF '+label+' unavailable '+str(e))
           PY
       - uses: actions/upload-artifact@v4
@@ -262,14 +272,14 @@ jobs:
               fi
               echo "::notice::HTTP stage env"
               cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
-              set -a; . /tmp/doctor-portal.env; set +a
+              eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
               echo "::notice::HTTP stage seed"
               if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
                 tail -30 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
                 exit 1
               fi
             fi
-            set -a; . /tmp/doctor-portal.env; set +a
+            eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
             echo "::notice::HTTP stage profile-$label"
             ids=$(LABEL="$label" python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[0 if __import__("os").environ["LABEL"]=="baseline" else 12:][:12]))')
             PROFILE_LABEL="$label" LABEL="$label" PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT="/tmp/classic-http/$label.json" python3 clinic-practice-management/bin/classic-v1-http-profile.py || { profile_rc=$?; break; }
