@@ -449,7 +449,7 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
         api('POST', 'test-connection', body).then(function (r) {
             result('cpms-sms-test-conn-result', r.message, r.ok);
             loadStatus();
-        }).catch(function (err) { result('cpms-sms-test-conn-result', 'خطا: ' + err.message, false); });
+        }).catch(function (err) { result('cpms-sms-test-conn-result', 'خطا: ' + err.message, false); loadStatus(); });
     };
 
     el('cpms-sms-test-send').onclick = function () {
@@ -503,7 +503,7 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
         chain.then(function () {
             result('cpms-sms-save-result', '✓ ذخیره شد.', true);
             return loadStatus().then(loadTemplates);
-        }).catch(function (err) { result('cpms-sms-save-result', 'خطا: ' + err.message, false); });
+        }).catch(function (err) { result('cpms-sms-save-result', 'خطا: ' + err.message, false); loadStatus(); });
     };
 
     function collectCreds() {

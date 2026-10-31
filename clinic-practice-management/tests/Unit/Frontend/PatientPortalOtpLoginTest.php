@@ -33,4 +33,8 @@ final class PatientPortalOtpLoginTest extends TestCase {
 		self::assertStringContainsString( '/[\\u06F0-\\u06F9]/g', $this->source );
 		self::assertStringContainsString( '/[\\u0660-\\u0669]/g', $this->source );
 	}
+	public function testUndeliveredOtpCannotRevealTheCodeStep(): void {
+		self::assertStringContainsString( 'result.body.data.sms_sent !== true', $this->source );
+		self::assertStringContainsString( 'codeRequested = true;', $this->source );
+	}
 }

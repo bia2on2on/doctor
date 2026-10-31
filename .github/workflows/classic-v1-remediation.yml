@@ -99,6 +99,12 @@ jobs:
           CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
+          python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY'
+import sys, xml.etree.ElementTree as ET
+for case in ET.parse(sys.argv[1]).iter('testcase'):
+    for bad in list(case.findall('failure')) + list(case.findall('error')):
+        print('::warning::BASELINE ' + case.get('name','') + ': ' + (bad.get('message','')[:350].replace('\n',' ')))
+PY
       - name: Reset database before candidate on the same runner
         run: |
           mysql --protocol=TCP -h 127.0.0.1 -P ${{ matrix.port }} -uroot -proot -e 'DROP DATABASE wordpress_test; CREATE DATABASE wordpress_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
@@ -106,6 +112,15 @@ jobs:
         run: |
           set -o pipefail
           CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php tests/Integration/SmsOtpDispatchTest.php tests/Integration/OtpSecurityTest.php tests/Integration/SmsClinicAuthorizationTest.php tests/Integration/ClinicalFlowTest.php tests/Integration/Phase11ReceptionAppointmentCancelRedTest.php 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
+      - name: Expose candidate regression failures
+        if: failure()
+        run: |
+          python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml <<'PY' || true
+          import sys, xml.etree.ElementTree as ET
+          for case in ET.parse(sys.argv[1]).iter('testcase'):
+              for bad in list(case.findall('failure')) + list(case.findall('error')):
+                  print('::error::CANDIDATE ' + case.get('name','') + ': ' + (bad.get('message','')[:500].replace('\n',' ')))
+          PY
       - name: Evidence summary
         if: always()
         run: |
@@ -194,10 +209,12 @@ jobs:
       - name: Sequential authenticated HTTP profiles
         run: |
           set -euo pipefail
+          profile_rc=0
           for label in baseline candidate; do
             if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
             zip=$(find "$root/dist" -name '*.zip' | head -1)
             wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root
+            sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
             sudo cp "$GITHUB_WORKSPACE/clinic-practice-management/tests/fixtures/classic-v1-http-profiler-mu.php" "$WP_DIR/wp-content/mu-plugins/classic-v1-profiler.php"
             sudo service apache2 restart
             if [ "$label" = baseline ]; then
@@ -208,8 +225,13 @@ jobs:
             fi
             set -a; . /tmp/doctor-portal.env; set +a
             ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[0 if __import__("os").environ["LABEL"]=="baseline" else 12:][:12]))' LABEL="$label")
-            PROFILE_LABEL="$label" LABEL="$label" PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT="/tmp/classic-http/$label.json" python3 clinic-practice-management/bin/classic-v1-http-profile.py
+            PROFILE_LABEL="$label" LABEL="$label" PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT="/tmp/classic-http/$label.json" python3 clinic-practice-management/bin/classic-v1-http-profile.py || { profile_rc=$?; break; }
           done
+          if [ "$profile_rc" -ne 0 ]; then
+            echo "::error::HTTP profile failed at stage $label; see bounded diagnostic below"
+            { echo "### HTTP profile failed (exit $profile_rc)"; echo '```'; sudo tail -40 "$WP_DIR/wp-content/debug.log" 2>/dev/null || true; sudo tail -30 /var/log/apache2/error.log 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+            exit "$profile_rc"
+          fi
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json
           a=json.load(open('/tmp/classic-http/baseline.json'))['summary']

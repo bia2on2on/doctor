@@ -136,4 +136,8 @@ final class PublicBookingJsSendGateTest extends TestCase
         self::assertStringContainsString("location_id: toInt(slotButton.getAttribute('data-location-id'))", $this->js, 'A nearby alternative must quote against its own rendered Location.');
         self::assertStringContainsString('entryLocationId !== selectedLocationId', $this->js, 'Nearby alternatives from another Location must remain hidden.');
     }
+    public function testOtpCodeStepRequiresAffirmativeProviderAcceptance(): void
+    {
+        self::assertStringContainsString('result.body.data.sms_sent === true', $this->js);
+    }
 }
