@@ -67,7 +67,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     public function testOtpDeliveryFailureIsNotHttpSuccessAndKeepsLimitsAndHashOnlyStorage(): void
     {
         $mobile = '0912' . random_int(1000000, 9999999);
-        $response = $this->post('/otp/request', ['mobile' => $mobile]);
+        $response = $this->iv1_scope($this->clinic, fn () => $this->post('/otp/request', ['mobile' => $mobile]));
         self::assertSame(503, $response->get_status(), 'An undelivered OTP must not enter the code-waiting UI: ' . wp_json_encode($response->get_data()));
         self::assertSame('CLINIC_OTP_DELIVERY_FAILED', $this->iv1_code($response));
         $data = $response->get_data()['data'] ?? [];
@@ -78,7 +78,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         self::assertNotNull($row);
         self::assertSame(64, strlen((string) $row['code_hash']));
         self::assertStringNotContainsString($mobile, (string) wp_json_encode($response->get_data()));
-        $limited = $this->post('/otp/request', ['mobile' => $mobile]);
+        $limited = $this->iv1_scope($this->clinic, fn () => $this->post('/otp/request', ['mobile' => $mobile]));
         self::assertSame(429, $limited->get_status(), 'Delivery failure must not bypass the existing cooldown.');
         self::assertSame('CLINIC_OTP_COOLDOWN', $this->iv1_code($limited));
     }
@@ -86,7 +86,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     public function testSuccessfulOtpStillReturnsSuccessWithoutSecretOrRetryPromise(): void
     {
         $this->iv1_scope($this->clinic, fn() => App::settings()->set('sms.provider', RecordingSmsProvider::ID));
-        $response = $this->post('/otp/request', ['mobile' => '0912' . random_int(1000000, 9999999)]);
+        $response = $this->iv1_scope($this->clinic, fn () => $this->post('/otp/request', ['mobile' => '0912' . random_int(1000000, 9999999)]));
         self::assertSame(200, $response->get_status(), wp_json_encode($response->get_data()));
         $data = $this->iv1_data($response);
         self::assertTrue($data['sms_sent']);
