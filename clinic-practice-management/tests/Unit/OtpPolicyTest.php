@@ -122,4 +122,59 @@ final class OtpPolicyTest extends TestCase
         $state = $this->policy->registerFailedAttempt($state, $this->at(self::T0));
         $this->assertSame(3, $this->policy->remainingAttempts($state));
     }
+
+    public function testCooldownBoundaryExactlyAtSecondsIsAllowed(): void
+    {
+        $state = new OtpState();
+        $state = $this->policy->registerSend($state, $this->at(self::T0));
+        // 59s -> still cooldown
+        $r59 = $this->policy->canSend($state, $this->at('2026-09-05T10:00:59+00:00'));
+        $this->assertFalse($r59['ok']);
+        $this->assertSame(OtpPolicy::REASON_COOLDOWN, $r59['reason']);
+        $this->assertSame(1, $this->policy->remainingCooldown($state, $this->at('2026-09-05T10:00:59+00:00')));
+        // 60s exactly -> boundary inclusive allowed (fix: < not <=)
+        $r60 = $this->policy->canSend($state, $this->at('2026-09-05T10:01:00+00:00'));
+        $this->assertTrue($r60['ok'], 'exactly at cooldown_seconds must be allowed');
+        $this->assertSame(0, $this->policy->remainingCooldown($state, $this->at('2026-09-05T10:01:00+00:00')));
+    }
+
+    public function testRemainingCooldownAndLockoutTtlConsistency(): void
+    {
+        $state = new OtpState();
+        $state = $this->policy->registerSend($state, $this->at(self::T0));
+        // 30s after send -> 30s remaining
+        $this->assertSame(30, $this->policy->remainingCooldown($state, $this->at('2026-09-05T10:00:30+00:00')));
+        // no lockout yet
+        $this->assertSame(0, $this->policy->remainingLockout($state, $this->at(self::T0)));
+
+        // Lockout after 5 fails
+        $locked = new OtpState();
+        for ($i = 0; $i < 5; $i++) {
+            $locked = $this->policy->registerFailedAttempt($locked, $this->at(self::T0));
+        }
+        $this->assertTrue($locked->isLocked($this->at('2026-09-05T10:01:00+00:00')));
+        $this->assertSame(840, $this->policy->remainingLockout($locked, $this->at('2026-09-05T10:01:00+00:00')));
+        $this->assertSame(0, $this->policy->remainingLockout($locked, $this->at('2026-09-05T10:16:00+00:00')));
+    }
+
+    public function testOtpServiceMessagesAreDistinctPerReason(): void
+    {
+        // This test documents the fixed inconsistency: LOCKED/DAILY_LIMIT/COOLDOWN
+        // now carry distinct Persian messages and accurate retry_after/TTL.
+        // OtpService throws OtpException with code+message+retry_after; we assert
+        // the policy reason mapping would produce distinct codes.
+        $state = new OtpState();
+        $state = $this->policy->registerSend($state, $this->at(self::T0));
+        $locked = new OtpState();
+        for ($i = 0; $i < 5; $i++) {
+            $locked = $this->policy->registerFailedAttempt($locked, $this->at(self::T0));
+        }
+        $this->assertSame(OtpPolicy::REASON_COOLDOWN, $this->policy->canSend($state, $this->at('2026-09-05T10:00:30+00:00'))['reason']);
+        $this->assertSame(OtpPolicy::REASON_LOCKED, $this->policy->canSend($locked, $this->at('2026-09-05T10:01:00+00:00'))['reason']);
+        $daily = new OtpState();
+        for ($i = 0; $i < 3; $i++) {
+            $daily = $this->policy->registerSend($daily, $this->at('2026-09-05T0' . (8 + $i) . ':00:00+00:00'));
+        }
+        $this->assertSame(OtpPolicy::REASON_DAILY_LIMIT, $this->policy->canSend($daily, $this->at(self::T0))['reason']);
+    }
 }

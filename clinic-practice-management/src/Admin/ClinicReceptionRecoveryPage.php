@@ -277,10 +277,13 @@ final class ClinicReceptionRecoveryPage
         $locationIds = array_values(array_unique(array_filter($locationIds, static fn($v) => $v > 0)));
 
         try {
-            App::membership_service()->assign_clinician_locations($clinicianId, $locationIds, $primaryLocationId);
-            // Mandatory audit in same outer boundary if any — the service's boundary
-            // already rolled back on failure, so reaching here means durable commit.
-            try {
+            // Mandatory audit in same transactional boundary as the assignment
+            // (fail-closed: if audit fails, the replace is rolled back; no
+            // orphan assignment without audit). The service's own transactional
+            // becomes a SAVEPOINT inside this outer transaction, so release on
+            // success and rollback on audit failure both behave atomically.
+            App::db()->transactional(function () use ($clinicianId, $locationIds, $primaryLocationId, $actorId, $clinicId): void {
+                App::membership_service()->assign_clinician_locations($clinicianId, $locationIds, $primaryLocationId);
                 App::audit()->log(
                     'CLINICIAN_LOCATION_RECOVERY',
                     ['wp_user_id' => $actorId, 'role' => 'clinic_manager'],
@@ -292,14 +295,7 @@ final class ClinicReceptionRecoveryPage
                     ['clinic_id' => $clinicId],
                     $clinicId
                 );
-            } catch (\Throwable $auditEx) {
-                // Audit is mandatory: if it fails, the assignment was already committed
-                // above (separate boundary). Log and surface — do not silently claim success.
-                // The next retry will be idempotent (same set).
-                error_log('[CPMS][ReceptionRecovery] audit failed after assign: ' . $auditEx->getMessage()); // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log
-                self::push_notice('error', 'انتساب انجام شد اما ثبتِ audit کامل نشد — دوباره بررسی کنید (شناسه ' . $clinicianId . ').');
-                self::redirect();
-            }
+            });
         } catch (MembershipException $e) {
             $msg = $e->getMessage();
             // Preserve Persian message from service; fallback to generic.
