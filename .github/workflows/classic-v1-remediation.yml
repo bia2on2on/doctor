@@ -216,7 +216,10 @@ jobs:
           for label in baseline candidate; do
             if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
             zip=$(find "$root/dist" -name '*.zip' | head -1)
-            wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root
+            if ! wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root > /tmp/classic-http/install-$label.log 2>&1; then
+              tail -30 /tmp/classic-http/install-$label.log | while IFS= read -r line; do echo "::error::INSTALL $line"; done
+              exit 1
+            fi
             sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
             sudo cp "$GITHUB_WORKSPACE/clinic-practice-management/tests/fixtures/classic-v1-http-profiler-mu.php" "$WP_DIR/wp-content/mu-plugins/classic-v1-profiler.php"
             sudo service apache2 restart
@@ -249,5 +252,7 @@ jobs:
         if: always()
         with:
           name: classic-v1-http
-          path: /tmp/classic-http/*.json
+          path: |
+            /tmp/classic-http/*.json
+            /tmp/classic-http/*.log
           retention-days: 14
