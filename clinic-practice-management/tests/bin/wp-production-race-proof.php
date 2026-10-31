@@ -273,7 +273,7 @@ try {
         echo "PRODUCTION_BOOKING_ROLLBACK mandatory_audit=failed capacity=restored holds=0 guard=restored\n";
         return;
     }
-    $require(in_array($round, ['otp', 'wrong', 'mixed', '10', '25', '50'], true) && $index >= 0 && $index < 50, 'worker-arguments');
+    $require((in_array($round, ['otp', 'wrong', 'mixed', '10', '25', '50'], true) || preg_match('/^issue[0-4]$/D', $round) === 1) && $index >= 0 && $index < 50, 'worker-arguments');
     $status = 'error';
     $code = 'UNEXPECTED';
     $replay = false;
@@ -281,7 +281,27 @@ try {
     $retry_valid = false;
     $elapsed_ms = 0.0;
 
-    if (($mode === 'otp-verify' && $round === 'otp') || ($mode === 'otp-wrong' && $round === 'wrong')) {
+    if ($mode === 'otp-issue' && preg_match('/^issue([0-4])$/D', $round, $issue_match) === 1 && $index < 3) {
+        // Synchronize before the entire request, not inside a token insert or
+        // lock: a correctly serialized implementation must not deadlock here.
+        $mobile = '09129991' . str_pad($issue_match[1], 3, '0', STR_PAD_LEFT);
+        $await($round);
+        $start = hrtime(true);
+        try {
+            $request = App::otpService()->request($mobile, OtpService::PURPOSE_LOGIN, null, null, $clinic);
+            $require($request['sms_sent'] && is_string($provider->code), 'otp-issue-delivery');
+            $status = 'issued';
+            $code = 'OK';
+        } catch (OtpException $error) {
+            $code = $error->apiCode();
+            $status = $code === 'CLINIC_OTP_COOLDOWN' ? 'cooldown' : 'error';
+            $persian = preg_match('/[\x{0600}-\x{06FF}]/u', $error->getMessage()) === 1;
+            $retry = $error->getData()['retry_after'] ?? 0;
+            $retry_valid = is_int($retry) && $retry >= 1 && $retry <= 60;
+        } finally {
+            $elapsed_ms = (hrtime(true) - $start) / 1000000;
+        }
+    } elseif (($mode === 'otp-verify' && $round === 'otp') || ($mode === 'otp-wrong' && $round === 'wrong')) {
         $prefix = 'SELECT * FROM ' . App::db()->table('cpms_otp_tokens') . ' WHERE id = ';
         $reached = false;
         $start = null;
@@ -320,10 +340,26 @@ try {
         }
     } elseif ($mode === 'mixed' && $round === 'mixed' && $index < 3) {
         $mixed = $state['mixed'];
-        $prefix = 'SELECT id FROM ' . App::db()->table('cpms_audit_seq') . ' WHERE id = 1';
+        $db = App::db();
+        $prefix = 'SELECT id FROM ' . $db->table('cpms_audit_seq') . ' WHERE id = 1';
+        $note_insert = 'INSERT INTO `' . $db->table('cpms_clinical_notes') . '`';
+        $note_seen = false;
+        $note_observed = false;
+        $note_insert_id = 0;
+        $note_error = '';
         $reached = false;
         $start = null;
-        $filter = static function (string $query) use ($prefix, $await, &$reached, &$start): string {
+        $filter = static function (string $query) use ($db, $prefix, $note_insert, $await, &$reached, &$start, &$note_seen, &$note_observed, &$note_insert_id, &$note_error): string {
+            // Observe only the result of the real note INSERT; the hook neither
+            // changes SQL nor publishes its potentially sensitive error text.
+            if ($note_seen && !$note_observed) {
+                $note_observed = true;
+                $note_insert_id = (int) $db->wpdb()->insert_id;
+                $note_error = (string) $db->wpdb()->last_error;
+            }
+            if (str_starts_with($query, $note_insert)) {
+                $note_seen = true;
+            }
             if (str_starts_with($query, $prefix) && str_ends_with($query, ' FOR UPDATE') && !$reached) {
                 $reached = true;
                 // The three real services have reached their mandatory audit
@@ -340,7 +376,27 @@ try {
                 $note = App::clinicalService()->addNote((int) $mixed['doctor'], (int) $mixed['clinical_visit'], [
                     'category' => 'clinical_note', 'visibility' => 'patient_visible', 'content_text' => 'یادداشت آزمایشی',
                 ]);
-                $require((int) ($note['id'] ?? 0) > 0, 'mixed-clinical');
+                if ((int) ($note['id'] ?? 0) <= 0) {
+                    if (!$note_seen) {
+                        throw new CpmsProofFailure('mixed-clinical-insert-not-observed');
+                    }
+                    if ($note_error !== '') {
+                        if (stripos($note_error, 'foreign key constraint') !== false) {
+                            throw new CpmsProofFailure('mixed-clinical-foreign-key');
+                        }
+                        if (stripos($note_error, 'deadlock') !== false || stripos($note_error, 'lock wait') !== false) {
+                            throw new CpmsProofFailure('mixed-clinical-lock-error');
+                        }
+                        if (stripos($note_error, 'incorrect string value') !== false || stripos($note_error, 'invalid data') !== false) {
+                            throw new CpmsProofFailure('mixed-clinical-encoding');
+                        }
+                        throw new CpmsProofFailure('mixed-clinical-other-sql-error');
+                    }
+                    if ($note_observed && $note_insert_id > 0) {
+                        throw new CpmsProofFailure('mixed-clinical-id-lost');
+                    }
+                    throw new CpmsProofFailure('mixed-clinical-zero-id');
+                }
                 $status = 'clinical';
             } elseif ($index === 1) {
                 wp_set_current_user((int) $mixed['accountant']);
@@ -352,7 +408,12 @@ try {
             } else {
                 wp_set_current_user((int) $mixed['manager']);
                 $sms = App::smsService()->testSend('09128000001', 'پیامک آزمایشی', (int) $mixed['manager']);
-                $require(($sms['status'] ?? '') === 'SENT', 'mixed-sms');
+                if (($sms['status'] ?? '') !== 'SENT') {
+                    if (!App::licenseGate()->assert(\ClinicCore\Domain\Licensing\LicenseGate::OP_SMS_COMMERCIAL)->allowed) {
+                        throw new CpmsProofFailure('mixed-sms-license-blocked');
+                    }
+                    throw new CpmsProofFailure('mixed-sms-send-failed');
+                }
                 $status = 'sms';
             }
             $require($reached, 'mixed-audit-boundary');
@@ -408,7 +469,7 @@ try {
     if ($error instanceof CpmsProofFailure && preg_match('/^[a-z][a-z0-9-]{0,63}$/D', $error->getMessage()) === 1) {
         echo 'PROOF_FAILURE ' . $error->getMessage() . "\n";
     }
-    if (in_array($round, ['otp', 'wrong', 'mixed', '10', '25', '50'], true) && $index >= 0 && $index < 50) {
+    if ((in_array($round, ['otp', 'wrong', 'mixed', '10', '25', '50'], true) || preg_match('/^issue[0-4]$/D', $round) === 1) && $index >= 0 && $index < 50) {
         $category = $error instanceof CpmsProofFailure ? 'PROOF_' . strtoupper(str_replace('-', '_', $error->getMessage())) :
             ($error instanceof OtpException ? $error->apiCode() : ($error instanceof BookingException ? $error->errorCode : 'WORKER_FAILURE'));
         $category = preg_match('/^[A-Z0-9_]{1,64}$/D', $category) === 1 ? $category : 'WORKER_FAILURE';
