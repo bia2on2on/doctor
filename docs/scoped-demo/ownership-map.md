@@ -1,12 +1,12 @@
 # Scoped demo — CPMS table ownership map (preparation checkpoint)
 
-**Source of truth:** repository `main` / session base `2ae07abf2e68c8ec7c9c679016915d5be4ce7034`, pinned companion schema `2026_10_31_0031`.
+**Source of truth:** repository `main` / session base `2ae07abf2e68c8ec7c9c679016915d5be4ce7034`, pinned companion schema `2026_10_27_0030`.
 
 **Status:** implemented in the companion and covered by real-database runtime drills (`tools/disposable-demo-installer/tests/scoped-recovery.php`, R1–R9). The tables below remain a design reference; the enforceable rules are the declarative constants listed in the correction section.
 
 ## Important correction to the mission wording
 
-The mission says “all 43 CPMS tables”. That count is from a pre-0030 schema. At schema `2026_10_31_0031`, `Preflight::OPERATIONAL_TABLES` has exactly **51** tables and `Preflight::KNOWN_TABLES` has **61** tables (51 operational + 10 system/global). `Teardown::DELETE_ORDER` has 57 entries. The scoped implementation and its tests must cover all **61**, with special treatment for the shared/global surfaces called out below.
+The mission says “all 43 CPMS tables”. That count is from a pre-0030 schema. At schema `2026_10_27_0030`, `Preflight::OPERATIONAL_TABLES` has exactly **50** tables and `Preflight::KNOWN_TABLES` has **60** tables (50 operational + 10 system/global). `Teardown::DELETE_ORDER` has 57 entries. The scoped implementation and its tests must cover all **60**, with special treatment for the shared/global surfaces called out below.
 
 The declarative source of truth for every rule below is `tools/disposable-demo-installer/compatibility.json`, and `.github/scripts/companion-compat/evaluate.py` is the gate that proves the companion still satisfies it.
 
@@ -91,8 +91,7 @@ read "actor reference that is never used to prove ownership".
 | 40 | `cpms_idempotency_keys` | `C` (mandatory boundary); `U` is an actor reference, key/endpoint/context | Delete only exact IDs with verified fixture clinic/user/key scope; preserve all foreign or ambiguous keys. |
 | 41 | `cpms_notifications` | `C`, nullable recipient user/patient, dedupe key | Delete only exact IDs for the synthetic clinic and manifest-owned recipients. |
 | 42 | `cpms_audit_logs` | append-only global hash chain; nullable `C`, resource/actor/meta JSON | **Never delete, update, or selectively remove any row.** Keep all demo and foreign audit entries; verify full chain and immutable baseline prefix. |
-| 43 | `cpms_audit_seq` | Singleton `id=1` guard for audit append serialization; `last_audit_id` bookkeeping | **Never delete or update.** Runner-managed, preserves audit chain; teardown omits it entirely. |
-| 44 | `cpms_drug_reference` | `C`; `FK(prescription_items.drug_ref_id)` | Delete only exact synthetic drug-reference IDs after their prescription children are gone. |
+| 43 | `cpms_drug_reference` | `C`; `FK(prescription_items.drug_ref_id)` | Delete only exact synthetic drug-reference IDs after their prescription children are gone. |
 
 ## The 10 system/global tables
 
@@ -135,14 +134,6 @@ never by a column name alone.
 | `cpms_visit_consultation_fees` | `(visit_id)` — **no `id` column** | `visit_id`, `clinic_id`, `clinician_id`, `set_by_wp_user_id` | Deleted by its **composite key** (`visit_id`) only. |
 | `cpms_visit_charge_items` | `id` | `clinic_id`, `visit_id`, `clinician_id`, `invoiced_invoice_id`, `created_by_wp_user_id`, `updated_by_wp_user_id`, `removed_by_wp_user_id` | Delete only exact manifest-owned charge-item IDs; feeds `charge_item_ids`. |
 | `cpms_visit_fee_snapshot_failures` | `(visit_id)` — **no `id` column** | `visit_id`, `clinic_id` | Deleted by its **composite key** (`visit_id`) only. |
-
-## Schema `2026_10_31_0031` addition — audit append serialization guard
-
-Migration `2026_10_31_0031_audit_append_serialization` adds the singleton guard
-table `cpms_audit_seq` (`id=1`, `last_audit_id`, `updated_at`). It is
-`runner_managed`/`never` — bookkeeping only, never tenant data. Scoped and
-strict teardowns both omit it; the compatibility manifest records it as
-`operational` with `teardown_class=runner_managed` and `teardown_mode=never`.
 
 ### Why the membership id-sets were split
 

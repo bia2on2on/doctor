@@ -3304,3 +3304,41 @@ limits, candidate design and outstanding acceptance; this is not a fix or releas
   (`.github/workflows/session-{activation,quality}-proof.yml`) and restored
   `ci.yml`'s triggers after collecting exact-SHA evidence. `companion-isolation.py`
   passes (`production-only change (46 file(s)); companion untouched`).
+
+## Successor PR — production-only consolidation of PR #291 + stabilization
+
+Built the single successor branch on `arena/318116a6-doctor` by fast-forwarding to
+the validated stabilization tree `7efe5563135bfc3ee6a398c1f7d751e3e4bc2396`
+(`arena/c9c7a855-doctor`). That tree descends from `e36f7d1` ("Preserve PR 291
+snapshot for independent verification"), whose Git tree is byte-identical to PR
+#291's head `3bd48d9cb5ef53fcb9b1cfb2fef57a02b7cabf8a` — so it already carries
+the complete PR #291 production work plus the stabilization hardening. Verified
+`git diff-tree` equality of `e36f7d1` vs `3bd48d9` before proceeding.
+
+Applied the five approved corrections on top:
+
+- **(a) Injected-gap fixture scoped to the manifest baseline.** `link_production_at_baseline()`
+  in `.github/workflows/test_workflow_contracts.py` now materialises
+  `clinic-practice-management/src/Migrations` truncated at the manifest's
+  `companion_schema_pin`, so the fixture's derived schema head equals the baseline
+  the companion declares. `test_the_gate_command_fails_on_an_injected_gap` now
+  passes (`72/72` contract tests OK, 1 skipped) and still fails `--gate all` for
+  the injected journey gap while `--gate compatibility` passes.
+- **(b) Companion gate kept fail-closed.** `evaluate.py --gate compatibility` on
+  the real tree still exits 1 with 7 blockers (schema head 0030 vs production
+  0031, `cpms_audit_seq` unclassified, two schema-pin lane findings). No gate
+  weakening.
+- **(c) Premature companion workflow/documentation changes reverted** to `main`:
+  `.github/workflows/disposable-demo-installer.yml`, `.github/workflows/scoped-demo.yml`,
+  `docs/scoped-demo/acceptance-plan.md`, `docs/scoped-demo/ownership-map.md`.
+- **(d) Legitimate production current-head schema assertions bumped 0030 → 0031**:
+  `closure-gate.yml`, `pilot-gate.yml`, `real-wp-acceptance.yml`,
+  `first-practice-acceptance.yml`, `disposable-site-acceptance.yml`,
+  `standalone-demo.yml`, `mariadb-10.11-compat.yml`,
+  `MariaDb1011CompatibilityTest.php`, and `upgrade-path-fixture.php`
+  (`expectedCandidateVersion`). Baseline/upgrade-path assertions (facility-matrix
+  0030 base, `rwp-first-practice.py` baseline, `wp-activation-schema-proof.php`,
+  rollback boundaries, `StaffMessagingPricingMigrationTest`) were deliberately left
+  at 0030.
+- **(e) Strict production/companion isolation preserved.** `companion-isolation.py`
+  on the full change set reports `companion-isolation: PASS`.

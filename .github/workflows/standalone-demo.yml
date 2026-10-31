@@ -327,7 +327,7 @@ jobs:
           wp eval 'echo defined("CPMS_VERSION") ? CPMS_VERSION : "MISSING";' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/core-version.txt
           grep -qv MISSING /tmp/cpsa-ci/core-version.txt
           wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root | tee /tmp/cpsa-ci/schema.txt
-          test "$(cat /tmp/cpsa-ci/schema.txt)" = '2026_10_27_0030'
+          test "$(cat /tmp/cpsa-ci/schema.txt)" = '2026_10_31_0031'
           wp eval 'echo class_exists("\ClinicCore\Bootstrap\App") ? "CORE_BOOTED" : "CORE_MISSING";' --path="$WP_DIR" --allow-root | grep -qx CORE_BOOTED
 
       - name: Enable and provision the scoped demo through the real services
