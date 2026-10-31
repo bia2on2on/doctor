@@ -68,7 +68,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     {
         $mobile = '0912' . random_int(1000000, 9999999);
         $response = $this->post('/otp/request', ['mobile' => $mobile]);
-        self::assertSame(503, $response->get_status(), 'An undelivered OTP must not enter the code-waiting UI.');
+        self::assertSame(503, $response->get_status(), 'An undelivered OTP must not enter the code-waiting UI: ' . wp_json_encode($response->get_data()));
         self::assertSame('CLINIC_OTP_DELIVERY_FAILED', $this->iv1_code($response));
         $data = $response->get_data()['data'] ?? [];
         self::assertFalse($data['sms_sent'] ?? true);
@@ -87,7 +87,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
     {
         $this->iv1_scope($this->clinic, fn() => App::settings()->set('sms.provider', RecordingSmsProvider::ID));
         $response = $this->post('/otp/request', ['mobile' => '0912' . random_int(1000000, 9999999)]);
-        self::assertSame(200, $response->get_status());
+        self::assertSame(200, $response->get_status(), wp_json_encode($response->get_data()));
         $data = $this->iv1_data($response);
         self::assertTrue($data['sms_sent']);
         self::assertFalse($data['retry_enqueued']);
@@ -133,7 +133,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         });
         $this->asSmsManager();
         $response = $this->post('/sms/settings', ['provider' => 'generic_api', 'generic' => ['endpoint' => 'https://sms.example.invalid/new']]);
-        self::assertSame(200, $response->get_status());
+        self::assertSame(200, $response->get_status(), wp_json_encode($response->get_data()));
         $status = $this->iv1_scope($this->clinic, fn() => App::smsService()->status());
         self::assertSame([], $status['last_test']);
         self::assertNotSame('VERIFIED', $status['state']);
