@@ -147,6 +147,12 @@ final class Phase11StaffPortalReceptionArrivalRedTest extends WP_UnitTestCase
         $boardData = $this->payload($board);
         self::assertSame($fx['loc_tehran'], (int) ($boardData['location_id'] ?? 0), 'G1: board is bound to the trusted Location');
         self::assertSame(self::TEHRAN_DATE, (string) ($boardData['date'] ?? ''), 'G1: board exposes the Location-local operational day');
+        self::assertArrayHasKey('jalali', $boardData, 'G1: board carries the Persian/Jalali presentation of the same operational day');
+        self::assertSame(
+            \ClinicCore\Domain\Time\Jalali::formatYmd(self::TEHRAN_DATE),
+            (string) ($boardData['jalali'] ?? ''),
+            'G1: board jalali is the Jalali rendering of the SAME Location-local day (presentation only)'
+        );
     }
 
     // ============ G2 — Non-secretary / insufficient capability / membership ============

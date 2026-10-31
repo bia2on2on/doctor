@@ -280,6 +280,14 @@ final class Phase10DoctorPortalVisitWorkspaceRedTest extends WP_UnitTestCase
         $visitData = $payload['visit'];
         self::assertArrayHasKey('id', $visitData, 'G3: Visit ID present');
         self::assertArrayHasKey('status', $visitData, 'G3: Visit status present');
+        self::assertArrayHasKey('jalali_date', $visitData, 'G3: Visit carries the Persian/Jalali presentation of the same visit date');
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) ($visitData['visit_date'] ?? '')) === 1) {
+            self::assertSame(
+                \ClinicCore\Domain\Time\Jalali::formatYmd((string) $visitData['visit_date']),
+                (string) $visitData['jalali_date'],
+                'G3: jalali_date is the Jalali rendering of the SAME visit date (presentation only)'
+            );
+        }
 
         $sensitiveFields = ['mobile', 'national_id', 'address', 'emergency_contact', 'emergency_phone'];
         foreach ($sensitiveFields as $field) {
