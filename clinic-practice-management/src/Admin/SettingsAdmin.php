@@ -92,7 +92,7 @@ final class SettingsAdmin
                             <td><?php echo esc_html((string) $job['id']); ?></td>
                             <td><?php echo esc_html((string) $job['type']); ?></td>
                             <td><?php echo esc_html((string) $job['last_error']); ?></td>
-                            <td><?php echo esc_html((string) $job['created_at']); ?></td>
+                            <td><?php echo esc_html(CpmsUi::jalaliDateTime((string) $job['created_at'])); ?></td>
                             <td><code>bin/cpms jobs retry <?php echo esc_html((string) $job['id']); ?></code></td>
                         </tr>
                     <?php endforeach; ?>

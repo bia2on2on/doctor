@@ -256,7 +256,7 @@ final class SystemPage
                 <?php foreach ($backups as $b) : ?>
                     <tr>
                         <td dir="ltr"><?php echo esc_html((string) $b['backup_id']); ?></td>
-                        <td><?php echo esc_html((string) $b['created_at']); ?></td>
+                        <td><?php echo esc_html(CpmsUi::jalaliDateTime((string) $b['created_at'])); ?></td>
                         <td><?php echo esc_html((string) $b['tables'] . '/' . (string) $b['rows']); ?></td>
                         <td><?php echo esc_html((string) $b['storage_files']); ?></td>
                         <td><?php echo esc_html((string) $b['integrity']); ?></td>

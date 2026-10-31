@@ -142,7 +142,7 @@ final class CpmsDashboard
                             <p class="description"><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-system')); ?>">ایجاد اولین بکاپ</a></p>
                         <?php else : ?>
                             <p class="cpms-big"><?php echo esc_html((string) count($backups)); ?></p>
-                            <p class="description">آخرین بکاپ: <code><?php echo esc_html((string) ($backups[0]['created_at'] ?? '—')); ?></code></p>
+                            <p class="description">آخرین بکاپ: <code><?php echo esc_html(($backups[0]['created_at'] ?? '') !== '' ? CpmsUi::jalaliDateTime((string) $backups[0]['created_at']) : '—'); ?></code></p>
                         <?php endif; ?>
                     </div>
                 <?php endif; ?>

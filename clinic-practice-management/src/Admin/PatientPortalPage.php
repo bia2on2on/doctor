@@ -844,8 +844,7 @@ final class PatientPortalPage
             ],
             'birth_date'              => [
                 'label'       => 'تاریخ تولد',
-                'type'        => 'text',
-                'placeholder' => 'YYYY-MM-DD',
+                'type'        => 'date',
                 'dir'         => 'ltr',
             ],
             'gender'                  => [
