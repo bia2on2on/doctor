@@ -247,6 +247,7 @@ jobs:
           set -euo pipefail
           zip=$(find /tmp/classic-http/baseline/clinic-practice-management/dist -name '*.zip' | head -1)
           wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root
+          wp rewrite flush --hard --path="$WP_DIR" --allow-root
           sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
           sudo cp clinic-practice-management/tests/fixtures/classic-v1-http-profiler-mu.php "$WP_DIR/wp-content/mu-plugins/classic-v1-profiler.php"
           sudo service apache2 restart
@@ -289,6 +290,7 @@ jobs:
           set -euo pipefail
           zip=$(find clinic-practice-management/dist -name '*.zip' | head -1)
           wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root
+          wp rewrite flush --hard --path="$WP_DIR" --allow-root
           sudo service apache2 restart
       - name: Profile candidate over real HTTP
         run: |
