@@ -69,7 +69,15 @@ def status():
     keys = {"Innodb_row_lock_waits", "Innodb_row_lock_time", "Innodb_deadlocks"}
     rows = db_rows("SHOW GLOBAL STATUS WHERE Variable_name IN "
                    "('Innodb_row_lock_waits','Innodb_row_lock_time','Innodb_deadlocks')")
-    return {name: int(value) for name, value in rows if name in keys and value.isdigit()}
+    values = {name: int(value) for name, value in rows if name in keys and value.isdigit()}
+    # MariaDB exposes Innodb_deadlocks in GLOBAL STATUS. MySQL 8 commonly
+    # exposes the equivalent enabled counter only through INNODB_METRICS.
+    if "Innodb_deadlocks" not in values:
+        metrics = db_rows("SELECT `COUNT` FROM information_schema.INNODB_METRICS "
+                          "WHERE NAME='lock_deadlocks' AND STATUS='enabled'")
+        if len(metrics) == 1 and len(metrics[0]) == 1 and metrics[0][0].isdigit():
+            values["Innodb_deadlocks"] = int(metrics[0][0])
+    return values
 
 
 def delta(before, after, key):
@@ -237,6 +245,24 @@ def main():
               + " db_global_waits=" + str(delta(before, after, "Innodb_row_lock_waits"))
               + " db_global_wait_ms=" + str(delta(before, after, "Innodb_row_lock_time"))
               + " db_global_deadlocks=" + str(delta(before, after, "Innodb_deadlocks")))
+    # Five fresh numbers, three simultaneous requests each. Synchronization is
+    # before request(), so this can expose but cannot deterministically prove
+    # absence of a check-then-insert race. Never wait inside a future row lock.
+    issuance_ok = True
+    for issue_round in range(5):
+        label = "issue" + str(issue_round)
+        mobile = "09129991" + str(issue_round).zfill(3)
+        issue_results, timing = run_group(label, 3, "otp-issue")
+        counts = Counter(result["status"] for result in issue_results)
+        challenges = db_scalar("SELECT COUNT(*) FROM wp_cpms_otp_tokens WHERE mobile='" + mobile + "' AND purpose='login'")
+        messages = db_scalar("SELECT COUNT(*) FROM wp_cpms_sms_messages WHERE recipient='" + mobile + "' AND event='otp' AND status='SENT'")
+        denials_ok = all(result["persian"] and result["retry_valid"] for result in issue_results if result["status"] == "cooldown")
+        passed = counts == {"issued": 1, "cooldown": 2} and challenges == 1 and messages == 1 and denials_ok
+        issuance_ok = issuance_ok and passed
+        title = "notice" if passed else "error"
+        print("::" + title + " title=OTP issuance race::round=" + str(issue_round + 1) + " workers=3 statuses="
+              + json.dumps(counts, sort_keys=True) + " challenges=" + str(challenges) + " sent=" + str(messages)
+              + " persian_retry=" + ("ok" if denials_ok else "failed") + " " + json.dumps(timing, sort_keys=True))
     # Three distinct real service writers pause immediately before locking the
     # audit guard: a clinical note, a captured partial payment and an SMS test.
     before = status()
@@ -260,7 +286,8 @@ def main():
           + " db_global_waits=" + str(delta(before, after, "Innodb_row_lock_waits"))
           + " db_global_wait_ms=" + str(delta(before, after, "Innodb_row_lock_time"))
           + " db_global_deadlocks=" + str(delta(before, after, "Innodb_deadlocks")))
-    print("PRODUCTION_RACE_PROOF otp_single_use=10 booking=10,25,50 mixed_writers=clinical,payment,sms adapter=in_memory chain=independent")
+    require(issuance_ok, "otp-issuance-race")
+    print("PRODUCTION_RACE_PROOF otp_single_use=10 otp_issuance=5x3 booking=10,25,50 mixed_writers=clinical,payment,sms adapter=in_memory chain=independent")
 
 
 if __name__ == "__main__":
@@ -273,7 +300,7 @@ if __name__ == "__main__":
             "proof-directory-exists", "database-query", "database-result", "independent-chain-process",
             "independent-chain", "independent-suffix", "worker-before-barrier", "barrier-timeout",
             "worker-exit", "fixture-setup", "fixture-slot", "otp-single-use", "otp-audit-count",
-            "otp-lockout-race", "otp-persian-errors", "otp-lockout-retry", "otp-lockout-fixture", "otp-lockout-state",
+            "otp-lockout-race", "otp-issuance-race", "otp-persian-errors", "otp-lockout-retry", "otp-lockout-fixture", "otp-lockout-state",
             "otp-failure-audit", "otp-locked-audit", "otp-boundaries", "booking-audit-rollback", "booking-outcomes", "idempotent-replay", "slot-capacity", "appointment-count",
             "converted-hold", "orphan-hold", "hold-count", "mixed-outcomes", "mixed-fixture", "mixed-note",
             "mixed-payment", "mixed-invoice", "mixed-audits",

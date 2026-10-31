@@ -3155,3 +3155,44 @@ limits, candidate design and outstanding acceptance; this is not a fix or releas
   WPCS 3.4.1 changed-line check found no findings with only the WASM-unspawnable
   syntax sniff omitted. These are not substitutes for full CI. The companion
   schema/audit-guard compatibility gate remains genuinely blocked; no waiver.
+
+### 2026-10-31 UTC — real contention run at acf733c
+
+- [Facility run 41223852638](https://github.com/bia2on2on/doctor/actions/runs/41223852638)
+  at `acf733c97da4eb595b5fe1634f4e447293b5cecb` passed fresh/repeat activation,
+  0030 upgrade, reception security/rollback and Persian RTL browser checks on
+  MySQL 8.4.13 and MariaDB 11.4.13. Both jobs **failed** in the later mixed-writer
+  proof; the full facility browser matrix was consequently skipped at this SHA.
+- Before that failure, both engines ran the production OTP and booking services:
+  a synchronized shared-code race had one success and nine rejected; ten wrong
+  codes produced four invalid and six locked outcomes with five persisted failures,
+  Persian errors and retry metadata; adjusted-fixture-clock cooldown, daily, TTL,
+  lockout and unlock checks and booking audit rollback passed. Each 10/25/50-way
+  booking race had exactly one winner, one appointment, one converted hold, no
+  active hold, and an idempotent replay. The independent complete chain and an
+  independently predecessor-anchored ten-row suffix verified after every round.
+  These used synthetic accounts and an in-memory SMS transport; they did not
+  exercise a real external SMS gateway.
+- At 50 contenders, hold-through-replay p95/max were 405.7/430.2 ms on MySQL
+  and 514.0/531.7 ms on MariaDB; global row-lock wait deltas were 171 and 180.
+  MariaDB reported zero deadlock delta; MySQL's `Innodb_deadlocks` status was
+  unavailable in this run, so a zero is **not** asserted. These are isolated CI
+  samples, not production latency/SLO evidence. Subsequent diagnostics try the
+  enabled MySQL `INNODB_METRICS` counter without changing server configuration.
+- Mixed clinical/finance/SMS writers reached the shared audit barrier but failed
+  clinical result assertions on both engines, and the SMS assertion also failed
+  on MySQL. The cause is not yet established; no mixed-write or final chain pass
+  is claimed. Added fixed, source-allowlisted error classifications without
+  exposing raw SQL, private exception text, synthetic identities or OTPs.
+- [Quality run 41223852647](https://github.com/bia2on2on/doctor/actions/runs/41223852647)
+  passed WPCS, PHPStan and PHP 8.1–8.5 units; focused MariaDB custom-role migration
+  tests now passed. The next focused MariaDB messaging/pricing migration suite
+  failed; raw artifacts/logs remain inaccessible (EOF) and its precise cause is
+  unknown. Full integration/coverage was skipped and the fail-closed coverage
+  guard reported missing inputs. Tenant Tripwire's acceptance-contract step
+  remains failed on the genuine companion compatibility prerequisite. Added
+  source-allowlisted JUnit diagnostics to the messaging/pricing step; no check
+  was suppressed.
+- Added five three-way OTP-issuance rounds with a pre-request barrier and distinct
+  synthetic numbers. These are not yet run: their synchronization can reveal a
+  check-then-insert race but a passing sample cannot prove its absence.

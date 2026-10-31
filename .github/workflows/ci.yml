@@ -381,9 +381,42 @@ jobs:
           WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
         run: |
           set -o pipefail
+          phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/iran-v1-mariadb-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/StaffMessagingPricingMigrationTest.php 2>&1 | tee /tmp/iran-v1-mariadb.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/StaffMessagingPricingMigrationTest.php 2>&1 | tee /tmp/iran-v1-mariadb.log || phpunit_status=$?
+          if [ "$phpunit_status" -ne 0 ]; then
+            # Publish only test names literally declared in this checked-in
+            # source and simple exception class names; never raw failure text.
+            python3 - "$phpunit_status" <<'PYIRANFAIL' || true
+          import re
+          import sys
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          try:
+              source = Path('tests/Integration/StaffMessagingPricingMigrationTest.php').read_text(encoding='utf-8')
+              allowed = set(re.findall(r'function\s+(test[A-Za-z0-9_]+)\s*\(', source))
+              cases = ET.parse('/tmp/iran-v1-mariadb-junit.xml').getroot().findall('.//testcase')
+              failures = []
+              for case in cases:
+                  for tag in ('error', 'failure'):
+                      node = case.find(tag)
+                      if node is not None:
+                          name = case.get('name', '')
+                          category = (node.get('type') or tag).rsplit(chr(92), 1)[-1]
+                          if name not in allowed:
+                              name = 'unknown_test'
+                          if not re.fullmatch(r'[A-Za-z0-9_]{1,80}', category):
+                              category = 'other'
+                          failures.append(name + ':' + category)
+              print('::error title=Iran V1 migration diagnostics::phpunit_exit={} cases={} failures={}'.format(
+                  sys.argv[1], len(cases), ','.join(sorted(failures)) or 'unavailable'))
+          except Exception:
+              print('::error title=Iran V1 migration diagnostics::junit_unavailable')
+          PYIRANFAIL
+            exit "$phpunit_status"
+          fi
           if ! grep -qE '^(OK \(|OK, but)' /tmp/iran-v1-mariadb.log; then
             echo '::error::Iran V1 migration suite did not finish with a passing PHPUnit summary.'
             exit 1
