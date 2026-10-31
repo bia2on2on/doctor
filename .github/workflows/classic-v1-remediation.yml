@@ -99,7 +99,6 @@ jobs:
           CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
-          tail -35 /tmp/classic-v1/baseline-${{ matrix.database }}.log | while IFS= read -r line; do echo "::notice::BASELINE LOG ${line}"; done
           python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY' || true
           import os, sys, xml.etree.ElementTree as ET
           p=sys.argv[1]
@@ -122,7 +121,6 @@ jobs:
       - name: Expose candidate regression failures
         if: failure()
         run: |
-          tail -35 /tmp/classic-v1/candidate-${{ matrix.database }}.log 2>/dev/null | while IFS= read -r line; do echo "::error::CANDIDATE LOG ${line}"; done
           python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml <<'PY' || true
           import os, sys, xml.etree.ElementTree as ET
           p=sys.argv[1]
@@ -225,8 +223,7 @@ jobs:
       - name: Sequential authenticated HTTP profiles
         run: |
           set -euo pipefail
-          exec 9>/tmp/classic-http/trace.log; BASH_XTRACEFD=9; set -x
-          trap 'rc=$?; set +x; if [ "$rc" -ne 0 ]; then tail -12 /tmp/classic-http/trace.log | while IFS= read -r line; do echo "::error::TRACE $line"; done; fi' EXIT
+          command -v php; php -v | head -1; command -v wp
           profile_rc=0
           for label in baseline candidate; do
             if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
@@ -242,9 +239,13 @@ jobs:
               exit 1
             fi
             if [ "$label" = baseline ]; then
-              if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php > /tmp/classic-http/fixture.log 2>&1; then
+              set +e
+              WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php > /tmp/classic-http/fixture.log 2>&1
+              fixture_rc=$?
+              set -e
+              if [ "$fixture_rc" -ne 0 ]; then
                 tail -30 /tmp/classic-http/fixture.log | while IFS= read -r line; do echo "::error::FIXTURE $line"; done
-                exit 1
+                exit "$fixture_rc"
               fi
               cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
               set -a; . /tmp/doctor-portal.env; set +a

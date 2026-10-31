@@ -68,6 +68,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
 
     public function testOtpDeliveryFailureIsNotHttpSuccessAndKeepsLimitsAndHashOnlyStorage(): void
     {
+        self::assertSame('classic_missing_provider', $this->iv1_scope($this->clinic, fn () => App::settings()->get('sms.provider')));
         $mobile = '0912' . random_int(1000000, 9999999);
         $response = $this->iv1_scope($this->clinic, fn () => $this->post('/otp/request', ['mobile' => $mobile]));
         self::assertSame(503, $response->get_status(), 'An undelivered OTP must not enter the code-waiting UI: ' . wp_json_encode($response->get_data()));
