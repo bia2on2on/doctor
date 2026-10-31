@@ -3234,3 +3234,37 @@ limits, candidate design and outstanding acceptance; this is not a fix or releas
      barrier deadlock.
 - None of the fixes in this commit has yet run on real CI MySQL/MariaDB; exact-SHA
   CI runs follow immediately. Companion compatibility remains genuinely blocked.
+
+### 2026-10-31 UTC — full two-engine facility matrix green at cf86f92; suite-isolation cleanup
+
+- [Facility run 41226361113](https://github.com/bia2on2on/doctor/actions/runs/41226361113)
+  at `cf86f92789d65c836d2aff3ea071d6cf3ebf5eb6` **passed completely** on both
+  `mysql 8.4.13` (job `124611224522`) and `mariadb 11.4.13-MariaDB-ubu2404`
+  (job `124611224504`): fresh/repeat activation, 0030→0031 upgrade, Clinic-local
+  reception authorization/rollback, Persian RTL desktop/mobile wp-admin proof,
+  10-way OTP verify race (`1 success / 9 rejected`, `db_global_deadlocks=0`),
+  10-way wrong-code race (`4 invalid / 6 locked`, `attempts=5`), adjusted-clock
+  OTP boundaries, mandatory-audit booking rollback, 10/25/50-way production
+  booking races (`1 winner`, `active_holds=0`, idempotent replay, independent
+  full + predecessor-anchored suffix chain, `db_global_deadlocks=0` on both
+  engines; 50-way p50/p95/max `391.8/569.0/580.7 ms` on MySQL and
+  `239.9/369.9/392.3 ms` on MariaDB), all five 3-way OTP issuance races
+  (`issued=1, cooldown=2`, `challenges=1, sent=1, req_audits=1, denial_audits=2`,
+  Persian + retry metadata verified), synchronized real clinical-note /
+  payment-capture / SMS-test mixed audit writers, pristine tenant-table check,
+  and all 12 facility browser journeys plus medical-building structure.
+- [Quality run 41226361114](https://github.com/bia2on2on/doctor/actions/runs/41226361114)
+  at `cf86f92789d65c836d2aff3ea071d6cf3ebf5eb6` passed WPCS, PHPStan, PHP 8.1–8.5
+  units, and **every focused MariaDB 11.4.13 and MySQL 8 integration step**
+  (custom-role MariaDB, Iran V1 MariaDB, first-practice MariaDB, heartbeat
+  recovery MySQL+MariaDB, custom-role lock-wait race, archival contract, archival
+  schema/downgrade, archival independent races, returning-patient enrollment,
+  and patient enrollment options/UI). The full MySQL integration suite reached
+  `2481 tests, 70787 assertions` and failed due to test-fixture pollution from
+  `AuditAppendConcurrencyTest` (which called `$wpdb->query('COMMIT')` on seed
+  Clinic 1 without cleaning up the committed membership or suffix audit rows,
+  breaking `FirstPracticeSetupTest`'s zero-membership precondition) and string-id
+  / membership cleanup bugs in `ClinicReceptionRecoveryTest`.
+- Isolated `AuditAppendConcurrencyTest` to its own temporary Organization/Clinic
+  with verified suffix-audit cleanup and guard reset, and fixed type/cleanup
+  defects in `ClinicReceptionRecoveryTest`. Re-running quality CI next.

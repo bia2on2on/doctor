@@ -24,6 +24,7 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
     private int $locationA = 0;
     private int $locationB = 0;
     private int $clinicianId = 0;
+    private int $clinicianUserId = 0;
     private int $managerId = 0;
     private int $suspendedManagerId = 0;
 
@@ -39,19 +40,20 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
 
         // Two fresh fixture Locations; a pre-existing default Location may
         // already have other eligible clinicians in the full test suite.
-        App::db()->insert('cpms_locations', ['clinic_id' => $this->clinicId, 'name' => 'Recovery Loc A', 'slug' => 'recovery-a-' . bin2hex(random_bytes(3)), 'is_active' => 1, 'is_primary' => 0, 'timezone' => 'Asia/Tehran', 'created_at' => $now, 'updated_at' => $now]);
+        self::assertTrue(App::db()->insert('cpms_locations', ['clinic_id' => $this->clinicId, 'name' => 'Recovery Loc A', 'slug' => 'recovery-a-' . bin2hex(random_bytes(3)), 'is_active' => 1, 'is_primary' => 0, 'timezone' => 'Asia/Tehran', 'created_at' => $now, 'updated_at' => $now]));
         $this->locationA = (int) App::db()->wpdb_last_insert_id();
-        App::db()->insert('cpms_locations', ['clinic_id' => $this->clinicId, 'name' => 'Recovery Loc B', 'slug' => 'recovery-b-' . bin2hex(random_bytes(3)), 'is_active' => 1, 'is_primary' => 0, 'timezone' => 'Asia/Tehran', 'created_at' => $now, 'updated_at' => $now]);
+        self::assertTrue(App::db()->insert('cpms_locations', ['clinic_id' => $this->clinicId, 'name' => 'Recovery Loc B', 'slug' => 'recovery-b-' . bin2hex(random_bytes(3)), 'is_active' => 1, 'is_primary' => 0, 'timezone' => 'Asia/Tehran', 'created_at' => $now, 'updated_at' => $now]));
         $this->locationB = (int) App::db()->wpdb_last_insert_id();
 
         // Clinician (active, has wp_user_id).
         $userId = wp_create_user('recovery_doc_' . bin2hex(random_bytes(3)), wp_generate_password(12), 'recovery_' . bin2hex(random_bytes(4)) . '@example.com');
         $this->assertNotWPError($userId);
-        wp_update_user(['ID' => (int) $userId, 'role' => RolesAndCapabilities::ROLE_DOCTOR]);
-        App::db()->insert('cpms_clinicians', ['clinic_id' => $this->clinicId, 'wp_user_id' => (int) $userId, 'full_name' => 'دکتر بازیابی', 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now]);
+        $this->clinicianUserId = (int) $userId;
+        wp_update_user(['ID' => $this->clinicianUserId, 'role' => RolesAndCapabilities::ROLE_DOCTOR]);
+        self::assertTrue(App::db()->insert('cpms_clinicians', ['clinic_id' => $this->clinicId, 'wp_user_id' => $this->clinicianUserId, 'full_name' => 'دکتر بازیابی', 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now]));
         $this->clinicianId = (int) App::db()->wpdb_last_insert_id();
         // Ensure clinician has membership.
-        App::db()->insert('cpms_clinic_memberships', ['clinic_id' => $this->clinicId, 'wp_user_id' => (int) $userId, 'role_key' => RolesAndCapabilities::ROLE_DOCTOR, 'status' => 'active', 'scope_mode' => 'clinic', 'is_primary' => 0, 'created_at' => $now, 'updated_at' => $now]);
+        self::assertTrue(App::db()->insert('cpms_clinic_memberships', ['clinic_id' => $this->clinicId, 'wp_user_id' => $this->clinicianUserId, 'role_key' => RolesAndCapabilities::ROLE_DOCTOR, 'status' => 'active', 'scope_mode' => 'clinic', 'is_primary' => 0, 'created_at' => $now, 'updated_at' => $now]));
 
         // Ensure assignments empty at start.
         App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinician_locations') . ' WHERE clinician_id = %d', [$this->clinicianId]);
@@ -62,7 +64,7 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         $this->managerId = (int) $manager;
         $u = get_userdata($this->managerId);
         $u->add_role(RolesAndCapabilities::ROLE_MANAGER);
-        App::db()->insert('cpms_clinic_memberships', ['clinic_id' => $this->clinicId, 'wp_user_id' => $this->managerId, 'role_key' => RolesAndCapabilities::ROLE_MANAGER, 'status' => 'active', 'scope_mode' => 'clinic', 'is_primary' => 0, 'created_at' => $now, 'updated_at' => $now]);
+        self::assertTrue(App::db()->insert('cpms_clinic_memberships', ['clinic_id' => $this->clinicId, 'wp_user_id' => $this->managerId, 'role_key' => RolesAndCapabilities::ROLE_MANAGER, 'status' => 'active', 'scope_mode' => 'clinic', 'is_primary' => 0, 'created_at' => $now, 'updated_at' => $now]));
 
         // Suspended manager (for negative test).
         $suspended = wp_create_user('recovery_susp_' . bin2hex(random_bytes(3)), wp_generate_password(12), 'susp_' . bin2hex(random_bytes(4)) . '@example.com');
@@ -70,7 +72,7 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         $this->suspendedManagerId = (int) $suspended;
         $u2 = get_userdata($this->suspendedManagerId);
         $u2->add_role(RolesAndCapabilities::ROLE_MANAGER);
-        App::db()->insert('cpms_clinic_memberships', ['clinic_id' => $this->clinicId, 'wp_user_id' => $this->suspendedManagerId, 'role_key' => RolesAndCapabilities::ROLE_MANAGER, 'status' => 'suspended', 'scope_mode' => 'clinic', 'is_primary' => 0, 'created_at' => $now, 'updated_at' => $now]);
+        self::assertTrue(App::db()->insert('cpms_clinic_memberships', ['clinic_id' => $this->clinicId, 'wp_user_id' => $this->suspendedManagerId, 'role_key' => RolesAndCapabilities::ROLE_MANAGER, 'status' => 'suspended', 'scope_mode' => 'clinic', 'is_primary' => 0, 'created_at' => $now, 'updated_at' => $now]));
     }
 
     protected function tearDown(): void
@@ -78,7 +80,7 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         // Cleanup our fixtures.
         App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinician_locations') . ' WHERE clinician_id = %d', [$this->clinicianId]);
         App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d', [$this->clinicianId]);
-        App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE wp_user_id IN (%d, %d)', [$this->managerId, $this->suspendedManagerId]);
+        App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE wp_user_id IN (%d, %d, %d)', [$this->clinicianUserId, $this->managerId, $this->suspendedManagerId]);
         App::db()->query('DELETE FROM ' . App::db()->table('cpms_locations') . ' WHERE id IN (%d, %d)', [$this->locationA, $this->locationB]);
         App::resetScope();
         parent::tearDown();
@@ -101,7 +103,7 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         App::membership_service()->assign_clinician_locations($this->clinicianId, [$this->locationA], $this->locationA);
         $eligible = $this->eligibleClinicians($this->clinicId, $this->locationA);
         $this->assertCount(1, $eligible);
-        $this->assertSame($this->clinicianId, $eligible[0]['id']);
+        $this->assertSame($this->clinicianId, (int) $eligible[0]['id']);
 
         // Assign to multiple locations (idempotent retry with same set).
         App::membership_service()->assign_clinician_locations($this->clinicianId, [$this->locationA, $this->locationB], $this->locationA);
@@ -125,8 +127,8 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         try {
             App::membership_service()->assign_clinician_locations($this->clinicianId, [$this->locationB], $this->locationB);
             $this->fail('suspended clinician assignment must fail');
-        } catch (\Throwable $e) {
-            $this->assertStringContainsString('mismatch', strtolower($e->getMessage()));
+        } catch (\ClinicCore\Domain\Membership\MembershipException $e) {
+            $this->assertSame('CLINIC_CLINICIAN_LOCATION_MISMATCH', $e->error_code);
         } finally {
             App::db()->query('UPDATE ' . App::db()->table('cpms_clinic_memberships') . ' SET status = %s WHERE wp_user_id = (SELECT wp_user_id FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d)', ['active', $this->clinicianId]);
         }
@@ -149,8 +151,8 @@ final class ClinicReceptionRecoveryTest extends WP_UnitTestCase
         try {
             App::membership_service()->assign_clinician_locations($this->clinicianId, [$foreignLoc], $foreignLoc);
             $this->fail('cross-tenant location must be denied');
-        } catch (\Throwable $e) {
-            $this->assertStringContainsString('mismatch', strtolower($e->getMessage()));
+        } catch (\ClinicCore\Domain\Membership\MembershipException $e) {
+            $this->assertSame('CLINIC_CLINICIAN_LOCATION_MISMATCH', $e->error_code);
         } finally {
             App::db()->query('DELETE FROM ' . App::db()->table('cpms_locations') . ' WHERE id = %d', [$foreignLoc]);
             App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d', [$foreignClinic]);
