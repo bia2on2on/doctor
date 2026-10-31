@@ -99,12 +99,12 @@ jobs:
           CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php tests/Integration/ClassicV1CriticalRemediationTest.php tests/Integration/ClassicV1PerformanceProbeTest.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
           grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
-          python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY'
-import sys, xml.etree.ElementTree as ET
-for case in ET.parse(sys.argv[1]).iter('testcase'):
-    for bad in list(case.findall('failure')) + list(case.findall('error')):
-        print('::warning::BASELINE ' + case.get('name','') + ': ' + (bad.get('message','')[:350].replace('\n',' ')))
-PY
+            python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY'
+  import sys, xml.etree.ElementTree as ET
+  for case in ET.parse(sys.argv[1]).iter('testcase'):
+      for bad in list(case.findall('failure')) + list(case.findall('error')):
+          print('::warning::BASELINE ' + case.get('name','') + ': ' + (bad.get('message','')[:350].replace('\n',' ')))
+  PY
       - name: Reset database before candidate on the same runner
         run: |
           mysql --protocol=TCP -h 127.0.0.1 -P ${{ matrix.port }} -uroot -proot -e 'DROP DATABASE wordpress_test; CREATE DATABASE wordpress_test CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
