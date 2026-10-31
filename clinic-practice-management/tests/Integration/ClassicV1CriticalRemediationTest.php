@@ -103,7 +103,7 @@ final class ClassicV1CriticalRemediationTest extends WP_UnitTestCase
         self::assertStringContainsString('داخلی', $response->get_data()['message'] ?? '');
         $status = $this->iv1_scope($this->clinic, fn() => App::smsService()->status());
         self::assertNotSame('VERIFIED', $status['state']);
-        self::assertSame('', $status['provider'], 'Rejected save must not partially switch provider.');
+        self::assertSame('', App::settings()->get('sms.provider', ''), 'Rejected save must not partially switch provider.');
         self::assertSame([], $this->provider->textSends, 'SSRF validation must precede network I/O.');
     }
 
