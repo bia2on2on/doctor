@@ -167,10 +167,13 @@ final class MigrationRunner
     public function applied(): array
     {
         $this->ensureSchemaTable();
+        $rows = $this->db->fetchAll(
+            'SELECT version FROM ' . $this->db->table( self::SCHEMA_TABLE ) . ' ORDER BY version'
+        );
 
-        return (array) $this->db->fetchValue(
-            'SELECT GROUP_CONCAT(version ORDER BY version) FROM ' . $this->db->table(self::SCHEMA_TABLE)
-        ) ?: [];
+        return array_values(
+            array_map( static fn ( array $row ): string => (string) $row['version'], $rows )
+        );
     }
 
     public function currentVersion(): ?string

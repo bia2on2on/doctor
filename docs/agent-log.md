@@ -3196,3 +3196,41 @@ limits, candidate design and outstanding acceptance; this is not a fix or releas
 - Added five three-way OTP-issuance rounds with a pre-request barrier and distinct
   synthetic numbers. These are not yet run: their synchronization can reveal a
   check-then-insert race but a passing sample cannot prove its absence.
+
+### 2026-10-31 UTC — diagnostic runs at 4e53183 and 022adcc, and proven fixes
+
+- [Quality run 41224466384](https://github.com/bia2on2on/doctor/actions/runs/41224466384)
+  at `4e53183779441275623967da122d24e6a0c472fa` passed WPCS, PHPStan, PHP 8.1–8.5
+  units and focused MariaDB custom-role migrations. Focused MariaDB Iran V1
+  migration diagnostics reported `testSevenAdditiveTablesExistWithPortableColumnsAndNoForeignKeys`:
+  `MigrationRunner::applied()` used `GROUP_CONCAT`, returning a single comma-joined
+  string cast to a one-element array instead of individual version elements.
+  Fixed `MigrationRunner::applied()` to return an ordered `list<string>` via
+  `fetchAll()` and added an explicit regression in `MigrationTest`.
+- [Facility run 41224495708](https://github.com/bia2on2on/doctor/actions/runs/41224495708)
+  at `022adccb357087929e75f6bc67682dcefb92bdf7`: MySQL `INNODB_METRICS.lock_deadlocks`
+  reported `db_global_deadlocks=0` across 10/25/50-way booking and OTP races on
+  both MySQL 8 and MariaDB 11.4.13. Two concrete defects were exposed:
+  1. Five 3-way OTP issuance rounds reproduced a real check-then-insert race on
+     both engines (MySQL issued 2, 2, 3, 1, 3 challenges across the five rounds;
+     MariaDB issued 1, 2, 1, 3, 2). Fixed `OtpService::request()` by acquiring an
+     exclusive InnoDB row lock via an upsert on a hashed `otp-send-guard:<sha256>`
+     row in `cpms_rate_limits` (`window_id=0, window_sec=1`) inside the challenge
+     transaction, re-reading/locking latest token state under that guard, keeping
+     denial and request audits durable, and dispatching SMS only after commit.
+     Also replaced the misleading hard-coded 15-minute Persian lockout string with
+     a duration-neutral message backed by configurable `retry_after`.
+  2. Sanitized mixed-writer diagnostics reported `mixed-clinical-lock-error` on
+     both engines (and `mixed-sms-send-failed` on MariaDB): `FinanceService::recordPayment()`
+     exclusively locks `cpms_clinics` to allocate a payment number, so holding all
+     three writers at an artificial audit-guard barrier inside the same Clinic
+     caused same-Clinic FK inserts to hit InnoDB lock wait timeouts, and
+     `ClinicalNoteRepository::insert()` previously ignored a failed `insert()`
+     under default non-strict `CpmsDb`, returning `id=0` and attempting a bogus
+     audit. Fixed `ClinicalNoteRepository::insert()` to fail closed on SQL failure
+     (with a fault-injection regression in `ClinicalAuditAtomicityTest`), and put
+     the mixed-writer finance fixture in Clinic B so the shared global audit
+     guard/hash-chain contention is tested without an artificial single-Clinic
+     barrier deadlock.
+- None of the fixes in this commit has yet run on real CI MySQL/MariaDB; exact-SHA
+  CI runs follow immediately. Companion compatibility remains genuinely blocked.

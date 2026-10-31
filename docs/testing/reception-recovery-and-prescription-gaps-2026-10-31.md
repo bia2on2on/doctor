@@ -62,7 +62,7 @@ This plan does not change `validateRxItem` in this commit; any future clinical c
 
 ## 4. OTP rate-limiter / TTL / message fix confirmed
 
-`OtpPolicy` boundary is `< cooldown_seconds` (exactly-at-60s is allowed), `remainingCooldown()`/`remainingLockout()` compute accurate `retry_after`, and `OtpService::requestOtp`/`verifyOtp` now throw distinct Persian messages per reason (`CLINIC_OTP_LOCKED` → “تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید” with `retry_after=remainingLockout`, `CLINIC_OTP_DAILY_LIMIT` → “محدودیت ارسال کد در روز به پایان رسیده است”, `CLINIC_OTP_COOLDOWN` → “هنوز زود است — بعداً تلاش کنید” with `ttl=otp.ttl_sec` + `retry_after=remainingCooldown`). Daily limit is consistent between `RateLimiter` and policy; `verify` does not mis-set `sentToday`.
+`OtpPolicy` boundary is `< cooldown_seconds` (exactly-at-60s is allowed), `remainingCooldown()`/`remainingLockout()` compute accurate `retry_after`, and `OtpService` throws distinct Persian messages per reason (`CLINIC_OTP_LOCKED` → “تلاش‌های نادرست زیاد بود — پس از پایان زمان قفل دوباره تلاش کنید” with `retry_after=remainingLockout`, `CLINIC_OTP_DAILY_LIMIT` → “محدودیت ارسال کد در روز به پایان رسیده است”, `CLINIC_OTP_COOLDOWN` → “هنوز زود است — بعداً تلاش کنید” with `ttl=otp.ttl_sec` + `retry_after=remainingCooldown`). Daily limit is consistent between `RateLimiter` and policy; `verify` does not mis-set `sentToday`.
 
 Covered by `tests/Unit/OtpPolicyTest.php` new cases: `testCooldownBoundaryExactlyAtSecondsIsAllowed`, `testRemainingCooldownAndLockoutTtlConsistency`, `testOtpServiceMessagesAreDistinctPerReason`.
 

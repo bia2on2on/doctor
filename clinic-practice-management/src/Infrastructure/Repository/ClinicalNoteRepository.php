@@ -42,9 +42,16 @@ final class ClinicalNoteRepository
             'created_at' => $now,
             'updated_at' => $now,
         ];
-        $this->db->insert('cpms_clinical_notes', $row);
+        $inserted = $this->db->insert( 'cpms_clinical_notes', $row );
+        $note_id  = $this->db->wpdb_last_insert_id();
+        // A deadlock, lock timeout or other SQL failure must not produce an
+        // id=0 result or an audit event claiming a note was created. The
+        // surrounding service transaction rolls back when this throws.
+        if ( ! $inserted || $note_id <= 0 ) {
+            throw new \RuntimeException( 'clinical note insert failed' );
+        }
 
-        return $this->db->wpdb_last_insert_id();
+        return $note_id;
     }
 
     /**

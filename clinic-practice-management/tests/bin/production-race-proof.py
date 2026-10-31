@@ -245,23 +245,28 @@ def main():
               + " db_global_waits=" + str(delta(before, after, "Innodb_row_lock_waits"))
               + " db_global_wait_ms=" + str(delta(before, after, "Innodb_row_lock_time"))
               + " db_global_deadlocks=" + str(delta(before, after, "Innodb_deadlocks")))
-    # Five fresh numbers, three simultaneous requests each. Synchronization is
-    # before request(), so this can expose but cannot deterministically prove
-    # absence of a check-then-insert race. Never wait inside a future row lock.
+    # Five fresh numbers, three simultaneous requests each, synchronized
+    # immediately before acquiring the per-mobile issuance guard.
     issuance_ok = True
     for issue_round in range(5):
         label = "issue" + str(issue_round)
         mobile = "09129991" + str(issue_round).zfill(3)
+        req_before = db_scalar("SELECT COUNT(*) FROM wp_cpms_audit_logs WHERE action='OTP_REQUEST'")
+        denial_before = db_scalar("SELECT COUNT(*) FROM wp_cpms_audit_logs WHERE action='OTP_DENIED_COOLDOWN'")
         issue_results, timing = run_group(label, 3, "otp-issue")
         counts = Counter(result["status"] for result in issue_results)
         challenges = db_scalar("SELECT COUNT(*) FROM wp_cpms_otp_tokens WHERE mobile='" + mobile + "' AND purpose='login'")
         messages = db_scalar("SELECT COUNT(*) FROM wp_cpms_sms_messages WHERE recipient='" + mobile + "' AND event='otp' AND status='SENT'")
+        req_audits = db_scalar("SELECT COUNT(*) FROM wp_cpms_audit_logs WHERE action='OTP_REQUEST'") - req_before
+        denial_audits = db_scalar("SELECT COUNT(*) FROM wp_cpms_audit_logs WHERE action='OTP_DENIED_COOLDOWN'") - denial_before
         denials_ok = all(result["persian"] and result["retry_valid"] for result in issue_results if result["status"] == "cooldown")
-        passed = counts == {"issued": 1, "cooldown": 2} and challenges == 1 and messages == 1 and denials_ok
+        passed = (counts == {"issued": 1, "cooldown": 2} and challenges == 1 and messages == 1
+                  and req_audits == 1 and denial_audits == 2 and denials_ok)
         issuance_ok = issuance_ok and passed
         title = "notice" if passed else "error"
         print("::" + title + " title=OTP issuance race::round=" + str(issue_round + 1) + " workers=3 statuses="
               + json.dumps(counts, sort_keys=True) + " challenges=" + str(challenges) + " sent=" + str(messages)
+              + " req_audits=" + str(req_audits) + " denial_audits=" + str(denial_audits)
               + " persian_retry=" + ("ok" if denials_ok else "failed") + " " + json.dumps(timing, sort_keys=True))
     # Three distinct real service writers pause immediately before locking the
     # audit guard: a clinical note, a captured partial payment and an SMS test.

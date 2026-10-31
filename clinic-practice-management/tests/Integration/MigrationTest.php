@@ -345,6 +345,7 @@ PHP);
             }
 
             $applied = $runner->applied();
+            $this->assertContains('2026_09_05_0001', $applied, 'applied() must return individual version elements, not a concatenated string');
             $this->assertNotContains('2099_01_01_0001', $applied, 'version Migration شکست‌خورده نباید ثبت شود');
             $this->assertNotContains('2099_01_01_0002', $applied, 'Migrationهای پس از Migration شکست‌خورده نباید اجرا شوند');
         } finally {
