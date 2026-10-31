@@ -97,7 +97,8 @@ jobs:
           cd /tmp/classic-v1/baseline/clinic-practice-management
           rc=0
           python3 - <<'PY'
-          files=['tests/Integration/ClassicV1CriticalRemediationTest.php','tests/Integration/ClassicV1PerformanceProbeTest.php']
+          import os
+          files=[os.path.join(os.getcwd(),'tests/Integration/ClassicV1CriticalRemediationTest.php'),os.path.join(os.getcwd(),'tests/Integration/ClassicV1PerformanceProbeTest.php')]
           open('/tmp/classic-v1/baseline-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
           PY
           CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php /tmp/classic-v1/baseline-suite.xml 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
@@ -122,7 +123,8 @@ jobs:
         run: |
           set -o pipefail
           python3 - <<'PY'
-          files=['tests/Integration/ClassicV1CriticalRemediationTest.php','tests/Integration/ClassicV1PerformanceProbeTest.php','tests/Integration/SmsOtpDispatchTest.php','tests/Integration/OtpSecurityTest.php','tests/Integration/SmsClinicAuthorizationTest.php','tests/Integration/ClinicalFlowTest.php','tests/Integration/Phase11ReceptionAppointmentCancelRedTest.php']
+          import os
+          files=[os.path.join(os.getcwd(),'tests/Integration/'+f) for f in ['ClassicV1CriticalRemediationTest.php','ClassicV1PerformanceProbeTest.php','SmsOtpDispatchTest.php','OtpSecurityTest.php','SmsClinicAuthorizationTest.php','ClinicalFlowTest.php','Phase11ReceptionAppointmentCancelRedTest.php']]
           open('/tmp/classic-v1/candidate-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
           PY
           CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --no-configuration --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php /tmp/classic-v1/candidate-suite.xml 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
@@ -238,66 +240,55 @@ jobs:
           git archive "$BASELINE_SHA" clinic-practice-management | tar -x --strip-components=1 -C /tmp/classic-http/baseline/clinic-practice-management
           (cd /tmp/classic-http/baseline/clinic-practice-management && bash bin/build-release.sh)
           (cd clinic-practice-management && bash bin/build-release.sh)
-      - name: Sequential authenticated HTTP profiles
+      - name: Install baseline and CI profiler
         run: |
           set -euo pipefail
-          echo "::notice::HTTP tools php=$(command -v php || echo missing) wp=$(command -v wp || echo missing)"
-          php -v | head -1
-          profile_rc=0
-          for label in baseline candidate; do
-            if [ "$label" = baseline ]; then root=/tmp/classic-http/baseline/clinic-practice-management; else root="$GITHUB_WORKSPACE/clinic-practice-management"; fi
-            echo "::notice::HTTP stage install-$label"
-            zip=$(find "$root/dist" -name '*.zip' | head -1)
-            if ! wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root > /tmp/classic-http/install-$label.log 2>&1; then
-              tail -30 /tmp/classic-http/install-$label.log | while IFS= read -r line; do echo "::error::INSTALL $line"; done
-              exit 1
-            fi
-            echo "::notice::HTTP stage profiler-$label"
-            sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
-            sudo cp "$GITHUB_WORKSPACE/clinic-practice-management/tests/fixtures/classic-v1-http-profiler-mu.php" "$WP_DIR/wp-content/mu-plugins/classic-v1-profiler.php"
-            echo "::notice::HTTP stage apache-$label"
-            if ! sudo service apache2 restart > /tmp/classic-http/apache-$label.log 2>&1; then
-              cat /tmp/classic-http/apache-$label.log | while IFS= read -r line; do echo "::error::APACHE $line"; done
-              exit 1
-            fi
-            if [ "$label" = baseline ]; then
-              echo "::notice::HTTP stage fixture"
-              set +e
-              WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php > /tmp/classic-http/fixture.log 2>&1
-              fixture_rc=$?
-              set -e
-              if [ "$fixture_rc" -ne 0 ]; then
-                tail -30 /tmp/classic-http/fixture.log | while IFS= read -r line; do echo "::error::FIXTURE $line"; done
-                exit "$fixture_rc"
-              fi
-              echo "::notice::HTTP stage env"
-              cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
-              eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
-              echo "::notice::HTTP stage seed"
-              if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
-                tail -30 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
-                exit 1
-              fi
-            fi
-            eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
-            echo "::notice::HTTP stage profile-$label"
-            ids=$(LABEL="$label" python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[0 if __import__("os").environ["LABEL"]=="baseline" else 12:][:12]))')
-            PROFILE_LABEL="$label" LABEL="$label" PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT="/tmp/classic-http/$label.json" python3 clinic-practice-management/bin/classic-v1-http-profile.py || { profile_rc=$?; break; }
-          done
-          if [ "$profile_rc" -ne 0 ]; then
-            echo "::error::HTTP profile failed at stage $label; see bounded diagnostic below"
-            { echo "### HTTP profile failed (exit $profile_rc)"; echo '```'; sudo tail -40 "$WP_DIR/wp-content/debug.log" 2>/dev/null || true; sudo tail -30 /var/log/apache2/error.log 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-            exit "$profile_rc"
-          fi
-          python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          zip=$(find /tmp/classic-http/baseline/clinic-practice-management/dist -name '*.zip' | head -1)
+          wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root
+          sudo mkdir -p "$WP_DIR/wp-content/mu-plugins"
+          sudo cp clinic-practice-management/tests/fixtures/classic-v1-http-profiler-mu.php "$WP_DIR/wp-content/mu-plugins/classic-v1-profiler.php"
+          sudo service apache2 restart
+      - name: Seed synthetic authenticated HTTP workload
+        run: |
+          set -euo pipefail
+          WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php
+          cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
+          eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
+          WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php
+      - name: Profile baseline over real HTTP
+        run: |
+          set -euo pipefail
+          eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
+          ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[:12]))')
+          PROFILE_LABEL=baseline PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/baseline.json python3 clinic-practice-management/bin/classic-v1-http-profile.py
+      - name: Install candidate over the same database
+        run: |
+          set -euo pipefail
+          zip=$(find clinic-practice-management/dist -name '*.zip' | head -1)
+          wp plugin install "$zip" --force --activate --path="$WP_DIR" --allow-root
+          sudo service apache2 restart
+      - name: Profile candidate over real HTTP
+        run: |
+          set -euo pipefail
+          eval "$(python3 -c 'import shlex; [print("export "+k+"="+shlex.quote(v)) for line in open("/tmp/doctor-portal.env") if "=" in line for k,v in [line.rstrip("\n").split("=",1)]]')"
+          ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[12:24]))')
+          PROFILE_LABEL=candidate PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/candidate.json python3 clinic-practice-management/bin/classic-v1-http-profile.py
+      - name: HTTP comparison summary
+        if: always()
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
-          a=json.load(open('/tmp/classic-http/baseline.json'))['summary']
-          b=json.load(open('/tmp/classic-http/candidate.json'))['summary']
+          try:
+              a=json.load(open('/tmp/classic-http/baseline.json'))['summary']
+              b=json.load(open('/tmp/classic-http/candidate.json'))['summary']
+          except Exception as e:
+              print('::error::HTTP comparison unavailable '+str(e)); raise SystemExit(0)
           print('### Real authenticated HTTP, MySQL 8, sequential on one runner/DB')
           print('| Operation | Baseline ms / queries | Candidate ms / queries |')
           print('|---|---|---|')
           for k in a: print(f"| {k} | {a[k]['median_ms']} / {a[k]['median_queries']} | {b[k]['median_ms']} / {b[k]['median_queries']} |")
           print('Synthetic data; medians of 12. POSTs use distinct equivalent pre-seeded visits. No real SMS provider.')
+          print('::notice::HTTP_SUMMARY '+json.dumps({'baseline':a,'candidate':b},sort_keys=True))
           PY
       - uses: actions/upload-artifact@v4
         if: always()
