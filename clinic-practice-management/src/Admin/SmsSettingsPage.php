@@ -353,9 +353,7 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
         banner.style.display = '';
         banner.innerHTML = '<p>' + esc(item[0]) + '</p>';
         el('cpms-sms-state').textContent = s.state;
-        if (s.last_test && s.last_test.message) {
-            el('cpms-sms-test-conn-result').textContent = ' (آخرین تست: ' + s.last_test.message + ')';
-        }
+        el('cpms-sms-test-conn-result').textContent = (s.last_test && s.last_test.message) ? ' (آخرین تست: ' + s.last_test.message + ')' : '';
     }
 
     function loadTemplates() {

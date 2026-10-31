@@ -249,7 +249,7 @@ final class OtpService
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
         $this->audit( $sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip, [], $clinicId );
 
-        return ['expires_in' => $ttl, 'sms_sent' => $sent, 'retry_enqueued' => $retryEnqueued];
+        return ['expires_in' => $ttl, 'sms_sent' => $sent, 'retry_enqueued' => $retryEnqueued, 'retry_after' => $policy->cooldownSeconds()];
     }
 
     /**

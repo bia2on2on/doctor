@@ -1975,6 +1975,9 @@ final class App
                 ->register('slots.generate', static function (array $payload) use ($db, $op): void {
                     (new SlotsGenerateHandler($db, self::settingsFactory(), $op))($payload);
                 })
+                ->register('appointment.cancel_notify', static function (array $payload): void {
+                    self::bookingService()->dispatchCancellationNotification((int) ($payload['appointment_id'] ?? 0));
+                })
                 ->register('sms.send', static function (array $payload): void {
                     // T: Clinic از مالکیتِ ردیفِ پیام حل می‌شود (SmsService).
                     (new SmsSendJobHandler(self::smsService()))($payload);

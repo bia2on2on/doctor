@@ -203,8 +203,8 @@
 				body: JSON.stringify({ mobile: mobile, purpose: 'login' })
 			}).then(function (result) {
 				setOtpBusy(false);
-				if (!result.ok) {
-					fail(result, 'درخواست کد انجام نشد. کمی بعد دوباره تلاش کنید.');
+				if (!result.ok || !result.body || !result.body.data || result.body.data.sms_sent !== true) {
+					fail(result, 'ارسال کد تأیید نشد. کمی بعد دوباره تلاش کنید.');
 					return;
 				}
 				codeRequested = true;

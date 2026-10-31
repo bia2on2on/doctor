@@ -28,6 +28,11 @@ final class OtpPolicy
     ) {
     }
 
+    public function cooldownSeconds(): int
+    {
+        return $this->cooldownSeconds;
+    }
+
     /**
      * آیا می‌توان کد جدید ارسال کرد؟
      *

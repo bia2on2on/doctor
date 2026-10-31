@@ -31,7 +31,7 @@ namespace ClinicCore\Application\Jobs;
 final class JobScopeRegistry
 {
     /**
-     * طبقهٔ scope هر نوعِ Jobِ ثبت‌شده — دقیقاً ۱۵ نوعِ واقعیِ `App::dispatcher()`.
+     * طبقهٔ scope هر نوعِ Jobِ ثبت‌شده — ۱۶ نوعِ واقعیِ `App::dispatcher()`.
      *
      * @var array<string, JobScopeClass::TENANT|JobScopeClass::SYSTEM|JobScopeClass::SWEEP>
      */
@@ -39,6 +39,7 @@ final class JobScopeRegistry
         // ---- T: tenant-scoped (context از منبع durable خودِ Job) ----
         // payload {message_id} ⇒ مالکیت از cpms_sms_messages.clinic_id
         'sms.send' => JobScopeClass::TENANT,
+        'appointment.cancel_notify' => JobScopeClass::TENANT,
         // payload {clinic_id} ⇒ الگوی کاریِ موجودِ ExportService (بدون تغییر)
         'report.export' => JobScopeClass::TENANT,
 

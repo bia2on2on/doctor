@@ -74,7 +74,7 @@ final class ClinicalService
     /**
      * @return array<string, mixed>
      */
-    public function record(int $actorUserId, int $visitId): array
+    public function record(int $actorUserId, int $visitId, ?int $requestedLocationId = null): array
     {
         $this->requireCap($actorUserId, RolesAndCapabilities::MEDICAL_READ, 'record');
 
@@ -93,6 +93,20 @@ final class ClinicalService
             $visitId,
             (int) $visit['patient_id']
         );
+        // A selector is a consistency hint, never authority. Omitting it must
+        // not bypass a location-restricted membership; clinic-wide memberships
+        // intentionally retain shared care across their own Clinic Locations.
+        $visitLocationId = (int) ($visit['location_id'] ?? 0);
+        if (($requestedLocationId !== null && $requestedLocationId !== $visitLocationId) || $visitLocationId <= 0) {
+            $this->auditAndThrow($actorUserId, 'visit', $visitId, (int) $visit['patient_id'], 'پرونده یافت نشد');
+        }
+        $memberships = new MembershipRepository($this->db);
+        $membership = $memberships->find_active((int) $visit['clinic_id'], $actorUserId);
+        if ($membership !== null && (string) ($membership['scope_mode'] ?? '') === 'location'
+            && !in_array($visitLocationId, $memberships->location_ids_for((int) $membership['id']), true)) {
+            $this->auditAndThrow($actorUserId, 'visit', $visitId, (int) $visit['patient_id'], 'پرونده یافت نشد');
+        }
+
         $patient = $this->db->fetchRow(
             'SELECT * FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d LIMIT 1',
             [(int) $visit['patient_id']]

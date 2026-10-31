@@ -1983,6 +1983,16 @@ final class BookingService
                 (int) $appt['clinic_id']
             );
 
+            // Transactional outbox: a committed cancellation cannot lose its
+            // patient notification if PHP exits immediately after COMMIT. The
+            // worker only queues SMS/internal rows; it never claims delivery.
+            if ($actor === 'staff' && (string) $appt['status'] === 'confirmed') {
+                App::jobs()->enqueue('appointment.cancel_notify', [
+                    'clinic_id' => (int) $appt['clinic_id'],
+                    'appointment_id' => $appointmentId,
+                ], priority: 8);
+            }
+
             return [$appt, $toState, $slotId];
         });
 
@@ -1994,42 +2004,32 @@ final class BookingService
         // (یادآوری‌های queued همان نوبت — apt:{id}).
         $this->notifications?->cancelQueuedForAppointment($appointmentId);
 
-        $patient = $this->patients->find((int) $appt['patient_id']);
-        if ((string) $appt['status'] === 'confirmed' && $patient !== null) {
-            if ($actor === 'patient') {
+        if ($actor === 'patient' && (string) $appt['status'] === 'confirmed') {
+            $patient = $this->patients->find((int) $appt['patient_id']);
+            if ($patient !== null) {
                 $this->sendAppointmentSms(SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt);
-            } elseif ($this->notifications !== null) {
-                // لغو توسط مطب → اعلان Internal به بیمار (کاتالوگ: APPT.cancelled)
-                try {
-                    $doctor = $this->db->fetchRow(
-                        'SELECT full_name FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d LIMIT 1',
-                        [(int) $appt['clinician_id']]
-                    );
-                    $clinic = (string) $this->db->fetchValue(
-                        'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
-                        [(int) $appt['clinic_id']]
-                    );
-                    $patientName = trim((string) $patient['first_name'] . ' ' . (string) $patient['last_name']);
-                    $this->notifications->publishToPatient(
-                        (int) $appt['clinic_id'],
-                        (int) $appt['patient_id'],
-                        NotificationEvents::APPT_CANCELLED,
-                        [
-                            'patient_name' => $patientName !== '' ? $patientName : 'بیمار گرامی',
-                            'doctor_name' => (string) ($doctor['full_name'] ?? 'پزشک'),
-                            'appointment_date' => Jalali::formatYmd((string) $appt['slot_date']),
-                            'appointment_time' => substr((string) $appt['slot_time'], 0, 5),
-                            'clinic_name' => $clinic !== '' ? $clinic : 'مطب',
-                        ],
-                        'apt:' . $appointmentId . ':cancelled:p' . (int) $appt['patient_id']
-                    );
-                } catch (Throwable $e) {
-                    $this->op->warning('booking.notif_failed', ['appointment_id' => $appointmentId, 'error' => $e->getMessage()]);
-                }
             }
         }
 
         return ['appointment_id' => $appointmentId, 'status' => $toState];
+    }
+
+    /** Durable cancellation outbox worker; safe to retry after a crash. */
+    public function dispatchCancellationNotification(int $appointmentId): void
+    {
+        $appt = $this->appointments->find($appointmentId);
+        if ($appt === null || (string) $appt['status'] !== 'cancelled_by_staff') {
+            return;
+        }
+        $patient = $this->patients->find((int) $appt['patient_id']);
+        if ($patient === null) {
+            throw new \RuntimeException('CANCELLATION_PATIENT_MISSING');
+        }
+        // Both durable channel rows and the SMS job commit together. Existing
+        // SMS/internal dedupe keys make a repeated worker attempt harmless.
+        $this->db->transactional(function () use ($appt, $patient): void {
+            $this->sendAppointmentSms(SmsEvents::APPT_CANCELLED, (string) $patient['mobile'], $appt, true);
+        });
     }
 
     private function machineCheck(string $from, string $event, string $actor): string
@@ -2917,7 +2917,7 @@ final class BookingService
      *
      * @param array<string, mixed> $appt
      */
-    private function sendAppointmentSms(string $event, string $mobile, array $appt): void
+    private function sendAppointmentSms(string $event, string $mobile, array $appt, bool $rethrow = false): void
     {
         try {
             $doctor = $this->db->fetchRow(
@@ -2967,6 +2967,9 @@ final class BookingService
         } catch (Throwable $e) {
             // SMS هرگز نباید Booking را شکست بدهد — Job/Retry خودش مدیریت می‌کند
             $this->op->warning('booking.sms_failed', ['event' => $event, 'appointment_id' => (int) $appt['id'], 'error' => $e->getMessage()]);
+            if ($rethrow) {
+                throw $e;
+            }
         }
     }
 

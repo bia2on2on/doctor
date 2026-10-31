@@ -8,6 +8,7 @@ use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Sms\SmsTemplateException;
+use ClinicCore\Infrastructure\Sms\SmsSendException;
 use WP_REST_Request;
 use WP_REST_Server;
 
@@ -180,6 +181,8 @@ final class SmsController extends RestBase
             return $this->success($this->sms->saveSettings($request->get_json_params() ?: [], $this->userId()));
         } catch (SmsTemplateException $ex) {
             return $this->error($ex->apiCode(), 400, $ex->getMessage());
+        } catch (SmsSendException $ex) {
+            return $this->error($ex->apiCode(), 400, 'تنظیمات اتصال پیامک معتبر نیست؛ نشانی و روش اتصال را بررسی کنید.');
         }
     }
 

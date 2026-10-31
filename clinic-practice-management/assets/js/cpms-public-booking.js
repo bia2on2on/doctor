@@ -1271,7 +1271,7 @@
 				body: JSON.stringify(payload)
 			}).then(function (result) {
 				setBusy(false);
-				if (result.ok) {
+				if (result.ok && result.body && result.body.data && result.body.data.sms_sent === true) {
 					setNodeMessage(status, '');
 					showAuthStep('otp-code');
 					var codeInput = root.querySelector('[data-role="otp-code"]');
