@@ -6,15 +6,16 @@ row and each `row_hash` against its own recorded predecessor and canonical
 fields. It continues after failures and reports IDs and error types, not
 patient details. The snapshot begins at genesis; there is no arbitrary row
 limit. The production `HashChain::verify` and `AuditLogger::verifyChain` are
-not used. Test the exporter in a disposable environment before operational use;
-its WP-CLI/database integration has not yet been exercised.
+not used. The exporter was exercised on isolated MySQL 8.4.13 and MariaDB
+11.4.13 sites in run 41217916386; that small synthetic run does not establish
+operational safety on a production database.
 
 On an approved disposable WordPress test site with the CPMS plugin active,
 from the repository root (adjust `--path` for that site):
 
 ```bash
 set -o pipefail
-wp --path=/path/to/wordpress eval-file clinic-practice-management/tests/audit-chain/export.php | python3 clinic-practice-management/tests/audit-chain/verify.py
+wp --path=/path/to/wordpress eval-file clinic-practice-management/tests/audit-chain/export.php | python3 clinic-practice-management/tests/audit-chain/verify.py --suffix 10
 ```
 
 Run `wp` with a database account permitted to select the audit table; the
@@ -38,6 +39,10 @@ a deleted tail or a fully rewritten history. A successful check is not proof
 of those properties or of correct booking, no deadlocks or acceptable latency.
 Do not repair historical rows; preserve them and escalate any failure.
 
-Local isolated checker tests: `python3 -m unittest discover -s tools/audit-chain -p 'test_*.py' -v`.
+The optional `--suffix N` also checks the final N rows against the actual
+preceding row when one exists (otherwise genesis). Its `anchor` field states
+which case was verified; this does not authenticate a rewritten predecessor.
+
+Local isolated checker tests: `python3 -m unittest discover -s clinic-practice-management/tests/audit-chain -p 'test_*.py' -v`.
 
 Preserved from investigation PR #289, head `a813285d5824b5731125ba2120e8e626f0176e31`, without modifying that branch. Its location here keeps the production-only/companion-isolation boundary intact.

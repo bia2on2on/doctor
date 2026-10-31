@@ -157,12 +157,11 @@ final class OtpPolicyTest extends TestCase
         $this->assertSame(0, $this->policy->remainingLockout($locked, $this->at('2026-09-05T10:16:00+00:00')));
     }
 
-    public function testOtpServiceMessagesAreDistinctPerReason(): void
+    public function testPolicyReasonsAreDistinctForCooldownLockoutAndDailyLimit(): void
     {
-        // This test documents the fixed inconsistency: LOCKED/DAILY_LIMIT/COOLDOWN
-        // now carry distinct Persian messages and accurate retry_after/TTL.
-        // OtpService throws OtpException with code+message+retry_after; we assert
-        // the policy reason mapping would produce distinct codes.
+        // These pure-policy assertions distinguish the three reasons only.
+        // They do not execute OtpService, its Persian messages or retry data;
+        // those contracts require the separate integration/runtime tests.
         $state = new OtpState();
         $state = $this->policy->registerSend($state, $this->at(self::T0));
         $locked = new OtpState();

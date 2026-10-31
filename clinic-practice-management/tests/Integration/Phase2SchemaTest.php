@@ -64,12 +64,12 @@ final class Phase2SchemaTest extends WP_UnitTestCase
 
     public function testFreshInstallReachesPhaseTwoSchema(): void
     {
-        self::assertSame('2026_10_27_0030', App::migrations()->currentVersion());
+        self::assertSame('2026_10_31_0031', App::migrations()->currentVersion());
 
         foreach ([
             'cpms_organizations', 'cpms_locations', 'cpms_clinic_memberships',
             'cpms_membership_capabilities', 'cpms_membership_locations',
-            'cpms_clinician_locations', 'cpms_patient_identities',
+            'cpms_clinician_locations', 'cpms_patient_identities', 'cpms_audit_seq',
         ] as $table) {
             $exists = $this->db()->fetchValue(
                 'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s',
@@ -143,7 +143,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
             }
         });
         self::assertSame(
-            ['2026_10_27_0030', '2026_10_18_0029', '2026_10_18_0028', '2026_10_13_0027', '2026_10_11_0026', '2026_10_11_0025', '2026_10_10_0024', '2026_09_26_0023', '2026_09_20_0022', '2026_09_20_0021', '2026_09_09_0020', '2026_09_09_0019', '2026_09_09_0018', '2026_09_09_0017', '2026_09_09_0016', '2026_09_09_0015', '2026_09_09_0014', '2026_09_09_0013', '2026_09_09_0012', '2026_09_09_0011', '2026_09_09_0010'],
+            ['2026_10_31_0031', '2026_10_27_0030', '2026_10_18_0029', '2026_10_18_0028', '2026_10_13_0027', '2026_10_11_0026', '2026_10_11_0025', '2026_10_10_0024', '2026_09_26_0023', '2026_09_20_0022', '2026_09_20_0021', '2026_09_09_0020', '2026_09_09_0019', '2026_09_09_0018', '2026_09_09_0017', '2026_09_09_0016', '2026_09_09_0015', '2026_09_09_0014', '2026_09_09_0013', '2026_09_09_0012', '2026_09_09_0011', '2026_09_09_0010'],
             $versions
         );
 
@@ -154,7 +154,7 @@ final class Phase2SchemaTest extends WP_UnitTestCase
         // ارتقا
         $applied = $this->withRealTables(static fn (): array => App::migrations()->migrate());
         self::assertContains('2026_09_09_0010', $applied);
-        self::assertSame('2026_10_27_0030', App::migrations()->currentVersion());
+        self::assertSame('2026_10_31_0031', App::migrations()->currentVersion());
 
         // داده دست‌نخورده
         $survived = $this->db()->fetchValue(

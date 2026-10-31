@@ -23,7 +23,9 @@ use WP_UnitTestCase;
  *  - verify(): single-use consumption, identity provisioning (wp_users /
  *    patient links) and the mandatory OTP_VERIFY_OK / LOGIN_SUCCESS audits
  *    share one boundary — a failed audit rolls the consume back, so the same
- *    code remains valid for the authorized retry.
+ *    code remains valid for the authorized retry;
+ *  - a failed-attempt counter update and its mandatory audit also roll back
+ *    together when the audit insert is fault-injected.
  * Also asserts: no false success, zero partial audit rows, restored SAVEPOINT
  * depth, trusted-Clinic attribution (clinic_id = 1) and pre-mutation input
  * validation (invalid mobile is rejected before any write).
@@ -150,6 +152,36 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame(1, $this->latestAuditClinicId('OTP_VERIFY_OK'), 'tenant attribution must name the trusted Clinic');
     }
 
+    public function testFailedAttemptAuditFailureRollsBackCounter(): void
+    {
+        $this->issueKnownCode('424242');
+        $depthBefore = $this->savepointDepth();
+        $this->failAuditInserts();
+        $threw = false;
+        try {
+            App::otpService()->verify(self::MOBILE, '000000');
+        } catch (\Throwable $e) {
+            $threw = true;
+        } finally {
+            $this->restoreAuditInserts();
+        }
+        self::assertTrue($threw, 'a failed mandatory failure audit must propagate');
+        self::assertSame(0, $this->tokenAttempts(), 'the counter must roll back with the failed audit');
+        self::assertSame(0, $this->auditCount('OTP_VERIFY_FAIL'));
+        self::assertNull($this->tokenConsumedAt());
+        self::assertSame($depthBefore, $this->savepointDepth());
+
+        try {
+            App::otpService()->verify(self::MOBILE, '000000');
+            self::fail('the wrong code must be rejected');
+        } catch (OtpException $e) {
+            self::assertSame('CLINIC_OTP_INVALID', $e->apiCode());
+            self::assertSame(4, $e->getData()['remaining']);
+        }
+        self::assertSame(1, $this->tokenAttempts());
+        self::assertSame(1, $this->auditCount('OTP_VERIFY_FAIL'));
+    }
+
     public function testInvalidMobileRejectedBeforeAnyTokenOrAuditWrite(): void
     {
         try {
@@ -184,6 +216,14 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
             'attempts' => 0,
             'created_at' => App::db()->nowUtcSql(),
         ]);
+    }
+
+    private function tokenAttempts(): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT attempts FROM ' . App::db()->table('cpms_otp_tokens') . ' WHERE mobile = %s ORDER BY id DESC LIMIT 1',
+            [self::MOBILE]
+        );
     }
 
     private function tokenConsumedAt(): ?string
