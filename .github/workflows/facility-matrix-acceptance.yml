@@ -95,6 +95,7 @@ jobs:
           set -euo pipefail
           python3 -m py_compile clinic-practice-management/bin/rwp-facility-matrix-journey.py
           python3 clinic-practice-management/bin/acceptance-isolation-check.py clinic-practice-management/bin/rwp-facility-matrix-journey.py
+          python3 -m unittest discover -s clinic-practice-management/tests/bin -p 'test_safe_php_fatal_report.py' -v
           bash -n clinic-practice-management/bin/build-release.sh
 
       - name: Pin and record database server
@@ -102,6 +103,7 @@ jobs:
           set -euo pipefail
           server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()')"
           echo "${{ matrix.database }} server VERSION(): ${server_version}"
+          echo "::notice title=CPMS database version::${{ matrix.database }} ${server_version}"
           case "${{ matrix.database }}:$server_version" in
             mariadb:11.4.13-MariaDB*|mysql:8.*) ;;
             *) echo "Unexpected database server: ${server_version}" >&2; exit 1 ;;
@@ -177,8 +179,23 @@ jobs:
         run: |
           set -euo pipefail
           ZIP=$(ls "$PWD"/clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
-          wp plugin install "$ZIP" --activate --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/mtx/plugin-install.log
-          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          # WP-CLI/PHP output can contain request values and credentials. Keep it
+          # outside the uploaded evidence directory and publish only a bounded,
+          # allowlisted diagnostic; preserve the failing command's actual status.
+          : > /tmp/mtx-plugin-install.raw
+          run_install_check() {
+            local status=0
+            "$@" >> /tmp/mtx-plugin-install.raw 2>&1 || status=$?
+            if [ "$status" -ne 0 ]; then
+              python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+                /tmp/mtx-plugin-install.raw "$WP_DIR/wp-content/debug.log" --summary "$GITHUB_STEP_SUMMARY"
+              echo "::error title=CPMS plugin activation::Install/activation check failed (exit $status)"
+              return "$status"
+            fi
+          }
+          run_install_check wp plugin install "$ZIP" --activate --path="$WP_DIR" --allow-root
+          run_install_check wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          echo 'Plugin ZIP installed and active.'
           # Apache (www-data) must be able to read the installed tree and write logs.
           sudo chmod -R a+rX "$WP_DIR/wp-content"
           sudo chmod 666 "$WP_DIR/wp-content/debug.log"
@@ -187,11 +204,8 @@ jobs:
         run: |
           set -euo pipefail
           wp eval 'echo "schema=" . \ClinicCore\Bootstrap\App::migrations()->currentVersion() . PHP_EOL;' --path="$WP_DIR" --allow-root | tee /tmp/mtx/schema.txt
-          if grep -qE 'PHP Fatal error|PHP Parse error|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log" 2>/dev/null; then
-            echo 'PHP fatal during install/activation'
-            tail -30 "$WP_DIR/wp-content/debug.log"
-            exit 1
-          fi
+          python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+            "$WP_DIR/wp-content/debug.log" --summary "$GITHUB_STEP_SUMMARY" --check
 
       # Split from the pristine checks on purpose (no log access in the authoring
       # sandbox): a failure must be attributable from the step name alone.
@@ -242,12 +256,11 @@ jobs:
             echo "database=${{ matrix.database }} $(cat /tmp/mtx/database-version.txt 2>/dev/null || echo unknown)"
             echo "zip_sha256=$(cut -d' ' -f1 /tmp/mtx/zip.sha256 2>/dev/null || echo unknown)"
           } | tee /tmp/mtx/versions.txt
-          cp "$WP_DIR/wp-content/debug.log" /tmp/mtx/logs/debug.log 2>/dev/null || : > /tmp/mtx/logs/debug.log
-          if grep -qE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/mtx/logs/debug.log; then
-            echo 'LOG GATE: FAIL — fatal/uncaught/critical in debug.log'
-            grep -nE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/mtx/logs/debug.log | tail -20
-            exit 1
-          fi
+          # Scan raw files in place: never archive or echo their exception text,
+          # stack arguments or request data. A fatal still fails the log gate.
+          python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+            /tmp/mtx-plugin-install.raw "$WP_DIR/wp-content/debug.log" \
+            --summary "$GITHUB_STEP_SUMMARY" --check
           echo 'LOG GATE: clean'
 
       - name: Upload matrix evidence
