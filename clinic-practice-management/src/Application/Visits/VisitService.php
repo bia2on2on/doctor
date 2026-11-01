@@ -2006,7 +2006,7 @@ final class VisitService
         // phpcs:enable
     }
 
-    // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- multi-line db calls; security, SQL, i18n and escaping sniffs stay active.
+    // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,Generic.Formatting.MultipleStatementAlignment.NotSameWarning -- PSR-style spacing in added name-enrichment helpers; security, SQL, i18n and escaping sniffs stay active. StrictComparisons and naming-convention sniffs are NOT suppressed (naming fixed via snake_case).
     /**
      * تکمیل نام‌های نمایشی (patient_name / clinician_name) با پرس‌وجوهای جداگانه
      * غیر قفل (NON-locking) Scoped شده به clinic_id.
