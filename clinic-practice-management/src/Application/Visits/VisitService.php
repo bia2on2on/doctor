@@ -2007,11 +2007,65 @@ final class VisitService
     }
 
     /**
+     * تکمیل نام‌های نمایشی (patient_name / clinician_name) با پرس‌وجوهای جداگانه
+     * غیر قفل (NON-locking) Scoped شده به clinic_id.
+     *
+     * VisitRepository::find / findForUpdate فقط ستون‌های cpms_visits را
+     * برمی‌گردانند، پس نام‌ها خالی/null می‌آیند. این متد نام‌ها را تکمیل می‌کند:
+     * هرگز نامی از کلینیک دیگری برگردانده نمی‌شود (tenancy); اگر بیمار یا
+     * پزشک در همان کلینیک نباشد، نام خالی/null (fail closed).
+     *
+     * @param array<string, mixed> $visit
+     * @return array<string, mixed>
+     */
+    private function enrichVisitNames(array $visit): array
+    {
+        $clinicId = (int) ($visit['clinic_id'] ?? 0);
+        if ($clinicId <= 0) {
+            return $visit;
+        }
+
+        // بیمار — پرس‌وجو غیر قفل، فقط همان کلینیک (هیچ نامی از کلینیک دیگر).
+        if ((int) ($visit['patient_id'] ?? 0) > 0) {
+            $patient = $this->db->fetchRow(
+                'SELECT first_name, last_name FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+                [(int) $visit['patient_id'], $clinicId]
+            );
+            if ($patient !== null) {
+                $visit['patient_first_name'] = (string) ($patient['first_name'] ?? '');
+                $visit['patient_last_name'] = (string) ($patient['last_name'] ?? '');
+            } else {
+                // fail closed: بیمار در همین کلینیک نیست → نام خالی
+                $visit['patient_first_name'] = '';
+                $visit['patient_last_name'] = '';
+            }
+        }
+
+        // پزشک — پرس‌وجو غیر قفل، فقط همین کلینیک (هیچ نامی از کلینیک دیگر).
+        if ((int) ($visit['clinician_id'] ?? 0) > 0) {
+            $clinician = $this->db->fetchRow(
+                'SELECT full_name FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+                [(int) $visit['clinician_id'], $clinicId]
+            );
+            if ($clinician !== null) {
+                $visit['clinician_name'] = (string) ($clinician['full_name'] ?? '');
+            } else {
+                // fail closed: پزشک در همین کلینیک نیست → null
+                $visit['clinician_name'] = null;
+            }
+        }
+
+        return $visit;
+    }
+
+    /**
      * @param array<string, mixed> $visit
      * @return array<string, mixed>
      */
     private function presentVisit(array $visit): array
     {
+        $visit = $this->enrichVisitNames($visit);
+
         return [
             'id' => (int) $visit['id'],
             'patient_id' => (int) $visit['patient_id'],

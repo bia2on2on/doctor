@@ -1726,7 +1726,11 @@ final class BookingService
 
                     $duration = (int) $slot['duration_min'];
                     $now_sql  = $this->db->nowUtcSql();
-                    $is_today = $slot_date === gmdate( 'Y-m-d' );
+                    // A scheduled (staff-booked) appointment must NEVER be
+                    // marked walk-in express: `is_walkin_express` may only be
+                    // set by the explicit walk-in path
+                    // (VisitService::walkIn). A same-day scheduled appointment
+                    // is still scheduled, so is_walkin_express is always 0 here.
                     // The final decision is after capacity/Location lock waits.
                     $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
                     $appt_id = $this->appointments->create(
@@ -1742,7 +1746,7 @@ final class BookingService
                             'slot_end_time'     => DurationResolver::slotEndTime( $slot_time, $duration ),
                             'reason'            => is_string( $reason_value ) && $reason_value !== '' ? mb_substr( $reason_value, 0, 255 ) : null,
                             'status'            => 'confirmed', // N-2: create→pending→confirm در یک operation ( مطابه State Machine )
-                            'is_walkin_express' => $is_today ? 1 : 0,
+                            'is_walkin_express' => 0,
                             'booked_at'         => $now_sql,
                             'confirmed_at'      => $now_sql,
                             'created_at'        => $now_sql,
