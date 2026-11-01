@@ -49,6 +49,14 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
     private const CLINIC_TZ = 'UTC';                // deliberately different from both Locations
     private const HORIZON = 3;
 
+    // DST fall-back candidates for the repeated-wall-time contract. Both shift
+    // 02:00 -> 01:00 Location-local (one hour), so the repeated interval and the
+    // expected slot set are identical; their dates differ by about a week, which
+    // keeps the fixture executable at any execution instant (see
+    // nextCoverableFallBack()).
+    private const TZ_DST_PRIMARY = 'America/New_York';
+    private const TZ_DST_FALLBACK = 'Europe/London';
+
     private int $orgId = 0;
     private int $clinicId = 0;
     private int $locAhead = 0;
@@ -467,36 +475,75 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
         );
     }
 
+    /**
+     * Next fall-back transition that the production horizon can actually cover.
+     *
+     * `slots.generate` reads its reference instant from the real clock and the
+     * documented loop semantics generate `today+1 .. today+horizon` — today
+     * itself is NEVER generated. A fall-back that lands ON the Location-local
+     * current day therefore yields `horizon = 0` and can never be observed
+     * (this is exactly the 2026-11-01 America/New_York fall-back that failed
+     * run 41272811332: the previous fixture asserted `horizon > 0` against a
+     * transition occurring "today").
+     *
+     * Both candidate zones observe a ONE-HOUR fall-back at 02:00 Location-local
+     * (America/New_York: 02:00 EDT -> 01:00 EST; Europe/London: 02:00 BST ->
+     * 01:00 GMT), so the repeated wall-clock interval is 01:00:00-01:59:59 in
+     * both and the contract under test — plus its expected slot set — is
+     * identical for either zone. Their fall-back dates are about a week apart,
+     * so at every execution instant at least one candidate has its next
+     * fall-back strictly after its own local "today" and inside the 365-day
+     * horizon. No skips, no weakened assertion, no production change.
+     *
+     * @return array{0: string, 1: string, 2: int} [zone name, fall-back date, horizon days]
+     */
+    private function nextCoverableFallBack(DateTimeImmutable $reference): array
+    {
+        foreach ([self::TZ_DST_PRIMARY, self::TZ_DST_FALLBACK] as $zoneName) {
+            self::assertContains($zoneName, timezone_identifiers_list(), "ENVIRONMENT precondition: PHP timezone database must provide {$zoneName}");
+            $timezone = new DateTimeZone($zoneName);
+            $transitions = $timezone->getTransitions($reference->getTimestamp(), $reference->modify('+365 days')->getTimestamp());
+            self::assertIsArray($transitions);
+            $fallBack = null;
+            for ($i = 1, $count = count($transitions); $i < $count; ++$i) {
+                if ((int) $transitions[$i]['offset'] < (int) $transitions[$i - 1]['offset']) {
+                    $fallBack = (new DateTimeImmutable('@' . (int) $transitions[$i]['ts']))->setTimezone($timezone);
+                    break;
+                }
+            }
+            if (!$fallBack instanceof DateTimeImmutable) {
+                // The production generation horizon is capped at 365 days, so in
+                // the days right after an annual fall-back the NEXT fall-back is
+                // outside it; try the other candidate zone.
+                continue;
+            }
+            $anchor = new DateTimeImmutable($reference->setTimezone($timezone)->format('Y-m-d') . ' 00:00:00', new DateTimeZone('UTC'));
+            $target = new DateTimeImmutable($fallBack->format('Y-m-d') . ' 00:00:00', new DateTimeZone('UTC'));
+            $horizon = (int) (($target->getTimestamp() - $anchor->getTimestamp()) / 86400);
+            if ($horizon > 0 && $horizon <= 365) {
+                return [$zoneName, $fallBack->format('Y-m-d'), $horizon];
+            }
+        }
+
+        self::fail('fixture: no coverable fall-back inside the supported 365-day generation horizon for either candidate zone');
+
+        return ['', '', 0]; // unreachable; keeps the declared return type honest for static analysis.
+    }
+
     public function testGenerationExcludesRepeatedNewYorkWallTimesButKeepsNeighbors(): void
     {
         global $wpdb;
         $db = App::db();
-        $timezone = new DateTimeZone('America/New_York');
-        self::assertContains('America/New_York', timezone_identifiers_list());
-
+        // Method name kept stable (it is referenced by CI diagnostics and by the
+        // T2 report). TZ_DST_PRIMARY is still America/New_York; TZ_DST_FALLBACK
+        // is only selected on the one local day a year when New York's fall-back
+        // is "today" and therefore outside the generated window.
         $reference = new DateTimeImmutable('now', new DateTimeZone('UTC'));
-        $transitions = $timezone->getTransitions($reference->getTimestamp(), $reference->modify('+365 days')->getTimestamp());
-        self::assertIsArray($transitions);
-        $fallBack = null;
-        for ($i = 1, $count = count($transitions); $i < $count; ++$i) {
-            if ((int) $transitions[$i]['offset'] < (int) $transitions[$i - 1]['offset']) {
-                $fallBack = (new DateTimeImmutable('@' . (int) $transitions[$i]['ts']))->setTimezone($timezone);
-                break;
-            }
-        }
-        if (!$fallBack instanceof DateTimeImmutable) {
-            // The production generation horizon is capped at 365 days. Just
-            // after the annual fall-back there is no next fall-back inside
-            // that horizon; the fixture is seasonal, not a product defect.
-            self::markTestSkipped('fixture: no New York fall-back transition inside the supported 365-day generation horizon');
-        }
-
-        $date = $fallBack->format('Y-m-d');
-        $anchor = new DateTimeImmutable($reference->setTimezone($timezone)->format('Y-m-d') . ' 00:00:00', new DateTimeZone('UTC'));
-        $target = new DateTimeImmutable($date . ' 00:00:00', new DateTimeZone('UTC'));
-        $horizon = (int) (($target->getTimestamp() - $anchor->getTimestamp()) / 86400);
+        [$zoneName, $date, $horizon] = $this->nextCoverableFallBack($reference);
         self::assertGreaterThan(0, $horizon, 'fixture: fall-back date must be after the Location-local current day');
         self::assertLessThanOrEqual(365, $horizon, 'fixture: upcoming fall-back must fit the supported generation horizon');
+
+        $target = new DateTimeImmutable($date . ' 00:00:00', new DateTimeZone('UTC'));
 
         $now = $db->nowUtcSql();
         $suffix = bin2hex(random_bytes(4));
@@ -506,7 +553,7 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
             $this->clinicId,
             'DST Location',
             'dst-location-' . $suffix,
-            'America/New_York',
+            $zoneName,
             $now,
             $now
         ));
@@ -540,6 +587,9 @@ final class SlotsGenerateLocationLocalTemporalRedTest extends WP_UnitTestCase
         ));
         $times = array_values(array_map('strval', (array) $times));
 
+        // 01:00 and 01:30 occur twice on the fall-back day (repeated interval
+        // 01:00:00-01:59:59) and must be excluded; 00:30, 02:00 and 02:30 are
+        // unambiguous and must be kept. Identical for both candidate zones.
         self::assertSame(['00:30:00', '02:00:00', '02:30:00'], $times);
     }
 }

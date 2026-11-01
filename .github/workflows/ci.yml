@@ -50,7 +50,15 @@ jobs:
         run: python3 bin/pilot-bench-report.py --test
         working-directory: ${{ github.workspace }}/clinic-practice-management
 
+      # Fail-closed diagnostics ordering: the contract/self-test steps above can
+      # fail (that failure is what fails this job), and a default `if: success()`
+      # would then SKIP the actual production hardcode scan — so a red tripwire
+      # job would carry no evidence about the production runtime at all.
+      # `!cancelled()` keeps the scan running after an earlier failure while the
+      # job still fails for the original failing step. Never `always()`: a
+      # cancelled run must not start new work.
       - name: Scan production for tenant hardcodes
+        if: ${{ !cancelled() }}
         working-directory: ${{ github.workspace }}
         run: |
           python3 bin/tenant-tripwire.py --allowlist bin/tenant-tripwire-allowlist.json
@@ -865,6 +873,18 @@ jobs:
       # Measurement only — no threshold, no product change.
       # ------------------------------------------------------------------
       - name: AuthorizationService focused coverage run (PCOV; existing Integration test)
+        # Fail-closed diagnostics ordering: the full Integration step above is the
+        # most common red in this job. With the default `if: success()` this
+        # measurement was SKIPPED on exactly those runs, and the fail-closed
+        # coverage guard then reported "driver.json/clover.xml absent" — which
+        # reads like missing coverage instead of "the measurement never ran".
+        # The measurement is independent of the full suite's verdict (its own
+        # database-free environment, one existing test file, exit code captured
+        # to phpunit.rc), so it now runs after an earlier failure too.
+        # NOT RUN is still never a PASS: the guard below stays fail-closed and now
+        # receives this step's outcome to say WHY artifacts are missing.
+        id: authz_coverage_run
+        if: ${{ !cancelled() }}
         run: |
           set -o pipefail
           mkdir -p /tmp/authz-coverage
@@ -890,8 +910,19 @@ jobs:
           EVENT_SHA: ${{ github.sha }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
+          # Outcome of the measurement step (success / failure / skipped /
+          # cancelled). Used ONLY to describe why artifacts may be absent; it
+          # never relaxes the guard's verdict.
+          AUTHZ_COVERAGE_RUN_OUTCOME: ${{ steps.authz_coverage_run.outcome }}
         run: |
           set -o pipefail
+          if [ "${AUTHZ_COVERAGE_RUN_OUTCOME:-unknown}" != "success" ] && [ "${AUTHZ_COVERAGE_RUN_OUTCOME:-unknown}" != "failure" ]; then
+            {
+              echo "::warning::AuthorizationService focused coverage measurement is NOT RUN (step outcome: ${AUTHZ_COVERAGE_RUN_OUTCOME:-unknown})."
+              echo "Missing coverage artifacts below therefore mean 'measurement could not run', NOT 'AuthorizationService is uncovered'."
+              echo "The guard stays fail-closed: NOT RUN is never converted into PASS."
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
           python3 bin/authorization-coverage-guard.py --test
           set +e
           python3 bin/authorization-coverage-guard.py \

@@ -434,6 +434,66 @@ def select_location(page, location_id):
     page.select_option('[data-role="sr-location-select"]', str(location_id))
 
 
+def select_location_bound(page, location_id, label):
+    """Select a Location explicitly and bind the REAL board response it triggers.
+
+    The board date chip is a presentation of the same Location-local operational
+    day, so its expected text must come from that response — never from a
+    hard-coded format assumption (see assert_board_date_is_jalali()).
+    """
+    with page.expect_response(
+        lambda response: route_of(response.url).rstrip("/") == BOARD_REFRESH_PATH,
+        timeout=25000,
+    ) as board_info:
+        select_location(page, location_id)
+    response = board_info.value
+    if response.status != 200:
+        raise RuntimeError(f"{label} board request returned {response.status}")
+    body = response.json()
+    data = body.get("data", body) if isinstance(body, dict) else {}
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{label} board response was not an object")
+    if int(data.get("location_id") or 0) != int(location_id):
+        raise RuntimeError(
+            f"{label} board response is not bound to the explicit Location"
+        )
+    return data
+
+
+def assert_board_date_is_jalali(page, data, doctor_today, label):
+    """The board date chip must render the server's JALALI presentation.
+
+    Production renders `state.jalali || state.date`
+    (templates/staff-reception.php). Asserting the raw Gregorian `Y-m-d` in the
+    DOM is a stale harness assumption, not a product contract. This keeps the
+    original strength — the Location-local operational DAY is still verified
+    against the fixture — and adds the presentation contract:
+
+      1. the payload still carries that exact Gregorian day (`date`);
+      2. it carries a Jalali presentation in `YYYY/MM/DD` form;
+      3. the chip shows exactly that Jalali text;
+      4. the chip did not fall back to the raw Gregorian ISO date.
+    """
+    if str(data.get("date") or "") != str(doctor_today):
+        raise RuntimeError(
+            f"{label} board date is not the Location-local day: "
+            f"{data.get('date')!r} != {str(doctor_today)!r}"
+        )
+    expected_jalali = str(data.get("jalali") or "").strip()
+    if not re.fullmatch(r"\d{4}/\d{2}/\d{2}", expected_jalali):
+        raise RuntimeError(f"{label} board payload carries no Jalali presentation: {expected_jalali!r}")
+    if expected_jalali == str(doctor_today):
+        raise RuntimeError(f"{label} Jalali presentation equals the raw Gregorian date")
+    date_text = page.locator('[data-role="sr-date"]').inner_text() or ""
+    if expected_jalali not in date_text:
+        raise RuntimeError(
+            f"{label} board date chip must show the Jalali day, got {date_text[:60]}"
+        )
+    if str(doctor_today) in date_text:
+        raise RuntimeError(f"{label} board date chip fell back to the raw Gregorian ISO date")
+    return expected_jalali
+
+
 def select_reception_scope(page):
     """Choose the Clinic and Location explicitly, including singleton choices."""
     clinic_select = page.locator('[data-role="sr-clinic-select"]')
@@ -699,11 +759,9 @@ def run_journey(browser, vp, arrive_id, expect_queue):
         shot(page, f"reception-{vp['vp']}-strict-tenant-selection")
 
         stage = "board"
-        select_location(page, PUB["loc_tehran"])
+        board_data = select_location_bound(page, PUB["loc_tehran"], "Tehran board")
         wait_rows_count(page, 4)
-        date_text = page.locator('[data-role="sr-date"]').inner_text() or ""
-        if PUB["today_tehran"] not in date_text:
-            raise RuntimeError(f"Tehran board date must be the Location-local day, got {date_text[:60]}")
+        assert_board_date_is_jalali(page, board_data, PUB["today_tehran"], "Tehran board")
         got_ids = sorted(
             int(rows(page).nth(i).get_attribute("data-appointment-id"))
             for i in range(rows(page).count())
@@ -749,15 +807,13 @@ def run_journey(browser, vp, arrive_id, expect_queue):
         )
 
         stage = "empty"
-        select_location(page, PUB["loc_tokyo"])
+        board_data_tokyo = select_location_bound(page, PUB["loc_tokyo"], "Tokyo board")
         wait_rows_count(page, 0)
         wait_board_settled(page)
         empty_text = (page.locator('[data-role="sr-appointments-body"]').inner_text() or "")
         if "ثبت نشده" not in empty_text:
             raise RuntimeError(f"empty Location must render the empty state, got {empty_text[:80]}")
-        date_text = page.locator('[data-role="sr-date"]').inner_text() or ""
-        if PUB["today_tokyo"] not in date_text:
-            raise RuntimeError(f"Tokyo board date must be the Location-local day, got {date_text[:60]}")
+        assert_board_date_is_jalali(page, board_data_tokyo, PUB["today_tokyo"], "Tokyo board")
         shot(page, f"reception-{vp['vp']}-empty")
 
         if vp["vp"] == "desktop-1366":

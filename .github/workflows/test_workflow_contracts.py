@@ -20,6 +20,43 @@ def workflow(name):
     return (WORKFLOWS / name).read_text(encoding="utf-8")
 
 
+def ci_job_block(text, job_key):
+    """Return the YAML block of one ci.yml job (top-level `  <job>:` section)."""
+    lines = text.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line == "  {0}:".format(job_key):
+            start = index
+            break
+    if start is None:
+        raise AssertionError("job not found in ci.yml: {0}".format(job_key))
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if re.match(r"^  [A-Za-z0-9_-]+:$", lines[index]):
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
+def ci_step_block(job_text, step_name):
+    """Return the YAML block of one named step inside a ci.yml job."""
+    lines = job_text.splitlines()
+    start = None
+    needle = "- name: {0}".format(step_name)
+    for index, line in enumerate(lines):
+        if line.strip() == needle:
+            start = index
+            break
+    if start is None:
+        raise AssertionError("step not found: {0}".format(step_name))
+    end = len(lines)
+    for index in range(start + 1, len(lines)):
+        if re.match(r"^\s{6}- ", lines[index]):
+            end = index
+            break
+    return "\n".join(lines[start:end])
+
+
 class WorkflowContractTests(unittest.TestCase):
     def test_facility_matrix_runs_on_main_push_and_all_supported_databases(self):
         text = workflow("facility-matrix-acceptance.yml")
@@ -128,6 +165,82 @@ class WorkflowContractTests(unittest.TestCase):
             "python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v",
             static_job,
         )
+
+
+    def test_tripwire_production_scan_still_runs_after_an_earlier_failing_step(self):
+        """Fail-closed diagnostics ordering.
+
+        The tripwire job runs contract/self-test steps BEFORE the production
+        tenant-hardcode scan. A step failure (a genuinely red contract) must fail
+        the job AND must not erase the production scan: with the default
+        `if: success()` the scan is skipped and a red tripwire job carries no
+        evidence about the production runtime.
+        """
+        text = workflow("ci.yml")
+        job = ci_job_block(text, "tripwire")
+
+        contract_step = ci_step_block(job, "Workflow evidence and acceptance contract tests")
+        scan_step = ci_step_block(job, "Scan production for tenant hardcodes")
+
+        # Ordering that makes the risk real: the contract suite runs first.
+        self.assertLess(
+            job.index("Workflow evidence and acceptance contract tests"),
+            job.index("Scan production for tenant hardcodes"),
+        )
+        self.assertIn("test_workflow_contracts.py", contract_step)
+        self.assertIn("bin/tenant-tripwire.py --allowlist bin/tenant-tripwire-allowlist.json", scan_step)
+
+        # The scan must keep its real work and must not be success()-gated.
+        self.assertNotRegex(scan_step, r"(?m)^\s*if: success\(\)\s*$")
+        self.assertNotIn("continue-on-error", scan_step)
+        self.assertRegex(
+            scan_step,
+            r"(?m)^        (if: \$\{\{ !cancelled\(\) \}\}|if: always\(\))$",
+            "the production tenant-hardcode scan must run after an earlier step failure",
+        )
+
+    def test_authz_coverage_measurement_and_fail_closed_guard_survive_an_earlier_failure(self):
+        """Fail-closed diagnostics ordering for the PCOV coverage guard.
+
+        When the full Integration step failed, the focused measurement was
+        SKIPPED and the fail-closed guard then reported absent artifacts, which
+        reads like missing coverage instead of "the measurement never ran".
+        The measurement must run whenever the job is still running, and the guard
+        must stay fail-closed, learn the measurement outcome, and say NOT RUN.
+        """
+        text = workflow("ci.yml")
+        job = ci_job_block(text, "integration")
+
+        measure = ci_step_block(job, "AuthorizationService focused coverage run (PCOV; existing Integration test)")
+        guard = ci_step_block(job, "AuthorizationService coverage guard (fail-closed; includes negative-control self-test)")
+
+        self.assertIn("id: authz_coverage_run", measure)
+        self.assertNotRegex(measure, r"(?m)^\s*if: success\(\)\s*$")
+        self.assertRegex(
+            measure,
+            r"(?m)^        (if: \$\{\{ !cancelled\(\) \}\}|if: always\(\))$",
+            "the focused coverage measurement must run after an earlier integration failure",
+        )
+        # The measurement itself must stay a real PCOV run on the existing test.
+        self.assertIn("-d pcov.enabled=1", measure)
+        self.assertIn("tests/Integration/AuthorizationServiceTest.php", measure)
+        self.assertIn("echo $? > /tmp/authz-coverage/phpunit.rc", measure)
+
+        # The guard keeps running unconditionally and stays fail-closed.
+        self.assertIn("if: always()", guard)
+        self.assertIn("AUTHZ_COVERAGE_RUN_OUTCOME: ${{ steps.authz_coverage_run.outcome }}", guard)
+        self.assertIn("NOT RUN", guard)
+        self.assertIn("bin/authorization-coverage-guard.py --test", guard)
+        for required in (
+            "--clover /tmp/authz-coverage/clover.xml",
+            "--driver-json /tmp/authz-coverage/driver.json",
+            "--phpunit-rc-file /tmp/authz-coverage/phpunit.rc",
+        ):
+            self.assertIn(required, guard)
+        self.assertIn('exit "$GUARD_RC"', guard)
+        # NOT RUN / SKIPPED is never converted into PASS.
+        self.assertNotIn("exit 0", guard)
+        self.assertNotIn("continue-on-error", guard)
 
 
 class StandaloneAdminAcceptanceTests(unittest.TestCase):

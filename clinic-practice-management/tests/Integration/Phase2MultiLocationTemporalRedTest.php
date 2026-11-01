@@ -61,6 +61,9 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        // The lazy check-in contract pins the VisitService clock seam; never let
+        // it leak into another test in this or any later class.
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc(null);
         $this->purgeMultiLocationTemporalFixture();
         parent::tearDown();
     }
@@ -282,10 +285,45 @@ final class Phase2MultiLocationTemporalRedTest extends WP_UnitTestCase
         $db = App::db();
 
         $tzNY = new DateTimeZone('America/New_York');
-        $nowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+
+        // Deterministic reference instant (fixture, not product behavior).
+        //
+        // The product rejects check-in outside the appointment's Location-local
+        // calendar day (VisitService::checkIn -> "check-in is only valid on the
+        // appointment's Gregorian calendar date in its trusted Location
+        // timezone"). Deriving "now + 1 hour" from the real clock therefore
+        // breaks this test in the last hour of every Location-local day: the
+        // appointment lands on the NEXT local day and check-in is rejected
+        // (that is what happened in run 41270655357).
+        //
+        // Pin the seam the product already exposes for deterministic RED tests
+        // (VisitService::setTestNowUtc) to 12:00 Location-local on the CURRENT
+        // New York calendar day: the future appointment (+1h) and the overdue
+        // positive control (-3h) both stay inside the same local day, so the
+        // contract under test is unchanged and is exercised at any execution
+        // time. Reset in tearDown().
+        $realNowUtc = new DateTimeImmutable('now', new DateTimeZone('UTC'));
+        $localDay = $realNowUtc->setTimezone($tzNY)->format('Y-m-d');
+        $nowUtc = (new DateTimeImmutable($localDay . ' 12:00:00', $tzNY))->setTimezone(new DateTimeZone('UTC'));
+        \ClinicCore\Application\Visits\VisitService::setTestNowUtc($nowUtc);
+
         $nowLocalNY = $nowUtc->setTimezone($tzNY);
         $apptLocal = $nowLocalNY->add(new \DateInterval('PT1H')); // future local
         $apptUtc = $apptLocal->setTimezone(new DateTimeZone('UTC'));
+
+        // fixture precondition: the appointment must stay on the Location-local
+        // day of the pinned instant, otherwise the assertion below would test
+        // the product's day guard instead of the lazy no-show contract.
+        self::assertSame(
+            $localDay,
+            $apptLocal->format('Y-m-d'),
+            'fixture: pinned reference instant must keep the future appointment on the same Location-local day'
+        );
+        self::assertSame(
+            $localDay,
+            $nowLocalNY->sub(new \DateInterval('PT3H'))->format('Y-m-d'),
+            'fixture: pinned reference instant must keep the overdue control on the same Location-local day'
+        );
 
         $slotDate = $apptLocal->format('Y-m-d');
         $slotTime = $apptLocal->format('H:i:s');
