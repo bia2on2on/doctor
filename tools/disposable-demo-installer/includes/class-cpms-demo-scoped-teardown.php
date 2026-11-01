@@ -2685,6 +2685,8 @@ class ScopedTeardown {
 		if ( 1 === preg_match( '/^09\d{9}$/D', $mobile ) ) {
 			$keys[] = 'otp-day:' . $mobile;
 			$keys[] = 'otp-hour:' . $mobile;
+			// Schema 0031 OTP issue guard row (sha256(mobile)), same fixture mobile.
+			$keys[] = 'otp-send-guard:' . hash( 'sha256', $mobile );
 		}
 		foreach ( $user_ids as $user_id ) {
 			$keys[] = 'booking-' . $user_id;
