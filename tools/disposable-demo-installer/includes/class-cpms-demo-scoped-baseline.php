@@ -52,6 +52,12 @@ class ScopedBaseline {
 	 */
 	private const VOLATILE_COLUMNS = array(
 		'cpms_jobs' => array( 'status', 'attempts', 'run_after', 'locked_by', 'lock_expires_at', 'last_error', 'started_at', 'completed_at' ),
+		// Schema 2026_10_31_0031 guard. A demo audit append updates
+		// `last_audit_id` and `updated_at` under the production row lock. That is
+		// the guard doing its job, not site data drifting: the baseline therefore
+		// keeps covering the guard's identity (`id`) and its `created_at`, and
+		// excludes exactly the two serialization columns.
+		'cpms_audit_seq' => array( 'last_audit_id', 'updated_at' ),
 	);
 
 	/**
@@ -440,6 +446,12 @@ class ScopedBaseline {
 		}
 		if ( false !== strpos( $table, 'cpms_schema_migrations' ) ) {
 			return array( 'version' );
+		}
+		if ( false !== strpos( $table, 'cpms_audit_seq' ) ) {
+			// Singleton guard row. Its only stable identity is `id`; the fallback
+			// below would pick `id | last_audit_id` and the key itself would move
+			// on every legitimate audit append.
+			return array( 'id' );
 		}
 		if ( false !== strpos( $table, 'term_relationships' ) ) {
 			return array( 'object_id', 'term_taxonomy_id' );

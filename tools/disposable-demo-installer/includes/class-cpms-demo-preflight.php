@@ -74,7 +74,14 @@ class Preflight {
 		'cpms_drug_reference',
 	);
 
-	/** Tables whose rows may legitimately exist on a freshly activated install or after verified teardown. */
+	/**
+	 * Tables whose rows may legitimately exist on a freshly activated install or after verified teardown.
+	 *
+	 * `cpms_audit_seq` (schema 2026_10_31_0031) is the audit serialization guard:
+	 * a singleton row (id = 1) seeded by MigrationRunner and locked by AuditLogger
+	 * on every append. It may legitimately exist on a freshly migrated install and
+	 * after verified teardown, so it is system state here - never demo residue.
+	 */
 	public const SYSTEM_TABLES = array(
 		'cpms_organizations',
 		'cpms_clinics',
@@ -86,12 +93,14 @@ class Preflight {
 		'cpms_rate_limits',
 		'cpms_license_install',
 		'cpms_license_state',
+		'cpms_audit_seq',
 	);
 
 	/** Every table the pinned schema version may contain. */
 	public const KNOWN_TABLES = array(
 		'cpms_appointments',
 		'cpms_audit_logs',
+		'cpms_audit_seq',
 		'cpms_clinic_memberships',
 		'cpms_clinical_note_versions',
 		'cpms_clinical_notes',

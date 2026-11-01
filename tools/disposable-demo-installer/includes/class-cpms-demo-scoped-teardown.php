@@ -486,6 +486,7 @@ class ScopedTeardown {
 		'cpms_license_install'   => 'install-level licence identity',
 		'cpms_license_state'     => 'install-level licence runtime state',
 		'cpms_schema_migrations' => 'runner-owned migration bookkeeping',
+		'cpms_audit_seq'         => 'install-level audit serialization guard',
 	);
 
 	/**
