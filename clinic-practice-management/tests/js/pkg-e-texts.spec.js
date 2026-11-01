@@ -192,6 +192,33 @@ check('SMS default templates no longer hardcode the doctor title', function () {
   assert.strictEqual(events.indexOf('دکتر {{doctor_name}}'), -1, 'title now comes from the payload helper');
 });
 
+// ---------------------------------------------------------------------------
+// 6) Native dialogs removed from the converted sites (no window.confirm/prompt/alert)
+// ---------------------------------------------------------------------------
+check('cpms-admin.js delegates to the shared dialog, which keeps the shipped acceptance surface', function () {
+  var dialog = read('assets/js/cpms-dialog.js');
+  // bin/rwp-acceptance.py::capture_confirm() drives a real dangerous action and
+  // requires .cpms-modal-overlay, a focused element whose class contains
+  // 'confirm', and Escape closing it. Those tokens must stay on the shared dialog.
+  assert.ok(dialog.indexOf('cpms-modal-overlay') !== -1, 'overlay legacy token missing (acceptance gate would break)');
+  assert.ok(dialog.indexOf('cpms-modal-confirm') !== -1, 'confirm-button legacy token missing (focus assertion would break)');
+  assert.ok(/\'Escape\'/.test(dialog), 'Escape must cancel');
+  assert.ok(dialog.indexOf('aria-modal') !== -1 && dialog.indexOf('aria-labelledby') !== -1);
+});
+
+check('CustomRoleDefinitionsPage has no server-rendered native confirm', function () {
+  var src = read('src/Admin/CustomRoleDefinitionsPage.php');
+  assert.strictEqual(/return confirm\s*\(/.test(src), false, 'onclick="return confirm(...)" must be gone');
+  assert.strictEqual(/onclick=/.test(src), false, 'no inline onclick handler may remain');
+  assert.ok(src.indexOf('data-cpms-confirm=') !== -1, 'the shared dialog is driven by data-cpms-confirm');
+});
+
+check('SmsSettingsPage no longer uses native alert()', function () {
+  var src = read('src/Admin/SmsSettingsPage.php');
+  assert.strictEqual(/[^.\w]alert\s*\(/.test(src), false, 'alert() must be replaced by inline Persian status text');
+  assert.ok(src.indexOf('cpms-sms-test-send-result') !== -1);
+});
+
 if (failures > 0) {
   console.error(failures + ' assertion(s) failed');
   process.exit(1);

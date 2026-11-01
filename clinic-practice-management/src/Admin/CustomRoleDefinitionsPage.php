@@ -435,8 +435,10 @@ final class CustomRoleDefinitionsPage {
 		echo '<input type="hidden" name="role_key" value="' . esc_attr( $definition['role_key'] ) . '">';
 		echo '<input type="hidden" name="version" value="' . esc_attr( (string) $definition['version'] ) . '">';
 		wp_nonce_field( $nonce );
-		$onclick = 'return confirm(' . wp_json_encode( $confirmation ) . ');';
-		echo '<button type="submit" class="button" onclick="' . esc_attr( $onclick ) . '">' . esc_html( $button_label ) . '</button>';
+		// تأییدِ قابل‌دسترس از مؤلفهٔ مشترک (assets/js/cpms-dialog.js؛ از
+		// cpms-admin.js روی همین ناحیهٔ مدیریت بار می‌شود) — نه confirm مرورگر.
+		// بدون JS، سرور همان nonce + capability را مستقل بررسی می‌کند.
+		echo '<button type="submit" class="button" data-cpms-confirm="' . esc_attr( $confirmation ) . '">' . esc_html( $button_label ) . '</button>';
 		echo '</form>';
 		self::render_archive_form( $clinic_id, $definition );
 	}
@@ -452,8 +454,7 @@ final class CustomRoleDefinitionsPage {
 		echo '<input type="hidden" name="version" value="' . esc_attr( (string) $definition['version'] ) . '">';
 		wp_nonce_field( self::NONCE_ARCHIVE );
 		echo '<label><input type="checkbox" name="confirm_archive" value="1" required> ' . esc_html__( 'پیامدهای برگشت‌ناپذیر بایگانی را می‌پذیرم.', 'cpms' ) . '</label> ';
-		$onclick = 'return confirm(' . wp_json_encode( $explanation ) . ');';
-		echo '<button type="submit" class="button" onclick="' . esc_attr( $onclick ) . '">' . esc_html__( 'بایگانی دائمی', 'cpms' ) . '</button>';
+		echo '<button type="submit" class="button" data-cpms-confirm="' . esc_attr( $explanation ) . '">' . esc_html__( 'بایگانی دائمی', 'cpms' ) . '</button>';
 		echo '</form>';
 	}
 

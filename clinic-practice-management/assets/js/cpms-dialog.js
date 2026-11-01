@@ -15,6 +15,15 @@
  *
  * This is UX only, never authorization: every action behind a confirmation is
  * still re-authorized server-side (nonce + capability + scope).
+ *
+ * BACKWARD-COMPATIBLE MARKUP CONTRACT (do not remove):
+ * the shipped acceptance harness `bin/rwp-acceptance.py::capture_confirm()`
+ * drives a dangerous action and asserts on the PRODUCTION dialog surface —
+ * it requires an element with class `cpms-modal-overlay`, a focused element
+ * whose class contains `confirm`, and Escape closing the overlay. Those two
+ * class tokens are therefore kept on the shared dialog's overlay and confirm
+ * button, so replacing the per-page modal with this component does not weaken
+ * or bypass the existing browser gate.
  */
 (function () {
     'use strict';
@@ -72,7 +81,9 @@
             previous.parentNode.removeChild(previous);
         }
 
-        var overlay = el('div', 'cpms-dialog-overlay');
+        // `cpms-modal-overlay` is the legacy/shipped acceptance token — see the
+        // markup contract in this file's header.
+        var overlay = el('div', 'cpms-dialog-overlay cpms-modal-overlay');
         var dialog = el('div', 'cpms-dialog');
         dialog.setAttribute('role', 'dialog');
         dialog.setAttribute('aria-modal', 'true');
@@ -119,7 +130,7 @@
         var actions = el('div', 'cpms-dialog__actions');
         var confirmBtn = el('button', 'cpms-dialog__btn cpms-dialog__btn--primary');
         confirmBtn.type = 'button';
-        confirmBtn.className = 'cpms-dialog__btn cpms-dialog__btn--primary';
+        confirmBtn.className = 'cpms-dialog__btn cpms-dialog__btn--primary cpms-modal-confirm';
         confirmBtn.textContent = settings.confirmLabel || (isPrompt ? 'ثبت' : 'تأیید و ادامه');
         var cancelBtn = el('button', 'cpms-dialog__btn');
         cancelBtn.type = 'button';

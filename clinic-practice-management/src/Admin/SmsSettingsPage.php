@@ -416,7 +416,8 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
                 span.textContent = r.status === 'SENT' ? '✓ ارسال شد' : ('نتیجه: ' + r.status);
                 span.style.color = r.status === 'SENT' ? 'green' : '#b32d2e';
             })
-            .catch(function (err) { alert('خطا: ' + err.message); });
+            // خطای درون‌صفحه‌ای (نه alert مرورگر): همان محلِ نتیجهٔ ارسال.
+            .catch(function (err) { result('cpms-sms-test-send-result', 'خطا: ' + err.message, false); });
     }
 
     // Persian/Jalali presentation of a stored UTC SMS timestamp (Owner B).
@@ -526,7 +527,8 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
     // ===== Init =====
     Promise.all([loadProviders(), loadStatus(), loadTemplates()])
         .then(function () { loadLogs(); loadBalance(); })
-        .catch(function (err) { alert('خطا در بارگذاری تنظیمات پیامک: ' + err.message); });
+        // خطای درون‌صفحه‌ای (نه alert مرورگر) در ناحیهٔ وضعیتِ همین صفحه.
+        .catch(function (err) { el('cpms-sms-state').textContent = 'خطا در بارگذاری تنظیمات پیامک: ' + err.message; });
 })();
 </script>
         <?php
