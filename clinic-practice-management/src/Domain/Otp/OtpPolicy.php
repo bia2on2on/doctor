@@ -22,7 +22,11 @@ final class OtpPolicy
     public const REASON_LOCKED = 'locked';
 
     public function __construct(
-        private readonly int $ttlSeconds = 300,
+        // C11 — TTL پیش‌فرض باید با پیش‌فرضِ عملیاتی (Settings::DEFAULTS
+        // 'otp.ttl_sec' = 120) یکی باشد؛ 300 یک Default غیرِعملیاتی بود که
+        // فقط در مسیرِ ساختِ بدونِ آرگومان (تست/CLI) دیده می‌شد و با متنِ
+        // پیامک («۲ دقیقه») و با مقدارِ واقعیِ Runtime اختلاف داشت.
+        private readonly int $ttlSeconds = 120,
         private readonly int $maxAttempts = 5,
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- snake_case variant exists below; keep camelCase param for BC.
         private readonly int $cooldown_seconds = 60,

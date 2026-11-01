@@ -215,22 +215,65 @@ try {
             );
         };
 
+        // C11 contract: the per-phone day/hour counters are ISSUANCE quotas.
+        // A request rejected by cooldown or lockout must consume neither, an
+        // actually issued challenge must charge both exactly once, and the cap
+        // must hold exactly (never max+1 issued, never max+1 counted).
+        $counter = static function (string $key, int $windowSec) use ($db): int {
+            return (int) $db->fetchValue(
+                'SELECT hits FROM ' . $db->table('cpms_rate_limits') . ' WHERE window_key = %s AND window_id = %d',
+                [$key, intdiv(time(), $windowSec)]
+            );
+        };
+        $dayHits = static fn (string $mobile): int => $counter('otp-day:' . $mobile, 86400);
+        $hourHits = static fn (string $mobile): int => $counter('otp-hour:' . $mobile, 3600);
+        $challenges = static fn (string $mobile): int => (int) $db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $db->table('cpms_otp_tokens') . ' WHERE mobile = %s AND purpose = %s',
+            [$mobile, OtpService::PURPOSE_LOGIN]
+        );
+        $age = static function (string $mobile) use ($db, $latest): void {
+            $db->update('cpms_otp_tokens', ['created_at' => gmdate('Y-m-d H:i:s', time() - 61) . '.000'], ['id' => $latest($mobile)]);
+        };
+
         $mobile = '09127000001';
         [$first] = $issue($mobile);
         $require($first['retry_after'] === 60, 'boundary-send-retry');
+        // An issued challenge charges both quotas exactly once.
+        $require($dayHits($mobile) === 1 && $hourHits($mobile) === 1 && $challenges($mobile) === 1, 'boundary-issue-consumes');
         $id = $latest($mobile);
         $require($id > 0, 'boundary-cooldown-id');
         $cooldown = $expectOtp(static fn () => $otp->request($mobile, OtpService::PURPOSE_LOGIN, null, null, $clinic), 'CLINIC_OTP_COOLDOWN', 'boundary-cooldown');
         $cooldown_data = $cooldown->getData();
         $require($isPersian($cooldown->getMessage()) && ($cooldown_data['ttl'] ?? 0) === 120
             && ($cooldown_data['retry_after'] ?? 0) >= 1 && ($cooldown_data['retry_after'] ?? 0) <= 60, 'boundary-cooldown-data');
+        // A cooldown-rejected request consumes neither quota and issues nothing.
+        $require($dayHits($mobile) === 1 && $hourHits($mobile) === 1 && $challenges($mobile) === 1, 'boundary-cooldown-no-consume');
         $require($db->update('cpms_otp_tokens', ['created_at' => gmdate('Y-m-d H:i:s', time() - 61) . '.000'], ['id' => $id]) === 1, 'boundary-cooldown-fixture');
-        $issue($mobile); // At/after the cooldown boundary, the third rate hit is allowed.
+        $issue($mobile); // At/after the cooldown boundary a new challenge is issued and charged.
+        $require($dayHits($mobile) === 2 && $hourHits($mobile) === 2 && $challenges($mobile) === 2, 'boundary-cooldown-boundary-issue-consumes');
+        // Fill the daily cap exactly (default otp.daily_max = 3).
+        $age($mobile);
+        $issue($mobile);
+        $require($dayHits($mobile) === 3 && $hourHits($mobile) === 3 && $challenges($mobile) === 3, 'boundary-daily-cap-reached');
         $daily = $expectOtp(static fn () => $otp->request($mobile, OtpService::PURPOSE_LOGIN, null, null, $clinic), 'CLINIC_OTP_DAILY_LIMIT', 'boundary-daily');
         $daily_data = $daily->getData();
         $require($isPersian($daily->getMessage()) && ($daily_data['retry_after'] ?? 0) >= 1
             && ($daily_data['retry_after'] ?? 0) <= 86400
             && abs((int) ($daily_data['reset_at'] ?? 0) - time() - (int) ($daily_data['retry_after'] ?? 0)) <= 2, 'boundary-daily-data');
+        // The cap is exact: three challenges, three counted — the rejected
+        // fourth request neither issues nor charges (old contract: it did).
+        $require($daily_data['allowed'] === false && $daily_data['remaining'] === 0, 'boundary-daily-denied-meta');
+        $require($dayHits($mobile) === 3 && $hourHits($mobile) === 3 && $challenges($mobile) === 3, 'boundary-daily-exact-cap');
+        // A lockout-rejected request consumes neither quota either.
+        $mobile = '09127000004';
+        [, $lock_code] = $issue($mobile);
+        $wrong = $lock_code === '000000' ? '000001' : '000000';
+        for ($attempt = 1; $attempt <= 5; $attempt++) {
+            $expectOtp(static fn () => $otp->verify($mobile, $wrong), $attempt === 5 ? 'CLINIC_OTP_LOCKED' : 'CLINIC_OTP_INVALID', 'boundary-lock-attempt');
+        }
+        $lockedRequest = $expectOtp(static fn () => $otp->request($mobile, OtpService::PURPOSE_LOGIN, null, null, $clinic), 'CLINIC_OTP_LOCKED', 'boundary-lockout-request');
+        $require($isPersian($lockedRequest->getMessage()) && ($lockedRequest->getData()['retry_after'] ?? 0) >= 1, 'boundary-lockout-request-data');
+        $require($dayHits($mobile) === 1 && $hourHits($mobile) === 1 && $challenges($mobile) === 1, 'boundary-lockout-no-consume');
 
         $mobile = '09127000002';
         [, $expired_code] = $issue($mobile);
@@ -257,7 +300,7 @@ try {
         $require($id > 0 && $db->update('cpms_otp_tokens', ['locked_until' => gmdate('Y-m-d H:i:s', time() - 1) . '.000'], ['id' => $id]) === 1, 'boundary-unlock-fixture');
         $unlocked = $otp->verify($mobile, $valid_code);
         $require($unlocked['session_issued'] && (int) $unlocked['user_id'] > 0, 'boundary-unlocked');
-        echo "PRODUCTION_OTP_BOUNDARIES cooldown=ok daily=ok ttl_expired=ok lockout=ok unlock=ok persian=ok retry_after=ok fixture_clock=adjusted\n";
+        echo "PRODUCTION_OTP_BOUNDARIES cooldown=ok daily=ok ttl_expired=ok lockout=ok unlock=ok persian=ok retry_after=ok fixture_clock=adjusted quota_issue_consumes=ok quota_cooldown_no_consume=ok quota_lockout_no_consume=ok quota_daily_exact=ok\n";
         return;
     }
     if ($mode === 'rollback') {
