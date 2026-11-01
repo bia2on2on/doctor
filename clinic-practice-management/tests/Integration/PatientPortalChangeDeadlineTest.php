@@ -476,6 +476,7 @@ final class PatientPortalChangeDeadlineTest extends WP_UnitTestCase
             $visits,
             [
                 'clinic_id'        => $this->clinicId,
+                'location_id'      => $this->locationId,
                 'clinician_id'     => $clinicianId,
                 'patient_id'       => $patientId,
                 'source'           => 'walk_in',
@@ -486,7 +487,7 @@ final class PatientPortalChangeDeadlineTest extends WP_UnitTestCase
                 'created_at'       => $now,
                 'updated_at'       => $now,
             ],
-            ['%d', '%d', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s']
+            ['%d', '%d', '%d', '%d', '%s', '%s', '%s', '%s', '%d', '%s', '%s']
         );
         self::assertTrue((bool) $ok, 'fixture: visit insert failed: ' . $wpdb->last_error);
         $visitId = (int) $wpdb->insert_id;
@@ -624,14 +625,38 @@ final class PatientPortalChangeDeadlineTest extends WP_UnitTestCase
     {
         $body = $response->get_data();
 
-        return $body instanceof \WP_Error ? (string) $body->get_error_code() : '';
+        if ($body instanceof \WP_Error) {
+            return (string) $body->get_error_code();
+        }
+
+        if (is_array($body)) {
+            return (string) ($body['code'] ?? '');
+        }
+
+        if (is_object($body) && isset($body->code)) {
+            return (string) $body->code;
+        }
+
+        return '';
     }
 
     private function errMessage(WP_REST_Response $response): string
     {
         $body = $response->get_data();
 
-        return $body instanceof \WP_Error ? (string) $body->get_error_message() : '';
+        if ($body instanceof \WP_Error) {
+            return (string) $body->get_error_message();
+        }
+
+        if (is_array($body)) {
+            return (string) ($body['message'] ?? '');
+        }
+
+        if (is_object($body) && isset($body->message)) {
+            return (string) $body->message;
+        }
+
+        return '';
     }
 
     private function appointmentStatus(int $appointmentId): string
