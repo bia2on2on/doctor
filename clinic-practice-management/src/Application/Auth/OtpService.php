@@ -151,14 +151,14 @@ final class OtpService
             ? $this->settingsFactory->forClinic($clinicId)
             : $this->currentSettings();
 
-        $dailyMax = (int) $settings->get('otp.daily_max');
-        $hourlyMax = (int) $settings->get('otp.hourly_max');
+        $daily_max = (int) $settings->get('otp.daily_max');
+        $hourly_max = (int) $settings->get('otp.hourly_max');
 
         // C11 — per-phone day/hour are *issuance* quotas, not attempt quotas:
         // they are charged only when a challenge is actually created, so a
         // request rejected by cooldown or lockout consumes neither. They are no
         // longer hit here: the decision and the charge both live inside the
-        // per-mobile issuance guard below (see issuanceQuotaDenial() and the
+        // per-mobile issuance guard below (see issuance_quota_denial() and the
         // charge after every policy gate passes).
         //
         // The per-IP counter stays exactly where it was and keeps its meaning:
@@ -183,7 +183,7 @@ final class OtpService
         // per-mobile limits; it never stores a raw mobile or a code.
         $guard_key = 'otp-send-guard:' . hash( 'sha256', $mobile );
         $issue = $this->db->transactional(
-            function () use ( $guard_key, $mobile, $purpose, $policy, $settings, $user_id, $ip, $clinic_id, $dailyMax, $hourlyMax ): array {
+            function () use ( $guard_key, $mobile, $purpose, $policy, $settings, $user_id, $ip, $clinic_id, $daily_max, $hourly_max ): array {
                 $locked = $this->db->query(
                     'INSERT INTO ' . $this->db->table( 'cpms_rate_limits' ) .
                     ' (window_key, window_id, window_sec, hits) VALUES (%s, 0, 1, 0)' .
@@ -199,7 +199,7 @@ final class OtpService
                 // request that ends up rejected must not consume the day/hour
                 // quota. Error precedence is preserved: the day/hour caps are
                 // still reported before cooldown/lockout, as before.
-                $quota = $this->issuanceQuotaDenial( $mobile, $dailyMax, $hourlyMax );
+                $quota = $this->issuance_quota_denial( $mobile, $daily_max, $hourly_max );
                 if ( $quota !== null ) {
                     if ( $quota->apiCode() === 'CLINIC_OTP_DAILY_LIMIT' ) {
                         $this->audit( 'OTP_DENIED_DAILY', $user_id, $mobile, $ip, [], $clinic_id );
@@ -255,9 +255,9 @@ final class OtpService
                 // both counters were below their caps a moment ago; the only
                 // way hit() can disagree is a window rollover in between, and
                 // then refusing is the fail-closed answer.
-                $dayCharge = $this->rate->hit( 'otp-day:' . $mobile, $dailyMax, self::DAY_WINDOW_SEC );
-                $hourCharge = $this->rate->hit( 'otp-hour:' . $mobile, $hourlyMax, self::HOUR_WINDOW_SEC );
-                if ( ! $dayCharge['allowed'] || ! $hourCharge['allowed'] ) {
+                $day_charge = $this->rate->hit( 'otp-day:' . $mobile, $daily_max, self::DAY_WINDOW_SEC );
+                $hour_charge = $this->rate->hit( 'otp-hour:' . $mobile, $hourly_max, self::HOUR_WINDOW_SEC );
+                if ( ! $day_charge['allowed'] || ! $hour_charge['allowed'] ) {
                     throw new \RuntimeException( 'OTP issuance quota invariant violated' );
                 }
 
@@ -820,26 +820,28 @@ final class OtpService
     /**
      * C11 — تصمیمِ سهمیهٔ صدور (روزانه/ساعتی) برای یک موبایل.
      *
-     * فقط می‌خوانَد (`RateLimiter::peek`) و هیچ شمارنده‌ای را بالا نمی‌برد؛
-     * مصرف در محلِ صدور و زیرِ همان قفل انجام می‌شود. باید **فقط** داخل قفلِ
-     * صدورِ همان موبایل صدا زده شود، وگرنه مقایسه با سقف دوباره Racy می‌شود.
+     * فقط می‌خوانَد (RateLimiter::peek) و هیچ شمارنده‌ای را بالا نمی‌برد؛ مصرف
+     * در محلِ صدور و زیرِ همان قفل انجام می‌شود. باید فقط داخل قفلِ صدورِ همان
+     * موبایل صدا زده شود، وگرنه مقایسه با سقف دوباره Racy می‌شود.
      *
+     * @param string $mobile     شمارهٔ نرمال‌شده (کلیدِ سهمیه).
+     * @param int    $daily_max  سقفِ روزانهٔ صادرشده.
+     * @param int    $hourly_max سقفِ ساعتیِ صادرشده.
      * @return OtpException|null null یعنی سهمیه آزاد است.
      */
-    private function issuanceQuotaDenial(string $mobile, int $dailyMax, int $hourlyMax): ?OtpException
-    {
-        if ($this->rate->peek('otp-day:' . $mobile, self::DAY_WINDOW_SEC) >= max(1, $dailyMax)) {
+    private function issuance_quota_denial( string $mobile, int $daily_max, int $hourly_max ): ?OtpException {
+        if ( $this->rate->peek( 'otp-day:' . $mobile, self::DAY_WINDOW_SEC ) >= max( 1, $daily_max ) ) {
             return new OtpException(
                 'CLINIC_OTP_DAILY_LIMIT',
                 'محدودیت ارسال کد در روز به پایان رسیده است',
-                $this->quotaDeniedMeta(self::DAY_WINDOW_SEC)
+                $this->quota_denied_meta( self::DAY_WINDOW_SEC )
             );
         }
-        if ($this->rate->peek('otp-hour:' . $mobile, self::HOUR_WINDOW_SEC) >= max(1, $hourlyMax)) {
+        if ( $this->rate->peek( 'otp-hour:' . $mobile, self::HOUR_WINDOW_SEC ) >= max( 1, $hourly_max ) ) {
             return new OtpException(
                 'CLINIC_RATE_LIMITED',
                 'درخواست‌های شما موقتاً محدود شده است',
-                $this->quotaDeniedMeta(self::HOUR_WINDOW_SEC)
+                $this->quota_denied_meta( self::HOUR_WINDOW_SEC )
             );
         }
 
@@ -848,19 +850,19 @@ final class OtpService
 
     /**
      * متادیتای ردِ سهمیه با همان شکلِ پیشین (allowed/remaining/reset_at) به‌علاوهٔ
-     * `retry_after` نسبی — همان محاسبهٔ پنجرهٔ `RateLimiter::hit()`.
+     * retry_after نسبی — همان محاسبهٔ پنجرهٔ RateLimiter::hit().
      *
+     * @param int $window_sec طولِ پنجرهٔ شمارنده (ثانیه).
      * @return array{allowed: bool, remaining: int, reset_at: int, retry_after: int}
      */
-    private function quotaDeniedMeta(int $windowSec): array
-    {
-        $resetAt = (intdiv(time(), $windowSec) + 1) * $windowSec;
+    private function quota_denied_meta( int $window_sec ): array {
+        $reset_at = ( intdiv( time(), $window_sec ) + 1 ) * $window_sec;
 
         return [
             'allowed'     => false,
             'remaining'   => 0,
-            'reset_at'    => $resetAt,
-            'retry_after' => max(1, $resetAt - time()),
+            'reset_at'    => $reset_at,
+            'retry_after' => max( 1, $reset_at - time() ),
         ];
     }
 
