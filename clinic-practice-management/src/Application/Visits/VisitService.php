@@ -277,28 +277,6 @@ final class VisitService
             }
             $this->guardDuplicateActiveVisit($patientId, $clinicianId, $clinicId, $locationIdForGuard); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
 
-            // Guard: patient must not have a non-terminal appointment in the same clinic today.
-            $today_for_appt_guard = $this->nowUtc()->format( 'Y-m-d' );
-            if ( $locationIdForGuard !== null && $locationIdForGuard > 0 && $clinicId > 0 ) {
-                try {
-                    $today_for_appt_guard = $this->operationalDateForLocation( $locationIdForGuard, $clinicId );
-                } catch ( \\Throwable $e ) {
-                    unset( $e );
-                }
-            }
-            $existing_appt = $this->appointments->find_non_terminal_by_patient_clinic_day( $patientId, $clinicId, $today_for_appt_guard ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
-            if ( $existing_appt !== null ) {
-                throw VisitException::of(
-                    'CLINIC_DUPLICATE_ACTIVE_APPOINTMENT',
-                    'این بیمار امروز نوبت فعال در این کلینیک دارد. لطفاً از مسیر پذیرش (check-in) برای نوبت موجود استفاده کنید.',
-                    409,
-                    array(
-                        'appointment_id' => (int) $existing_appt['id'],
-                        'appointment_status' => (string) $existing_appt['status'],
-                    )
-                );
-            }
-
             $visit = $this->createVisit( $actorUserId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                 $clinicId,
                 $patientId,
@@ -542,7 +520,7 @@ final class VisitService
             // presentation only (Owner B — Persian/Jalali date UX).
             'jalali'        => Jalali::formatYmd( $operational_date ),
             'stats'         => $stats,
-            'queue'         => array_map( [ $this, 'presentVisit' ], $this->enrichVisitNamesBatch( $queue ) ),
+            'queue'         => array_map( [ $this, 'presentVisit' ], $this->enrich_visit_names_batch( $queue ) ),
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
             'location_id'   => $location_id,
         ];
@@ -622,7 +600,7 @@ final class VisitService
             // day (presentation only; Gregorian storage/comparisons untouched).
             'jalali'        => Jalali::formatYmd( $operational_date ),
             'stats'         => $stats,
-            'queue'         => array_map( [ $this, 'presentVisit' ], $this->enrichVisitNamesBatch( $queue ) ),
+            'queue'         => array_map( [ $this, 'presentVisit' ], $this->enrich_visit_names_batch( $queue ) ),
             'appointments'  => $doctor_appointments,
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
             'location_id'   => $location_id,
@@ -2028,7 +2006,7 @@ final class VisitService
         // phpcs:enable
     }
 
-    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.PHP.StrictComparisons -- established PSR-style in this file: the added name-enrichment helpers reuse the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
+    // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- multi-line db calls; security, SQL, i18n and escaping sniffs stay active.
     /**
      * تکمیل نام‌های نمایشی (patient_name / clinician_name) با پرس‌وجوهای جداگانه
      * غیر قفل (NON-locking) Scoped شده به clinic_id.
@@ -2038,7 +2016,7 @@ final class VisitService
      * هرگز نامی از کلینیک دیگری برگردانده نمی‌شود (tenancy); اگر بیمار یا
      * پزشک در همان کلینیک نباشد، نام خالی/null (fail closed).
      *
-     * اگر enrichVisitNamesBatch() قبلاً ردیف را تکمیل کرده است (نشان
+     * اگر enrich_visit_names_batch() قبلاً ردیف را تکمیل کرده است (نشان
      * `_names_enriched`)، پرس‌وجو تکراری نمی‌زند (جلوگیری از N+1 در صف و
      * داشبورد روز). نامی که قبلاً در ردیف وجود داشته باشد، با مقدار خالی
      * بازنویسی نمی‌شود.
@@ -2046,9 +2024,9 @@ final class VisitService
      * @param array<string, mixed> $visit
      * @return array<string, mixed>
      */
-    private function enrichVisitNames( array $visit ): array
+    private function enrich_visit_names( array $visit ): array
     {
-        // قبلاً توسط enrichVisitNamesBatch() تکمیل شده — پرس‌وجو تکراری نزنیم.
+        // قبلاً توسط enrich_visit_names_batch() تکمیل شده — پرس‌وجو تکراری نزنیم.
         if ( ! empty( $visit['_names_enriched'] ) ) {
             return $visit;
         }
@@ -2118,7 +2096,7 @@ final class VisitService
      * @param list<array<string, mixed>> $visits
      * @return list<array<string, mixed>>
      */
-    private function enrichVisitNamesBatch( array $visits ): array
+    private function enrich_visit_names_batch( array $visits ): array
     {
         $by_clinic = array();
         foreach ( $visits as $index => $visit ) {
@@ -2217,9 +2195,9 @@ final class VisitService
      * @param array<string, mixed> $visit
      * @return array<string, mixed>
      */
-    private function presentVisit( array $visit ): array
+    private function presentVisit(array $visit): array
     {
-        $visit = $this->enrichVisitNames( $visit );
+        $visit = $this->enrich_visit_names( $visit );
         // Defense-in-depth: the internal _names_enriched marker must never
         // leak into the presented row / REST response / JSON output.
         unset( $visit['_names_enriched'] );
