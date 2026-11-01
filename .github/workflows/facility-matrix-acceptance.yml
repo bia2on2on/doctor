@@ -9,9 +9,10 @@ name: Facility Onboarding Matrix (12 types · MySQL 8 + MariaDB 11.4.13)
 # evidence on BOTH supported database engines. It is isolated so its runtime can
 # never starve the established acceptance lanes.
 #
-# Business users only: the Organization Manager and the designated Clinic
-# Managers are WordPress Subscribers driving the frontend Management Portal.
-# No wp-admin page is opened by the harness. Synthetic data only.
+# The 12-type facility matrix itself uses business users driving the frontend
+# Management Portal, without wp-admin. The separate reception recovery proof
+# uses synthetic manager/admin identities and wp-admin on the isolated upgrade
+# database; it never seeds authority into the pristine facility-matrix site.
 
 on:
   pull_request:
@@ -19,6 +20,7 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  workflow_call:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref == 'refs/heads/main' && format('main-run-{0}', github.run_id) || github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('ref-{0}', github.ref) }}
@@ -95,6 +97,7 @@ jobs:
           set -euo pipefail
           python3 -m py_compile clinic-practice-management/bin/rwp-facility-matrix-journey.py
           python3 clinic-practice-management/bin/acceptance-isolation-check.py clinic-practice-management/bin/rwp-facility-matrix-journey.py
+          python3 -m unittest discover -s clinic-practice-management/tests/bin -p 'test_safe_php_fatal_report.py' -v
           bash -n clinic-practice-management/bin/build-release.sh
 
       - name: Pin and record database server
@@ -102,6 +105,7 @@ jobs:
           set -euo pipefail
           server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3306 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()')"
           echo "${{ matrix.database }} server VERSION(): ${server_version}"
+          echo "::notice title=CPMS database version::${{ matrix.database }} ${server_version}"
           case "${{ matrix.database }}:$server_version" in
             mariadb:11.4.13-MariaDB*|mysql:8.*) ;;
             *) echo "Unexpected database server: ${server_version}" >&2; exit 1 ;;
@@ -177,21 +181,179 @@ jobs:
         run: |
           set -euo pipefail
           ZIP=$(ls "$PWD"/clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
-          wp plugin install "$ZIP" --activate --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/mtx/plugin-install.log
-          wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          # WP-CLI/PHP output can contain request values and credentials. Keep it
+          # outside the uploaded evidence directory and publish only a bounded,
+          # allowlisted diagnostic; preserve the failing command's actual status.
+          : > /tmp/mtx-plugin-install.raw
+          run_install_check() {
+            local status=0
+            "$@" >> /tmp/mtx-plugin-install.raw 2>&1 || status=$?
+            if [ "$status" -ne 0 ]; then
+              python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+                /tmp/mtx-plugin-install.raw "$WP_DIR/wp-content/debug.log" --summary "$GITHUB_STEP_SUMMARY"
+              echo "::error title=CPMS plugin activation::Install/activation check failed (exit $status)"
+              return "$status"
+            fi
+          }
+          run_install_check wp plugin install "$ZIP" --activate --path="$WP_DIR" --allow-root
+          run_install_check wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          echo 'Plugin ZIP installed and active.'
           # Apache (www-data) must be able to read the installed tree and write logs.
           sudo chmod -R a+rX "$WP_DIR/wp-content"
           sudo chmod 666 "$WP_DIR/wp-content/debug.log"
+
+      - name: Verify fresh install and repeat activation
+        run: |
+          set -euo pipefail
+          PROOF="$GITHUB_WORKSPACE/clinic-practice-management/tests/bin/wp-activation-schema-proof.php"
+          : > /tmp/mtx-activation-proof.raw
+          run_proof() {
+            local status=0
+            "$@" >> /tmp/mtx-activation-proof.raw 2>&1 || status=$?
+            if [ "$status" -ne 0 ]; then
+              python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+                /tmp/mtx-activation-proof.raw "$WP_DIR/wp-content/debug.log" --summary "$GITHUB_STEP_SUMMARY"
+              while IFS= read -r code; do echo "::error title=CPMS fresh activation proof::$code"; done \
+                < <(grep -oE 'activation proof failed: [a-z0-9-]+' /tmp/mtx-activation-proof.raw || true)
+              echo "::error title=CPMS fresh activation proof::Check failed (exit $status)"
+              return "$status"
+            fi
+          }
+          run_proof wp eval-file "$PROOF" fresh --path="$WP_DIR" --allow-root
+          run_proof wp plugin deactivate clinic-practice-management --path="$WP_DIR" --allow-root
+          run_proof wp plugin activate clinic-practice-management --path="$WP_DIR" --allow-root
+          run_proof wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
+          run_proof wp eval-file "$PROOF" fresh-repeat --path="$WP_DIR" --allow-root
+          grep '^ACTIVATION_PROOF ' /tmp/mtx-activation-proof.raw | tee /tmp/mtx/fresh-activation-proof.txt
+          while IFS= read -r line; do echo "::notice title=CPMS activation proof::$line"; done < /tmp/mtx/fresh-activation-proof.txt
+
+      - name: Verify upgrade from schema 0030 and repeat activation
+        run: |
+          set -euo pipefail
+          BASE_SHA=d2c9f779df47f45137b5ffe9c8bc2dce2451f404
+          UPGRADE_DIR=/home/runner/mtx-upgrade
+          PROOF="$GITHUB_WORKSPACE/clinic-practice-management/tests/bin/wp-activation-schema-proof.php"
+          ZIP=$(ls "$GITHUB_WORKSPACE"/clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
+          : > /tmp/mtx-upgrade-proof.raw
+          run_proof() {
+            local status=0
+            "$@" >> /tmp/mtx-upgrade-proof.raw 2>&1 || status=$?
+            if [ "$status" -ne 0 ]; then
+              python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+                /tmp/mtx-upgrade-proof.raw "$UPGRADE_DIR/wp-content/debug.log" --summary "$GITHUB_STEP_SUMMARY"
+              while IFS= read -r code; do echo "::error title=CPMS upgrade proof::$code"; done \
+                < <(grep -oE 'activation proof failed: [a-z0-9-]+' /tmp/mtx-upgrade-proof.raw || true)
+              echo "::error title=CPMS upgrade proof::Check failed (exit $status)"
+              return "$status"
+            fi
+          }
+          git cat-file -e "$BASE_SHA^{commit}" 2>/dev/null || git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          mkdir -p /tmp/mtx-0030 "$UPGRADE_DIR"
+          git archive "$BASE_SHA" clinic-practice-management | tar -x -C /tmp/mtx-0030
+          if ! (cd /tmp/mtx-0030/clinic-practice-management && bash bin/build-release.sh) > /tmp/mtx-0030-build.raw 2>&1; then
+            echo '::error title=CPMS upgrade proof::Could not build the pinned schema-0030 ZIP'
+            exit 1
+          fi
+          BASE_ZIP=$(find /tmp/mtx-0030/clinic-practice-management/dist -name 'clinic-practice-management-*.zip' -print -quit)
+          test -n "$BASE_ZIP"
+          tar -xzf /tmp/wp.tar.gz --strip-components=1 -C "$UPGRADE_DIR"
+          run_proof mysql --protocol=TCP -h 127.0.0.1 -P 3306 -uroot -proot -e 'CREATE DATABASE cpms_mtx_upgrade CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;'
+          run_proof wp config create --dbname=cpms_mtx_upgrade --dbuser=root --dbpass=root --dbhost=127.0.0.1:3306 --dbprefix=wp_ --skip-salts --path="$UPGRADE_DIR" --allow-root
+          run_proof wp config shuffle-salts --path="$UPGRADE_DIR" --allow-root
+          run_proof wp config set WP_DEBUG true --raw --path="$UPGRADE_DIR" --allow-root
+          run_proof wp config set WP_DEBUG_LOG true --raw --path="$UPGRADE_DIR" --allow-root
+          run_proof wp config set WP_DEBUG_DISPLAY false --raw --path="$UPGRADE_DIR" --allow-root
+          run_proof wp config set DISABLE_WP_CRON true --raw --path="$UPGRADE_DIR" --allow-root
+          run_proof wp core install --url='http://localhost:8080/upgrade-only' --title='Synthetic upgrade proof' --admin_user="$ADMIN_USER" --admin_password="$ADMIN_PASS" --admin_email=admin@acc.local --skip-email --path="$UPGRADE_DIR" --allow-root
+          run_proof wp plugin install "$BASE_ZIP" --activate --path="$UPGRADE_DIR" --allow-root
+          run_proof wp eval-file "$PROOF" baseline --path="$UPGRADE_DIR" --allow-root
+          run_proof wp plugin deactivate clinic-practice-management --path="$UPGRADE_DIR" --allow-root
+          run_proof wp plugin install "$ZIP" --force --activate --path="$UPGRADE_DIR" --allow-root
+          run_proof wp plugin is-active clinic-practice-management --path="$UPGRADE_DIR" --allow-root
+          run_proof wp eval-file "$PROOF" candidate --path="$UPGRADE_DIR" --allow-root
+          run_proof wp plugin deactivate clinic-practice-management --path="$UPGRADE_DIR" --allow-root
+          run_proof wp plugin activate clinic-practice-management --path="$UPGRADE_DIR" --allow-root
+          run_proof wp eval-file "$PROOF" candidate-repeat --path="$UPGRADE_DIR" --allow-root
+          # Stream the complete consistent snapshot directly to the independent
+          # Python verifier: never retain or print rows, identifiers or hashes.
+          if ! wp eval-file "$GITHUB_WORKSPACE/clinic-practice-management/tests/audit-chain/export.php" --path="$UPGRADE_DIR" --allow-root \
+              2>/tmp/mtx-audit-export.raw | python3 clinic-practice-management/tests/audit-chain/verify.py \
+              > /tmp/mtx-independent-audit.json 2>/tmp/mtx-audit-verify.raw; then
+            echo '::error title=CPMS independent audit::Snapshot/export verification failed or was incomplete'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          with open('/tmp/mtx-independent-audit.json', encoding='utf-8') as stream:
+              result = json.load(stream)
+          if result.get('ok') is not True or result.get('checked', 0) < 2:
+              raise SystemExit('::error title=CPMS independent audit::Insufficient or broken chain')
+          print('::notice title=CPMS independent audit::full snapshot verified; rows=' + str(result['checked']))
+          PY
+          grep '^ACTIVATION_PROOF ' /tmp/mtx-upgrade-proof.raw | tee /tmp/mtx/upgrade-proof.txt
+          while IFS= read -r line; do echo "::notice title=CPMS upgrade proof::$line"; done < /tmp/mtx/upgrade-proof.txt
+
+      - name: Prove Clinic-local reception authorization and rollback
+        env:
+          RECOVERY_PROOF_PASSWORD: Acceptance-2026!
+        run: |
+          set -euo pipefail
+          UPGRADE_DIR=/home/runner/mtx-upgrade
+          RAW=/tmp/mtx-reception-service.raw
+          if ! wp eval-file "$GITHUB_WORKSPACE/clinic-practice-management/tests/bin/wp-reception-security-proof.php" \
+              --path="$UPGRADE_DIR" --allow-root > "$RAW" 2>&1; then
+            python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+              "$RAW" "$UPGRADE_DIR/wp-content/debug.log" --summary "$GITHUB_STEP_SUMMARY"
+            while IFS= read -r code; do echo "::error title=CPMS reception service::$code"; done \
+              < <(grep -oE 'reception proof failed: [a-z0-9-]+' "$RAW" || true)
+            echo '::error title=CPMS reception service::Isolated security proof failed'
+            exit 1
+          fi
+          grep '^RECEPTION_SERVICE_PROOF ' "$RAW" | tee /tmp/mtx/reception-service-proof.txt
+          while IFS= read -r line; do echo "::notice title=CPMS reception service::$line"; done < /tmp/mtx/reception-service-proof.txt
+
+      - name: Prove Persian RTL wp-admin recovery on desktop and mobile
+        run: |
+          set -euo pipefail
+          UPGRADE_DIR=/home/runner/mtx-upgrade
+          sudo chmod -R a+rX "$UPGRADE_DIR"
+          sudo chmod 777 "$UPGRADE_DIR/wp-content"
+          sudo touch "$UPGRADE_DIR/wp-content/debug.log" && sudo chmod 666 "$UPGRADE_DIR/wp-content/debug.log"
+          sudo tee /etc/apache2/conf-available/cpms-upgrade-proof.conf >/dev/null <<CONF
+          Alias /upgrade-only "$UPGRADE_DIR"
+          <Directory "$UPGRADE_DIR">
+            Options FollowSymLinks
+            AllowOverride All
+            Require all granted
+          </Directory>
+          CONF
+          sudo a2enconf cpms-upgrade-proof >/dev/null
+          sudo apache2ctl configtest && sudo service apache2 reload
+          python3 clinic-practice-management/tests/bin/reception-browser-proof.py | tee /tmp/mtx/reception-browser-proof.txt
+          while IFS= read -r line; do echo "::notice title=CPMS reception browser::$line"; done < /tmp/mtx/reception-browser-proof.txt
+          # Verify the whole chain again after the actual admin action, without
+          # logging the snapshot, hashes, identifiers or request details.
+          if ! wp eval-file "$GITHUB_WORKSPACE/clinic-practice-management/tests/audit-chain/export.php" --path="$UPGRADE_DIR" --allow-root \
+              2>/tmp/mtx-reception-export.raw | python3 clinic-practice-management/tests/audit-chain/verify.py \
+              > /tmp/mtx-reception-chain.json 2>/tmp/mtx-reception-verify.raw; then
+            echo '::error title=CPMS reception audit::Independent snapshot verification failed'
+            exit 1
+          fi
+          python3 - <<'PY'
+          import json
+          with open('/tmp/mtx-reception-chain.json', encoding='utf-8') as stream:
+              result = json.load(stream)
+          if result.get('ok') is not True or result.get('checked', 0) < 4:
+              raise SystemExit('::error title=CPMS reception audit::Insufficient or broken chain')
+          print('::notice title=CPMS reception audit::full snapshot verified; rows=' + str(result['checked']))
+          PY
 
       - name: Verify schema + no PHP fatal
         run: |
           set -euo pipefail
           wp eval 'echo "schema=" . \ClinicCore\Bootstrap\App::migrations()->currentVersion() . PHP_EOL;' --path="$WP_DIR" --allow-root | tee /tmp/mtx/schema.txt
-          if grep -qE 'PHP Fatal error|PHP Parse error|Uncaught|There has been a critical error' "$WP_DIR/wp-content/debug.log" 2>/dev/null; then
-            echo 'PHP fatal during install/activation'
-            tail -30 "$WP_DIR/wp-content/debug.log"
-            exit 1
-          fi
+          python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+            "$WP_DIR/wp-content/debug.log" --summary "$GITHUB_STEP_SUMMARY" --check
 
       # Split from the pristine checks on purpose (no log access in the authoring
       # sandbox): a failure must be attributable from the step name alone.
@@ -204,6 +366,25 @@ jobs:
             wp user create "$ORG_MANAGER_USER" 'orgmgr@acc.local' --user_pass="$ORG_MANAGER_PASS" --role=subscriber --path="$WP_DIR" --allow-root
           fi
           wp user get "$ORG_MANAGER_USER" --field=roles --path="$WP_DIR" --allow-root | tee /tmp/mtx/org-manager-role.txt
+
+      - name: Stress real OTP and production booking services
+        run: |
+          set -euo pipefail
+          # The private test adapter captures generated synthetic OTP codes in
+          # process memory; no production provider or live site is involved.
+          # Workers synchronize at real WP service boundaries on separate DB
+          # connections; only aggregate outcomes, latencies and global DB status
+          # deltas are published. Raw worker output remains in /tmp, not artifacts.
+          if ! python3 clinic-practice-management/tests/bin/production-race-proof.py \
+              | tee /tmp/mtx/production-race-proof.txt; then
+            python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+              /tmp/cpms-production-proof/setup.private /tmp/cpms-production-proof/boundaries.private \
+              /tmp/cpms-production-proof/rollback.private /tmp/cpms-production-proof/worker-*.private \
+              /home/runner/mtx-upgrade/wp-content/debug.log \
+              --summary "$GITHUB_STEP_SUMMARY"
+            echo '::error title=CPMS production race::Synthetic service contention proof failed'
+            exit 1
+          fi
 
       - name: Assert pristine tenant tables before the browser matrix
         run: |
@@ -242,12 +423,11 @@ jobs:
             echo "database=${{ matrix.database }} $(cat /tmp/mtx/database-version.txt 2>/dev/null || echo unknown)"
             echo "zip_sha256=$(cut -d' ' -f1 /tmp/mtx/zip.sha256 2>/dev/null || echo unknown)"
           } | tee /tmp/mtx/versions.txt
-          cp "$WP_DIR/wp-content/debug.log" /tmp/mtx/logs/debug.log 2>/dev/null || : > /tmp/mtx/logs/debug.log
-          if grep -qE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/mtx/logs/debug.log; then
-            echo 'LOG GATE: FAIL — fatal/uncaught/critical in debug.log'
-            grep -nE 'PHP Fatal error|Uncaught|There has been a critical error' /tmp/mtx/logs/debug.log | tail -20
-            exit 1
-          fi
+          # Scan raw files in place: never archive or echo their exception text,
+          # stack arguments or request data. A fatal still fails the log gate.
+          python3 clinic-practice-management/tests/bin/safe-php-fatal-report.py \
+            /tmp/mtx-plugin-install.raw "$WP_DIR/wp-content/debug.log" \
+            --summary "$GITHUB_STEP_SUMMARY" --check
           echo 'LOG GATE: clean'
 
       - name: Upload matrix evidence

@@ -159,7 +159,7 @@ final class PatientAdminPage
                         <tr><th><label for="cp_pat_last">نام خانوادگی *</label></th><td><input type="text" id="cp_pat_last" name="last_name" class="regular-text" required></td></tr>
                         <tr><th><label for="cp_pat_mobile">موبایل *</label></th><td><input type="tel" id="cp_pat_mobile" name="mobile" class="regular-text" required inputmode="tel" dir="ltr" placeholder="0912xxxxxxx"></td></tr>
                         <tr><th><label for="cp_pat_nid">کد ملی</label></th><td><input type="text" id="cp_pat_nid" name="national_id" class="regular-text" inputmode="numeric" dir="ltr"></td></tr>
-                        <tr><th><label for="cp_pat_birth">تاریخ تولد</label></th><td><input type="text" id="cp_pat_birth" name="birth_date" class="regular-text" placeholder="YYYY-MM-DD" dir="ltr"></td></tr>
+                        <tr><th><label for="cp_pat_birth">تاریخ تولد</label></th><td><input type="date" id="cp_pat_birth" name="birth_date" class="regular-text" dir="ltr"></td></tr>
                         <tr><th><label for="cp_pat_gender">جنسیت</label></th>
                             <td><select id="cp_pat_gender" name="gender">
                                 <option value=""></option>

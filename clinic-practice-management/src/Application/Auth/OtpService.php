@@ -2,6 +2,8 @@
 
 declare(strict_types=1);
 
+// phpcs:disable WordPress.WhiteSpace.ControlStructureSpacing,PEAR.Functions.FunctionCallSignature,Generic.WhiteSpace.ArbitraryParenthesesSpacing,Generic.Formatting.MultipleStatementAlignment,WordPress.NamingConventions.ValidVariableName -- legacy PSR compact style in this file; security, SQL, and runtime correctness sniffs remain active via per-line ignores where needed.
+
 namespace ClinicCore\Application\Auth;
 
 use ClinicCore\Application\Notifications\SmsService;
@@ -66,6 +68,9 @@ final class OtpService
     private const PROVISIONING_PURPOSES = [self::PURPOSE_LOGIN];
 
     private const PEPPER_OPTION = 'cpms_otp_pepper';
+    // The lock duration is configurable; clients receive the exact remaining
+    // seconds as retry_after rather than a misleading hard-coded duration.
+    private const LOCKED_MESSAGE = 'تلاش‌های نادرست زیاد بود — پس از پایان زمان قفل دوباره تلاش کنید';
 
     /**
      * Phase 8 Slice 2 — پسوندِ ایمیلِ قطعیِ هویت OTP.
@@ -144,7 +149,11 @@ final class OtpService
         $byDay = $this->rate->hit('otp-day:' . $mobile, $dailyMax, 86400);
         if (!$byDay['allowed']) {
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
+            // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
             $this->audit( 'OTP_DENIED_DAILY', $userId, $mobile, $ip, [], $clinicId );
+            // Preserve the rate-limit metadata while giving clients the same
+            // relative retry contract as cooldown and lockout responses.
+            $byDay['retry_after'] = max(1, (int) $byDay['reset_at'] - time());
             throw new OtpException('CLINIC_OTP_DAILY_LIMIT', 'محدودیت ارسال کد در روز به پایان رسیده است', $byDay);
         }
         $byHour = $this->rate->hit('otp-hour:' . $mobile, $hourlyMax, 3600);
@@ -158,60 +167,95 @@ final class OtpService
             }
         }
 
-        $policy = $settings->otpPolicy();
-        $state = $this->loadState($mobile, $purpose);
-        $send = $policy->canSend($state, $this->now());
-        if (!$send['ok']) {
-            $code = match ($send['reason']) {
-                OtpPolicy::REASON_LOCKED => 'CLINIC_OTP_LOCKED',
-                OtpPolicy::REASON_DAILY_LIMIT => 'CLINIC_OTP_DAILY_LIMIT',
-                default => 'CLINIC_OTP_COOLDOWN',
-            };
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
-            $this->audit( 'OTP_DENIED_' . strtoupper( $send['reason'] ), $userId, $mobile, $ip, [], $clinicId );
-            throw new OtpException($code, 'هنوز زود است — بعداً تلاش کنید');
-        }
+        $policy    = $settings->otpPolicy();
+        $user_id   = $userId;
+        $clinic_id = $clinicId;
+        // The guard is a separate, hashed per-mobile row in the existing rate
+        // table. Its zero timestamp makes it eligible for ordinary rate-limit
+        // cleanup. An UPSERT takes an exclusive InnoDB row lock until the
+        // outermost transaction commits, including when cleanup races it.
+        // It serializes all purposes and Clinics, matching the existing global
+        // per-mobile limits; it never stores a raw mobile or a code.
+        $guard_key = 'otp-send-guard:' . hash( 'sha256', $mobile );
+        $issue = $this->db->transactional(
+            function () use ( $guard_key, $mobile, $purpose, $policy, $settings, $user_id, $ip, $clinic_id ): array {
+                $locked = $this->db->query(
+                    'INSERT INTO ' . $this->db->table( 'cpms_rate_limits' ) .
+                    ' (window_key, window_id, window_sec, hits) VALUES (%s, 0, 1, 0)' .
+                    ' ON DUPLICATE KEY UPDATE hits = hits',
+                    [ $guard_key ]
+                );
+                if ( ! $locked || $this->db->wpdb()->last_error !== '' ) {
+                    throw new \RuntimeException( 'OTP issuance guard failed' );
+                }
 
-        // ساخت Token (فقط Hash). Phase 8 Slice 2: وقتی Clinic از دادهٔ persisted
-        // مشتق شده، روی Challenge مُهر می‌شود (Migration 0021 — ستون NULL مجاز).
-        // کلیدِ ستون فقط در حضور Clinic اضافه می‌شود تا ردیفِ تاریخی/بدون Clinic
-        // دقیقاً NULL بماند (بدون Backfill — Migration 0021).
-        $code = OtpPolicy::generateCode(6);
-        $ttl = (int) $settings->get('otp.ttl_sec');
-        $expiresAt = $this->addSeconds($this->now(), $ttl);
-        $tokenRow = [
-            'mobile' => $mobile,
-            'purpose' => $purpose,
-            'code_hash' => OtpPolicy::hashCode($code, $this->pepper()),
-            'expires_at' => $expiresAt,
-            'attempts' => 0,
-            'created_at' => $this->db->nowUtcSql(),
-        ];
-        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
-        if ($clinicId !== null && $clinicId > 0) {
-            $tokenRow['clinic_id'] = $clinicId;
-        }
-        // D6 audit atomicity: the challenge row and its mandatory OTP_REQUEST
-        // audit share one boundary — a failed audit rolls the token back, so no
-        // un-audited OTP challenge can exist. SMS dispatch is an external side
-        // effect and stays after the commit; its delivery-result audit
-        // (OTP_SENT_OK/FAIL) cannot be paired with the SMS itself and remains
-        // post-commit by design (the challenge itself is already audited here).
-        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy local naming preserved.
-        $token_row = $tokenRow;
-        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-        $user_id  = $userId;
-        $token_id = $this->db->transactional(
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local imported into the audit boundary.
-            function () use ( $token_row, $user_id, $mobile, $ip, $clinicId ): int {
-                $this->db->insert( 'cpms_otp_tokens', $token_row );
-                $inserted_id = (int) $this->db->wpdb_last_insert_id();
-                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local imported into the audit boundary.
-                $this->audit( 'OTP_REQUEST', $user_id, $mobile, $ip, [], $clinicId );
+                // Read again only after the guard: an earlier unlocked read can
+                // let several simultaneous requests all pass cooldown. Lock an
+                // existing token by primary key so concurrent failed attempts
+                // cannot be bypassed by issuing during lockout.
+                $state = $this->loadState( $mobile, $purpose );
+                $now = $this->now();
+                $send = $policy->canSend( $state, $now );
+                if ( ! $send['ok'] ) {
+                    $reason = (string) $send['reason'];
+                    $this->audit( 'OTP_DENIED_' . strtoupper( $reason ), $user_id, $mobile, $ip, [], $clinic_id );
+                    if ( $reason === OtpPolicy::REASON_LOCKED ) {
+                        $retry_after = $policy->remaining_lockout( $state, $now );
+                        $error = new OtpException(
+                            'CLINIC_OTP_LOCKED',
+                            self::LOCKED_MESSAGE,
+                            [ 'retry_after' => $retry_after > 0 ? $retry_after : $policy->lockout_seconds(), 'remaining' => 0 ]
+                        );
+                    } elseif ( $reason === OtpPolicy::REASON_DAILY_LIMIT ) {
+                        $error = new OtpException(
+                            'CLINIC_OTP_DAILY_LIMIT',
+                            'محدودیت ارسال کد در روز به پایان رسیده است',
+                            [ 'retry_after' => 86400 - ( time() % 86400 ) ]
+                        );
+                    } else {
+                        $retry_after = $policy->remaining_cooldown( $state, $now );
+                        $error = new OtpException(
+                            'CLINIC_OTP_COOLDOWN',
+                            'هنوز زود است — بعداً تلاش کنید',
+                            [ 'retry_after' => $retry_after > 0 ? $retry_after : $policy->cooldown_seconds(), 'ttl' => (int) $settings->get( 'otp.ttl_sec' ) ]
+                        );
+                    }
+                    // The denial audit must commit, so throw only after this
+                    // transaction returns, as in the verification boundary.
+                    return [ 'error' => $error ];
+                }
 
-                return $inserted_id;
+                // Only hashes are durable; a trusted explicit Clinic remains
+                // attached to the challenge as before. The plaintext code is
+                // kept solely for the post-commit in-memory SMS dispatch.
+                $code = OtpPolicy::generateCode( 6 );
+                $ttl = (int) $settings->get( 'otp.ttl_sec' );
+                $token_row = [
+                    'mobile'     => $mobile,
+                    'purpose'    => $purpose,
+                    'code_hash'  => OtpPolicy::hashCode( $code, $this->pepper() ),
+                    'expires_at' => $this->addSeconds( $now, $ttl ),
+                    'attempts'   => 0,
+                    'created_at' => $this->db->nowUtcSql(),
+                ];
+                if ( $clinic_id !== null && $clinic_id > 0 ) {
+                    $token_row['clinic_id'] = $clinic_id;
+                }
+                $inserted = $this->db->insert( 'cpms_otp_tokens', $token_row );
+                $token_id = (int) $this->db->wpdb_last_insert_id();
+                if ( ! $inserted || $token_id <= 0 ) {
+                    throw new \RuntimeException( 'OTP challenge insert failed' );
+                }
+                $this->audit( 'OTP_REQUEST', $user_id, $mobile, $ip, [], $clinic_id );
+                return [ 'token_id' => $token_id, 'code' => $code, 'ttl' => $ttl ];
             }
         );
+        if ( isset( $issue['error'] ) ) {
+            throw $issue['error'];
+        }
+        $token_id = $issue['token_id'];
+        $code     = $issue['code'];
+        $ttl      = $issue['ttl'];
 
         // ارسال از طریق SmsService (ADR-0025): Template/Text + Record + Fast-path + Queue Fallback.
         // OTP Service مستقل از Provider است — کد فقط به‌عنوان متغیر قالب می‌رود (§25).
@@ -247,6 +291,7 @@ final class OtpService
             $retry_enqueued = false;
         }
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
+        // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
         $this->audit( $sent ? 'OTP_SENT_OK' : 'OTP_SENT_FAIL', $userId, $mobile, $ip, [], $clinicId );
 
         return [
@@ -322,40 +367,6 @@ final class OtpService
         $policy = $settings->otpPolicy();
         $clinicId = $rowClinicId ?? (int) $settings->clinicId();
 
-        $state = new OtpState(
-            (int) $row['attempts'],
-            $row['locked_until'] !== null ? $this->toDateTime($row['locked_until']) : null,
-            $this->toDateTime($row['created_at']),
-            (int) $row['attempts']
-        );
-        if ($state->isLocked($now)) {
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
-            $this->audit( 'CLINIC_OTP_LOCKED', null, $mobile, $ip, [], $clinicId );
-            throw new OtpException('CLINIC_OTP_LOCKED', 'تلاش‌های نادرست زیاد بود — 15 دقیقه صبر کنید');
-        }
-
-        if (!hash_equals(OtpPolicy::hashCode($code, $this->pepper()), (string) $row['code_hash'])) {
-            $failed = $policy->registerFailedAttempt($state, $now);
-            // update() (نه prepare): wpdb::prepare مقدار null را به رشته خالی
-            // تبدیل می‌کند و `locked_until = ''` در MySQL خطا می‌دهد → UPDATE
-            // کلاً رد می‌شد و شمارنده تلاش‌ها هرگز ذخیره نمی‌شد.
-            $this->db->update(
-                'cpms_otp_tokens',
-                [
-                    'attempts' => $failed->attempts,
-                    'locked_until' => $failed->lockedUntil?->format('Y-m-d H:i:s.000'),
-                ],
-                ['id' => (int) $row['id']]
-            );
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR local, established file style.
-            $this->audit( 'OTP_VERIFY_FAIL', null, $mobile, $ip, [ 'remaining' => $policy->remainingAttempts( $failed ) ], $clinicId );
-            throw new OtpException(
-                $failed->lockedUntil !== null ? 'CLINIC_OTP_LOCKED' : 'CLINIC_OTP_INVALID',
-                $failed->lockedUntil !== null ? 'تلاش‌های نادرست زیاد بود' : 'کد اشتباه است',
-                ['remaining' => $policy->remainingAttempts($failed)]
-            );
-        }
-
         // D6 audit atomicity: the single-use consumption, identity resolution
         // (wp_users/patient-link writes) and the mandatory OTP_VERIFY_OK /
         // LOGIN_SUCCESS audits share ONE boundary — a failed audit rolls the
@@ -372,14 +383,89 @@ final class OtpService
 
         try {
             $verify_outcome = $this->db->transactional(
-                function () use ( $row, $mobile, $purpose, $ip, $clinic_id, &$provisioned ): array {
+                function () use ( $row, $rowClinicId, $mobile, $code, $purpose, $ip, $clinic_id, $policy, &$provisioned ): array {
+                    // One current read serializes failures and successful consumes
+                    // on this challenge. Recheck expiry/lock AFTER any lock wait:
+                    // stale pre-transaction state cannot lose failed attempts or
+                    // authenticate a token that expired or locked while waiting.
+                    $locked = $this->db->fetchRowForUpdate(
+                        'SELECT * FROM ' . $this->db->table( 'cpms_otp_tokens' ) . ' WHERE id = %d',
+                        [ (int) $row['id'] ]
+                    );
+                    if ( $this->db->wpdb()->last_error !== '' ) {
+                        throw new \RuntimeException( 'OTP challenge read failed' );
+                    }
+                    $locked_clinic = $locked !== null && isset( $locked['clinic_id'] ) ? (int) $locked['clinic_id'] : null;
+                    if ( $locked === null || $locked_clinic !== $rowClinicId
+                        || (string) $locked['mobile'] !== $mobile || (string) $locked['purpose'] !== $purpose
+                        || $locked['consumed_at'] !== null ) {
+                        return [ 'error' => new OtpException( 'CLINIC_OTP_INVALID', 'این کد قبلاً استفاده شده است' ) ];
+                    }
+                    $current_time = $this->now();
+                    if ( $this->toDateTime( (string) $locked['expires_at'] ) <= $current_time ) {
+                        return [ 'error' => new OtpException( 'CLINIC_OTP_EXPIRED', 'کد منقضی شده است — درخواست کد جدید بدهید' ) ];
+                    }
+                    $state = new OtpState(
+                        (int) $locked['attempts'],
+                        $locked['locked_until'] !== null ? $this->toDateTime( (string) $locked['locked_until'] ) : null,
+                        $this->toDateTime( (string) $locked['created_at'] ),
+                        0
+                    );
+                    if ( $state->isLocked( $current_time ) ) {
+                        $this->audit( 'CLINIC_OTP_LOCKED', null, $mobile, $ip, [], $clinic_id );
+                        $retry_after = max( 1, $policy->remaining_lockout( $state, $current_time ) );
+                        return [
+                            'error' => new OtpException(
+                                'CLINIC_OTP_LOCKED',
+                                self::LOCKED_MESSAGE,
+                                [ 'retry_after' => $retry_after, 'remaining' => 0 ]
+                            ),
+                        ];
+                    }
+                    if ( ! hash_equals( OtpPolicy::hashCode( $code, $this->pepper() ), (string) $locked['code_hash'] ) ) {
+                        $failed = $policy->registerFailedAttempt( $state, $current_time );
+                        // wpdb::update preserves SQL NULL for locked_until.
+                        // Treat a failed/zero-row write as an error, not a
+                        // successful counter update or audit event.
+                        $updated = $this->db->update(
+                            'cpms_otp_tokens',
+                            [
+                                'attempts'     => $failed->attempts,
+                                'locked_until' => $failed->lockedUntil?->format( 'Y-m-d H:i:s.000' ),
+                            ],
+                            [ 'id' => (int) $locked['id'] ],
+                            true
+                        );
+                        if ( $updated !== 1 ) {
+                            throw new \RuntimeException( 'OTP attempt update failed' );
+                        }
+                        $remaining = $policy->remainingAttempts( $failed );
+                        $this->audit( 'OTP_VERIFY_FAIL', null, $mobile, $ip, [ 'remaining' => $remaining ], $clinic_id );
+                        $failure_data = [ 'remaining' => $remaining ];
+                        if ( $failed->lockedUntil !== null ) {
+                            $failure_data['retry_after'] = max( 1, $policy->remaining_lockout( $failed, $current_time ) );
+                        }
+                        // Return, then throw outside the transaction: failure
+                        // counter and mandatory audit must commit together.
+                        return [
+                            'error' => new OtpException(
+                                $failed->lockedUntil !== null ? 'CLINIC_OTP_LOCKED' : 'CLINIC_OTP_INVALID',
+                                $failed->lockedUntil !== null ? self::LOCKED_MESSAGE : 'کد اشتباه است',
+                                $failure_data
+                            ),
+                        ];
+                    }
+
                     // مصرف تک‌بار (اتومیک: اگر هم‌زمان مصرف شده باشد، 0 row)
-                    $consumed = $this->db->query(
+                    // query() reports SQL success even when zero rows matched.
+                    // A competing verifier may have consumed this row after our
+                    // earlier read, so require exactly one affected row instead.
+                    $consumed = $this->db->execute(
                         'UPDATE ' . $this->db->table( 'cpms_otp_tokens' ) .
                         ' SET consumed_at = %s WHERE id = %d AND consumed_at IS NULL',
                         [ $this->db->nowUtcSql(), (int) $row['id'] ]
                     );
-                    if ( ! $consumed ) {
+                    if ( $consumed !== 1 ) {
                         throw new OtpException( 'CLINIC_OTP_INVALID', 'این کد قبلاً استفاده شده است' );
                     }
 
@@ -400,8 +486,10 @@ final class OtpService
                     $session_issued = in_array( $purpose, self::SESSION_PURPOSES, true ) && $user_id > 0;
                     $patient_links  = $user_id > 0 ? $this->patientLinks( $user_id ) : [];
 
+                    // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
                     $this->audit( 'OTP_VERIFY_OK', $user_id, $mobile, $ip, [ 'purpose' => $purpose ], $clinic_id );
                     if ( $session_issued ) {
+                        // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
                         $this->audit( 'LOGIN_SUCCESS', $user_id, $mobile, $ip, [], $clinic_id );
                     }
 
@@ -420,6 +508,10 @@ final class OtpService
             // ghost identity; evict exactly those keys, never a global flush.
             UserCacheRollback::invalidate( $provisioned !== null ? [ $provisioned ] : [] );
             throw $e;
+        }
+
+        if ( isset( $verify_outcome['error'] ) ) {
+            throw $verify_outcome['error'];
         }
 
         // کوکی احراز هویت وردپرس پس از Commitِ پایدار صادر می‌شود (اثر جانبی
@@ -691,19 +783,36 @@ final class OtpService
 
     private function loadState(string $mobile, string $purpose): OtpState
     {
-        $row = $this->db->fetchRow(
-            'SELECT attempts, locked_until, created_at FROM ' . $this->db->table('cpms_otp_tokens') .
+        // Called inside the per-mobile issuance guard. A non-locking lookup of
+        // the latest primary key avoids taking a gap lock for an unseen mobile.
+        $latest = $this->db->fetchRow(
+            'SELECT id FROM ' . $this->db->table( 'cpms_otp_tokens' ) .
             ' WHERE mobile = %s AND purpose = %s ORDER BY id DESC LIMIT 1',
-            [$mobile, $purpose]
+            [ $mobile, $purpose ]
         );
-        if ($row === null) {
+        if ( $this->db->wpdb()->last_error !== '' ) {
+            throw new \RuntimeException( 'OTP state lookup failed' );
+        }
+        if ( $latest === null ) {
+            return new OtpState();
+        }
+        // Current-read the exact row after any verification lock wait. Failed
+        // verification counters or lockouts committed meanwhile are visible.
+        $row = $this->db->fetchRowForUpdate(
+            'SELECT attempts, locked_until, created_at FROM ' . $this->db->table( 'cpms_otp_tokens' ) . ' WHERE id = %d',
+            [ (int) $latest['id'] ]
+        );
+        if ( $this->db->wpdb()->last_error !== '' ) {
+            throw new \RuntimeException( 'OTP state lock failed' );
+        }
+        if ( $row === null ) {
             return new OtpState();
         }
 
         return new OtpState(
             (int) $row['attempts'],
-            $row['locked_until'] !== null ? $this->toDateTime($row['locked_until']) : null,
-            $this->toDateTime($row['created_at']),
+            $row['locked_until'] !== null ? $this->toDateTime( (string) $row['locked_until'] ) : null,
+            $this->toDateTime( (string) $row['created_at'] ),
             0
         );
     }

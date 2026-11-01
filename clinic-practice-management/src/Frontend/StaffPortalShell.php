@@ -145,6 +145,14 @@ final class StaffPortalShell {
 	public const DOCTOR_JS_HANDLE = DoctorPortalShell::JS_HANDLE;
 
 	/**
+	 * Persian/Jalali date UX handle. The SAME local, network-free bundle that
+	 * CpmsAssets registers for CPMS admin screens; shared here so real
+	 * calendar-date inputs on every portal module get the Shamsi entry field
+	 * and popup calendar too.
+	 */
+	public const JALALI_HANDLE = 'cpms-jalali-date';
+
+	/**
 	 * The doctor operational module. Future modules are added only after their
 	 * own product work; no placeholder is registered.
 	 */
@@ -361,12 +369,38 @@ final class StaffPortalShell {
 	}
 
 	/**
-	 * Conditional assets: only the module that is actually mounted.
+	 * Register the local, network-free Jalali date UX bundle (idempotent).
+	 * Same file/handle as the CPMS admin asset registration.
+	 */
+	public static function register_jalali_handles(): void {
+		$base = defined( 'CPMS_PLUGIN_URL' ) && '' !== CPMS_PLUGIN_URL
+			? rtrim( (string) CPMS_PLUGIN_URL, '/' )
+			: '';
+		if ( '' === $base ) {
+			return;
+		}
+		$version = defined( 'CPMS_VERSION' ) ? (string) CPMS_VERSION : 'dev';
+		if ( ! wp_style_is( self::JALALI_HANDLE, 'registered' ) ) {
+			wp_register_style( self::JALALI_HANDLE, $base . '/assets/css/cpms-jalali-date.css', [], $version );
+		}
+		if ( ! wp_script_is( self::JALALI_HANDLE, 'registered' ) ) {
+			wp_register_script( self::JALALI_HANDLE, $base . '/assets/js/cpms-jalali-date.js', [], $version, true );
+		}
+	}
+
+	/**
+	 * Conditional assets: the Jalali date UX is loaded for EVERY mounted
+	 * module; the doctor stylesheet/script only for the doctor module.
 	 */
 	public static function enqueue_for_portal(): void {
 		if ( ! self::is_portal_request() ) {
 			return;
 		}
+		// Persian/Jalali date UX for real calendar-date inputs on the
+		// reception/finance/reports/doctor modules (Owner B).
+		self::register_jalali_handles();
+		wp_enqueue_style( self::JALALI_HANDLE );
+		wp_enqueue_script( self::JALALI_HANDLE );
 		if ( self::MODULE_DOCTOR !== self::select_module( get_current_user_id() ) ) {
 			return;
 		}

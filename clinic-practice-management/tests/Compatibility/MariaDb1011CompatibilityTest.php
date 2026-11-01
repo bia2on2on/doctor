@@ -30,7 +30,7 @@ final class MariaDb1011CompatibilityTest extends WP_UnitTestCase
         self::assertSame(1, preg_match('/\A10\.11\.\d+-MariaDB/i', (string) $server['server_version']));
         self::assertStringContainsString('mariadb', strtolower((string) $server['version_comment']));
         self::assertContains(strtoupper((string) $server['checks_enabled']), ['1', 'ON']);
-        self::assertSame('2026_10_27_0030', App::migrations()->currentVersion());
+        self::assertSame('2026_10_31_0031', App::migrations()->currentVersion());
     }
 
     public function testProductionJsonColumnEnforcesCheckAndRoundTripsUtf8mb4(): void

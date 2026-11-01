@@ -65,7 +65,7 @@ $cpms_reports_clinics = \ClinicCore\Frontend\StaffPortalShell::reports_eligible_
 <main class="cpms-reports-board" data-role="reports-root" data-cpms-staff-module="reports" aria-labelledby="cpms-reports-board-title">
     <section class="cpms-reports-board__panel" aria-label="گزارش میانگین زمان انتظار">
         <h2 class="cpms-reports-board__heading" id="cpms-reports-board-title">میانگین زمان انتظار — یک تاریخ مشخص</h2>
-        <p class="cpms-reports-board__hint" data-role="reports-date-note">تاریخ را به‌صورت میلادی و با قالب «سال-ماه-روز» (مثلاً 2026-03-14) انتخاب کنید. گزارش بر پایهٔ «تاریخ ثبت‌شدهٔ ویزیت» محاسبه می‌شود؛ این به‌معنای یک روز تقویمی محلیِ واحد برای همهٔ موقعیت‌های کلینیک نیست. تاریخ پیش‌فرضی انتخاب نمی‌شود.</p>
+        <p class="cpms-reports-board__hint" data-role="reports-date-note">تاریخ را از کالندار انتخاب کنید. گزارش بر پایهٔ «تاریخ ثبت‌شدهٔ ویزیت» محاسبه می‌شود؛ این به‌معنای یک روز تقویمی محلیِ واحد برای همهٔ موقعیت‌های کلینیک نیست. تاریخ پیش‌فرضی انتخاب نمی‌شود.</p>
 <?php if ( array() === $cpms_reports_clinics ) : ?>
         <p class="cpms-reports-board__status" data-role="reports-no-clinic" data-kind="error">کلینیکی با دسترسی مشاهدهٔ گزارش برای شما در دسترس نیست.</p>
 <?php else : ?>
@@ -83,8 +83,8 @@ $cpms_reports_clinics = \ClinicCore\Frontend\StaffPortalShell::reports_eligible_
                 </select>
             </label>
 <?php endif; ?>
-            <label class="cpms-reports-board__field">تاریخ گزارش (میلادی، YYYY-MM-DD)
-                <input type="date" name="date" required inputmode="numeric" placeholder="YYYY-MM-DD" pattern="\d{4}-\d{2}-\d{2}" autocomplete="off" data-role="reports-date-input" aria-describedby="cpms-reports-board-status">
+            <label class="cpms-reports-board__field">تاریخ گزارش
+                <input type="date" name="date" required autocomplete="off" data-role="reports-date-input" aria-describedby="cpms-reports-board-status">
             </label>
             <button type="submit" class="cpms-reports-board__submit" data-role="reports-submit">نمایش میانگین زمان انتظار</button>
             <button type="button" class="cpms-reports-board__submit cpms-reports-board__submit--duration" data-role="reports-visit-duration-action" aria-controls="cpms-reports-visit-duration-result">نمایش میانگین مدت مشاوره</button>
@@ -247,7 +247,7 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
         setStatus('برای دریافت هر گزارش، یک تاریخ انتخاب کنید و یکی از دکمه‌های گزارش را بزنید.', '');
     }
     function errorMessage(status, code) {
-        if (code === 'CLINIC_VALIDATION_FAILED') return 'تاریخ یا کلینیک واردشده معتبر نیست؛ تاریخ را به‌صورت میلادی و با قالب YYYY-MM-DD وارد کنید.';
+        if (code === 'CLINIC_VALIDATION_FAILED') return 'تاریخ یا کلینیک واردشده معتبر نیست؛ یک تاریخ را از کالندار انتخاب کنید.';
         if (code === 'CLINIC_SCOPE_REQUIRED') return 'ابتدا یک کلینیک را انتخاب کنید.';
         if (code === 'CLINIC_SCOPE_UNAVAILABLE') return 'کلینیک انتخاب‌شده برای شما در دسترس نیست؛ صفحه را تازه کنید و دوباره تلاش کنید.';
         if (status === 401 || status === 403 || code === 'CLINIC_PERMISSION_DENIED' || code === 'CLINIC_INVALID_NONCE') return 'دسترسی شما به این گزارش مجاز نیست یا نشست منقضی شده است.';
@@ -379,7 +379,7 @@ echo wp_json_encode( $cpms_reports_board_config ); // phpcs:ignore WordPress.Sec
         if (!validDate(date)) {
             cancelActive();
             clearResults();
-            setStatus('تاریخ واردشده معتبر نیست؛ آن را به‌صورت میلادی و با قالب YYYY-MM-DD وارد کنید.', 'error');
+            setStatus('تاریخ واردشده معتبر نیست؛ یک تاریخ را از کالندار انتخاب کنید.', 'error');
             input.focus();
             return;
         }

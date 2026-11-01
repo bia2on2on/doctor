@@ -120,6 +120,40 @@ final class ClinicalAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame(1, $this->latestAuditClinicId('NOTE_CREATED'), 'tenant attribution must name the trusted Clinic');
     }
 
+    public function testNoteInsertFailureNeverCreatesFalseSuccessOrAudit(): void
+    {
+        $visit_id = $this->makeConsultation();
+        $depth_before = $this->savepointDepth();
+        $audits_before = $this->auditCount('NOTE_CREATED');
+        $intercepted = false;
+        $fault = static function (string $query) use (&$intercepted): string {
+            if (preg_match('/\A\s*INSERT\s+INTO\s+(\S+)/i', $query, $match) === 1
+                && str_contains($match[1], 'cpms_clinical_notes')) {
+                $intercepted = true;
+                return 'INSERT INTO ' . $match[1] . ' (`cpms_fault_injection_no_such_column`) VALUES (1)';
+            }
+            return $query;
+        };
+        global $wpdb;
+        $previous = $wpdb->suppress_errors(true);
+        add_filter('query', $fault, 5);
+        try {
+            App::clinicalService()->addNote($this->doctorUserId, $visit_id, [
+                'category' => 'clinical_note', 'visibility' => 'patient_visible', 'content_text' => 'آزمایش',
+            ]);
+            self::fail('an unsuccessful note INSERT must not report success');
+        } catch (\RuntimeException $error) {
+            self::assertSame('clinical note insert failed', $error->getMessage());
+        } finally {
+            remove_filter('query', $fault, 5);
+            $wpdb->suppress_errors($previous);
+        }
+        self::assertTrue($intercepted);
+        self::assertSame(0, $this->tableCount('cpms_clinical_notes'));
+        self::assertSame($audits_before, $this->auditCount('NOTE_CREATED'));
+        self::assertSame($depth_before, $this->savepointDepth());
+    }
+
     public function testCreatePrescriptionAuditFailureRollsBackPrescriptionAndItems(): void
     {
         $visit_id = $this->makeConsultation();
@@ -233,6 +267,54 @@ final class ClinicalAuditAtomicityTest extends WP_UnitTestCase
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    public function testRecordDatesUseVisitLocationWithoutChangingItemContracts(): void
+    {
+        global $wpdb;
+        $visit = $this->makeConsultation();
+        wp_set_current_user($this->doctorUserId);
+        $locationId = (int) App::db()->fetchValue(
+            'SELECT location_id FROM ' . App::db()->table('cpms_visits') . ' WHERE id = %d',
+            [$visit]
+        );
+        $locations = App::db()->table('cpms_locations');
+        $originalTimezone = (string) App::db()->fetchValue('SELECT timezone FROM ' . $locations . ' WHERE id = %d', [$locationId]);
+        self::assertGreaterThan(0, $locationId);
+        try {
+            self::assertSame(1, $wpdb->update($locations, ['timezone' => 'America/Los_Angeles'], ['id' => $locationId]));
+            $recs = App::clinicalService()->addRecommendations($this->doctorUserId, $visit, [
+                'items' => [['type' => 'rest', 'text' => 'rest', 'is_patient_visible' => true]],
+            ]);
+            $recId = (int) $recs['recommendations'][0]['id'];
+            $fu = App::clinicalService()->addFollowUp($this->doctorUserId, $visit, [
+                'is_needed' => true, 'suggested_date' => '2026-03-20', 'reason' => 'review',
+            ]);
+            $fuId = (int) $fu['id'];
+            $utc = '2026-03-20 00:30:00'; // Previous local day in Los Angeles; same day in Tehran.
+            self::assertSame(1, $wpdb->update(App::db()->table('cpms_recommendations'), ['created_at' => $utc], ['id' => $recId]));
+            self::assertSame(1, $wpdb->insert(App::db()->table('cpms_medical_attachments'), [
+                'clinic_id' => 1, 'patient_id' => $this->patientId, 'visit_id' => $visit,
+                'category' => 'document', 'original_filename' => 'date-proof.pdf',
+                'stored_filename' => bin2hex(random_bytes(12)), 'mime_type' => 'application/pdf',
+                'file_size' => 1, 'storage_path' => 'date-proof', 'visibility' => 'patient_visible',
+                'uploaded_by_wp_user_id' => $this->doctorUserId, 'created_at' => $utc,
+            ]));
+            $fileId = (int) $wpdb->insert_id;
+            $record = App::clinicalService()->record($this->doctorUserId, $visit);
+            self::assertSame(['id', 'visit_id', 'type', 'text', 'is_patient_visible', 'created_at'], array_keys($record['recommendations'][0]));
+            self::assertSame(['id', 'visit_id', 'is_needed', 'suggested_date', 'interval_days', 'reason', 'status', 'created_at'], array_keys($record['follow_ups'][0]));
+            self::assertSame(['id', 'original_filename', 'category', 'visibility', 'mime_type', 'file_size', 'uploaded_by_wp_user_id', 'created_at'], array_keys($record['files'][0]));
+            self::assertSame('1404/12/29', $record['presentation']['recommendations'][$recId]['created_at_jalali']);
+            self::assertSame('1404/12/29', $record['presentation']['files'][$fileId]['created_at_jalali']);
+            self::assertSame('1405/01/01', $record['presentation']['follow_ups'][$fuId]['suggested_date_jalali']);
+            self::assertStringStartsWith($utc, $record['recommendations'][0]['created_at']);
+            self::assertStringStartsWith($utc, $record['files'][0]['created_at']);
+            self::assertSame('2026-03-20', $record['follow_ups'][0]['suggested_date']);
+        } finally {
+            $wpdb->update($locations, ['timezone' => $originalTimezone], ['id' => $locationId]);
+            wp_set_current_user(0);
+        }
+    }
 
     private function makeConsultation(): int
     {

@@ -520,7 +520,7 @@ final class ClinicianAdminPage
         <input type="hidden" name="action" value="cpms_exception_create">
         <input type="hidden" name="clinic_id" value="<?php echo (int) self::$active_clinic_id; ?>">
         <input type="hidden" name="clinician_id" value="<?php echo $cid; ?>">
-        <label for="cpms-exception-date">تاریخ (میلادی):</label> <input type="date" id="cpms-exception-date" name="date" required>
+        <label for="cpms-exception-date">تاریخ:</label> <input type="date" id="cpms-exception-date" name="date" required>
         <label>نوع:
             <select name="type">
                 <option value="holiday">تعطیل رسمی</option>

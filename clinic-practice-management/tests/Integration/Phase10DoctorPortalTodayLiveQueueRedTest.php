@@ -1235,6 +1235,14 @@ final class Phase10DoctorPortalTodayLiveQueueRedTest extends WP_UnitTestCase
         self::assertArrayHasKey('queue', $today, 'positive: today() path reached');
         self::assertArrayHasKey('stats', $today);
         self::assertArrayHasKey('date', $today);
+        self::assertArrayHasKey('jalali', $today, 'positive: today() carries the Persian/Jalali presentation of the same operational day');
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', (string) ($today['date'] ?? '')) === 1) {
+            self::assertSame(
+                \ClinicCore\Domain\Time\Jalali::formatYmd((string) $today['date']),
+                (string) $today['jalali'],
+                'the jalali field is the Jalali rendering of the SAME Location-local operational day (presentation only)'
+            );
+        }
     }
 
     private function countClinics(): int { return (int)App::db()->fetchValue('SELECT COUNT(*) FROM '.App::db()->table('cpms_clinics'), []); }

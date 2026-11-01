@@ -910,7 +910,7 @@ with sync_playwright() as p:
     clinic_id = int(baseline.get("clinic_id") or 0)
     check("precondition.single_clinic", clinic_id > 0 and int(baseline.get("clinic_count") or 0) == 1,
           f"clinic_id_set={clinic_id > 0}")
-    check("precondition.schema_0030", baseline.get("schema") == "2026_10_27_0030",
+    check("precondition.schema_0031", baseline.get("schema") == "2026_10_31_0031",
           f"schema={baseline.get('schema')}")
     check("precondition.admin_is_administrator_only",
           baseline.get("admin_wp_roles") == ["administrator"],

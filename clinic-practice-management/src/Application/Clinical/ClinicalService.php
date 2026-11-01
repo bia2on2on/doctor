@@ -162,33 +162,49 @@ final class ClinicalService
         );
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
-        return [
+        // Location IANA timezone is the operational truth for datetime
+        // presentation (same resolver already used by presentPrescription()).
+        $location_tz     = $this->resolve_location_timezone( [ 'visit_id' => $visit_id ] );
+        $presented_notes = array_map(
+            function ( array $note ) use ( $location_tz ): array {
+                $presented                      = $this->presentNote( $note );
+                $presented['created_at_jalali'] = $this->format_utc_to_jalali( (string) ( $note['created_at'] ?? '' ), $location_tz );
+                return $presented;
+            },
+            $this->notes->forVisit( $visit_id, $note_visibility )
+        );
+
+        $record = [
             'visit' => [
                 'id' => (int) $visit['id'],
                 'status' => (string) $visit['status'],
                 'source' => (string) $visit['source'],
                 'visit_date' => (string) $visit['visit_date'],
+                // Persian/Jalali presentation of the SAME Location-local visit
+                // date. Storage/comparisons stay Gregorian (Owner B).
+                'jalali_date'               => Jalali::formatYmd( (string) $visit['visit_date'] ),
                 'clinician_id' => (int) $visit['clinician_id'],
                 'appointment_id' => $visit['appointment_id'] !== null ? (int) $visit['appointment_id'] : null,
                 'consultation_started_at' => $visit['consultation_started_at'],
                 'consultation_completed_at' => $visit['consultation_completed_at'],
             ],
             'patient' => $this->patientMedicalView($patient),
-            'notes' => array_map( [ $this, 'presentNote' ], $this->notes->forVisit( $visit_id, $note_visibility ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy array alignment and parameter naming preserved.
+            'notes'           => $presented_notes,
             'prescriptions' => $rxList,
             'recommendations' => array_map( [ $this, 'presentRecommendation' ], $this->recommendations->forVisit( $visit_id ) ),
             'follow_ups' => array_map( [ $this, 'presentFollowUp' ], $this->followUps->forVisit( $visit_id ) ), // phpcs:ignore WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned, WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- legacy alignment/property.
             // E7: patient_visible stays Visit/Clinic-scoped; doctor_private also requires
             // the Visit-owner file authority.
-            'files' => array_map(static fn (array $f): array => [
-                'id' => (int) $f['id'],
-                'original_filename' => (string) $f['original_filename'],
-                'category' => (string) $f['category'],
-                'visibility' => (string) $f['visibility'],
-                'mime_type' => (string) $f['mime_type'],
-                'file_size' => (int) $f['file_size'],
-                'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
-                'created_at' => (string) $f['created_at'],
+            'files'           => array_map(
+                static fn ( array $f ): array => [
+                    'id'                     => (int) $f['id'],
+                    'original_filename'      => (string) $f['original_filename'],
+                    'category'               => (string) $f['category'],
+                    'visibility'             => (string) $f['visibility'],
+                    'mime_type'              => (string) $f['mime_type'],
+                    'file_size'              => (int) $f['file_size'],
+                    'uploaded_by_wp_user_id' => (int) $f['uploaded_by_wp_user_id'],
+                    'created_at'             => (string) $f['created_at'],
                 ],
                 $visit_files
             ),
@@ -200,6 +216,9 @@ final class ClinicalService
                 'clinician_name' => $v['clinician_name'],
             ], $pastVisits),
         ];
+
+        $record['presentation'] = $this->record_date_presentation( $record, $location_tz );
+        return $record;
     }
 
     // ================= E8/E9 — یادداشت‌ها + نسخه‌بندی =================
@@ -2212,6 +2231,43 @@ final class ClinicalService
         }
 
         return $tz;
+    }
+
+    /**
+     * Build display-only dates from the already-authorized record items. The
+     * item arrays stay unchanged; no additional clinical rows are fetched.
+     *
+     * @param array<string, mixed> $record Authorized canonical record.
+     * @return array<string, array<int, array<string, string>>>
+     */
+    private function record_date_presentation( array $record, string $location_tz ): array {
+        $presentation = [
+            'recommendations' => [],
+            'follow_ups'      => [],
+            'files'           => [],
+        ];
+        foreach ( $record['recommendations'] as $item ) {
+            $presentation['recommendations'][ (int) $item['id'] ] = [
+                'created_at_jalali' => $this->format_utc_to_jalali( (string) $item['created_at'], $location_tz ),
+            ];
+        }
+        foreach ( $record['follow_ups'] as $item ) {
+            $date = (string) ( $item['suggested_date'] ?? '' );
+            try {
+                $jalali = $date !== '' ? Jalali::formatYmd( $date ) : '';
+            } catch ( \DomainException $e ) {
+                $jalali = '';
+            }
+            $presentation['follow_ups'][ (int) $item['id'] ] = [
+                'suggested_date_jalali' => $jalali,
+            ];
+        }
+        foreach ( $record['files'] as $item ) {
+            $presentation['files'][ (int) $item['id'] ] = [
+                'created_at_jalali' => $this->format_utc_to_jalali( (string) $item['created_at'], $location_tz ),
+            ];
+        }
+        return $presentation;
     }
 
     /**
