@@ -365,24 +365,36 @@ final class PatientPortalChangeDeadlineTest extends WP_UnitTestCase
         global $wpdb;
 
         $now = App::db()->nowUtcSql();
-        $ok  = $wpdb->insert(
+
+        // clinician.wp_user_id پیش‌شرطِ تخصیصِ Location است
+        // (MembershipService::assign_clinician_locations → clinician_wp_user_id()).
+        $docUserId = (int) wp_create_user(
+            'pdpkg_doc_' . bin2hex(random_bytes(4)) . '_' . uniqid('', false),
+            'pass-not-used-123',
+            'pdpkg_doc_' . bin2hex(random_bytes(4)) . '_' . uniqid('', false) . '@test.local'
+        );
+        self::assertGreaterThan(0, $docUserId, 'fixture: clinician user created.');
+        $docUser = get_userdata($docUserId);
+        self::assertNotFalse($docUser);
+        $docUser->set_role('subscriber');
+
+        $ok = $wpdb->insert(
             $wpdb->prefix . 'cpms_clinicians',
             [
                 'clinic_id'  => $this->clinicId,
+                'wp_user_id' => $docUserId,
                 'full_name'  => $name,
                 'is_active'  => 1,
                 'created_at' => $now,
                 'updated_at' => $now,
             ],
-            ['%d', '%s', '%d', '%s', '%s']
+            ['%d', '%d', '%s', '%d', '%s', '%s']
         );
         self::assertTrue((bool) $ok, 'fixture: clinician insert failed: ' . $wpdb->last_error);
         $clinicianId = (int) $wpdb->insert_id;
 
         // مشارکتِ پایدار + تخصیص Location — پیش‌شرطِ فهرستِ اسلاتِ آزاد در
         // reschedule-options (availabilityCandidates).
-        $docUserId = (int) wp_create_user('pdpkg_doc_' . $clinicianId . '_' . uniqid('', false), 'pass-not-used-123', 'pdpkg_doc_' . $clinicianId . '_' . uniqid('', false) . '@test.local');
-        self::assertGreaterThan(0, $docUserId, 'fixture: clinician user created.');
         cpms_test_seed_membership($docUserId, $this->clinicId, 'cpms_doctor');
         App::membership_service()->assign_clinician_locations($clinicianId, [$this->locationId], $this->locationId);
 
