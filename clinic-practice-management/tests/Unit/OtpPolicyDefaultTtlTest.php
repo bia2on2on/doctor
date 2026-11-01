@@ -39,10 +39,15 @@ final class OtpPolicyDefaultTtlTest extends TestCase
             'a code must be expired exactly at the default TTL'
         );
 
-        // اگر کسی Default را دوباره به 300 برگرداند، این تست می‌شکند.
-        $this->assertFalse(
+        // اگر کسی Default را دوباره به 300 برگرداند، این تست می‌شکند: با
+        // TTL=300 کد در ثانیهٔ ۲۹۹ هنوز معتبر می‌بود.
+        $this->assertTrue(
             $policy->isCodeExpired($issuedAt, $issuedAt->modify('+299 seconds')),
             'default TTL must not be 300s again'
+        );
+        $this->assertFalse(
+            $policy->isCodeExpired($issuedAt, $issuedAt->modify('+60 seconds')),
+            'the code must still be valid well inside the 120s window'
         );
     }
 }
