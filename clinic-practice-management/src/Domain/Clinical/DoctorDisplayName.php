@@ -32,6 +32,16 @@ final class DoctorDisplayName {
 	/** جداکننده‌های مجاز پیرامونِ عنوان: فاصله‌ها، NBSP، ZWNJ، نقطه. */
 	private const SEPARATORS = ' \t\n\r\f\v\x{00A0}\x{200C}.';
 
+	/**
+	 * کلاسِ صریحِ پیرایش — دقیقاً همان کلاسِ JS (`EDGE_WS_CLASS`): فقط فاصلهٔ ASCII
+	 * (space، tab، LF، CR، FF، VT) به‌همراهِ NBSP U+00A0.
+	 *
+	 * عمداً از `\s` استفاده نمی‌شود: تعریفِ `\s` در PCRE، JS و ICU یکسان نیست
+	 * (در JS شاملِ U+FEFF/U+2009/U+3000 هم می‌شود). U+2009، U+3000، U+FEFF و ZWNJ
+	 * نه پیراسته می‌شوند و نه بازنویسی.
+	 */
+	private const EDGE_WS = ' \t\n\r\f\v\x{00A0}';
+
 	/** واژهٔ عنوان، با هر دو شکلِ کاف (ک U+06A9 / ك U+0643). */
 	private const TITLE_WORD = 'د[\x{06A9}\x{0643}]تر';
 
@@ -110,9 +120,10 @@ final class DoctorDisplayName {
 		$value = (string) preg_replace( '/[ \t\n\r\f\v]+/u', ' ', $value );
 
 		// NBSP هم «فاصله» است و در دو سر حذف می‌شود؛ ZWNJ و نقطه فاصله نیستند.
-		// (\s در PCRE/UTF-8 فقط ASCII است؛ NBSP صریحاً افزوده می‌شود.)
-		$value = (string) preg_replace( '/^[\s\x{00A0}]+|[\s\x{00A0}]+$/u', '', $value );
+		$value = self::trim_whitespace( $value );
 
+		// ورودیِ نامعتبر UTF-8: هر preg_* با الگوی /u مقدار null برمی‌گرداند و
+		// (string) null یعنی رشتهٔ خالی — fail-closed، بدونِ بازنویسیِ ورودی.
 		return $value;
 	}
 
@@ -120,7 +131,14 @@ final class DoctorDisplayName {
 	 * @param string $value ورودی.
 	 */
 	private static function trim_whitespace( string $value ): string {
-		return (string) preg_replace( '/^[\s\x{00A0}]+|[\s\x{00A0}]+$/u', '', $value );
+		$trimmed = preg_replace(
+			'/^[' . self::EDGE_WS . ']+|[' . self::EDGE_WS . ']+$/u',
+			'',
+			$value
+		);
+
+		// preg_* با ورودیِ UTF-8 نامعتبر null می‌دهد → رشتهٔ خالی (fail-closed).
+		return null === $trimmed ? '' : $trimmed;
 	}
 
 	/**

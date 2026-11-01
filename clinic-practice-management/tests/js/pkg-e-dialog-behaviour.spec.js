@@ -136,7 +136,12 @@ function createDocument() {
     this.wasSelected = true;
   };
   El.prototype.click = function () {
-    fire(this, 'click', {});
+    // A programmatic click behaves like a user click: the event is dispatched and,
+    // unless cancelled, the element's own default action runs.
+    var event = fire(this, 'click', {});
+    if (!event.defaultPrevented && typeof this.defaultAction === 'function') {
+      this.defaultAction();
+    }
   };
   El.prototype.listenerCount = function (type) {
     return (this.listeners[type] || []).length;
@@ -227,6 +232,24 @@ function createDocument() {
   doc.keydown = function (key, target, shiftKey) {
     return fire(doc, 'keydown', { key: key, shiftKey: !!shiftKey, target: target });
   };
+  // How a browser performs a form submission. `guardRecursion` models the
+  // HTML "firing submission events" guard (a requestSubmit() issued while a
+  // submit event is already being dispatched is ignored); with it OFF we model
+  // the behaviour documented on MDN, where requestSubmit() simply fires another
+  // submit event. The spec asserts the SAME outcome under both models.
+  doc.guardRecursion = false;
+
+  doc.userSubmit = function (form) {
+    var outer = form.inSubmit;
+    form.inSubmit = true;
+    var event = fire(form, 'submit', {});
+    form.inSubmit = outer;
+    if (!event.defaultPrevented) {
+      form.nativeSubmits++;
+    }
+    return event;
+  };
+
   doc.overlays = function () {
     return doc.body.children.filter(function (child) {
       return String(child.className).indexOf('cpms-modal-overlay') !== -1;
@@ -550,18 +573,41 @@ check('D3: focus is restored to a LIVE node after a double open', async function
 function makeForm(doc, message) {
   var form = doc.createEl('form');
   form.setAttribute('data-cpms-confirm', message);
-  var submissions = 0;
+  form.nativeSubmits = 0;        // submissions the browser performed
+  form.programmaticSubmits = 0;  // form.submit() calls (no submit event)
+  form.inSubmit = false;
+
   form.requestSubmit = function () {
-    submissions++;
+    if (form.inSubmit && doc.guardRecursion) {
+      return; // "firing submission events" guard
+    }
+    var outer = form.inSubmit;
+    form.inSubmit = true;
+    var event = doc.fire(form, 'submit', {});
+    form.inSubmit = outer;
+    if (!event.defaultPrevented) {
+      form.nativeSubmits++;
+    }
   };
   form.submit = function () {
-    submissions++;
+    form.programmaticSubmits++;
   };
   form.submissions = function () {
-    return submissions;
+    return form.nativeSubmits + form.programmaticSubmits;
   };
   doc.register(form);
   return form;
+}
+
+function makeSubmitButton(doc, form, message) {
+  var btn = doc.createEl('button');
+  btn.type = 'submit';
+  btn.setAttribute('data-cpms-confirm', message);
+  btn.defaultAction = function () {
+    doc.userSubmit(form);
+  };
+  doc.register(btn);
+  return btn;
 }
 
 function makeAdminEnv(options, fixtures) {
@@ -634,7 +680,7 @@ check('D2: without CpmsDialog, window.confirm(false) blocks the submit', async f
   var doc = env.doc;
   var form = env.fixtures.form;
 
-  var ev = doc.fire(form, 'submit', {});
+  var ev = doc.userSubmit(form);
   if (!ev.defaultPrevented) { throw new Error('a refused confirmation must cancel the event'); }
   if (form.submissions() !== 0) { throw new Error('no submit may happen without a confirmation'); }
   if (env.confirmCalls.length !== 1) { throw new Error('the native fallback must ask exactly once'); }
@@ -650,7 +696,9 @@ check('D2: without CpmsDialog, window.confirm(true) lets the submit through', as
   var doc = env.doc;
   var form = env.fixtures.form;
 
-  var ev = doc.fire(form, 'submit', {});
+  // userSubmit models the browser: the event is dispatched and, when it is not
+  // cancelled, the native submission happens exactly once.
+  var ev = doc.userSubmit(form);
   if (ev.defaultPrevented) { throw new Error('an accepted confirmation must not be cancelled'); }
   if (form.submissions() !== 1) { throw new Error('the submit must run once, got ' + form.submissions()); }
 });
@@ -663,7 +711,7 @@ check('D2: a throwing window.confirm counts as CANCEL (fail-closed)', async func
   var form = env.fixtures.form;
   env.nativeConfirmResult = true; // would submit if the throw were ignored
 
-  var ev = doc.fire(form, 'submit', {});
+  var ev = doc.userSubmit(form);
   if (!ev.defaultPrevented) { throw new Error('a blocked native dialog must cancel the event'); }
   if (form.submissions() !== 0) { throw new Error('no submit may happen'); }
 });
@@ -733,5 +781,139 @@ check('schedule-delete: with the shared dialog, cancel still prevents the delete
 function doc_fire_click(doc, el) {
   return doc.fire(el, 'click', {});
 }
+
+/* ------------------------------------------------------------------------- *
+ * 4) T1 — the native-confirm fallback must submit EXACTLY once
+ *
+ * The browser's own default action (form submission, submit-button activation)
+ * is counted, and so is any programmatic requestSubmit()/submit()/click() the
+ * handler performs. Each case is asserted under BOTH submission models:
+ *   - guardRecursion=false: requestSubmit() during dispatch fires again (the
+ *     behaviour MDN documents for requestSubmit: it fires the submit event);
+ *   - guardRecursion=true: the HTML "firing submission events" guard drops it.
+ * A correct binding must produce one submission either way.
+ * ------------------------------------------------------------------------- */
+
+function withModels(fn) {
+  [false, true].forEach(function (guard) {
+    fn(guard);
+  });
+}
+
+check('T1: native confirm(true) on a <form> submits exactly once (both models)', async function () {
+  var seen = [];
+  withModels(function (guard) {
+    var env = makeAdminEnv({}, function (doc) {
+      doc.guardRecursion = guard;
+      return { form: makeForm(doc, 'حذف شود؟') };
+    });
+    env.nativeConfirmResult = true;
+    var form = env.fixtures.form;
+    env.doc.userSubmit(form);
+    seen.push({ guard: guard, count: form.submissions() });
+  });
+  seen.forEach(function (r) {
+    if (r.count !== 1) {
+      throw new Error('guardRecursion=' + r.guard + ': expected exactly 1 submit, got ' + r.count);
+    }
+  });
+});
+
+check('T1: native confirm(false) on a <form> submits zero times (both models)', async function () {
+  withModels(function (guard) {
+    var env = makeAdminEnv({}, function (doc) {
+      doc.guardRecursion = guard;
+      return { form: makeForm(doc, 'حذف شود؟') };
+    });
+    env.nativeConfirmResult = false;
+    var form = env.fixtures.form;
+    var ev = env.doc.userSubmit(form);
+    if (!ev.defaultPrevented) {
+      throw new Error('guardRecursion=' + guard + ': the submit must be cancelled');
+    }
+    if (form.submissions() !== 0) {
+      throw new Error('guardRecursion=' + guard + ': expected 0 submits, got ' + form.submissions());
+    }
+  });
+});
+
+check('T1: a non-true answer is never an unconfirmed submit (both models)', async function () {
+  withModels(function (guard) {
+    var env = makeAdminEnv({}, function (doc) {
+      doc.guardRecursion = guard;
+      return { form: makeForm(doc, 'حذف شود؟') };
+    });
+    // A blocked/silent dialog can return undefined; only `true` may proceed.
+    env.nativeConfirmResult = undefined;
+    var form = env.fixtures.form;
+    env.doc.userSubmit(form);
+    if (form.submissions() !== 0) {
+      throw new Error('guardRecursion=' + guard + ': undefined must count as CANCEL');
+    }
+  });
+});
+
+check('T1: native confirm(true) on a submit button submits its form exactly once (both models)', async function () {
+  withModels(function (guard) {
+    var env = makeAdminEnv({}, function (doc) {
+      doc.guardRecursion = guard;
+      var form = makeForm(doc, 'حذف شود؟');
+      form.removeAttribute('data-cpms-confirm'); // the BUTTON carries the confirm
+      return { form: form, btn: makeSubmitButton(doc, form, 'بایگانی شود؟') };
+    });
+    env.nativeConfirmResult = true;
+    var form = env.fixtures.form;
+    var btn = env.fixtures.btn;
+    btn.click();
+    if (form.submissions() !== 1) {
+      throw new Error('guardRecursion=' + guard + ': expected exactly 1 submit, got ' + form.submissions());
+    }
+  });
+});
+
+check('T1: schedule-delete submits its hidden form exactly once (both models)', async function () {
+  withModels(function (guard) {
+    var env = makeAdminEnv({}, function (doc) {
+      doc.guardRecursion = guard;
+      var btn = doc.createEl('button');
+      btn.type = 'button';
+      btn.setAttribute('data-cpms-schedule-delete', '42');
+      btn.setAttribute('data-cpms-confirm', 'حذف برنامه این روز؟');
+      doc.register(btn);
+      var hidden = makeForm(doc, 'unused');
+      hidden.removeAttribute('data-cpms-confirm');
+      hidden.id = 'cpms-sched-del';
+      hidden.schedule_id = doc.createEl('input');
+      return { btn: btn, hidden: hidden };
+    });
+    env.nativeConfirmResult = true;
+    var btn = env.fixtures.btn;
+    var hidden = env.fixtures.hidden;
+    btn.click();
+    if (hidden.submissions() !== 1) {
+      throw new Error('guardRecursion=' + guard + ': expected exactly 1 submit, got ' + hidden.submissions());
+    }
+    if (hidden.schedule_id.value !== '42') {
+      throw new Error('guardRecursion=' + guard + ': the id must be filled in');
+    }
+  });
+});
+
+check('T1: with the shared dialog, a confirmed form submits exactly once (both models)', async function () {
+  for (var guard of [false, true]) {
+    var env = makeSharedEnv(function (doc) {
+      doc.guardRecursion = guard;
+      return { form: makeForm(doc, 'حذف شود؟') };
+    });
+    var form = env.fixtures.form;
+    env.doc.userSubmit(form);
+    await flush();
+    env.doc.keydown('Enter', env.doc.activeElement, false);
+    await flush();
+    if (form.submissions() !== 1) {
+      throw new Error('guardRecursion=' + guard + ': expected exactly 1 submit, got ' + form.submissions());
+    }
+  }
+});
 
 run();

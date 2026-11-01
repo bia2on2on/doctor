@@ -30,7 +30,12 @@
     );
     // فقط فاصلهٔ معمولی فشرده/پیراسته می‌شود؛ NBSP داخلِ نام، ZWNJ و نقطه دست‌نخورده‌اند.
     var ORDINARY_WS_RUN_RE = /[ \t\n\r\f\v]+/g;
-    var EDGE_WS_RE = /^[\s\u00A0]+|[\s\u00A0]+$/g;
+    // کلاسِ صریحِ پیرایش — دقیقاً همان کلاسِ PHP: فقط فاصلهٔ ASCII (space، \t، \n،
+    // \r، \f، \v) به‌همراهِ NBSP U+00A0. عمداً از \s استفاده نمی‌شود: \s در JS
+    // U+FEFF، U+2009، U+3000 و … را هم می‌گیرد، ولی PCRE در PHP (بدون UCP)
+    // نمی‌گیرد؛ نتیجه دو رفتارِ متفاوت برای یک ورودی می‌شد.
+    var EDGE_WS_CLASS = ' \\t\\n\\r\\f\\v\\u00A0';
+    var EDGE_WS_RE = new RegExp('^[' + EDGE_WS_CLASS + ']+|[' + EDGE_WS_CLASS + ']+$', 'g');
 
     function trimEdges(value) {
         return String(value).replace(EDGE_WS_RE, '');

@@ -54,8 +54,14 @@
    * One confirmation, then run `act`. Cancel does nothing.
    * The synchronous native branch has already decided the outcome before any
    * preventDefault happens; the async branch intercepts the event first.
+   *
+   * `nativeAct` — only for controls whose own default action does NOT do the
+   * work (data-cpms-schedule-delete is a `type="button"`). For a form submit,
+   * a submit button and a link, the browser performs the action itself once the
+   * event is not cancelled: calling `act()` there too would run it twice
+   * (requestSubmit() fires another submit event → two POSTs).
    */
-  function confirmThen(event, trigger, message, act) {
+  function confirmThen(event, trigger, message, act, nativeAct) {
     if (isPending(trigger)) {
       event.preventDefault();
       event.stopPropagation();
@@ -68,7 +74,9 @@
         event.stopPropagation();
         return;
       }
-      act();
+      if (typeof nativeAct === 'function') {
+        nativeAct();
+      }
       return;
     }
     event.preventDefault();
@@ -115,14 +123,16 @@
     Array.prototype.forEach.call(document.querySelectorAll('[data-cpms-schedule-delete]'), function (btn) {
       btn.addEventListener('click', function (e) {
         var message = btn.getAttribute('data-cpms-confirm') || 'حذف برنامه این روز؟';
-        confirmThen(e, btn, message, function () {
+        var performDelete = function () {
           var id = btn.getAttribute('data-cpms-schedule-delete');
           var f = document.getElementById('cpms-sched-del');
           if (f && id) {
             f.schedule_id.value = id;
             f.submit();
           }
-        });
+        };
+        // `type="button"` has no default action → the native branch runs it too.
+        confirmThen(e, btn, message, performDelete, performDelete);
       });
     });
   }

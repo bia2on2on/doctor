@@ -84,6 +84,24 @@ titleFixture.vectors.forEach(function (vector) {
   });
 });
 
+check('the trim class is EXACTLY ASCII whitespace + NBSP, never \\s', function () {
+  var source = read('assets/js/cpms-ui-text.js');
+  var code = source.replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  assert.strictEqual(/\\s/.test(code), false, 'cpms-ui-text.js must not use \\s for the trim class');
+
+  // Trimmed: space, tab, LF, CR, FF, VT, NBSP.
+  [' ', '\t', '\n', '\r', '\f', '\v', '\u00A0'].forEach(function (ws) {
+    assert.strictEqual(CpmsText.doctorDisplayName(ws + '\u0631\u0636\u0627\u06CC\u06CC' + ws),
+      '\u062F\u06A9\u062A\u0631 \u0631\u0636\u0627\u06CC\u06CC', 'edge ws must be trimmed: ' + JSON.stringify(ws));
+  });
+  // NOT trimmed and NOT rewritten: U+2009, U+3000, U+FEFF, ZWNJ.
+  ['\u2009', '\u3000', '\uFEFF', '\u200C'].forEach(function (ch) {
+    assert.strictEqual(CpmsText.doctorDisplayName(ch + '\u0631\u0636\u0627\u06CC\u06CC'),
+      '\u062F\u06A9\u062A\u0631 ' + ch + '\u0631\u0636\u0627\u06CC\u06CC',
+      'must NOT be trimmed: ' + JSON.stringify(ch));
+  });
+});
+
 check('empty name stays empty (caller supplies its own Persian fallback)', function () {
   assert.strictEqual(CpmsText.doctorDisplayName(''), '');
   assert.strictEqual(CpmsText.doctorDisplayName(undefined), '');

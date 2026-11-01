@@ -1,5 +1,5 @@
 {
-  "_comment": "Shared doctor-title vectors: ONE source of truth for PHP (tests/Unit/DoctorDisplayNameTest.php) and JS (tests/js/pkg-e-texts.spec.js). Owner rule D1: a leading title is a WHOLE token (Persian doktar with Persian kaf U+06A9 or Arabic kaf U+0643, or Latin Dr/Dr. case-insensitive) followed by end-of-string or a separator (ASCII whitespace, NBSP, ZWNJ, dot). Nothing inside the remaining name is rewritten.",
+  "_comment": "Shared doctor-title vectors: ONE source of truth for PHP (tests/Unit/DoctorDisplayNameTest.php) and JS (tests/js/pkg-e-texts.spec.js). Owner rule D1: a leading title is a WHOLE token (Persian doktar with Persian kaf U+06A9 or Arabic kaf U+0643, or Latin Dr/Dr. case-insensitive) followed by end-of-string or a separator (ASCII whitespace, NBSP, ZWNJ, dot). Nothing inside the remaining name is rewritten. Trim/collapse class is EXPLICIT and identical in PHP and JS: ASCII whitespace (space, tab, LF, CR, FF, VT) plus NBSP U+00A0 - nothing else. U+2009, U+3000, U+FEFF and ZWNJ are neither trimmed at the edges nor rewritten inside a name.",
   "title": "\u062f\u06a9\u062a\u0631",
   "vectors": [
     {
@@ -197,6 +197,41 @@
       "expected": "\u062f\u06a9\u062a\u0631 \u0631\u0636\u0627\u06cc\u06cc",
       "note": "mixed Latin and Persian leading titles collapse to one",
       "had_title": true
+    },
+    {
+      "id": "lead-bom-not-trimmed",
+      "input": "\ufeff\u0631\u0636\u0627\u06cc\u06cc",
+      "expected": "\u062f\u06a9\u062a\u0631 \ufeff\u0631\u0636\u0627\u06cc\u06cc",
+      "had_title": false,
+      "note": "U+FEFF is NOT in the trim class: only ASCII whitespace and NBSP are trimmed"
+    },
+    {
+      "id": "trail-thin-space-not-trimmed",
+      "input": "\u0631\u0636\u0627\u06cc\u06cc\u2009",
+      "expected": "\u062f\u06a9\u062a\u0631 \u0631\u0636\u0627\u06cc\u06cc\u2009",
+      "had_title": false,
+      "note": "U+2009 (thin space) is NOT trimmed and NOT rewritten"
+    },
+    {
+      "id": "lead-ideographic-space-not-trimmed",
+      "input": "\u3000\u0631\u0636\u0627\u06cc\u06cc",
+      "expected": "\u062f\u06a9\u062a\u0631 \u3000\u0631\u0636\u0627\u06cc\u06cc",
+      "had_title": false,
+      "note": "U+3000 (ideographic space) is NOT trimmed and NOT rewritten"
+    },
+    {
+      "id": "inner-thin-space-preserved",
+      "input": "\u0639\u0644\u06cc\u2009\u0627\u06a9\u0628\u0631",
+      "expected": "\u062f\u06a9\u062a\u0631 \u0639\u0644\u06cc\u2009\u0627\u06a9\u0628\u0631",
+      "had_title": false,
+      "note": "U+2009 inside the name is preserved byte-for-byte"
+    },
+    {
+      "id": "lead-zwnj-not-trimmed",
+      "input": "\u200c\u0631\u0636\u0627\u06cc\u06cc",
+      "expected": "\u062f\u06a9\u062a\u0631 \u200c\u0631\u0636\u0627\u06cc\u06cc",
+      "had_title": false,
+      "note": "a leading ZWNJ is not edge whitespace: it is kept, and only the title is added"
     }
   ]
 }

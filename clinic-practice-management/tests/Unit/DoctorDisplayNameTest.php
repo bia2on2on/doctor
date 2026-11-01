@@ -74,6 +74,57 @@ final class DoctorDisplayNameTest extends TestCase
         self::assertSame('', DoctorDisplayName::with_title("\u{00A0}"));
     }
 
+    /**
+     * The trim/collapse class must be EXACTLY ASCII whitespace + NBSP in both
+     * languages (owner rule): everything else is neither trimmed nor rewritten.
+     */
+    public function testTrimClassIsAsciiWhitespacePlusNbspOnly(): void
+    {
+        $name = 'رضایی';
+
+        foreach ([" ", "\t", "\n", "\r", "\f", "\v", "\u{00A0}"] as $ws) {
+            self::assertSame(
+                'دکتر ' . $name,
+                DoctorDisplayName::with_title($ws . $name . $ws),
+                'edge whitespace must be trimmed: ' . bin2hex($ws)
+            );
+        }
+
+        foreach (["\u{2009}", "\u{3000}", "\u{FEFF}", "\u{200C}"] as $other) {
+            self::assertSame(
+                'دکتر ' . $other . $name,
+                DoctorDisplayName::with_title($other . $name),
+                'must NOT be trimmed: ' . bin2hex($other)
+            );
+            self::assertSame(
+                'دکتر ' . $name . $other,
+                DoctorDisplayName::with_title($name . $other),
+                'must NOT be trimmed: ' . bin2hex($other)
+            );
+        }
+    }
+
+    /**
+     * Fail-closed: an invalid-UTF-8 name must not be trimmed, rewritten or
+     * passed through — every preg_* call with a /u pattern returns null, so the
+     * helper returns '' and the caller supplies its own fallback.
+     *
+     * PHP-only: there is no JS equivalent because JS strings are UTF-16 and
+     * cannot hold invalid bytes.
+     */
+    public function testInvalidUtf8FailsClosedInsteadOfMutating(): void
+    {
+        // preg_* emits a warning for malformed UTF-8; the outcome is the point here.
+        $previous = set_error_handler(static fn (): bool => true);
+        try {
+            self::assertSame('', DoctorDisplayName::with_title("رضایی\xFF"));
+            self::assertSame('', DoctorDisplayName::with_title("\xFF\xFE"));
+            self::assertFalse(DoctorDisplayName::starts_with_title("\xFF"));
+        } finally {
+            set_error_handler($previous);
+        }
+    }
+
     public function testStartsWithTitleUsesTheSameWholeTokenRule(): void
     {
         $fixture = self::fixture();
