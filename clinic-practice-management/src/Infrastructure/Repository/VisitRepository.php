@@ -55,12 +55,29 @@ final class VisitRepository
      *
      * @return array<string, mixed>|null
      */
-    public function findActiveByPatientDay(int $patientId, int $clinicianId, string $visitDate): ?array
+    public function findActiveByPatientDay( int $patient_id, int $clinician_id, string $visit_date, int $clinic_id = 0 ): ?array
     {
+        if ( $clinic_id > 0 ) {
+            return $this->db->fetchRow(
+                'SELECT * FROM ' . $this->db->table( 'cpms_visits' ) .
+                ' WHERE patient_id = %d AND clinician_id = %d AND clinic_id = %d AND visit_date = %s AND active = 1 LIMIT 1',
+                array(
+                    $patient_id,
+                    $clinician_id,
+                    $clinic_id,
+                    $visit_date,
+                )
+            );
+        }
+
         return $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_visits') .
+            'SELECT * FROM ' . $this->db->table( 'cpms_visits' ) .
             ' WHERE patient_id = %d AND clinician_id = %d AND visit_date = %s AND active = 1 LIMIT 1',
-            [$patientId, $clinicianId, $visitDate]
+            array(
+                $patient_id,
+                $clinician_id,
+                $visit_date,
+            )
         );
     }
 

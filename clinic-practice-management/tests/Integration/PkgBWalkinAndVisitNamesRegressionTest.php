@@ -7,6 +7,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Visits\VisitService;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Visits\VisitException;
 use ClinicCore\Infrastructure\Repository\AppointmentRepository;
 use DateTimeImmutable;
 use DateInterval;
@@ -392,7 +393,7 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
         $this->assertNull($persisted);
     }
 
-    // ================= Defect 2 — visit presentation carries names =================
+    // ================= Defect 3 — walk-in guard =================\n\n    public function testWalkInRejectedWhenSameDayActiveAppointmentExists(): void\n    {\n        // Same-day confirmed appointment in Clinic 1 for this patient+clinician.\n        $tz = new DateTimeZone('Asia/Tehran');\n        $nowLocal = new DateTimeImmutable('now', $tz);\n        $slotDate = $nowLocal->format('Y-m-d');\n        $slotTime = $nowLocal->modify('+3 hours')->format('H:i:s');\n\n        $slot = $this->makeSlot($slotDate, $slotTime);\n        $this->makeAppointment($this->patientId, $this->clinicianId, $slotDate, $slotTime);\n\n        // walkIn must be rejected because the patient already has an active appointment today.\n        $this->expectException(VisitException::class);\n        $this->expectExceptionCode(409);\n        App::visitService()->walkIn(\n            $this->secretaryUserId,\n            $this->patientId,\n            $this->clinicianId,\n            []\n        );\n    }\n\n    public function testWalkInSucceedsWhenNoAppointment(): void\n    {\n        // No appointment for this patient today.\n        $visit = App::visitService()->walkIn(\n            $this->secretaryUserId,\n            $this->patientId,\n            $this->clinicianId,\n            []\n        );\n        $this->assertSame('waiting', $visit['status']); // FR-6.1 auto-enqueue\n        $this->assertNull($visit['appointment_id']);\n    }\n\n    public function testWalkInSucceedsWhenAppointmentInDifferentClinic(): void\n    {\n        // Appointment for this patient in the foreign clinic (raw SQL, bypasses clinic consistency).\n        $tz = new DateTimeZone('Asia/Tehran');\n        $nowLocal = new DateTimeImmutable('now', $tz);\n        $slotDate = $nowLocal->format('Y-m-d');\n        $slotTime = $nowLocal->modify('+3 hours')->format('H:i:s');\n        $now = App::db()->nowUtcSql();\n\n        global $wpdb;\n        $wpdb->query(\n            $wpdb->prepare(\n                'INSERT INTO ' . $wpdb->prefix . 'cpms_appointments\n                     (clinic_id, location_id, reference_code, patient_id, clinician_id, slot_id, slot_date, slot_time,\n                      duration_min, slot_end_time, status, is_walkin_express, confirmed_at, created_at, updated_at)\n                  VALUES (%d, %d, %s, %d, %d, 0, %s, %s, 20, %s, "confirmed", 0, %s, %s, %s)',\n                $this->foreignClinicId,\n                0,\n                'appt-foreign-' . bin2hex(random_bytes(4)),\n                $this->patientId,\n                $this->foreignClinicianId,\n                $slotDate,\n                $slotTime,\n                (new DateTimeImmutable($slotDate . ' ' . $slotTime, $tz))->add(new DateInterval('PT20M'))->format('H:i:s'),\n                $now,\n                $now,\n                $now\n            )\n        );\n\n        // walkIn in Clinic 1 must succeed — guard only checks same-clinic appointments.\n        $visit = App::visitService()->walkIn(\n            $this->secretaryUserId,\n            $this->patientId,\n            $this->clinicianId,\n            []\n        );\n        $this->assertSame('waiting', $visit['status']);\n        $this->assertNull($visit['appointment_id']);\n    }\n\n    public function testWalkInSucceedsWhenAppointmentIsTerminal(): void\n    {\n        // Same-day cancelled appointment — terminal, should not block walk-in.\n        $tz = new DateTimeZone('Asia/Tehran');\n        $nowLocal = new DateTimeImmutable('now', $tz);\n        $slotDate = $nowLocal->format('Y-m-d');\n        $slotTime = $nowLocal->modify('+3 hours')->format('H:i:s');\n\n        $slot = $this->makeSlot($slotDate, $slotTime);\n        $apptId = $this->makeAppointment($this->patientId, $this->clinicianId, $slotDate, $slotTime);\n\n        // Cancel the appointment (terminal status).\n        global $wpdb;\n        $wpdb->update(\n            $wpdb->prefix . 'cpms_appointments',\n            [ 'status' => 'cancelled_by_staff' ],\n            [ 'id' => $apptId ]\n        );\n\n        // walkIn must succeed — cancelled is not a non-terminal status.\n        $visit = App::visitService()->walkIn(\n            $this->secretaryUserId,\n            $this->patientId,\n            $this->clinicianId,\n            []\n        );\n        $this->assertSame('waiting', $visit['status']);\n        $this->assertNull($visit['appointment_id']);\n    }\n\n    // ================= Defect 2 — visit presentation carries names =================
 
     public function testCheckInAndTransitionResponsesCarryNames(): void
     {
@@ -430,12 +431,14 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
         $now = App::db()->nowUtcSql();
 
         // Visit in Clinic 1 whose patient AND clinician belong to the foreign clinic.
+        // location_id is required (NOT NULL on cpms_visits) — use Clinic 1's primary location.
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_visits
-                     (clinic_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, active, created_at, updated_at)
-                  VALUES (%d, %d, %d, NULL, "walk_in", "checked_in", %s, %s, 1, %s, %s)',
+                     (clinic_id, location_id, clinician_id, patient_id, appointment_id, source, status, visit_date, check_in_at, active, created_at, updated_at)
+                  VALUES (%d, %d, %d, %d, NULL, "walk_in", "checked_in", %s, %s, 1, %s, %s)',
                 self::CLINIC_ID,
+                $this->locationId,
                 $this->foreignClinicianId,
                 $this->foreignPatientId,
                 gmdate('Y-m-d'),
@@ -445,6 +448,7 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
             )
         );
         $visitId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $visitId, 'پیش‌شرط: درج Visit با clinic_id=۱ و location_id معتبر');
 
         // Transition (cancel, secretary) — presented row must not leak a foreign name.
         $visit = App::visitService()->transition($this->secretaryUserId, $visitId, 'cancel', ['reason' => 'ثبت اشتباه']);
