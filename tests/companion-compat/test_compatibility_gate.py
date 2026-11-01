@@ -687,11 +687,16 @@ class DetectorsStillFail(unittest.TestCase):
     def test_stale_workflow_schema_pin_is_rejected(self) -> None:
         """A lane's hardcoded schema assertion must match the derived head.
 
-        Both companion lanes asserted `2026_10_18_0029` long after production
-        moved to `2026_10_27_0030`. Because their path filters exclude the
-        production subtree they only ran on a companion change, so the staleness
-        surfaced as a red lane on an unrelated pull request instead of being
-        evaluated here.
+        Both companion lanes once asserted `2026_10_18_0029` long after production
+        had moved on. Because their path filters exclude the production subtree
+        they only ran on a companion change, so the staleness surfaced as a red
+        lane on an unrelated pull request instead of being evaluated here.
+
+        The stale version injected below is derived from the migration history
+        rather than hardcoded: a hardcoded literal silently stopped mutating
+        anything once production advanced past it, which turned this detector
+        into a no-op. If a lane no longer asserts the head at all, the mutation
+        below cannot be built and this test fails loudly instead of passing.
         """
         manifest = load_manifest()
         scan = manifest["schema_pin_scan"]
@@ -702,6 +707,8 @@ class DetectorsStillFail(unittest.TestCase):
             [], [f.message for f in report.findings], "the committed workflows must be current"
         )
 
+        head = self.schema.head
+        stale_version = next(v for v in reversed(self.schema.versions) if v != head)
         stale = json.loads(json.dumps(manifest))
         stale["schema_pin_scan"]["allowed_historical_versions"] = []
         stale["schema_pin_scan"]["files"] = [
@@ -710,16 +717,17 @@ class DetectorsStillFail(unittest.TestCase):
         target = ROOT / stale["schema_pin_scan"]["files"][0]
         original = target.read_text(encoding="utf-8")
         try:
-            target.write_text(
-                original.replace("2026_10_27_0030", "2026_10_18_0029").replace(
-                    "2026_10_27_0030", "2026_10_18_0029"
-                ),
-                encoding="utf-8",
+            mutated = original.replace(head, stale_version)
+            self.assertNotEqual(
+                original,
+                mutated,
+                f"{target.name} must assert the current head `{head}` for this detector to mean anything",
             )
+            target.write_text(mutated, encoding="utf-8")
             report = self._report()
             evaluate.check_stale_workflow_pins(self.schema, stale, report, ROOT)
             messages = " ".join(f.message for f in report.findings)
-            self.assertIn("2026_10_18_0029", messages)
+            self.assertIn(stale_version, messages)
             self.assertTrue(any(f.severity == evaluate.BLOCKER for f in report.findings))
         finally:
             target.write_text(original, encoding="utf-8")

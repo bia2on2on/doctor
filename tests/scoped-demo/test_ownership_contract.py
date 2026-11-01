@@ -125,7 +125,11 @@ class OwnershipContractTests(unittest.TestCase):
         """
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         tables = manifest["tables"]
-        self.assertEqual(60, len(tables))
+        # 61 since schema 2026_10_31_0031 added cpms_audit_seq (the append-only
+        # audit serialization guard). Membership is still checked table by table
+        # against the companion constants below, so a wrong count cannot be
+        # "fixed" by editing this number alone.
+        self.assertEqual(61, len(tables))
         self.assertEqual(
             sorted(tables), sorted(self.known), "KNOWN_TABLES must equal the manifest inventory"
         )
