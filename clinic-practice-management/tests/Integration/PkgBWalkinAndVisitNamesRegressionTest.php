@@ -17,8 +17,19 @@ use WP_UnitTestCase;
  * Regression tests for Package B corrective fixes:
  *
  *  - A scheduled (staff-booked) appointment must NEVER be marked walk-in
- *    express: `is_walkin_express` stays 0 even when the slot is today. Only
- *    the explicit walk-in path (VisitService::walkIn) may set the flag.
+ *    express: `is_walkin_express` stays 0 even when the slot is today.
+ *
+ *  - What the walk-in path actually does (from code): `VisitService::walkIn()`
+ *    calls `createVisit()` with `appointment_id = NULL`; `createVisit()` only
+ *    inserts into `cpms_visits` and NEVER touches `cpms_appointments`, so a
+ *    real walk-in creates a visit with NO appointment and therefore NO
+ *    `is_walkin_express` flag at all. `is_walkin_express` is written ONLY by
+ *    `BookingService::createByStaff()` (= 0, FIXED) and
+ *    `BookingService::confirm()` (= 0). NO service path sets it to 1.
+ *    Test (b) below is therefore a READER CONTROL that inserts a row directly
+ *    (not through a service) to verify `listForDoctorOperationalDay` maps
+ *    `is_walkin_express = 1` → `express = true`.
+ *
  *  - Visit presentation (check-in / transition / getVisit) must carry
  *    non-empty `patient_name` and `clinician_name` via a separate NON-locking
  *    query scoped by `clinic_id`: tenancy holds (never a name from another
@@ -164,6 +175,23 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
         $this->secretaryUserId = (int) wp_create_user('pkgb_secretary_' . bin2hex(random_bytes(3)), 'pass-12345', 'pkgb-sec@test.local');
         $secretary = get_userdata($this->secretaryUserId);
         $secretary->set_role('cpms_secretary');
+
+        // Secretary membership in Clinic 1 so scoped roleForUser resolves
+        // 'secretary' (walkIn requires an active membership under explicit scope).
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinic_memberships
+                     (clinic_id, wp_user_id, role_key, scope_mode, status, is_primary, created_at, updated_at)
+                 VALUES (%d, %d, %s, %s, %s, 0, %s, %s)',
+                self::CLINIC_ID,
+                $this->secretaryUserId,
+                'cpms_secretary',
+                'clinic',
+                'active',
+                $now,
+                $now
+            )
+        );
     }
 
     protected function tearDown(): void
@@ -272,7 +300,7 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
         $this->assertSame(0, $persisted);
     }
 
-    public function testTrueWalkInExpressFlagStillReadableAsOne(): void
+    public function testReaderMapsIsWalkinExpressToExpress(): void
     {
         $tz = new DateTimeZone('Asia/Tehran');
         $nowLocal = new DateTimeImmutable('now', $tz);
@@ -281,6 +309,14 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
 
         $slot = $this->makeSlot($slotDate, $slotTime);
 
+        // NOTE: this row is inserted DIRECTLY (raw SQL), NOT through a service.
+        // No service path writes is_walkin_express = 1 —
+        // BookingService::createByStaff() and ::confirm() both write 0, and
+        // VisitService::walkIn() → createVisit() creates a visit with
+        // appointment_id = NULL and never touches cpms_appointments.
+        // This is a READER CONTROL: it verifies
+        // AppointmentRepository::listForDoctorOperationalDay() maps
+        // is_walkin_express = 1 → express = true.
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $wpdb->query(
@@ -309,8 +345,6 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
             $wpdb->prepare('SELECT is_walkin_express FROM ' . $wpdb->prefix . 'cpms_appointments WHERE id = %d', $apptId)
         ));
 
-        // (b) — a genuine walk-in/express appointment still gets 1: the flag is
-        //     preserved and presented as express = true.
         $repo = new AppointmentRepository(App::db());
         $rows = $repo->listForDoctorOperationalDay(
             self::CLINIC_ID,
@@ -327,6 +361,32 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
         }
         self::assertNotNull($found, 'express appointment must appear in the presented day list');
         $this->assertSame(true, $found['express']);
+    }
+
+    public function testRealWalkInViaServiceCreatesVisitWithoutAppointment(): void
+    {
+        // Real walk-in through VisitService::walkIn() (NOT raw SQL). The
+        // secretary has an active membership in Clinic 1, the patient and
+        // clinician belong to Clinic 1, and the license gate allows check-in.
+        $visit = App::visitService()->walkIn(
+            $this->secretaryUserId,
+            $this->patientId,
+            $this->clinicianId,
+            []
+        );
+
+        $this->assertSame('checked_in', $visit['status']);
+        // The walk-in path creates a visit, not an appointment: appointment_id
+        // is NULL, so there is no is_walkin_express flag at all. No service
+        // path sets is_walkin_express = 1 (both BookingService writers use 0).
+        $this->assertNull($visit['appointment_id']);
+
+        // Persisted visit agrees: no appointment reference.
+        global $wpdb;
+        $persisted = $wpdb->get_var(
+            $wpdb->prepare('SELECT appointment_id FROM ' . $wpdb->prefix . 'cpms_visits WHERE id = %d', (int) $visit['id'])
+        );
+        $this->assertNull($persisted);
     }
 
     // ================= Defect 2 — visit presentation carries names =================

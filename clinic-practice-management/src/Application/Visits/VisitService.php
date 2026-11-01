@@ -520,7 +520,7 @@ final class VisitService
             // presentation only (Owner B — Persian/Jalali date UX).
             'jalali'        => Jalali::formatYmd( $operational_date ),
             'stats'         => $stats,
-            'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
+            'queue'         => array_map( [ $this, 'presentVisit' ], $this->enrichVisitNamesBatch( $queue ) ),
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
             'location_id'   => $location_id,
         ];
@@ -600,7 +600,7 @@ final class VisitService
             // day (presentation only; Gregorian storage/comparisons untouched).
             'jalali'        => Jalali::formatYmd( $operational_date ),
             'stats'         => $stats,
-            'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
+            'queue'         => array_map( [ $this, 'presentVisit' ], $this->enrichVisitNamesBatch( $queue ) ),
             'appointments'  => $doctor_appointments,
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
             'location_id'   => $location_id,
@@ -2015,18 +2015,29 @@ final class VisitService
      * هرگز نامی از کلینیک دیگری برگردانده نمی‌شود (tenancy); اگر بیمار یا
      * پزشک در همان کلینیک نباشد، نام خالی/null (fail closed).
      *
+     * اگر enrichVisitNamesBatch() قبلاً ردیف را تکمیل کرده است (نشان
+     * `_names_enriched`)، پرس‌وجو تکراری نمی‌زند (جلوگیری از N+1 در صف و
+     * داشبورد روز). نامی که قبلاً در ردیف وجود داشته باشد، با مقدار خالی
+     * بازنویسی نمی‌شود.
+     *
      * @param array<string, mixed> $visit
      * @return array<string, mixed>
      */
     private function enrichVisitNames(array $visit): array
     {
+        // قبلاً توسط enrichVisitNamesBatch() تکمیل شده — پرس‌وجو تکراری نزنیم.
+        if (!empty($visit['_names_enriched'])) {
+            return $visit;
+        }
+
         $clinicId = (int) ($visit['clinic_id'] ?? 0);
         if ($clinicId <= 0) {
             return $visit;
         }
 
         // بیمار — پرس‌وجو غیر قفل، فقط همان کلینیک (هیچ نامی از کلینیک دیگر).
-        if ((int) ($visit['patient_id'] ?? 0) > 0) {
+        // نامی که قبلاً در ردیف وجود دارد، بازنویسی نمی‌شود.
+        if ((int) ($visit['patient_id'] ?? 0) > 0 && !isset($visit['patient_first_name'])) {
             $patient = $this->db->fetchRow(
                 'SELECT first_name, last_name FROM ' . $this->db->table('cpms_patients') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
                 [(int) $visit['patient_id'], $clinicId]
@@ -2042,7 +2053,8 @@ final class VisitService
         }
 
         // پزشک — پرس‌وجو غیر قفل، فقط همین کلینیک (هیچ نامی از کلینیک دیگر).
-        if ((int) ($visit['clinician_id'] ?? 0) > 0) {
+        // نامی که قبلاً در ردیف وجود دارد، بازنویسی نمی‌شود.
+        if ((int) ($visit['clinician_id'] ?? 0) > 0 && !isset($visit['clinician_name'])) {
             $clinician = $this->db->fetchRow(
                 'SELECT full_name FROM ' . $this->db->table('cpms_clinicians') . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
                 [(int) $visit['clinician_id'], $clinicId]
@@ -2056,6 +2068,97 @@ final class VisitService
         }
 
         return $visit;
+    }
+
+    /**
+     * تکمیل دسته‌ای نام‌های نمایشی برای یک گروه ویزیت (صف / داشبورد روز).
+     *
+     * به‌جای دو پرس‌وجو در هر ردیف (N+1)، برای هر clinic_id یک پرس‌وجو به
+     * cpms_patients و یک پرس‌وجو به cpms_clinicians با جملة IN اجرا
+     * می‌کند: همیشه غیر قفل و همیشه clinic_scoped (tenancy حفظ شده، fail
+     * closed). نشان `_names_enriched` تنظیم می‌شود تا presentVisit() پرس‌وجو
+     * تکراری نکند.
+     *
+     * @param list<array<string, mixed>> $visits
+     * @return list<array<string, mixed>>
+     */
+    private function enrichVisitNamesBatch(array $visits): array
+    {
+        $byClinic = [];
+        foreach ($visits as $index => $visit) {
+            $clinicId = (int) ($visit['clinic_id'] ?? 0);
+            if ($clinicId <= 0) {
+                $visits[$index]['_names_enriched'] = true;
+                continue;
+            }
+            $byClinic[$clinicId][] = $index;
+        }
+
+        foreach ($byClinic as $clinicId => $indexes) {
+            $patientIds = [];
+            $clinicianIds = [];
+            foreach ($indexes as $index) {
+                if ((int) ($visits[$index]['patient_id'] ?? 0) > 0 && !isset($visits[$index]['patient_first_name'])) {
+                    $patientIds[] = (int) $visits[$index]['patient_id'];
+                }
+                if ((int) ($visits[$index]['clinician_id'] ?? 0) > 0 && !isset($visits[$index]['clinician_name'])) {
+                    $clinicianIds[] = (int) $visits[$index]['clinician_id'];
+                }
+            }
+
+            $patientMap = [];
+            if ($patientIds !== []) {
+                $patientIds = array_unique($patientIds);
+                $placeholders = implode(',', array_fill(0, count($patientIds), '%d'));
+                $rows = $this->db->fetchAll(
+                    'SELECT id, first_name, last_name FROM ' . $this->db->table('cpms_patients') .
+                    ' WHERE clinic_id = %d AND id IN (' . $placeholders . ') LIMIT 1000',
+                    array_merge([$clinicId], $patientIds)
+                );
+                foreach ((array) $rows as $row) {
+                    $patientMap[(int) $row['id']] = [
+                        'first_name' => (string) ($row['first_name'] ?? ''),
+                        'last_name' => (string) ($row['last_name'] ?? ''),
+                    ];
+                }
+            }
+
+            $clinicianMap = [];
+            if ($clinicianIds !== []) {
+                $clinicianIds = array_unique($clinicianIds);
+                $placeholders = implode(',', array_fill(0, count($clinicianIds), '%d'));
+                $rows = $this->db->fetchAll(
+                    'SELECT id, full_name FROM ' . $this->db->table('cpms_clinicians') .
+                    ' WHERE clinic_id = %d AND id IN (' . $placeholders . ') LIMIT 1000',
+                    array_merge([$clinicId], $clinicianIds)
+                );
+                foreach ((array) $rows as $row) {
+                    $clinicianMap[(int) $row['id']] = (string) ($row['full_name'] ?? '');
+                }
+            }
+
+            foreach ($indexes as $index) {
+                $visit = $visits[$index];
+                $visit['_names_enriched'] = true;
+                if ((int) ($visit['patient_id'] ?? 0) > 0 && !isset($visit['patient_first_name'])) {
+                    $patient = $patientMap[(int) $visit['patient_id']] ?? null;
+                    if ($patient !== null) {
+                        $visit['patient_first_name'] = $patient['first_name'];
+                        $visit['patient_last_name'] = $patient['last_name'];
+                    } else {
+                        // fail closed: بیمار در همین کلینیک نیست → نام خالی
+                        $visit['patient_first_name'] = '';
+                        $visit['patient_last_name'] = '';
+                    }
+                }
+                if ((int) ($visit['clinician_id'] ?? 0) > 0 && !isset($visit['clinician_name'])) {
+                    $visit['clinician_name'] = $clinicianMap[(int) $visit['clinician_id']] ?? null;
+                }
+                $visits[$index] = $visit;
+            }
+        }
+
+        return $visits;
     }
 
     /**
