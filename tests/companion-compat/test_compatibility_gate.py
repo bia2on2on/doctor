@@ -422,6 +422,77 @@ class AuditGuardOwnership(unittest.TestCase):
         self.assertIn("return array( 'id' );", source, "the guard's key must be its id alone")
 
 
+class AuditGuardAgainstProductionWrites(unittest.TestCase):
+    """The companion's guard handling is derived from what production WROTE.
+
+    `AuditLogger` (production, schema 0031) locks the singleton guard row
+    `FOR UPDATE`, then updates exactly two bookkeeping columns inside the same
+    transaction, and throws when the row is absent. Those three facts decide the
+    companion's obligations, so they are read out of the production source here
+    instead of being restated by hand: if production ever writes another column,
+    or stops locking the row, the scoped baseline's narrow volatility list would
+    silently become wrong and this test says so.
+    """
+
+    AUDIT_LOGGER = PLUGIN / "src" / "Infrastructure" / "Audit" / "AuditLogger.php"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = cls.AUDIT_LOGGER.read_text(encoding="utf-8")
+        cls.state = cs.load(COMPANION)
+        cls.manifest = load_manifest()
+        cls.baseline_source = (
+            COMPANION / "includes" / "class-cpms-demo-scoped-baseline.php"
+        ).read_text(encoding="utf-8")
+
+    def test_production_reads_the_guard(self) -> None:
+        self.assertIn("cpms_audit_seq", self.source)
+
+    def test_the_guard_is_locked_per_append(self) -> None:
+        """A demo append contends on this row, so it is not site data."""
+        self.assertRegex(
+            self.source,
+            r"fetchRowForUpdate\(\s*'SELECT id FROM ' \. \$this->db->table\( 'cpms_audit_seq'",
+            "production must lock the guard row for the serialization contract to hold",
+        )
+
+    def test_production_fails_closed_when_the_guard_is_missing(self) -> None:
+        """Deleting the row would break every audit append on the site."""
+        self.assertIn("audit guard row missing", self.source)
+        self.assertEqual("runner_managed", self.manifest["tables"]["cpms_audit_seq"]["teardown_class"])
+        self.assertNotIn("cpms_audit_seq", self.state.delete_order)
+
+    def test_baseline_volatility_equals_the_columns_production_writes(self) -> None:
+        import re
+
+        written = set(
+            re.findall(
+                r"([a-z_]+) = %[ds]",
+                re.search(
+                    r"'UPDATE ' \. \$this->db->table\( 'cpms_audit_seq' \) \. ' SET (?P<set>[^']+)'",
+                    self.source,
+                ).group("set"),
+            )
+        )
+        self.assertEqual({"last_audit_id", "updated_at"}, written, "production's guard writes changed")
+
+        declared = set(
+            re.findall(
+                r"'([a-z_]+)'",
+                re.search(
+                    r"'cpms_audit_seq' => array\( (?P<columns>[^)]*)\)",
+                    self.baseline_source,
+                ).group("columns"),
+            )
+        )
+        self.assertEqual(
+            written,
+            declared,
+            "the scoped baseline must exclude exactly the columns production rewrites, "
+            "so a legitimate append cannot read as drift and nothing else is exempted",
+        )
+
+
 class AuditGuardDetectorsStillFail(unittest.TestCase):
     """A wrong rule for the guard must be rejected, not silently accepted."""
 

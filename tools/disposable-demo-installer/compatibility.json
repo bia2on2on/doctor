@@ -1086,7 +1086,7 @@
       "primary_key": [
         "id"
       ],
-      "rationale": "Singleton (id = 1) guard row seeded by MigrationRunner and fast-forwarded by AuditLogger under the production row lock. It has no clinic_id/organization_id and no parent reference, so nothing in it can prove demo ownership: it is install-level host state and is never deleted in either lane.",
+      "rationale": "Singleton (id = 1) guard row. Migration 2026_10_31_0031 (run by MigrationRunner) creates and fast-forwards it; AuditLogger locks it FOR UPDATE inside the same transaction as every audit append, updates only last_audit_id/updated_at, and throws when the row is absent. It has no clinic_id, no organization_id and no foreign key, so nothing in it can prove demo ownership; deleting it would break audit writes on the host site. Install-level host state, never demo-owned, never deleted in either lane.",
       "since": "2026_10_31_0031",
       "surrogate_id": true,
       "teardown_class": "runner_managed",
