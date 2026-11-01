@@ -375,7 +375,10 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
             []
         );
 
-        $this->assertSame('checked_in', $visit['status']);
+        // FR-6.1: queue.auto_enqueue is on (set in setUp), so createVisit()
+        // auto-enqueues the new visit from checked_in → waiting. The visit
+        // still has no appointment (walk-in), only its status changed.
+        $this->assertSame('waiting', $visit['status']);
         // The walk-in path creates a visit, not an appointment: appointment_id
         // is NULL, so there is no is_walkin_express flag at all. No service
         // path sets is_walkin_express = 1 (both BookingService writers use 0).
