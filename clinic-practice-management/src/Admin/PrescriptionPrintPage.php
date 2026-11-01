@@ -111,7 +111,7 @@ final class PrescriptionPrintPage
     </div>
     <div class="rx-mark">℞</div>
     <div class="doctor-info" style="text-align:left">
-        <b><?php echo esc_html(\ClinicCore\Domain\Clinical\DoctorDisplayName::withTitle((string) $data['doctor']['name'])); ?></b><br>
+        <b><?php echo esc_html( \ClinicCore\Domain\Clinical\DoctorDisplayName::with_title( (string) $data['doctor']['name'] ) ); ?></b><br>
         <small><?php echo esc_html((string) ($data['doctor']['specialty'] ?? '')); ?></small>
     </div>
 </div>

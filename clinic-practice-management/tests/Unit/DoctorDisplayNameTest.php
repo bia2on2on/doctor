@@ -20,33 +20,33 @@ final class DoctorDisplayNameTest extends TestCase
 {
     public function testTitleIsAddedWhenTheStoredNameHasNone(): void
     {
-        self::assertSame('دکتر رضایی', DoctorDisplayName::withTitle('رضایی'));
-        self::assertSame('دکتر سارا کریمی', DoctorDisplayName::withTitle('سارا کریمی'));
+        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('رضایی'));
+        self::assertSame('دکتر سارا کریمی', DoctorDisplayName::with_title('سارا کریمی'));
     }
 
     public function testTitleIsNeverDoubledForAnyAcceptedPrefixForm(): void
     {
-        self::assertSame('دکتر رضایی', DoctorDisplayName::withTitle('دکتر رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::withTitle('دکتر. رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::withTitle('دکتر .رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::withTitle("دکتر\u{200C}رضایی"));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::withTitle('  دکتر   رضایی  '));
-        self::assertSame('دکتر', DoctorDisplayName::withTitle('دکتر'));
-        self::assertSame('دکتر', DoctorDisplayName::withTitle("دکتر.\u{200C} "));
+        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('دکتر رضایی'));
+        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('دکتر. رضایی'));
+        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('دکتر .رضایی'));
+        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title("دکتر\u{200C}رضایی"));
+        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('  دکتر   رضایی  '));
+        self::assertSame('دکتر', DoctorDisplayName::with_title('دکتر'));
+        self::assertSame('دکتر', DoctorDisplayName::with_title("دکتر.\u{200C} "));
     }
 
     public function testEmptyNameStaysEmptySoTheCallerOwnsItsFallback(): void
     {
-        self::assertSame('', DoctorDisplayName::withTitle(''));
-        self::assertSame('', DoctorDisplayName::withTitle('   '));
+        self::assertSame('', DoctorDisplayName::with_title(''));
+        self::assertSame('', DoctorDisplayName::with_title('   '));
     }
 
     public function testDoubledTitleInsideRenderedTextCollapses(): void
     {
-        self::assertSame('با دکتر رضایی', DoctorDisplayName::collapseDoubledTitle('با دکتر دکتر رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::collapseDoubledTitle('دکتر  دکتر رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::collapseDoubledTitle("دکتر\u{200C}دکتر رضایی"));
-        self::assertSame('با دکتر رضایی', DoctorDisplayName::collapseDoubledTitle('با دکتر رضایی'));
+        self::assertSame('با دکتر رضایی', DoctorDisplayName::collapse_doubled_title('با دکتر دکتر رضایی'));
+        self::assertSame('دکتر رضایی', DoctorDisplayName::collapse_doubled_title('دکتر  دکتر رضایی'));
+        self::assertSame('دکتر رضایی', DoctorDisplayName::collapse_doubled_title("دکتر\u{200C}دکتر رضایی"));
+        self::assertSame('با دکتر رضایی', DoctorDisplayName::collapse_doubled_title('با دکتر رضایی'));
     }
 
     public function testDefaultSmsTemplatesDoNotHardcodeTheTitle(): void
@@ -72,7 +72,7 @@ final class DoctorDisplayNameTest extends TestCase
             'سلام {{patient_name}}، نوبت شما با دکتر {{doctor_name}} در {{appointment_date}} تأیید شد.',
             [
                 'patient_name'     => 'سارا',
-                'doctor_name'      => DoctorDisplayName::withTitle('رضایی'),
+                'doctor_name'      => DoctorDisplayName::with_title('رضایی'),
                 'appointment_date' => '1405/08/10',
             ],
             ['patient_name', 'doctor_name', 'appointment_date'],
@@ -92,7 +92,7 @@ final class DoctorDisplayNameTest extends TestCase
             (string) $definition['default_text'],
             [
                 'patient_name'     => 'سارا',
-                'doctor_name'      => DoctorDisplayName::withTitle('رضایی'),
+                'doctor_name'      => DoctorDisplayName::with_title('رضایی'),
                 'appointment_date' => '1405/08/10',
                 'appointment_time' => '09:30',
                 'clinic_name'      => 'مطب نمونه',

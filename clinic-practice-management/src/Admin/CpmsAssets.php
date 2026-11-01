@@ -88,8 +88,8 @@ final class CpmsAssets
         // HEAD: the per-page inline modules (which print in the body) call
         // `window.CpmsText` / `window.CpmsDialog` while they initialise, so the
         // helpers must already exist — footer assets would be too late.
-        wp_enqueue_script('cpms-ui-text', $base . '/assets/js/cpms-ui-text.js', [], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev', false);
-        wp_enqueue_script('cpms-dialog', $base . '/assets/js/cpms-dialog.js', ['cpms-ui-text'], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev', false);
+        wp_enqueue_script( 'cpms-ui-text', $base . '/assets/js/cpms-ui-text.js', [], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev', false );
+        wp_enqueue_script( 'cpms-dialog', $base . '/assets/js/cpms-dialog.js', [ 'cpms-ui-text' ], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev', false );
 
         wp_enqueue_style('cpms-admin', $base . '/assets/css/cpms-admin.css', [], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev');
         wp_enqueue_script('cpms-admin', $base . '/assets/js/cpms-admin.js', ['cpms-dialog'], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev', true);

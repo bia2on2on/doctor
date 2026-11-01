@@ -46,13 +46,15 @@ final class SmsTemplateRenderer
         }
 
         // 3) جایگذاری
-        // خروجی هرگز «دکتر دکتر» ندارد: Templateهای قدیمیِ ذخیره‌شده خودشان
-        // «دکتر {{doctor_name}}» را در متن دارند و مقدار هم اکنون عنوان‌دار است.
-        return DoctorDisplayName::collapseDoubledTitle((string) preg_replace_callback(
+        $rendered = (string) preg_replace_callback(
             self::VAR_PATTERN,
             static fn (array $m): string => (string) ($vars[$m[1]] ?? ''),
             $text
-        ));
+        );
+
+        // خروجی هرگز «دکتر دکتر» ندارد: Templateهای قدیمیِ ذخیره‌شده خودشان
+        // «دکتر {{doctor_name}}» را در متن دارند و مقدار هم اکنون عنوان‌دار است.
+        return DoctorDisplayName::collapse_doubled_title( $rendered );
     }
 
     /**

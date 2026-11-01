@@ -2949,10 +2949,15 @@ final class BookingService
                 $patientName = 'بیمار گرامی';
             }
 
+            // عنوان «دکتر» فقط یک‌بار و بدون تغییر نامِ ذخیره‌شده.
+            $doctor_name = DoctorDisplayName::with_title( (string) ( $doctor['full_name'] ?? '' ) );
+            if ( '' === $doctor_name ) {
+                $doctor_name = 'پزشک';
+            }
+
             $vars = [
                 'patient_name' => $patientName,
-                // عنوان «دکتر» فقط یک‌بار و بدون تغییر نامِ ذخیره‌شده.
-                'doctor_name' => DoctorDisplayName::withTitle((string) ($doctor['full_name'] ?? '')) ?: 'پزشک',
+                'doctor_name'      => $doctor_name,
                 'appointment_date' => Jalali::formatYmd((string) $appt['slot_date']),
                 'appointment_time' => substr((string) $appt['slot_time'], 0, 5),
                 'clinic_name' => $clinic !== '' ? $clinic : 'مطب',

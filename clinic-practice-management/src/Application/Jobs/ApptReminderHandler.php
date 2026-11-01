@@ -668,7 +668,7 @@ final class ApptReminderHandler
         return [
             'patient_name' => $patientName !== '' ? $patientName : 'بیمار گرامی',
             // عنوان «دکتر» فقط یک‌بار (پیش از این، متنِ الگو خودش «دکتر» می‌گذاشت).
-            'doctor_name' => $doctor !== '' ? DoctorDisplayName::withTitle($doctor) : 'پزشک',
+            'doctor_name'      => $doctor !== '' ? DoctorDisplayName::with_title( $doctor ) : 'پزشک',
             'appointment_date' => Jalali::formatYmd((string) $row['slot_date']),
             'appointment_time' => substr((string) $row['slot_time'], 0, 5),
             'clinic_name' => $clinic !== '' ? $clinic : 'مطب',
