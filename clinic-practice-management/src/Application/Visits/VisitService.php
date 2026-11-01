@@ -2006,7 +2006,7 @@ final class VisitService
         // phpcs:enable
     }
 
-    // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket -- multi-line db calls; security, SQL, i18n and escaping sniffs stay active.
+    // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- multi-line db calls; security, SQL, i18n and escaping sniffs stay active.
     /**
      * تکمیل نام‌های نمایشی (patient_name / clinician_name) با پرس‌وجوهای جداگانه
      * غیر قفل (NON-locking) Scoped شده به clinic_id.
@@ -2024,7 +2024,7 @@ final class VisitService
      * @param array<string, mixed> $visit
      * @return array<string, mixed>
      */
-    private function enrich_visit_names( array $visit ): array
+    private function enrich_visit_names(array $visit): array
     {
         // قبلاً توسط enrich_visit_names_batch() تکمیل شده — پرس‌وجو تکراری نزنیم.
         if ( ! empty( $visit['_names_enriched'] ) ) {
@@ -2096,7 +2096,7 @@ final class VisitService
      * @param list<array<string, mixed>> $visits
      * @return list<array<string, mixed>>
      */
-    private function enrich_visit_names_batch( array $visits ): array
+    private function enrich_visit_names_batch(array $visits): array
     {
         $by_clinic = array();
         foreach ( $visits as $index => $visit ) {
