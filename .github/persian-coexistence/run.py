@@ -128,14 +128,14 @@ GROUPS = {
         },
     },
     "persian-woocommerce-sms": {
-        # Official WordPress.org Plugins API verified 2026-10-20: stable moved
-        # 7.3.1 -> 7.3.2 (last_updated 2026-10-20, WordPressBugBounty mirror
-        # updated 2026-10-20; CI runner API also reports 7.3.2). Exact-version
-        # enforcement and API/ZIP identity checks are unchanged; older run
-        # evidence stays bound to the pins actually measured.
+        # Official WordPress.org Plugins API verified 2026-11-01: stable moved
+        # 7.3.2 -> 7.3.3 (last_updated 2026-11-01 1:50pm GMT, download_link
+        # .../persian-woocommerce-sms.zip; CI runner API also reports 7.3.3).
+        # Exact-version enforcement and API/ZIP identity checks are unchanged;
+        # older run evidence stays bound to the pins actually measured.
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce-sms": "7.3.2",
+            "persian-woocommerce-sms": "7.3.3",
         },
         "subject": "persian-woocommerce-sms",
         "root": "coexistence-persian-woocommerce-sms",
@@ -151,9 +151,10 @@ GROUPS = {
     # all-19 evidence stays addressable and unrenamed under its original record.
     # Phase 19 owner decision (2026-10-09): Persian WooCommerce 10.0.7 is
     # temporarily excluded from this ACTIVE pin set only — 18 authoritative free
-    # pins remain (updated 2026-10-21: 10.0.6 -> 10.0.7 per official
-    # WordPress.org Plugins API stable; previous refresh 2026-10-20:
-    # 10.0.5 -> 10.0.6, persian-woocommerce-sms 7.3.1 -> 7.3.2). This quarantine is not a universal
+    # pins remain (updated 2026-11-01: persian-woocommerce-sms 7.3.2 -> 7.3.3 per
+    # official WordPress.org Plugins API stable; previous refreshes 2026-10-21:
+    # persian-woocommerce 10.0.6 -> 10.0.7, and 2026-10-20: 10.0.5 -> 10.0.6,
+    # persian-woocommerce-sms 7.3.1 -> 7.3.2). This quarantine is not a universal
     # incompatibility declaration; the version keeps its independent
     # persian-woocommerce-diagnosis lane (and its SMS pair), and the unchanged
     # third-party-baseline subject matrix still pins and measures it
@@ -163,7 +164,7 @@ GROUPS = {
     "combined-nineteen": {
         "pins": {
             "woocommerce": "11.2.0",
-            "persian-woocommerce-sms": "7.3.2",
+            "persian-woocommerce-sms": "7.3.3",
             "litespeed-cache": "7.9.1",
             "wordpress-seo": "28.6",
             "seo-by-rank-math": "1.0.280",
