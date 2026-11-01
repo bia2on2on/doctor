@@ -56,6 +56,8 @@ final class VisitService
 
     private readonly MembershipRepository $memberships;
 
+    private readonly VisitNameEnricher $nameEnricher;
+
     /** @var DateTimeImmutable|null test seam for deterministic operational day (Phase 10) */
     private static ?DateTimeImmutable $testNowUtc = null; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.PropertyNotSnakeCase -- legacy PSR-style, established contract
 
@@ -79,6 +81,7 @@ final class VisitService
         ?MembershipRepository $memberships = null ) { // phpcs:ignore Squiz.Functions.MultiLineFunctionDeclaration.CloseBracketLine -- WPCS
         // Optional only for backwards-compatible direct service construction;
         // production wiring injects the same shared participation repository.
+        $this->nameEnricher = new VisitNameEnricher($db);
         $this->memberships = $memberships ?? new MembershipRepository($db);
     }
 
@@ -520,7 +523,7 @@ final class VisitService
             // presentation only (Owner B — Persian/Jalali date UX).
             'jalali'        => Jalali::formatYmd( $operational_date ),
             'stats'         => $stats,
-            'queue'         => array_map( [ $this, 'presentVisit' ], $this->enrich_visit_names_batch( $queue ) ),
+            'queue'         => array_map([$this, 'presentVisit'], $this->nameEnricher->enrich_visit_names_batch($queue)),
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
             'location_id'   => $location_id,
         ];
@@ -600,7 +603,7 @@ final class VisitService
             // day (presentation only; Gregorian storage/comparisons untouched).
             'jalali'        => Jalali::formatYmd( $operational_date ),
             'stats'         => $stats,
-            'queue'         => array_map( [ $this, 'presentVisit' ], $this->enrich_visit_names_batch( $queue ) ),
+            'queue'         => array_map([$this, 'presentVisit'], $this->nameEnricher->enrich_visit_names_batch($queue)),
             'appointments'  => $doctor_appointments,
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
             'location_id'   => $location_id,
@@ -2006,217 +2009,26 @@ final class VisitService
         // phpcs:enable
     }
 
-    // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.PHP.StrictComparisons -- PSR-style spacing in added name-enrichment helpers; security, SQL, i18n and escaping sniffs stay active. Naming-convention sniffs are NOT suppressed (fixed via snake_case).
-    /**
-     * تکمیل نام‌های نمایشی (patient_name / clinician_name) با پرس‌وجوهای جداگانه
-     * غیر قفل (NON-locking) Scoped شده به clinic_id.
-     *
-     * VisitRepository::find / findForUpdate فقط ستون‌های cpms_visits را
-     * برمی‌گردانند، پس نام‌ها خالی/null می‌آیند. این متد نام‌ها را تکمیل می‌کند:
-     * هرگز نامی از کلینیک دیگری برگردانده نمی‌شود (tenancy); اگر بیمار یا
-     * پزشک در همان کلینیک نباشد، نام خالی/null (fail closed).
-     *
-     * اگر enrich_visit_names_batch() قبلاً ردیف را تکمیل کرده است (نشان
-     * `_names_enriched`)، پرس‌وجو تکراری نمی‌زند (جلوگیری از N+1 در صف و
-     * داشبورد روز). نامی که قبلاً در ردیف وجود داشته باشد، با مقدار خالی
-     * بازنویسی نمی‌شود.
-     *
-     * @param array<string, mixed> $visit
-     * @return array<string, mixed>
-     */
-    private function enrich_visit_names(array $visit): array
-    {
-        // قبلاً توسط enrich_visit_names_batch() تکمیل شده — پرس‌وجو تکراری نزنیم.
-        if ( ! empty( $visit['_names_enriched'] ) ) {
-            return $visit;
-        }
-
-        $clinic_id = $visit['clinic_id'] ?? 0;
-        $clinic_id = (int) $clinic_id;
-        if ( $clinic_id <= 0 ) {
-            return $visit;
-        }
-
-        // بیمار — پرس‌وجو غیر قفل، فقط همان کلینیک (هیچ نامی از کلینیک دیگر).
-        // نامی که قبلاً در ردیف وجود دارد، بازنویسی نمی‌شود.
-        $patient_id = $visit['patient_id'] ?? 0;
-        if ( $patient_id > 0 && ! isset( $visit['patient_first_name'] ) ) {
-            $patient = $this->db->fetchRow(
-                'SELECT first_name, last_name FROM ' . $this->db->table( 'cpms_patients' ) . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
-                array(
-                    $patient_id,
-                    $clinic_id,
-                )
-            );
-            if ( $patient !== null ) {
-                $first_name = $patient['first_name'] ?? '';
-                $last_name = $patient['last_name'] ?? '';
-                $visit['patient_first_name'] = (string) $first_name;
-                $visit['patient_last_name'] = (string) $last_name;
-            } else {
-                // fail closed: بیمار در همین کلینیک نیست → نام خالی
-                $visit['patient_first_name'] = '';
-                $visit['patient_last_name'] = '';
-            }
-        }
-
-        // پزشک — پرس‌وجو غیر قفل، فقط همین کلینیک (هیچ نامی از کلینیک دیگر).
-        // نامی که قبلاً در ردیف وجود دارد، بازنویسی نمی‌شود.
-        $clinician_id = $visit['clinician_id'] ?? 0;
-        $clinician_id = (int) $clinician_id;
-        if ( $clinician_id > 0 && ! isset( $visit['clinician_name'] ) ) {
-            $clinician = $this->db->fetchRow(
-                'SELECT full_name FROM ' . $this->db->table( 'cpms_clinicians' ) . ' WHERE id = %d AND clinic_id = %d LIMIT 1',
-                array(
-                    $clinician_id,
-                    $clinic_id,
-                )
-            );
-            if ( $clinician !== null ) {
-                $full_name = $clinician['full_name'] ?? '';
-                $visit['clinician_name'] = (string) $full_name;
-            } else {
-                // fail closed: پزشک در همین کلینیک نیست → null
-                $visit['clinician_name'] = null;
-            }
-        }
-
-        return $visit;
-    }
-
-    /**
-     * تکمیل دسته‌ای نام‌های نمایشی برای یک گروه ویزیت (صف / داشبورد روز).
-     *
-     * به‌جای دو پرس‌وجو در هر ردیف (N+1)، برای هر clinic_id یک پرس‌وجو به
-     * cpms_patients و یک پرس‌وجو به cpms_clinicians با جملة IN اجرا
-     * می‌کند: همیشه غیر قفل و همیشه clinic_scoped (tenancy حفظ شده، fail
-     * closed). نشان `_names_enriched` تنظیم می‌شود تا presentVisit() پرس‌وجو
-     * تکراری نکند.
-     *
-     * @param list<array<string, mixed>> $visits
-     * @return list<array<string, mixed>>
-     */
-    private function enrich_visit_names_batch(array $visits): array
-    {
-        $by_clinic = array();
-        foreach ( $visits as $index => $visit ) {
-            $clinic_id = $visit['clinic_id'] ?? 0;
-            $clinic_id = (int) $clinic_id;
-            if ( $clinic_id <= 0 ) {
-                $visits[ $index ]['_names_enriched'] = true;
-                continue;
-            }
-            $by_clinic[ $clinic_id ][] = $index;
-        }
-
-        foreach ( $by_clinic as $clinic_id => $indexes ) {
-            $patient_ids = array();
-            $clinician_ids = array();
-            foreach ( $indexes as $index ) {
-                $visit_patient_id = $visits[ $index ]['patient_id'] ?? 0;
-                if ( (int) $visit_patient_id > 0 && ! isset( $visits[ $index ]['patient_first_name'] ) ) {
-                    $patient_ids[] = (int) $visit_patient_id;
-                }
-                $visit_clinician_id = $visits[ $index ]['clinician_id'] ?? 0;
-                if ( (int) $visit_clinician_id > 0 && ! isset( $visits[ $index ]['clinician_name'] ) ) {
-                    $clinician_ids[] = (int) $visit_clinician_id;
-                }
-            }
-
-            $patient_map = array();
-            if ( ! empty( $patient_ids ) ) {
-                $patient_ids = array_unique( $patient_ids );
-                // Chunk the IN clause so a queue with more ids than a single
-                // query limit never silently loses names.
-                foreach ( array_chunk( $patient_ids, 500 ) as $chunk ) {
-                    $placeholders = implode( ',', array_fill( 0, count( $chunk ), '%d' ) );
-                    $rows = $this->db->fetchAll(
-                        'SELECT id, first_name, last_name FROM ' . $this->db->table( 'cpms_patients' ) .
-                        ' WHERE clinic_id = %d AND id IN (' . $placeholders . ')',
-                        array_merge( array( $clinic_id ), $chunk )
-                    );
-                    foreach ( (array) $rows as $row ) {
-                        $row_first_name = $row['first_name'] ?? '';
-                        $row_last_name = $row['last_name'] ?? '';
-                        $patient_map[ (int) $row['id'] ] = array(
-                            'first_name' => (string) $row_first_name,
-                            'last_name' => (string) $row_last_name,
-                        );
-                    }
-                }
-            }
-
-            $clinician_map = array();
-            if ( ! empty( $clinician_ids ) ) {
-                $clinician_ids = array_unique( $clinician_ids );
-                // Chunk the IN clause so a queue with more ids than a single
-                // query limit never silently loses names.
-                foreach ( array_chunk( $clinician_ids, 500 ) as $chunk ) {
-                    $placeholders = implode( ',', array_fill( 0, count( $chunk ), '%d' ) );
-                    $rows = $this->db->fetchAll(
-                        'SELECT id, full_name FROM ' . $this->db->table( 'cpms_clinicians' ) .
-                        ' WHERE clinic_id = %d AND id IN (' . $placeholders . ')',
-                        array_merge( array( $clinic_id ), $chunk )
-                    );
-                    foreach ( (array) $rows as $row ) {
-                        $row_full_name = $row['full_name'] ?? '';
-                        $clinician_map[ (int) $row['id'] ] = (string) $row_full_name;
-                    }
-                }
-            }
-
-            foreach ( $indexes as $index ) {
-                $visit = $visits[ $index ];
-                $visit['_names_enriched'] = true;
-                $visit_patient_id = $visit['patient_id'] ?? 0;
-                if ( (int) $visit_patient_id > 0 && ! isset( $visit['patient_first_name'] ) ) {
-                    $patient = $patient_map[ (int) $visit_patient_id ] ?? null;
-                    if ( $patient !== null ) {
-                        $visit['patient_first_name'] = $patient['first_name'];
-                        $visit['patient_last_name'] = $patient['last_name'];
-                    } else {
-                        // fail closed: بیمار در همین کلینیک نیست → نام خالی
-                        $visit['patient_first_name'] = '';
-                        $visit['patient_last_name'] = '';
-                    }
-                }
-                $visit_clinician_id = $visit['clinician_id'] ?? 0;
-                if ( (int) $visit_clinician_id > 0 && ! isset( $visit['clinician_name'] ) ) {
-                    $visit['clinician_name'] = $clinician_map[ (int) $visit_clinician_id ] ?? null;
-                }
-                $visits[ $index ] = $visit;
-            }
-        }
-
-        return $visits;
-    }
-
-    /**
-     * @param array<string, mixed> $visit
-     * @return array<string, mixed>
-     */
     private function presentVisit(array $visit): array
     {
-        $visit = $this->enrich_visit_names( $visit );
-        // Defense-in-depth: the internal _names_enriched marker must never
-        // leak into the presented row / REST response / JSON output.
-        unset( $visit['_names_enriched'] );
+        $visit = $this->nameEnricher->enrich_visit_names($visit);
+        unset($visit['_names_enriched']);
 
         $id = (int) $visit['id'];
         $patient_id = (int) $visit['patient_id'];
         $patient_first_name = $visit['patient_first_name'] ?? '';
         $patient_last_name = $visit['patient_last_name'] ?? '';
-        $patient_name = trim( $patient_first_name . ' ' . $patient_last_name );
+        $patient_name = trim($patient_first_name . ' ' . $patient_last_name);
         $clinician_id = (int) $visit['clinician_id'];
         $clinician_name = $visit['clinician_name'] ?? null;
         $appointment_id = $visit['appointment_id'];
-        if ( $appointment_id !== null ) {
+        if ($appointment_id !== null) {
             $appointment_id = (int) $appointment_id;
         }
         $source = (string) $visit['source'];
         $status = (string) $visit['status'];
         $express_raw = $visit['express'] ?? 0;
-        $express = ! empty( $express_raw ) && (int) $express_raw === 1;
+        $express = !empty($express_raw) && (int) $express_raw === 1;
         $check_in_at = $visit['check_in_at'];
         $waiting_since = $visit['waiting_since'];
         $called_at = $visit['called_at'];
@@ -2251,7 +2063,6 @@ final class VisitService
             'cancel_reason' => $cancel_reason,
         ];
     }
-    // phpcs:enable
 
     private function appointmentStatusLabel(string $status): string
     {

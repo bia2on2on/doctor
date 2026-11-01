@@ -186,29 +186,6 @@ final class AppointmentRepository
     }
 
     /**
-     * Find a non-terminal (pending/confirmed) appointment for a patient in a
-     * clinic on a specific day. Used by the Walk-in guard to prevent
-     * registering a walk-in when the patient already has an active
-     * appointment in the same clinic.
-     *
-     * @return array<string, mixed>|null
-     */
-    public function find_non_terminal_by_patient_clinic_day( int $patient_id, int $clinic_id, string $date ): ?array
-    {
-        return $this->db->fetchRow(
-            'SELECT id, status FROM ' . $this->db->table( 'cpms_appointments' ) .
-            ' WHERE patient_id = %d AND clinic_id = %d AND slot_date = %s AND status IN ( %s, %s ) LIMIT 1',
-            array(
-                $patient_id,
-                $clinic_id,
-                $date,
-                'pending',
-                'confirmed',
-            )
-        );
-    }
-
-    /**
      * Patient Portal appointment list. Ownership and presentation metadata are
      * resolved in one bounded query: an active Patient, a durable user link,
      * and exact link/Patient/Appointment Clinic consistency are all mandatory.

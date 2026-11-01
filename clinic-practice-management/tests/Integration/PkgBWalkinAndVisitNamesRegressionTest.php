@@ -86,6 +86,7 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
             )
         );
         $this->clinicianId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->clinicianId, 'clinic-1 clinician row must be created');
 
         // Foreign clinic (2) sharing the default organization, for tenancy tests.
         $wpdb->query(
@@ -100,6 +101,7 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
             )
         );
         $this->foreignClinicId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->foreignClinicId, 'foreign org row must be created');
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics
@@ -120,18 +122,20 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
                      (clinic_id, full_name, wp_user_id, is_active, created_at, updated_at)
-                 VALUES (%d, %s, %d, 1, %s, %s)',
+                 VALUES (%d, %s, %s, 1, %s, %s)',
                 $foreignClinicId,
                 'Dr Foreign',
-                0,
+                NULL,
                 $now,
                 $now
             )
         );
         $this->foreignClinicianId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->foreignClinicianId, 'foreign clinician row must be created');
 
         // Doctor user linked to the Clinic-1 physician (doctor-owned transitions).
         $this->doctorUserId = (int) wp_create_user('pkgb_doctor_' . bin2hex(random_bytes(3)), 'pass-12345', 'pkgb-doc@test.local');
+        self::assertGreaterThan(0, $this->doctorUserId, 'doctor user must be created');
         $doctor = get_userdata($this->doctorUserId);
         $doctor->set_role('cpms_doctor');
         $wpdb->query(
@@ -156,6 +160,7 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
             )
         );
         $this->patientId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->patientId, 'clinic-1 patient row must be created');
 
         // Foreign patient in the foreign clinic.
         $wpdb->query(
@@ -171,9 +176,11 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
             )
         );
         $this->foreignPatientId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $this->foreignPatientId, 'foreign patient row must be created');
 
         // Secretary (WP role path — used without explicit scope for check-in).
         $this->secretaryUserId = (int) wp_create_user('pkgb_secretary_' . bin2hex(random_bytes(3)), 'pass-12345', 'pkgb-sec@test.local');
+        self::assertGreaterThan(0, $this->secretaryUserId, 'secretary user must be created');
         $secretary = get_userdata($this->secretaryUserId);
         $secretary->set_role('cpms_secretary');
 
@@ -269,11 +276,11 @@ final class PkgBWalkinAndVisitNamesRegressionTest extends WP_UnitTestCase
 
     public function testStaffBookedSameDayAppointmentIsNotWalkInExpress(): void
     {
-        // Clinic-local today with a future slot time (staff: min lead 0).
-        $tz = new DateTimeZone('Asia/Tehran');
-        $nowLocal = new DateTimeImmutable('now', $tz);
-        $slotDate = $nowLocal->format('Y-m-d');
-        $slotTime = $nowLocal->modify('+3 hours')->format('H:i:s');
+        // Clinic-local today with a future slot time (staff: min lead 0). Fixed
+        // date/time — no wall-clock dependence (avoids midnight wrap after 21:00
+        // Asia/Tehran).
+        $slotDate = '2026-11-01';
+        $slotTime = '15:00:00';
 
         $slot = $this->makeSlot($slotDate, $slotTime);
 
