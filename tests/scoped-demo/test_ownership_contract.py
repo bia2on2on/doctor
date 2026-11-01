@@ -125,7 +125,11 @@ class OwnershipContractTests(unittest.TestCase):
         """
         manifest = json.loads(MANIFEST.read_text(encoding="utf-8"))
         tables = manifest["tables"]
-        self.assertEqual(60, len(tables))
+        # 61 since schema 2026_10_31_0031 added cpms_audit_seq (the append-only
+        # audit serialization guard). Membership is still checked table by table
+        # against the companion constants below, so a wrong count cannot be
+        # "fixed" by editing this number alone.
+        self.assertEqual(61, len(tables))
         self.assertEqual(
             sorted(tables), sorted(self.known), "KNOWN_TABLES must equal the manifest inventory"
         )
@@ -180,7 +184,14 @@ class OwnershipContractTests(unittest.TestCase):
     def test_design_documents_cover_all_known_tables(self) -> None:
         for table in self.known:
             self.assertIn(f"`{table}`", self.ownership_map, table)
-        self.assertIn("each of the 60", self.acceptance_plan)
+        # The documented count is derived from the companion inventory rather than
+        # written as a literal on both sides. The previous literal pair ("60" in the
+        # docs, "60" here) went stale the moment schema 2026_10_31_0031 added
+        # `cpms_audit_seq`, and nothing could notice: the prose and the assertion
+        # agreed with each other while both disagreed with the source.
+        expected = len(self.known)
+        self.assertIn(f"each of the {expected}", self.acceptance_plan)
+        self.assertIn(f"**{expected}**", self.ownership_map)
         self.assertIn("NOT RUN", self.acceptance_plan)
 
     def test_pinned_schema_and_audit_chain_contract_exist(self) -> None:
@@ -202,7 +213,27 @@ class OwnershipContractTests(unittest.TestCase):
         self.assertEqual(version, latest_versions[-1])
         hash_chain = read(HASH_CHAIN)
         audit_logger = read(AUDIT_LOGGER)
-        self.assertIn("public static function verify(array $rows)", hash_chain)
+        # Production's verifier is the contract, and it verifies a row list from a
+        # CALLER-SUPPLIED anchor (GENESIS by default) so a bounded suffix can be
+        # checked against the real predecessor hash. Asserting the old
+        # one-argument literal `verify(array $rows)` described a signature
+        # production had already outgrown on `main`, so the assertion was stale
+        # rather than the code being wrong. These assertions pin the real,
+        # stronger contract: an explicit optional anchor, the two delegating
+        # entry points, and fail-closed reporting.
+        self.assertRegex(
+            hash_chain,
+            r"public static function verify\(\s*array \$rows\s*,\s*\?string \$anchor = null\s*\)\s*:\s*array",
+            "HashChain::verify must accept an explicit anchor (fail-closed suffix verification)",
+        )
+        for entry_point in ("verify_full_chain", "verify_suffix"):
+            self.assertRegex(
+                hash_chain,
+                rf"public static function {entry_point}\(",
+                f"HashChain::{entry_point} must exist for full/suffix verification",
+            )
+        self.assertIn("hash_equals(", hash_chain, "chain comparison must be constant-time")
+        self.assertIn("'ok' => false", hash_chain, "a broken chain must report ok=false")
         self.assertIn("row_hash = SHA-256(prev_hash + canonical(fields))", hash_chain)
         self.assertIn("Append-only + Hash Chain", audit_logger)
         self.assertIn("public function log(", audit_logger)

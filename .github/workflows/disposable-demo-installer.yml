@@ -254,7 +254,7 @@ jobs:
           wp plugin install "$GITHUB_WORKSPACE/$CPMS_ZIP" --activate --path="$WP_DIR" --allow-root
           wp plugin is-active clinic-practice-management --path="$WP_DIR" --allow-root
           SCHEMA="$(wp eval 'echo \ClinicCore\Bootstrap\App::migrations()->currentVersion();' --path="$WP_DIR" --allow-root)"
-          test "$SCHEMA" = '2026_10_27_0030'
+          test "$SCHEMA" = '2026_10_31_0031'
           echo "SCHEMA=$SCHEMA"
           OUT_DIR=/tmp/cpdd-ci bash "$GITHUB_WORKSPACE/bin/build-demo-installer.sh" --companion | tee /tmp/cpdd-ci/companion-build.log
           wp plugin install /tmp/cpdd-ci/cpms-disposable-demo-companion-1.0.0.zip --activate --path="$WP_DIR" --allow-root
@@ -284,6 +284,34 @@ jobs:
             --use-include --path="$WP_DIR" --allow-root --user="$ADMIN_USER" \
             2>&1 | tee /tmp/cpdd-ci/integration.log
           grep -q '^CPDD_INTEGRATION=PASS' /tmp/cpdd-ci/integration.log
+
+      # Fail-closed diagnostics: runs only after the step above failed, reports the
+      # first fatal line as a single annotation (so it is visible without raw logs)
+      # and changes nothing about the failure itself — the failing step already
+      # failed the job and this step does not alter any exit code or result.
+      - name: Integration acceptance diagnostics (annotation only)
+        if: failure()
+        run: |
+          LOG=/tmp/cpdd-ci/integration.log
+          if [ ! -s "$LOG" ]; then
+            echo "::error title=CPDD integration diagnostics::no integration log was written"
+            exit 0
+          fi
+          echo '--- last 30 lines of integration.log ---'
+          tail -n 30 "$LOG" || true
+          FATAL=$(grep -m1 -E 'PHP (Fatal|Parse) error|Uncaught |CPDD_INTEGRATION_FATAL=|^::error ' "$LOG" 2>/dev/null \
+            | sed -E 's/(pass(word)?|passwd|pepper|secret|token|apikey|api_key|salt|nonce)([[:space:]]*[=:][[:space:]]*)[^[:space:],;]+/\1\3[redacted]/Ig' \
+            | cut -c1-400 || true)
+          NFail=$(grep -c '^FAIL ' "$LOG" 2>/dev/null || true)
+          NPASS=$(grep -c '^PASS ' "$LOG" 2>/dev/null || true)
+          echo "::error title=CPDD integration diagnostics::first fatal: ${FATAL:-<none matched>} (assert PASS=${NPASS:-0} FAIL=${NFail:-0})"
+          # Report the failing assertions themselves (label only, no secrets).
+          NL=0
+          while IFS= read -r line; do
+            NL=$((NL + 1))
+            echo "::error title=CPDD failing assertion ${NL}::$(printf '%s' "$line" | cut -c1-300)"
+          done < <(grep -m3 '^FAIL ' "$LOG" || true)
+          exit 0
 
       - name: Post-teardown site state (default data intact, no demo artefacts)
         run: |

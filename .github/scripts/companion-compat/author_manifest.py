@@ -274,6 +274,13 @@ NEVER_OWNED_TABLES = {
     "cpms_license_install": "install-level licence identity",
     "cpms_license_state": "install-level licence runtime state",
     "cpms_schema_migrations": "runner-owned migration bookkeeping",
+    # Schema 2026_10_31_0031. The guard is shared audit-integrity state: a
+    # singleton row (id = 1) with no clinic_id, no organization_id and no foreign
+    # key, so nothing in it can prove demo ownership. Production AuditLogger
+    # locks it FOR UPDATE on every append and throws when the row is absent, so
+    # deleting it would break audit writes on the host site. Never owned, never
+    # deletable, in either lane.
+    "cpms_audit_seq": "install-level audit serialization guard",
 }
 
 # Tables that feed a set with their own primary key.
@@ -330,6 +337,17 @@ PRESERVED_ANCHORS = {
 }
 RUNNER_MANAGED = {
     "cpms_schema_migrations": "Migration bookkeeping written by MigrationRunner; always preserved.",
+    # Written only by migration 2026_10_31_0031 (via MigrationRunner) and by the
+    # production AuditLogger inside its append transaction; never written by the
+    # fixture. `runner_managed` keeps it out of every teardown path.
+    "cpms_audit_seq": (
+        "Singleton (id = 1) guard row. Migration 2026_10_31_0031 (run by MigrationRunner) "
+        "creates and fast-forwards it; AuditLogger locks it FOR UPDATE inside the same "
+        "transaction as every audit append, updates only last_audit_id/updated_at, and throws "
+        "when the row is absent. It has no clinic_id, no organization_id and no foreign key, so "
+        "nothing in it can prove demo ownership; deleting it would break audit writes on the "
+        "host site. Install-level host state, never demo-owned, never deleted in either lane."
+    ),
 }
 
 # Verified deletion-key rules for tables that have NO surrogate `id` column.

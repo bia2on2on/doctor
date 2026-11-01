@@ -153,8 +153,17 @@ class DefectCSchema0030Coverage(unittest.TestCase):
     def setUpClass(cls) -> None:
         cls.state = cs.load(COMPANION)
 
-    def test_schema_pin_is_0030(self) -> None:
-        self.assertEqual("2026_10_27_0030", self.state.schema_version)
+    def test_schema_pin_matches_the_production_head(self) -> None:
+        """The companion's pin must equal the authoritative migration head.
+
+        Derived from `clinic-practice-management/src/Migrations/` rather than
+        written as a literal: the literal version of this test kept asserting
+        `2026_10_27_0030` after production had moved on, so it could only ever be
+        repaired by hand. It now fails on any drift in either direction.
+        """
+        head = ps.load(ROOT / "clinic-practice-management").head
+        self.assertTrue(head, "the migrations directory must yield a schema head")
+        self.assertEqual(head, self.state.schema_version)
 
     def test_tables_are_known_and_operational(self) -> None:
         self.assertTrue(self.TABLES.issubset(set(self.state.known_tables)))

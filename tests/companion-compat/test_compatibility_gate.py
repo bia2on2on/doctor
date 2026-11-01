@@ -65,15 +65,25 @@ class DerivedProductionFacts(unittest.TestCase):
         cls.surface = pf.load(PLUGIN)
 
     def test_schema_head_matches_the_pinned_contract(self) -> None:
-        self.assertEqual("2026_10_27_0030", self.schema.head)
-        self.assertEqual(30, len(self.schema.versions))
-        self.assertEqual(60, len(self.schema.live_tables()))
+        self.assertEqual("2026_10_31_0031", self.schema.head)
+        self.assertEqual(31, len(self.schema.versions))
+        self.assertEqual(61, len(self.schema.live_tables()))
 
     def test_schema_0030_tables_are_discovered(self) -> None:
         live = self.schema.live_tables()
         self.assertTrue(SCHEMA_0030_TABLES.issubset(live))
         for table in SCHEMA_0030_TABLES:
             self.assertEqual("2026_10_27_0030", self.schema.tables[table].introduced_by)
+
+    def test_schema_0031_adds_only_the_audit_guard(self) -> None:
+        """Schema 0031 adds exactly one table, and it is the singleton guard."""
+        self.assertEqual(["cpms_audit_seq"], self.schema.tables_added_in("2026_10_31_0031"))
+        guard = self.schema.tables["cpms_audit_seq"]
+        self.assertEqual(["id"], guard.primary_key)
+        self.assertEqual(["id", "last_audit_id", "created_at", "updated_at"], guard.columns)
+        self.assertEqual([], guard.foreign_keys, "the guard references no tenant parent")
+        for tenant_column in ("clinic_id", "organization_id"):
+            self.assertNotIn(tenant_column, guard.columns)
 
     def test_tables_without_a_surrogate_id_are_identified(self) -> None:
         without_id = {
@@ -116,13 +126,17 @@ class CompanionDeclaredState(unittest.TestCase):
         cls.manifest = load_manifest()
 
     def test_schema_pin_is_current(self) -> None:
-        self.assertEqual("2026_10_27_0030", self.state.schema_version)
+        self.assertEqual("2026_10_31_0031", self.state.schema_version)
+        self.assertEqual("2026_10_31_0031", self.manifest["compatibility"]["companion_schema_pin"])
 
     def test_inventory_is_the_manifest_inventory(self) -> None:
         self.assertEqual(sorted(self.manifest["tables"]), sorted(self.state.known_tables))
+        # 61 tables since schema 2026_10_31_0031 added cpms_audit_seq. The manifest
+        # is the reviewed inventory of record; the companion partition must match.
+        self.assertEqual(61, len(self.manifest["tables"]))
         self.assertEqual(50, len(self.state.operational_tables))
-        self.assertEqual(10, len(self.state.system_tables))
-        self.assertEqual(60, len(self.state.known_tables))
+        self.assertEqual(11, len(self.state.system_tables))
+        self.assertEqual(61, len(self.state.known_tables))
 
     def test_membership_id_sets_are_namespaced(self) -> None:
         self.assertNotIn("membership_id", self.state.scoped_column_map)
@@ -303,6 +317,233 @@ class GateBehaviour(unittest.TestCase):
         )
 
 
+class AuditGuardOwnership(unittest.TestCase):
+    """Schema 0031's `cpms_audit_seq` guard is safe in BOTH lanes.
+
+    The guard is a singleton (id = 1) that production's AuditLogger locks and
+    fast-forwards on every audit append. It carries no clinic, organization or
+    parent reference, so no row in it can ever prove demo ownership. These tests
+    pin the consequences of that fact: it is known (so neither lane is blind to
+    it), it is system state (so the strict clean-site preflight does not read the
+    seeded row as demo residue), and it is unreachable by every deletion path (so
+    the scoped lane cannot destroy install-level host state).
+    """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.state = cs.load(COMPANION)
+        cls.manifest = load_manifest()
+        cls.entry = cls.manifest["tables"]["cpms_audit_seq"]
+
+    def test_guard_is_known_to_the_companion(self) -> None:
+        self.assertIn("cpms_audit_seq", self.state.known_tables)
+        self.assertIn("cpms_audit_seq", self.manifest["tables"])
+        self.assertEqual(
+            "2026_10_31_0031",
+            self.entry["since"],
+            "the guard must be attributed to the migration that created it",
+        )
+
+    def test_guard_is_system_state_not_operational_data(self) -> None:
+        """A seeded guard row must not make a clean disposable site look dirty.
+
+        `Preflight::check_cpms_data()` requires every OPERATIONAL_TABLE to be
+        empty and tolerates rows in SYSTEM_TABLES (that is how the migration
+        bookkeeping table survives teardown). Classifying the guard as
+        operational would make every migrated site fail the clean-site preflight.
+        """
+        self.assertIn("cpms_audit_seq", self.state.system_tables)
+        self.assertNotIn("cpms_audit_seq", self.state.operational_tables)
+        self.assertEqual("system", self.entry["inventory"])
+
+    def test_guard_is_never_owned_in_scoped_mode(self) -> None:
+        self.assertIn("cpms_audit_seq", self.state.scoped_never_owned)
+        self.assertEqual(
+            self.manifest["ownership_rules"]["never_owned"]["cpms_audit_seq"],
+            self.state.scoped_never_owned["cpms_audit_seq"],
+            "the companion and the manifest must state the same never-owned reason",
+        )
+        self.assertGreater(len(self.state.scoped_never_owned["cpms_audit_seq"]), 20)
+        self.assertEqual("never", self.entry["ownership_rule"]["kind"])
+        self.assertEqual({}, self.entry["ownership_columns"])
+        self.assertIsNone(self.entry["feeds_id_set"])
+
+    def test_guard_is_outside_every_deletion_path(self) -> None:
+        """Neither lane may delete the guard."""
+
+        self.assertEqual("runner_managed", self.entry["teardown_class"])
+        self.assertEqual("never", self.entry["teardown_mode"])
+        self.assertNotIn("cpms_audit_seq", self.state.delete_order)
+        self.assertNotIn("cpms_audit_seq", self.state.scoped_constants.get("GLOBAL_TABLES", []))
+        self.assertNotIn(
+            "cpms_audit_seq", self.state.scoped_constants.get("PRESERVED_PARENT_TABLES", [])
+        )
+
+    def test_gate_reports_no_audit_guard_finding(self) -> None:
+        result = evaluate.evaluate(ROOT, gate="compatibility")
+        guard_findings = [
+            finding["message"]
+            for finding in result["findings"]
+            if "cpms_audit_seq" in finding["message"]
+        ]
+        self.assertEqual([], guard_findings)
+        # Inventory and teardown must be clean at BOTH severities: an
+        # "info" row here would still mean the table is not fully evaluated.
+        for check in ("table_inventory", "inventory_partition", "teardown_coverage"):
+            self.assertEqual(
+                [],
+                [f["message"] for f in result["findings"] if f["check"] == check],
+                f"{check} must report nothing for the resolved 0031 inventory",
+            )
+        guard_blockers = [
+            f["message"]
+            for f in result["findings"]
+            if f["check"] == "ownership_rules" and f["severity"] == evaluate.BLOCKER
+        ]
+        self.assertEqual([], guard_blockers)
+
+    def test_scoped_baseline_excludes_only_the_two_guard_columns(self) -> None:
+        """A demo audit append must not read as baseline drift.
+
+        The baseline hashes baseline rows and refuses teardown when one changed.
+        Every audit append rewrites `last_audit_id`/`updated_at`, so those two
+        columns are excluded - and nothing else, so the guard's identity stays
+        covered. This is a source-level assertion: the PHP suites prove the
+        behaviour under a real database.
+        """
+        source = (COMPANION / "includes" / "class-cpms-demo-scoped-baseline.php").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn(
+            "'cpms_audit_seq' => array( 'last_audit_id', 'updated_at' ),",
+            source,
+            "the guard's mutable columns must be declared volatile, narrowly",
+        )
+        self.assertIn("return array( 'id' );", source, "the guard's key must be its id alone")
+
+
+class AuditGuardAgainstProductionWrites(unittest.TestCase):
+    """The companion's guard handling is derived from what production WROTE.
+
+    `AuditLogger` (production, schema 0031) locks the singleton guard row
+    `FOR UPDATE`, then updates exactly two bookkeeping columns inside the same
+    transaction, and throws when the row is absent. Those three facts decide the
+    companion's obligations, so they are read out of the production source here
+    instead of being restated by hand: if production ever writes another column,
+    or stops locking the row, the scoped baseline's narrow volatility list would
+    silently become wrong and this test says so.
+    """
+
+    AUDIT_LOGGER = PLUGIN / "src" / "Infrastructure" / "Audit" / "AuditLogger.php"
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.source = cls.AUDIT_LOGGER.read_text(encoding="utf-8")
+        cls.state = cs.load(COMPANION)
+        cls.manifest = load_manifest()
+        cls.baseline_source = (
+            COMPANION / "includes" / "class-cpms-demo-scoped-baseline.php"
+        ).read_text(encoding="utf-8")
+
+    def test_production_reads_the_guard(self) -> None:
+        self.assertIn("cpms_audit_seq", self.source)
+
+    def test_the_guard_is_locked_per_append(self) -> None:
+        """A demo append contends on this row, so it is not site data."""
+        self.assertRegex(
+            self.source,
+            r"fetchRowForUpdate\(\s*'SELECT id FROM ' \. \$this->db->table\( 'cpms_audit_seq'",
+            "production must lock the guard row for the serialization contract to hold",
+        )
+
+    def test_production_fails_closed_when_the_guard_is_missing(self) -> None:
+        """Deleting the row would break every audit append on the site."""
+        self.assertIn("audit guard row missing", self.source)
+        self.assertEqual("runner_managed", self.manifest["tables"]["cpms_audit_seq"]["teardown_class"])
+        self.assertNotIn("cpms_audit_seq", self.state.delete_order)
+
+    def test_baseline_volatility_equals_the_columns_production_writes(self) -> None:
+        import re
+
+        written = set(
+            re.findall(
+                r"([a-z_]+) = %[ds]",
+                re.search(
+                    r"'UPDATE ' \. \$this->db->table\( 'cpms_audit_seq' \) \. ' SET (?P<set>[^']+)'",
+                    self.source,
+                ).group("set"),
+            )
+        )
+        self.assertEqual({"last_audit_id", "updated_at"}, written, "production's guard writes changed")
+
+        declared = set(
+            re.findall(
+                r"'([a-z_]+)'",
+                re.search(
+                    r"'cpms_audit_seq' => array\( (?P<columns>[^)]*)\)",
+                    self.baseline_source,
+                ).group("columns"),
+            )
+        )
+        self.assertEqual(
+            written,
+            declared,
+            "the scoped baseline must exclude exactly the columns production rewrites, "
+            "so a legitimate append cannot read as drift and nothing else is exempted",
+        )
+
+
+class AuditGuardDetectorsStillFail(unittest.TestCase):
+    """A wrong rule for the guard must be rejected, not silently accepted."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.schema = ps.load(PLUGIN)
+        cls.state = cs.load(COMPANION)
+        cls.manifest = load_manifest()
+
+    def test_deletable_classification_without_teardown_entry_is_rejected(self) -> None:
+        manifest = json.loads(json.dumps(self.manifest))
+        manifest["tables"]["cpms_audit_seq"]["teardown_class"] = "deletable"
+        report = evaluate.Report()
+        evaluate.check_teardown_coverage(self.schema, self.state, manifest, report)
+        blocked = [
+            f.message
+            for f in report.findings
+            if f.check == "teardown_coverage" and f.severity == evaluate.BLOCKER
+        ]
+        self.assertTrue(
+            any("cpms_audit_seq" in message for message in blocked),
+            f"a deletable guard must be rejected, got {blocked}",
+        )
+
+    def test_never_owned_guard_in_delete_order_is_rejected(self) -> None:
+        state = cs.load(COMPANION)
+        state.delete_order = list(state.delete_order) + ["cpms_audit_seq"]
+        report = evaluate.Report()
+        evaluate.check_ownership_rule_agreement(self.schema, state, self.manifest, report)
+        blocked = [
+            f.message for f in report.findings if f.check == "ownership_rules" and f.severity == evaluate.BLOCKER
+        ]
+        self.assertTrue(
+            any("cpms_audit_seq" in message for message in blocked),
+            f"a never-owned guard in DELETE_ORDER must be a blocker, got {blocked}",
+        )
+
+    def test_dropping_the_guard_from_the_inventory_is_rejected(self) -> None:
+        state = cs.load(COMPANION)
+        state.known_tables = [t for t in state.known_tables if t != "cpms_audit_seq"]
+        report = evaluate.Report()
+        evaluate.check_table_inventory(self.schema, state, self.manifest, report)
+        blocked = [
+            f.message for f in report.findings if f.check == "table_inventory"
+        ]
+        self.assertTrue(
+            any("cpms_audit_seq" in message for message in blocked),
+            f"an inventory that forgets the new table must fail closed, got {blocked}",
+        )
+
+
 class DetectorsStillFail(unittest.TestCase):
     """Reconstruct historical defect shapes and prove each check rejects them."""
 
@@ -446,11 +687,16 @@ class DetectorsStillFail(unittest.TestCase):
     def test_stale_workflow_schema_pin_is_rejected(self) -> None:
         """A lane's hardcoded schema assertion must match the derived head.
 
-        Both companion lanes asserted `2026_10_18_0029` long after production
-        moved to `2026_10_27_0030`. Because their path filters exclude the
-        production subtree they only ran on a companion change, so the staleness
-        surfaced as a red lane on an unrelated pull request instead of being
-        evaluated here.
+        Both companion lanes once asserted `2026_10_18_0029` long after production
+        had moved on. Because their path filters exclude the production subtree
+        they only ran on a companion change, so the staleness surfaced as a red
+        lane on an unrelated pull request instead of being evaluated here.
+
+        The stale version injected below is derived from the migration history
+        rather than hardcoded: a hardcoded literal silently stopped mutating
+        anything once production advanced past it, which turned this detector
+        into a no-op. If a lane no longer asserts the head at all, the mutation
+        below cannot be built and this test fails loudly instead of passing.
         """
         manifest = load_manifest()
         scan = manifest["schema_pin_scan"]
@@ -461,6 +707,8 @@ class DetectorsStillFail(unittest.TestCase):
             [], [f.message for f in report.findings], "the committed workflows must be current"
         )
 
+        head = self.schema.head
+        stale_version = next(v for v in reversed(self.schema.versions) if v != head)
         stale = json.loads(json.dumps(manifest))
         stale["schema_pin_scan"]["allowed_historical_versions"] = []
         stale["schema_pin_scan"]["files"] = [
@@ -469,16 +717,17 @@ class DetectorsStillFail(unittest.TestCase):
         target = ROOT / stale["schema_pin_scan"]["files"][0]
         original = target.read_text(encoding="utf-8")
         try:
-            target.write_text(
-                original.replace("2026_10_27_0030", "2026_10_18_0029").replace(
-                    "2026_10_27_0030", "2026_10_18_0029"
-                ),
-                encoding="utf-8",
+            mutated = original.replace(head, stale_version)
+            self.assertNotEqual(
+                original,
+                mutated,
+                f"{target.name} must assert the current head `{head}` for this detector to mean anything",
             )
+            target.write_text(mutated, encoding="utf-8")
             report = self._report()
             evaluate.check_stale_workflow_pins(self.schema, stale, report, ROOT)
             messages = " ".join(f.message for f in report.findings)
-            self.assertIn("2026_10_18_0029", messages)
+            self.assertIn(stale_version, messages)
             self.assertTrue(any(f.severity == evaluate.BLOCKER for f in report.findings))
         finally:
             target.write_text(original, encoding="utf-8")

@@ -57,7 +57,7 @@ define( 'CPMS_DEMO_STANDALONE', is_file( __DIR__ . '/core/clinic-practice-manage
  * Schema version this installer was written and verified against.
  * Any other version fails closed instead of guessing table/column contracts.
  */
-define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_27_0030' );
+define( 'CPMS_DEMO_SCHEMA_VERSION', '2026_10_31_0031' );
 
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-exception.php';
 require_once CPMS_DEMO_DIR . 'includes/class-cpms-demo-standalone.php';
