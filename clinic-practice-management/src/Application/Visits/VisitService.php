@@ -2180,8 +2180,6 @@ final class VisitService
         // Defense-in-depth: the internal _names_enriched marker must never
         // leak into the presented row / REST response / JSON output.
         unset($visit['_names_enriched']);
-    }
-    // phpcs:enable
 
         return [
             'id' => (int) $visit['id'],
@@ -2205,6 +2203,7 @@ final class VisitService
             'cancel_reason' => $visit['cancel_reason'] ?? null,
         ];
     }
+    // phpcs:enable
 
     private function appointmentStatusLabel(string $status): string
     {
