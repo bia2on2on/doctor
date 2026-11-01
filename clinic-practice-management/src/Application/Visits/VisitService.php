@@ -2006,6 +2006,7 @@ final class VisitService
         // phpcs:enable
     }
 
+    // phpcs:disable WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,Generic.Functions.OpeningFunctionBraceKernighanRitchie.BraceOnNewLine,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceAfterOpen,Generic.WhiteSpace.ArbitraryParenthesesSpacing.SpaceBeforeClose,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose,WordPress.WhiteSpace.OperatorSpacing.NoSpaceBefore,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis,Generic.Formatting.MultipleStatementAlignment.NotSameWarning,WordPress.Arrays.MultipleStatementAlignment.DoubleArrowNotAligned -- established PSR-style in this file: the added name-enrichment helpers reuse the existing camelCase signatures/properties; security, SQL, i18n and escaping sniffs stay active.
     /**
      * تکمیل نام‌های نمایشی (patient_name / clinician_name) با پرس‌وجوهای جداگانه
      * غیر قفل (NON-locking) Scoped شده به clinic_id.
@@ -2109,31 +2110,39 @@ final class VisitService
             $patientMap = [];
             if ($patientIds !== []) {
                 $patientIds = array_unique($patientIds);
-                $placeholders = implode(',', array_fill(0, count($patientIds), '%d'));
-                $rows = $this->db->fetchAll(
-                    'SELECT id, first_name, last_name FROM ' . $this->db->table('cpms_patients') .
-                    ' WHERE clinic_id = %d AND id IN (' . $placeholders . ') LIMIT 1000',
-                    array_merge([$clinicId], $patientIds)
-                );
-                foreach ((array) $rows as $row) {
-                    $patientMap[(int) $row['id']] = [
-                        'first_name' => (string) ($row['first_name'] ?? ''),
-                        'last_name' => (string) ($row['last_name'] ?? ''),
-                    ];
+                // Chunk the IN clause so a queue with more ids than a single
+                // query limit never silently loses names.
+                foreach (array_chunk($patientIds, 500) as $chunk) {
+                    $placeholders = implode(',', array_fill(0, count($chunk), '%d'));
+                    $rows = $this->db->fetchAll(
+                        'SELECT id, first_name, last_name FROM ' . $this->db->table('cpms_patients') .
+                        ' WHERE clinic_id = %d AND id IN (' . $placeholders . ')',
+                        array_merge([$clinicId], $chunk)
+                    );
+                    foreach ((array) $rows as $row) {
+                        $patientMap[(int) $row['id']] = [
+                            'first_name' => (string) ($row['first_name'] ?? ''),
+                            'last_name' => (string) ($row['last_name'] ?? ''),
+                        ];
+                    }
                 }
             }
 
             $clinicianMap = [];
             if ($clinicianIds !== []) {
                 $clinicianIds = array_unique($clinicianIds);
-                $placeholders = implode(',', array_fill(0, count($clinicianIds), '%d'));
-                $rows = $this->db->fetchAll(
-                    'SELECT id, full_name FROM ' . $this->db->table('cpms_clinicians') .
-                    ' WHERE clinic_id = %d AND id IN (' . $placeholders . ') LIMIT 1000',
-                    array_merge([$clinicId], $clinicianIds)
-                );
-                foreach ((array) $rows as $row) {
-                    $clinicianMap[(int) $row['id']] = (string) ($row['full_name'] ?? '');
+                // Chunk the IN clause so a queue with more ids than a single
+                // query limit never silently loses names.
+                foreach (array_chunk($clinicianIds, 500) as $chunk) {
+                    $placeholders = implode(',', array_fill(0, count($chunk), '%d'));
+                    $rows = $this->db->fetchAll(
+                        'SELECT id, full_name FROM ' . $this->db->table('cpms_clinicians') .
+                        ' WHERE clinic_id = %d AND id IN (' . $placeholders . ')',
+                        array_merge([$clinicId], $chunk)
+                    );
+                    foreach ((array) $rows as $row) {
+                        $clinicianMap[(int) $row['id']] = (string) ($row['full_name'] ?? '');
+                    }
                 }
             }
 
@@ -2160,6 +2169,7 @@ final class VisitService
 
         return $visits;
     }
+    // phpcs:enable
 
     /**
      * @param array<string, mixed> $visit
@@ -2168,6 +2178,9 @@ final class VisitService
     private function presentVisit(array $visit): array
     {
         $visit = $this->enrichVisitNames($visit);
+        // Defense-in-depth: the internal _names_enriched marker must never
+        // leak into the presented row / REST response / JSON output.
+        unset($visit['_names_enriched']);
 
         return [
             'id' => (int) $visit['id'],
