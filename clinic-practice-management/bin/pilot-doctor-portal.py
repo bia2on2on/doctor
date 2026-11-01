@@ -3075,8 +3075,33 @@ def prove_one(browser, doctor, vp, shot_name=None, probe_fallback=False):
                 mutate=(vp["vp"] == "desktop-1366"),
             )
         stage = "today-queue"
-        if doctor["today"] not in (page.locator('[data-role="today-date"]').inner_text() or ""):
-            raise RuntimeError("today date not rendered")
+        # Persian/Jalali date UX (production, PR #293): the Doctor Portal renders
+        # the SAME Location-local operational day in its JALALI presentation —
+        # /doctor/*/today returns `jalali` = Jalali::formatYmd(operational_date)
+        # ("YYYY/MM/DD") next to the unchanged Gregorian `date`, and
+        # templates/doctor-portal-shell.php renderToday() writes
+        # `state.today.jalali || state.today.date` into [data-role="today-date"].
+        # Asserting the raw Gregorian `Y-m-d` in that element is therefore stale
+        # (it failed 4x as "today date not rendered" at stage today-queue in run
+        # 41283622334). The contract asserted below is the current one and is
+        # strictly stronger, never weaker:
+        #   1. the payload still binds the real Gregorian operational day to the
+        #      fixture's today (asserted above) and now carries a Jalali form;
+        #   2. the rendered element shows EXACTLY that Jalali presentation;
+        #   3. the element did not silently fall back to the raw Gregorian ISO
+        #      date — a regression back to Gregorian fails here.
+        expected_jalali = str(data.get("jalali") or "").strip()
+        if not re.fullmatch(r"\d{4}/\d{2}/\d{2}", expected_jalali):
+            raise RuntimeError(f"today payload carries no Jalali presentation: {expected_jalali!r}")
+        if expected_jalali == str(doctor["today"]):
+            raise RuntimeError("today Jalali presentation equals the raw Gregorian date")
+        today_date_text = page.locator('[data-role="today-date"]').inner_text() or ""
+        if expected_jalali not in today_date_text:
+            raise RuntimeError(
+                f"today Jalali date not rendered: expected {expected_jalali!r} in {today_date_text!r}"
+            )
+        if str(doctor["today"]) in today_date_text:
+            raise RuntimeError("today date fell back to the raw Gregorian ISO date")
         expected = [doctor["appt_booked"]]
         if doctor["appt_arrived"]:
             expected.append(doctor["appt_arrived"])
