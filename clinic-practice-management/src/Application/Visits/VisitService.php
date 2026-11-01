@@ -2169,7 +2169,6 @@ final class VisitService
 
         return $visits;
     }
-    // phpcs:enable
 
     /**
      * @param array<string, mixed> $visit
@@ -2181,6 +2180,8 @@ final class VisitService
         // Defense-in-depth: the internal _names_enriched marker must never
         // leak into the presented row / REST response / JSON output.
         unset($visit['_names_enriched']);
+    }
+    // phpcs:enable
 
         return [
             'id' => (int) $visit['id'],
