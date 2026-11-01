@@ -67,6 +67,14 @@ final class OtpService
      */
     private const PROVISIONING_PURPOSES = [self::PURPOSE_LOGIN];
 
+    /**
+     * C11 — پنجره‌های سهمیهٔ صادرشده (روزانه/ساعتی). همان مقادیری که پیش‌تر
+     * به‌صورت Literal در request() بود؛ ثابت شده تا «بررسی» و «مصرف» نتوانند
+     * با دو پنجرهٔ متفاوت محاسبه شوند.
+     */
+    private const DAY_WINDOW_SEC = 86400;
+    private const HOUR_WINDOW_SEC = 3600;
+
     private const PEPPER_OPTION = 'cpms_otp_pepper';
     // The lock duration is configurable; clients receive the exact remaining
     // seconds as retry_after rather than a misleading hard-coded duration.
@@ -146,20 +154,17 @@ final class OtpService
         $dailyMax = (int) $settings->get('otp.daily_max');
         $hourlyMax = (int) $settings->get('otp.hourly_max');
 
-        $byDay = $this->rate->hit('otp-day:' . $mobile, $dailyMax, 86400);
-        if (!$byDay['allowed']) {
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- PSR signature parameter, established file style.
-            // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
-            $this->audit( 'OTP_DENIED_DAILY', $userId, $mobile, $ip, [], $clinicId );
-            // Preserve the rate-limit metadata while giving clients the same
-            // relative retry contract as cooldown and lockout responses.
-            $byDay['retry_after'] = max(1, (int) $byDay['reset_at'] - time());
-            throw new OtpException('CLINIC_OTP_DAILY_LIMIT', 'محدودیت ارسال کد در روز به پایان رسیده است', $byDay);
-        }
-        $byHour = $this->rate->hit('otp-hour:' . $mobile, $hourlyMax, 3600);
-        if (!$byHour['allowed']) {
-            throw new OtpException('CLINIC_RATE_LIMITED', 'درخواست‌های شما موقتاً محدود شده است', $byHour);
-        }
+        // C11 — per-phone day/hour are *issuance* quotas, not attempt quotas:
+        // they are charged only when a challenge is actually created, so a
+        // request rejected by cooldown or lockout consumes neither. They are no
+        // longer hit here: the decision and the charge both live inside the
+        // per-mobile issuance guard below (see issuanceQuotaDenial() and the
+        // charge after every policy gate passes).
+        //
+        // The per-IP counter stays exactly where it was and keeps its meaning:
+        // it limits *attempts* from one address per hour, including attempts
+        // that end up rejected by cooldown/lockout. That behaviour is
+        // deliberately unchanged.
         if ($ip !== null && $ip !== '') {
             $byIp = $this->rate->hit('otp-ip:' . $ip, 10, 3600);
             if (!$byIp['allowed']) {
@@ -178,7 +183,7 @@ final class OtpService
         // per-mobile limits; it never stores a raw mobile or a code.
         $guard_key = 'otp-send-guard:' . hash( 'sha256', $mobile );
         $issue = $this->db->transactional(
-            function () use ( $guard_key, $mobile, $purpose, $policy, $settings, $user_id, $ip, $clinic_id ): array {
+            function () use ( $guard_key, $mobile, $purpose, $policy, $settings, $user_id, $ip, $clinic_id, $dailyMax, $hourlyMax ): array {
                 $locked = $this->db->query(
                     'INSERT INTO ' . $this->db->table( 'cpms_rate_limits' ) .
                     ' (window_key, window_id, window_sec, hits) VALUES (%s, 0, 1, 0)' .
@@ -187,6 +192,21 @@ final class OtpService
                 );
                 if ( ! $locked || $this->db->wpdb()->last_error !== '' ) {
                     throw new \RuntimeException( 'OTP issuance guard failed' );
+                }
+
+                // C11 — quota gate. Checked here so the denial is serialized
+                // with issuance too, and it only reads (peek, never hit): a
+                // request that ends up rejected must not consume the day/hour
+                // quota. Error precedence is preserved: the day/hour caps are
+                // still reported before cooldown/lockout, as before.
+                $quota = $this->issuanceQuotaDenial( $mobile, $dailyMax, $hourlyMax );
+                if ( $quota !== null ) {
+                    if ( $quota->apiCode() === 'CLINIC_OTP_DAILY_LIMIT' ) {
+                        $this->audit( 'OTP_DENIED_DAILY', $user_id, $mobile, $ip, [], $clinic_id );
+                    }
+                    // Committed like every other denial audit: throw only
+                    // after the transaction returns.
+                    return [ 'error' => $quota ];
                 }
 
                 // Read again only after the guard: an earlier unlocked read can
@@ -223,6 +243,22 @@ final class OtpService
                     // The denial audit must commit, so throw only after this
                     // transaction returns, as in the verification boundary.
                     return [ 'error' => $error ];
+                }
+
+                // C11 — every gate passed, so a challenge is certain and only
+                // now are the per-phone day/hour quotas charged. The charge and
+                // the insert below share the transaction and the per-mobile
+                // guard row lock taken above, which makes check-and-consume
+                // atomic with the issue decision: with N concurrent issuing
+                // requests, at most maxPerWindow challenges are issued per
+                // window (and a rollback refunds the charge). peek() proved
+                // both counters were below their caps a moment ago; the only
+                // way hit() can disagree is a window rollover in between, and
+                // then refusing is the fail-closed answer.
+                $dayCharge = $this->rate->hit( 'otp-day:' . $mobile, $dailyMax, self::DAY_WINDOW_SEC );
+                $hourCharge = $this->rate->hit( 'otp-hour:' . $mobile, $hourlyMax, self::HOUR_WINDOW_SEC );
+                if ( ! $dayCharge['allowed'] || ! $hourCharge['allowed'] ) {
+                    throw new \RuntimeException( 'OTP issuance quota invariant violated' );
                 }
 
                 // Only hashes are durable; a trusted explicit Clinic remains
@@ -779,6 +815,53 @@ final class OtpService
              ORDER BY l.is_primary DESC, l.id ASC',
             [$userId, 'active']
         );
+    }
+
+    /**
+     * C11 — تصمیمِ سهمیهٔ صدور (روزانه/ساعتی) برای یک موبایل.
+     *
+     * فقط می‌خوانَد (`RateLimiter::peek`) و هیچ شمارنده‌ای را بالا نمی‌برد؛
+     * مصرف در محلِ صدور و زیرِ همان قفل انجام می‌شود. باید **فقط** داخل قفلِ
+     * صدورِ همان موبایل صدا زده شود، وگرنه مقایسه با سقف دوباره Racy می‌شود.
+     *
+     * @return OtpException|null null یعنی سهمیه آزاد است.
+     */
+    private function issuanceQuotaDenial(string $mobile, int $dailyMax, int $hourlyMax): ?OtpException
+    {
+        if ($this->rate->peek('otp-day:' . $mobile, self::DAY_WINDOW_SEC) >= max(1, $dailyMax)) {
+            return new OtpException(
+                'CLINIC_OTP_DAILY_LIMIT',
+                'محدودیت ارسال کد در روز به پایان رسیده است',
+                $this->quotaDeniedMeta(self::DAY_WINDOW_SEC)
+            );
+        }
+        if ($this->rate->peek('otp-hour:' . $mobile, self::HOUR_WINDOW_SEC) >= max(1, $hourlyMax)) {
+            return new OtpException(
+                'CLINIC_RATE_LIMITED',
+                'درخواست‌های شما موقتاً محدود شده است',
+                $this->quotaDeniedMeta(self::HOUR_WINDOW_SEC)
+            );
+        }
+
+        return null;
+    }
+
+    /**
+     * متادیتای ردِ سهمیه با همان شکلِ پیشین (allowed/remaining/reset_at) به‌علاوهٔ
+     * `retry_after` نسبی — همان محاسبهٔ پنجرهٔ `RateLimiter::hit()`.
+     *
+     * @return array{allowed: bool, remaining: int, reset_at: int, retry_after: int}
+     */
+    private function quotaDeniedMeta(int $windowSec): array
+    {
+        $resetAt = (intdiv(time(), $windowSec) + 1) * $windowSec;
+
+        return [
+            'allowed'     => false,
+            'remaining'   => 0,
+            'reset_at'    => $resetAt,
+            'retry_after' => max(1, $resetAt - time()),
+        ];
     }
 
     private function loadState(string $mobile, string $purpose): OtpState
