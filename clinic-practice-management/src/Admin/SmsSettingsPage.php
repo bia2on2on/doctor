@@ -178,8 +178,8 @@ final class SmsSettingsPage
         <table class="widefat striped" id="cpms-sms-logs" dir="ltr">
             <thead>
             <tr>
-                <th>ID</th><th>Event</th><th>Recipient</th><th>Message</th><th>Provider</th>
-                <th>Status</th><th>Attempts</th><th>Provider Msg ID</th><th>Failure</th><th>Created (UTC)</th>
+                <th>شناسه</th><th>رویداد</th><th>گیرنده</th><th>متن پیام</th><th>ارائه‌دهنده</th>
+                <th>وضعیت</th><th>تلاش‌ها</th><th>شناسهٔ پیام ارائه‌دهنده</th><th>خطا</th><th>زمان ثبت</th>
             </tr>
             </thead>
             <tbody></tbody>

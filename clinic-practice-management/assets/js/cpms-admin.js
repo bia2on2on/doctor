@@ -12,61 +12,27 @@
   // 1) Dangerous-action confirmations — با یک Modal قابل‌دسترس و قابل‌رندر (نه confirm مرورگر).
   //    پیام فارسی از data-cpms-confirm. اگر JS اجرا نشود، nonce + capability سمت سرور
   //    همچنان مرجع authorize هستند (توضیح در گزارش: confirmation = UX، نه authorization).
+  //    تأییدِ عملیات از مؤلفهٔ مشترکِ درون‌صفحه‌ای می‌آید (assets/js/cpms-dialog.js):
+  //    RTL، تلهٔ فوکوس، Escape، بازگردانی فوکوس — نه confirmِ مرورگر.
+  //    اگر آن asset بار نشود، هیچ تأییدی جا زده نمی‌شود و ارسالِ فرم به مسیر
+  //    طبیعیِ خودش برمی‌گردد (nonce + capability سمت سرور مرجعِ authorize است).
   function showConfirm(message) {
-    return new Promise(function (resolve) {
-      // حذف هر modal قبلی
-      var old = document.querySelector('.cpms-modal-overlay');
-      if (old) { old.parentNode.removeChild(old); }
-      var lastFocus = document.activeElement;
-      var overlay = document.createElement('div');
-      overlay.className = 'cpms-modal-overlay';
-      overlay.setAttribute('role', 'presentation');
-      var dialog = document.createElement('div');
-      dialog.className = 'cpms-modal';
-      dialog.setAttribute('role', 'dialog');
-      dialog.setAttribute('aria-modal', 'true');
-      dialog.setAttribute('dir', 'rtl');
-      dialog.innerHTML =
-        '<h3>تأیید عملیات</h3>' +
-        '<p class="cpms-modal-message"></p>' +
-        '<div class="cpms-modal-actions">' +
-          '<button type="button" class="button button-primary cpms-modal-confirm">تأیید و ادامه</button>' +
-          '<button type="button" class="button cpms-modal-cancel">انصراف</button>' +
-        '</div>';
-      dialog.querySelector('.cpms-modal-message').textContent = message;
-      overlay.appendChild(dialog);
-      document.body.appendChild(overlay);
-      var confirmBtn = dialog.querySelector('.cpms-modal-confirm');
-      var cancelBtn = dialog.querySelector('.cpms-modal-cancel');
-      function done(ok) {
-        document.removeEventListener('keydown', onKey, true);
-        if (overlay.parentNode) { overlay.parentNode.removeChild(overlay); }
-        resolve(ok);
-        if (lastFocus && lastFocus.focus) { try { lastFocus.focus(); } catch (e) {} }
-      }
-      function onKey(e) {
-        if (e.key === 'Escape') { e.preventDefault(); done(false); }
-        if (e.key === 'Tab') {
-          var focusables = [cancelBtn, confirmBtn];
-          var i = focusables.indexOf(document.activeElement);
-          if (e.shiftKey) {
-            if (i <= 0) { e.preventDefault(); confirmBtn.focus(); }
-          } else if (i === focusables.length - 1 || i === -1) {
-            e.preventDefault(); cancelBtn.focus();
-          }
-        }
-      }
-      confirmBtn.addEventListener('click', function () { done(true); });
-      cancelBtn.addEventListener('click', function () { done(false); });
-      document.addEventListener('keydown', onKey, true);
-      confirmBtn.focus();
-    });
+    if (window.CpmsDialog && typeof window.CpmsDialog.confirm === 'function') {
+      return window.CpmsDialog.confirm(message, { title: 'تأیید عملیات' });
+    }
+    return Promise.resolve(null);
   }
+
+  function dialogAvailable() {
+    return !!(window.CpmsDialog && typeof window.CpmsDialog.confirm === 'function');
+  }
+
   function bindConfirms() {
     // فرم‌ها
     Array.prototype.forEach.call(document.querySelectorAll('form[data-cpms-confirm]'), function (form) {
       form.addEventListener('submit', function (e) {
         if (!form.hasAttribute('data-cpms-confirm')) { return; } // already confirmed → real submit
+        if (!dialogAvailable()) { return; } // no shared dialog → native submit (server still authorizes)
         e.preventDefault();
         e.stopPropagation();
         showConfirm(form.getAttribute('data-cpms-confirm')).then(function (ok) {
@@ -80,6 +46,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('a[data-cpms-confirm], button[data-cpms-confirm]:not([data-cpms-schedule-delete])'), function (el) {
       el.addEventListener('click', function (e) {
         if (!el.hasAttribute('data-cpms-confirm')) { return; }
+        if (!dialogAvailable()) { return; }
         e.preventDefault();
         e.stopPropagation();
         showConfirm(el.getAttribute('data-cpms-confirm')).then(function (ok) {
@@ -98,6 +65,7 @@
       btn.addEventListener('click', function (e) {
         e.preventDefault();
         e.stopPropagation();
+        if (!dialogAvailable()) { return; }
         showConfirm(btn.getAttribute('data-cpms-confirm') || 'حذف برنامه این روز؟').then(function (ok) {
           if (!ok) { return; }
           var id = btn.getAttribute('data-cpms-schedule-delete');

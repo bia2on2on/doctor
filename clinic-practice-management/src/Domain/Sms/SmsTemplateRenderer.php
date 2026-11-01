@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace ClinicCore\Domain\Sms;
 
+use ClinicCore\Domain\Clinical\DoctorDisplayName;
+
 /**
  * رندر Template SMS با متغیرهای داخلی {{var}} (خالص — ADR-0025، الزام §12/§15).
  *
@@ -44,11 +46,13 @@ final class SmsTemplateRenderer
         }
 
         // 3) جایگذاری
-        return (string) preg_replace_callback(
+        // خروجی هرگز «دکتر دکتر» ندارد: Templateهای قدیمیِ ذخیره‌شده خودشان
+        // «دکتر {{doctor_name}}» را در متن دارند و مقدار هم اکنون عنوان‌دار است.
+        return DoctorDisplayName::collapseDoubledTitle((string) preg_replace_callback(
             self::VAR_PATTERN,
             static fn (array $m): string => (string) ($vars[$m[1]] ?? ''),
             $text
-        );
+        ));
     }
 
     /**

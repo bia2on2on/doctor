@@ -93,15 +93,15 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
 }
 </style>
 <main class="cpms-pricing" data-role="pricing-root" aria-labelledby="cpms-pricing-title">
-    <section class="cpms-pricing__panel" aria-label="تعرفه پیشفرض ویزیت">
-        <h2 class="cpms-pricing__heading" id="cpms-pricing-title">تعرفه پیشفرض ویزیت پزشک</h2>
-        <p class="cpms-pricing__hint">مبالغ فقط به <strong>ریال</strong> و عدد صحیح وارد میشوند. تعرفه فقط برای ویزیتهای جدید همان پزشک، مطب و موقعیت اعمال میشود؛ فاکتورهای پرداختشده تغییر نمیکنند.</p>
+    <section class="cpms-pricing__panel" aria-label="تعرفه پیش‌فرض ویزیت">
+        <h2 class="cpms-pricing__heading" id="cpms-pricing-title">تعرفه پیش‌فرض ویزیت پزشک</h2>
+        <p class="cpms-pricing__hint">مبالغ فقط به <strong>ریال</strong> و عدد صحیح وارد می‌شوند. تعرفه فقط برای ویزیت‌های جدید همان پزشک، مطب و موقعیت اعمال می‌شود؛ فاکتورهای پرداخت‌شده تغییر نمی‌کنند.</p>
         <div class="cpms-pricing__fields">
             <label class="cpms-pricing__field">مطب
                 <select class="cpms-pricing__select" data-role="pricing-clinic" aria-label="انتخاب مطب"></select>
             </label>
-            <label class="cpms-pricing__field">تعرفه پیشفرض (ریال)
-                <input class="cpms-pricing__input" type="number" min="0" step="1" inputmode="numeric" data-role="pricing-default-amount" aria-label="تعرفه پیشفرض به ریال">
+            <label class="cpms-pricing__field">تعرفه پیش‌فرض (ریال)
+                <input class="cpms-pricing__input" type="number" min="0" step="1" inputmode="numeric" data-role="pricing-default-amount" aria-label="تعرفه پیش‌فرض به ریال">
             </label>
             <label class="cpms-pricing__field">شناسه موقعیت (۰ = همه)
                 <input class="cpms-pricing__input" type="number" min="0" step="1" value="0" data-role="pricing-default-location" aria-label="شناسه موقعیت">
@@ -112,14 +112,14 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
     </section>
     <p class="cpms-pricing__panel cpms-pricing__status" data-role="pricing-status" role="status" aria-live="polite">در حال بارگذاری…</p>
     <div class="cpms-pricing__grid">
-        <section class="cpms-pricing__panel" aria-label="ویزیتهای امروز پزشک">
-            <h3 class="cpms-pricing__heading">ویزیتهای امروز</h3>
+        <section class="cpms-pricing__panel" aria-label="ویزیت‌های امروز پزشک">
+            <h3 class="cpms-pricing__heading">ویزیت‌های امروز</h3>
             <ul class="cpms-pricing__visits" data-role="pricing-visits"></ul>
         </section>
         <section class="cpms-pricing__panel" aria-label="صورتحساب ویزیت" data-role="pricing-billing" hidden>
             <h3 class="cpms-pricing__heading" data-role="pricing-visit-title">ویزیت انتخاب نشده است</h3>
             <div class="cpms-pricing__stats" data-role="pricing-stats"></div>
-            <h4 class="cpms-pricing__heading">خدمات و درمانهای اضافی</h4>
+            <h4 class="cpms-pricing__heading">خدمات و درمان‌های اضافی</h4>
             <div class="cpms-pricing__table-wrap">
                 <table class="cpms-pricing__table">
                     <thead><tr><th>شرح خدمت</th><th>مبلغ واحد (ریال)</th><th>تعداد</th><th>جمع (ریال)</th><th>توضیح</th><th>اقدام</th></tr></thead>
@@ -147,7 +147,7 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
             </form>
             <form class="cpms-pricing__form" data-role="pricing-override-form">
                 <div class="cpms-pricing__fields">
-                    <label class="cpms-pricing__field">تعرفه این ویزیت (ریال) — جایگزین پیشفرض
+                    <label class="cpms-pricing__field">تعرفه این ویزیت (ریال) — جایگزین پیش‌فرض
                         <input class="cpms-pricing__input" type="number" min="0" step="1" required data-role="pricing-override-amount" aria-label="تعرفه اختصاصی ویزیت به ریال">
                     </label>
                     <div class="cpms-pricing__field"><button type="submit" class="cpms-pricing__btn" data-role="pricing-override-save">ثبت تعرفه ویزیت</button></div>
@@ -252,9 +252,9 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         return request('/staff/portal/pricing/context').then(function (data) {
             state.clinicId = Number(data.clinic_id) || state.clinicId;
             clinicSelect.value = String(state.clinicId);
-            contextLabel.textContent = 'پزشک: ' + (data.clinician_name || '') + ' — تعرفه پیشفرض فعلی: '
+            contextLabel.textContent = 'پزشک: ' + (data.clinician_name || '') + ' — تعرفه پیش‌فرض فعلی: '
                 + (data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee))
-                + ' — سیاست: ' + (data.fee_policy || 'تعرفه هر ویزیت هنگام پذیرش ثبت میشود');
+                + ' — سیاست: ' + (data.fee_policy || 'تعرفه هر ویزیت هنگام پذیرش ثبت می‌شود');
             document.querySelector('[data-role="pricing-default-amount"]').value = data.default_fee === null ? '' : String(data.default_fee);
             if (!data.can_edit) setStatus('دسترسی ویرایش تعرفه برای این حساب فعال نیست.', 'error');
         });
@@ -283,9 +283,9 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
     }
     function feeSourceLabel(source) {
         if (source === 'visit_override') return 'تعرفه اختصاصی پزشک';
-        if (source === 'checkin_snapshot') return 'تعرفه ثبتشده هنگام پذیرش';
+        if (source === 'checkin_snapshot') return 'تعرفه ثبت‌شده هنگام پذیرش';
         if (source === 'snapshot_failed') return 'ثبت تعرفه هنگام پذیرش ناموفق بود؛ تعیین دستی لازم است';
-        if (source === 'doctor_default') return 'پیشفرض پزشک';
+        if (source === 'doctor_default') return 'پیش‌فرض پزشک';
         return 'تنظیم نشده';
     }
     function cell(text, label) {
@@ -298,17 +298,17 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         billingNode.hidden = false;
         document.querySelector('[data-role="pricing-visit-title"]').textContent = 'صورتحساب ویزیت ' + data.visit_id + ' — ' + (data.patient_name || '');
         statsNode.textContent = '';
-        stat('تعرفه پیشفرض پزشک', data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee));
-        stat('تعرفه ثبتشده هنگام پذیرش', data.snapshot_fee === null ? 'ثبت نشده' : rial(data.snapshot_fee));
+        stat('تعرفه پیش‌فرض پزشک', data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee));
+        stat('تعرفه ثبت‌شده هنگام پذیرش', data.snapshot_fee === null ? 'ثبت نشده' : rial(data.snapshot_fee));
         stat('تعرفه اختصاصی این ویزیت', data.override_fee === null ? 'بدون تغییر' : rial(data.override_fee));
-        stat('تعرفه اعمالشده ویزیت', rial(data.effective_fee === null ? 0 : data.effective_fee));
+        stat('تعرفه اعمال‌شده ویزیت', rial(data.effective_fee === null ? 0 : data.effective_fee));
         stat('جمع خدمات اضافی', rial(data.charges_total));
         stat('جمع کل', rial(data.expected_total));
-        stat('مبلغ پرداختشده', rial(data.paid_amount));
+        stat('مبلغ پرداخت‌شده', rial(data.paid_amount));
         stat('مانده بدهی', rial(data.remaining_balance));
         stat('وضعیت پرداخت', data.payment_status_label);
         stat('منبع تعرفه', feeSourceLabel(data.fee_source));
-        stat('سیاست تعرفه', 'تغییر تعرفه پیشفرض، ویزیتهای ثبتشده را تغییر نمیدهد');
+        stat('سیاست تعرفه', 'تغییر تعرفه پیش‌فرض، ویزیت‌های ثبت‌شده را تغییر نمیدهد');
 
         chargesNode.textContent = '';
         var charges = Array.isArray(data.charges) ? data.charges : [];
@@ -351,7 +351,7 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         var items = invoice && Array.isArray(invoice.items) ? invoice.items : [];
         if (!items.length) {
             var emptyInvoiceRow = document.createElement('tr');
-            var emptyInvoiceCell = cell('فاکتوری صادر نشده است؛ اقلام بالا پس از صدور فاکتور نمایش داده میشوند.', 'فاکتور');
+            var emptyInvoiceCell = cell('فاکتوری صادر نشده است؛ اقلام بالا پس از صدور فاکتور نمایش داده می‌شوند.', 'فاکتور');
             emptyInvoiceCell.colSpan = 4;
             emptyInvoiceRow.appendChild(emptyInvoiceCell);
             itemsNode.appendChild(emptyInvoiceRow);
@@ -411,7 +411,7 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         var amount = Number(document.querySelector('[data-role="pricing-default-amount"]').value);
         var locationId = Number(document.querySelector('[data-role="pricing-default-location"]').value || 0);
         request('/staff/portal/pricing/default-fee', 'POST', { amount: amount, location_id: locationId })
-            .then(function () { setStatus('تعرفه پیشفرض ذخیره شد.', ''); return connect(); })
+            .then(function () { setStatus('تعرفه پیش‌فرض ذخیره شد.', ''); return connect(); })
             .catch(function (error) { setStatus(error.message || 'ذخیره تعرفه ناموفق بود.', 'error'); });
     });
     document.querySelector('[data-role="pricing-charge-form"]').addEventListener('submit', function (event) {

@@ -52,31 +52,31 @@ final class SmsEvents
                 'label' => 'تأیید نوبت',
                 'variables' => $apptVars,
                 'required' => $apptRequired,
-                'default_text' => 'سلام {{patient_name}}، نوبت شما با دکتر {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}} در {{clinic_name}} تأیید شد.',
+                'default_text' => 'سلام {{patient_name}}، نوبت شما با {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}} در {{clinic_name}} تأیید شد.',
             ],
             self::APPT_REMINDER => [
                 'label' => 'یادآوری نوبت',
                 'variables' => $apptVars,
                 'required' => $apptRequired,
-                'default_text' => 'یادآوری نوبت: {{patient_name}} عزیز، نوبت شما با دکتر {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}}.',
+                'default_text' => 'یادآوری نوبت: {{patient_name}} عزیز، نوبت شما با {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}}.',
             ],
             self::APPT_CANCELLED => [
                 'label' => 'لغو نوبت',
                 'variables' => $apptVars,
                 'required' => $apptRequired,
-                'default_text' => 'سلام {{patient_name}}، نوبت شما با دکتر {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}} لغو شد.',
+                'default_text' => 'سلام {{patient_name}}، نوبت شما با {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}} لغو شد.',
             ],
             self::APPT_RESCHEDULED => [
                 'label' => 'جابه‌جایی نوبت',
                 'variables' => $apptVars,
                 'required' => $apptRequired,
-                'default_text' => 'سلام {{patient_name}}، نوبت شما جابه‌جا شد: با دکتر {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}}.',
+                'default_text' => 'سلام {{patient_name}}، نوبت شما جابه‌جا شد: با {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}}.',
             ],
             self::FOLLOW_UP => [
                 'label' => 'یادآوری پیگیری (Follow-up)',
                 'variables' => $apptVars,
                 'required' => $apptRequired,
-                'default_text' => 'یادآوری پیگیری: {{patient_name}} عزیز، ویزیت با دکتر {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}}.',
+                'default_text' => 'یادآوری پیگیری: {{patient_name}} عزیز، ویزیت با {{doctor_name}} در {{appointment_date}} ساعت {{appointment_time}}.',
             ],
         ];
     }
