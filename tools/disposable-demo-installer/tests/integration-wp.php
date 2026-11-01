@@ -30,6 +30,60 @@ use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 
+/*
+ * Fail-closed diagnostics.
+ *
+ * A PHP fatal or an uncaught Throwable aborts this script before the summary
+ * line is printed, so the CI step reports only "exit code 255" and the cause is
+ * invisible in the check-run annotations. These handlers add ONE single-line
+ * annotation (kind, file, line, redacted message) so a fatal can be identified
+ * from the annotations alone. They never swallow a failure and never mask it:
+ * every path here still terminates the script with a non-zero exit code.
+ */
+$cpdd_annotate = static function ( string $kind, string $detail ): void {
+	$detail = (string) preg_replace( '/\s+/', ' ', trim( $detail ) );
+	$detail = (string) preg_replace(
+		'/(pass(?:word)?|passwd|pepper|secret|token|apikey|api_key|salt|nonce)(\s*[=:]\s*)[^\s,;]+/i',
+		'$1$2[redacted]',
+		$detail
+	);
+	if ( strlen( $detail ) > 400 ) {
+		$detail = substr( $detail, 0, 400 ) . '...';
+	}
+	if ( '' === (string) getenv( 'GITHUB_ACTIONS' ) ) {
+		echo 'CPDD_INTEGRATION_FATAL=' . $kind . ' ' . $detail . PHP_EOL;
+		return;
+	}
+	echo '::error title=CPDD integration fatal::' . $kind . ' ' . $detail . PHP_EOL;
+};
+
+set_exception_handler(
+	static function ( \Throwable $e ) use ( $cpdd_annotate ): void {
+		$cpdd_annotate(
+			'uncaught ' . get_class( $e ),
+			basename( (string) $e->getFile() ) . ':' . (int) $e->getLine() . ' ' . (string) $e->getMessage()
+		);
+		exit( 255 );
+	}
+);
+
+register_shutdown_function(
+	static function () use ( $cpdd_annotate ): void {
+		$err = error_get_last();
+		if ( ! is_array( $err ) || ! isset( $err['type'], $err['file'], $err['line'], $err['message'] ) ) {
+			return;
+		}
+		if ( ! in_array( (int) $err['type'], array( E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ), true ) ) {
+			return;
+		}
+		$cpdd_annotate(
+			'php fatal',
+			basename( (string) $err['file'] ) . ':' . (int) $err['line'] . ' ' . (string) $err['message']
+		);
+		exit( 255 );
+	}
+);
+
 $GLOBALS['cpdd_fail'] = 0;
 
 /**
