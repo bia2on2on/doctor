@@ -145,7 +145,7 @@ check('doctor shell renders Persian digits for day durations and prescription it
 });
 
 // ---------------------------------------------------------------------------
-// 4) Finance help text is cleared, staff-pricing half-spaces are fixed
+// 4) Finance help text is cleared on location selection / successful load
 // ---------------------------------------------------------------------------
 var finance = read('templates/staff-finance-board.php');
 
@@ -157,14 +157,14 @@ check('finance board clears the "select a location" hint', function () {
   assert.ok(/renderBoard\(payload\(result\)\);\s*clearLocationHint\(\);/.test(finance), 'a successful board load must clear the hint');
 });
 
-var pricing = read('templates/staff-pricing.php');
-
-check('staff-pricing help text uses ZWNJ (no glued Persian words)', function () {
-  ['پیشفرض', 'ویزیتهای', 'میشوند', 'میشود', 'پرداختشده', 'نمیکنند', 'ثبتشده', 'اعمالشده', 'درمانهای'].forEach(function (glued) {
-    assert.strictEqual(pricing.indexOf(glued), -1, 'glued form found: ' + glued);
-  });
-  assert.ok(pricing.indexOf('پیش\u200cفرض') !== -1, 'the half-space form must exist');
-});
+// NOTE: the staff-pricing half-space (ZWNJ) repair is NOT part of this change.
+// The corrected spellings (e.g. «تعرفه ثبت‌شده هنگام پذیرش») are asserted with the
+// OLD glued spelling by acceptance/pilot paths outside this package
+// (tests/scoped-demo, tests/disposable-site, bin/pilot-finance-board.py and the
+// companion tool's own acceptance suite), so repairing the copy here turns those
+// guards red. That repair needs its own PR which updates those expectations
+// together — including the companion path — rather than mixing production and
+// companion changes in one PR.
 
 // ---------------------------------------------------------------------------
 // 5) Persian table headers / MRN labels / no doubled SMS title

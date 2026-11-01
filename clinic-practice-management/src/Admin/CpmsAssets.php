@@ -92,7 +92,7 @@ final class CpmsAssets
         wp_enqueue_script( 'cpms-dialog', $base . '/assets/js/cpms-dialog.js', [ 'cpms-ui-text' ], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev', false );
 
         wp_enqueue_style('cpms-admin', $base . '/assets/css/cpms-admin.css', [], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev');
-        wp_enqueue_script('cpms-admin', $base . '/assets/js/cpms-admin.js', ['cpms-dialog'], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev', true);
+        wp_enqueue_script( 'cpms-admin', $base . '/assets/js/cpms-admin.js', [ 'cpms-dialog' ], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev', true );
 
         // Offline catalogue fields (searchable province/city/specialty + "Other / سایر"):
         // progressive enhancement only, local file, no network. Every submission is
