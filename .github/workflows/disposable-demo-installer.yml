@@ -305,6 +305,12 @@ jobs:
           NFail=$(grep -c '^FAIL ' "$LOG" 2>/dev/null || true)
           NPASS=$(grep -c '^PASS ' "$LOG" 2>/dev/null || true)
           echo "::error title=CPDD integration diagnostics::first fatal: ${FATAL:-<none matched>} (assert PASS=${NPASS:-0} FAIL=${NFail:-0})"
+          # Report the failing assertions themselves (label only, no secrets).
+          NL=0
+          while IFS= read -r line; do
+            NL=$((NL + 1))
+            echo "::error title=CPDD failing assertion ${NL}::$(printf '%s' "$line" | cut -c1-300)"
+          done < <(grep -m3 '^FAIL ' "$LOG" || true)
           exit 0
 
       - name: Post-teardown site state (default data intact, no demo artefacts)

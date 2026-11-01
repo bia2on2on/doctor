@@ -57,12 +57,46 @@ $cpdd_annotate = static function ( string $kind, string $detail ): void {
 	echo '::error title=CPDD integration fatal::' . $kind . ' ' . $detail . PHP_EOL;
 };
 
+/**
+ * Annotate the *shape* of every `cpms_rate_limits` window_key present, with all
+ * identifiers masked, so a fail-closed ownership block can be traced back to the
+ * production caller that created the unexpected row without printing IPs,
+ * mobiles or username hashes.
+ *
+ * @return string
+ */
+$cpdd_rate_shape = static function (): string {
+	global $wpdb;
+	$table = $wpdb->prefix . 'cpms_rate_limits';
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- read-only diagnostic.
+	$keys = $wpdb->get_col( 'SELECT window_key FROM `' . $table . '`' );
+	if ( ! is_array( $keys ) ) {
+		return '<unreadable>';
+	}
+	$shapes = array();
+	foreach ( $keys as $key ) {
+		$key = (string) preg_replace( '/:.*$/', ':#', (string) $key );
+		$key = (string) preg_replace( '/[0-9].*$/', '#', $key );
+		$shapes[ $key ] = (int) ( $shapes[ $key ] ?? 0 ) + 1;
+	}
+	ksort( $shapes );
+	$parts = array();
+	foreach ( $shapes as $shape => $count ) {
+		$parts[] = $shape . '=' . $count;
+	}
+
+	return 'total=' . count( $keys ) . ' ' . implode( ' ', $parts );
+};
+
 set_exception_handler(
-	static function ( \Throwable $e ) use ( $cpdd_annotate ): void {
+	static function ( \Throwable $e ) use ( $cpdd_annotate, $cpdd_rate_shape ): void {
 		$cpdd_annotate(
 			'uncaught ' . get_class( $e ),
 			basename( (string) $e->getFile() ) . ':' . (int) $e->getLine() . ' ' . (string) $e->getMessage()
 		);
+		if ( $e instanceof DemoException && 'TEARDOWN_BLOCKED' === (string) $e->demo_code() ) {
+			$cpdd_annotate( 'rate-limit shape', $cpdd_rate_shape() );
+		}
 		exit( 255 );
 	}
 );
