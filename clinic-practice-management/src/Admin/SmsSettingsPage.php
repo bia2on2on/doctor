@@ -93,7 +93,10 @@ final class SmsSettingsPage
         <table class="form-table" role="presentation">
             <tr>
                 <th scope="row">وضعیت</th>
-                <td><span id="cpms-sms-state">در حال بارگذاری…</span></td>
+                <td>
+                    <span id="cpms-sms-state" role="status" aria-live="polite"
+                        >در حال بارگذاری…</span>
+                </td>
             </tr>
             <tr>
                 <th scope="row">ارائه‌دهنده (Provider)</th>
@@ -163,7 +166,7 @@ final class SmsSettingsPage
                     <input type="text" id="cpms-sms-test-mobile" class="regular-text" dir="ltr" placeholder="09xxxxxxxxx">
                     <input type="text" id="cpms-sms-test-message" class="regular-text" value="پیام آزمایشی سیستم مطب">
                     <button type="button" class="button" id="cpms-sms-test-send">Send Test</button>
-                    <span id="cpms-sms-test-send-result"></span>
+                    <span id="cpms-sms-test-send-result" role="status" aria-live="polite"></span>
                 </td>
             </tr>
             <tr>

@@ -56,29 +56,46 @@ check('cpms-ui-text.js exports CpmsText.doctorDisplayName', function () {
   assert.ok(CpmsText && typeof CpmsText.doctorDisplayName === 'function');
 });
 
-check('doctor title is added when the name has no title', function () {
-  assert.strictEqual(CpmsText.doctorDisplayName('رضایی'), 'دکتر رضایی');
-  assert.strictEqual(CpmsText.doctorDisplayName('سارا کریمی'), 'دکتر سارا کریمی');
+// The expectations come from the ONE shared fixture that the PHP unit test reads
+// too (tests/fixtures/doctor-display-name-vectors.json), so PHP/JS parity is
+// checked from a single source instead of two hand-maintained lists.
+var titleFixture = JSON.parse(read('tests/fixtures/doctor-display-name-vectors.json'));
+
+check('shared fixture is readable and carries the D1 vectors', function () {
+  assert.ok(Array.isArray(titleFixture.vectors) && titleFixture.vectors.length >= 20);
+  ['prefix-word-doktari', 'name-with-zwnj', 'name-with-interior-dot', 'latin-dr-dot', 'null'].forEach(function (id) {
+    assert.ok(titleFixture.vectors.some(function (v) { return v.id === id; }), 'fixture vector missing: ' + id);
+  });
 });
 
-check('doctor title is never doubled (plain, dotted, ZWNJ, extra spaces)', function () {
-  assert.strictEqual(CpmsText.doctorDisplayName('دکتر رضایی'), 'دکتر رضایی');
-  assert.strictEqual(CpmsText.doctorDisplayName('دکتر. رضایی'), 'دکتر رضایی');
-  assert.strictEqual(CpmsText.doctorDisplayName('دکتر .رضایی'), 'دکتر رضایی');
-  assert.strictEqual(CpmsText.doctorDisplayName('دکتر\u200cرضایی'), 'دکتر رضایی');
-  assert.strictEqual(CpmsText.doctorDisplayName('  دکتر   رضایی  '), 'دکتر رضایی');
-  assert.strictEqual(CpmsText.doctorDisplayName('دکتر'), 'دکتر');
+titleFixture.vectors.forEach(function (vector) {
+  check('title vector ' + vector.id + ' (' + vector.note + ')', function () {
+    assert.strictEqual(
+      CpmsText.doctorDisplayName(vector.input === null ? null : vector.input),
+      vector.expected
+    );
+    if (typeof vector.had_title === 'boolean') {
+      assert.strictEqual(
+        CpmsText.startsWithTitle(vector.input === null ? null : vector.input),
+        vector.had_title,
+        'startsWithTitle must use the same whole-token rule'
+      );
+    }
+  });
 });
 
 check('empty name stays empty (caller supplies its own Persian fallback)', function () {
   assert.strictEqual(CpmsText.doctorDisplayName(''), '');
-  assert.strictEqual(CpmsText.doctorDisplayName(null), '');
+  assert.strictEqual(CpmsText.doctorDisplayName(undefined), '');
 });
 
-check('a doubled title inside an already-rendered text collapses', function () {
+check('a doubled title inside an already-rendered text collapses, names stay intact', function () {
   assert.strictEqual(CpmsText.collapseDoubledTitle('با دکتر دکتر رضایی'), 'با دکتر رضایی');
   assert.strictEqual(CpmsText.collapseDoubledTitle('دکتر  دکتر رضایی'), 'دکتر رضایی');
   assert.strictEqual(CpmsText.collapseDoubledTitle('با دکتر رضایی'), 'با دکتر رضایی');
+  // A word that merely STARTS with the title letters must never be eaten.
+  assert.strictEqual(CpmsText.collapseDoubledTitle('دکتر دکتری'), 'دکتر دکتری');
+  assert.strictEqual(CpmsText.collapseDoubledTitle('دکتر دکترزاده'), 'دکتر دکترزاده');
 });
 
 check('faDigits renders Persian digits and never latin ones', function () {
@@ -103,12 +120,17 @@ check('cpms-dialog.js implements focus trap, Escape and RTL modal semantics', fu
   });
 });
 
-check('cpms-admin.js delegates data-cpms-confirm to the shared dialog and uses no native dialog', function () {
+check('cpms-admin.js delegates to the shared dialog; the ONLY native dialog is the D2 fallback', function () {
   var src = read('assets/js/cpms-admin.js');
-  assert.strictEqual(/window\.confirm\s*\(/.test(src), false, 'cpms-admin.js must not call window.confirm');
   assert.strictEqual(/window\.prompt\s*\(/.test(src), false, 'cpms-admin.js must not call window.prompt');
   assert.strictEqual(/[^.\w]alert\s*\(/.test(src), false, 'cpms-admin.js must not call alert');
   assert.ok(src.indexOf('window.CpmsDialog.confirm') !== -1, 'cpms-admin.js must delegate to window.CpmsDialog');
+  // D2: the shared dialog is preferred; the native confirm exists ONLY as the
+  // fail-closed fallback inside nativeConfirm().
+  var nativeCalls = (src.match(/window\.confirm\s*\(/g) || []).length;
+  assert.strictEqual(nativeCalls, 1, 'exactly one native window.confirm call (the D2 fallback) is allowed');
+  var fallbackBody = src.slice(src.indexOf('function nativeConfirm'), src.indexOf('function showConfirm'));
+  assert.ok(fallbackBody.indexOf('window.confirm(') !== -1, 'the native confirm must live inside nativeConfirm()');
 });
 
 // ---------------------------------------------------------------------------
@@ -169,14 +191,29 @@ check('finance board clears the "select a location" hint', function () {
 // ---------------------------------------------------------------------------
 // 5) Persian table headers / MRN labels / no doubled SMS title
 // ---------------------------------------------------------------------------
-check('SMS log table headers are Persian', function () {
+check('SMS log table headers are Persian (matched inside the <th> cells)', function () {
   var sms = read('src/Admin/SmsSettingsPage.php');
   ['<th>Status</th>', '<th>Attempts</th>', '<th>Provider Msg ID</th>', '<th>Failure</th>'].forEach(function (english) {
     assert.strictEqual(sms.indexOf(english), -1, 'English header still present: ' + english);
   });
-  ['وضعیت', 'تلاش‌ها', 'شناسهٔ پیام ارائه‌دهنده', 'خطا'].forEach(function (persian) {
-    assert.ok(sms.indexOf(persian) !== -1, 'Persian header missing: ' + persian);
+  // R5: these words occur ELSEWHERE in the file, so a bare indexOf() would pass
+  // even with English headers. Match the exact <th> cells instead.
+  ['<th>وضعیت</th>', '<th>تلاش‌ها</th>', '<th>شناسهٔ پیام ارائه‌دهنده</th>', '<th>خطا</th>', '<th>زمان ثبت</th>'].forEach(function (cell) {
+    assert.ok(sms.indexOf(cell) !== -1, 'Persian header cell missing: ' + cell);
   });
+  var thCells = (sms.match(/<th>[^<]*<\/th>/g) || []);
+  var latinCells = thCells
+    .map(function (cell) { return cell.replace(/<\/?th>/g, ''); })
+    .filter(function (label) { return /[A-Za-z]/.test(label); });
+  assert.deepStrictEqual(latinCells, [], 'no Latin-only header cell may remain in the log table');
+});
+
+check('SMS status slots announce themselves to assistive tech (D4)', function () {
+  var sms = read('src/Admin/SmsSettingsPage.php');
+  assert.ok(/<span id="cpms-sms-state" role="status" aria-live="polite"/.test(sms),
+    '#cpms-sms-state needs role=status aria-live=polite');
+  assert.ok(/<span id="cpms-sms-test-send-result" role="status" aria-live="polite"/.test(sms),
+    '#cpms-sms-test-send-result needs role=status aria-live=polite');
 });
 
 check('MRN is shown with a Persian label in the doctor shell and finance page', function () {
@@ -217,6 +254,23 @@ check('SmsSettingsPage no longer uses native alert()', function () {
   var src = read('src/Admin/SmsSettingsPage.php');
   assert.strictEqual(/[^.\w]alert\s*\(/.test(src), false, 'alert() must be replaced by inline Persian status text');
   assert.ok(src.indexOf('cpms-sms-test-send-result') !== -1);
+});
+
+check('cpms-admin.js falls back to native confirm (fail-closed) and never skips confirmation', function () {
+  var src = read('assets/js/cpms-admin.js');
+  assert.ok(src.indexOf('nativeConfirm') !== -1, 'native fallback required by D2');
+  assert.ok(/window\.confirm\(/.test(src), 'the fallback must be the native window.confirm');
+  // The old fail-open shape (`if (!dialogAvailable()) { return; }` before any
+  // confirmation) must be gone.
+  assert.strictEqual(/if \(!dialogAvailable\(\)\) \{ return; \}/.test(src), false,
+    'fail-open early return must not remain');
+  assert.ok(src.indexOf('isPending') !== -1, 'D3: a pending trigger must be ignored');
+});
+
+check('cpms-dialog.js settles a pending dialog as cancel before opening another (D3)', function () {
+  var src = read('assets/js/cpms-dialog.js');
+  assert.ok(/active\.settle\(\)/.test(src), 'the pending dialog must be settled as cancel');
+  assert.ok(/if \(active !== handle\)/.test(src), 'a stale keydown handler must not act');
 });
 
 if (failures > 0) {

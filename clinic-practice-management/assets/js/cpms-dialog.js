@@ -62,6 +62,12 @@
         (document.head || document.body || document.documentElement).appendChild(style);
     }
 
+    // D3: at most ONE dialog may be live. Opening another one first settles the
+    // pending one as CANCEL (false for confirm, null for prompt), removes its
+    // overlay and ALL its listeners — a stale keydown handler must never resolve
+    // an orphaned promise (that could submit an action nobody confirmed).
+    var active = null;
+
     function el(tag, className) {
         var node = document.createElement(tag);
         if (className) {
@@ -73,13 +79,15 @@
     function open(options) {
         var settings = options || {};
         var isPrompt = settings.mode === 'prompt';
-        var lastFocus = document.activeElement;
 
         ensureStyles();
-        var previous = document.querySelector('.cpms-dialog-overlay');
-        if (previous && previous.parentNode) {
-            previous.parentNode.removeChild(previous);
+        if (active && typeof active.settle === 'function') {
+            active.settle();
         }
+        // Captured AFTER the previous dialog is settled: that restore has already
+        // focused the live trigger on the page, so this dialog returns focus to a
+        // node that still exists instead of the removed dialog's button.
+        var lastFocus = document.activeElement;
 
         // `cpms-modal-overlay` is the legacy/shipped acceptance token — see the
         // markup contract in this file's header.
@@ -144,12 +152,16 @@
 
         return new Promise(function (resolve) {
             var settled = false;
+            var handle = {};
 
             function finish(value) {
                 if (settled) {
                     return;
                 }
                 settled = true;
+                if (active === handle) {
+                    active = null;
+                }
                 document.removeEventListener('keydown', onKey, true);
                 if (overlay.parentNode) {
                     overlay.parentNode.removeChild(overlay);
@@ -186,6 +198,10 @@
             }
 
             function onKey(event) {
+                // A handler that is no longer the visible dialog must not react.
+                if (active !== handle) {
+                    return;
+                }
                 if (event.key === 'Escape') {
                     event.preventDefault();
                     finish(isPrompt ? null : false);
@@ -213,6 +229,9 @@
                     }
                 }
             }
+
+            handle.settle = function () { finish(isPrompt ? null : false); };
+            active = handle;
 
             confirmBtn.addEventListener('click', submit);
             cancelBtn.addEventListener('click', function () { finish(isPrompt ? null : false); });

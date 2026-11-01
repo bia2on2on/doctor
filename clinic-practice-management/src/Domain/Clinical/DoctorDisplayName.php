@@ -7,70 +7,78 @@ namespace ClinicCore\Domain\Clinical;
 /**
  * نرمال‌سازیِ «نام نمایشیِ پزشک» برای رابطِ کاربریِ فارسی — یک نقطهٔ واحد.
  *
- * قاعده: عنوان «دکتر» فقط یک‌بار و فقط اگر نام از پیش با آن شروع نشده باشد
- * اضافه می‌شود. نامِ ذخیره‌شده در پایگاه‌داده هرگز تغییر نمی‌کند؛ این کلاس
- * فقط خروجیِ نمایشی/SMS را می‌سازد.
+ * قاعدهٔ مالک (D1): عنوانِ ابتدایی فقط به‌صورتِ «توکنِ کامل» شناخته می‌شود:
+ *  - واژهٔ «دکتر» (کِ فارسی U+06A9؛ «ك» عربی U+0643 فقط برای *مقایسه* برابر
+ *    گرفته می‌شود)، یا «Dr» / «Dr.» لاتین (بی‌توجه به بزرگی/کوچکی)،
+ *  - و تنها وقتی پس از آن «پایانِ رشته» یا یک جداکننده بیاید: فاصلهٔ ASCII،
+ *    NBSP، ZWNJ یا نقطه. واژه‌ای که فقط با همان حروف شروع شود (مثلِ «دکتری»
+ *    یا «دکترزاده») **نام** است و دست‌نخورده می‌ماند.
  *
- * موارد پوشش‌داده‌شده:
- *  - «رضایی»                      → «دکتر رضایی»
- *  - «دکتر رضایی» / «دکتر  رضایی»  → «دکتر رضایی» (بدون تکرار)
- *  - «دکتر. رضایی» / «دکتر .رضایی» → «دکتر رضایی»
- *  - «دکتر‌رضایی» (ZWNJ)           → «دکتر رضایی»
- *  - نامِ خالی/null                → رشتهٔ خالی (فراخوان باید برچسبِ خودش را بگذارد)
+ * هیچ چیز **داخلِ** نام بازنویسی نمی‌شود: ZWNJ، نقطهٔ میانی و فاصله‌های
+ * غیرِمعمولی دقیقاً همان‌طور که ذخیره شده‌اند می‌مانند؛ فقط فاصلهٔ ابتدا/انتها
+ * حذف و رشته‌های فاصلهٔ معمولی به یک فاصله تبدیل می‌شوند. عنوان‌های تکراری در
+ * ابتدا به یکی کاهش می‌یابند. نامِ ذخیره‌شده هرگز تغییر نمی‌کند.
  *
- * نکتهٔ پیاده‌سازی: تمام برش‌ها با الگوهای UTF-8 (`/u`) انجام می‌شود. هرگز
- * از `trim( $name, $byteCharlist )` استفاده نکنید — فهرست بایتی می‌تواند بایتِ
- * پایانیِ حروفِ فارسیِ چندبایتی را جدا و متن را خراب کند.
- *
- * معادلِ JSِ همین رفتار: `window.CpmsText.doctorDisplayName()` در
- * `assets/js/cpms-ui-text.js` — هر دو باید دقیقاً یک خروجی بدهند
- * (تست: DoctorDisplayNameTest + tests/js/pkg-e-texts.spec.js).
+ * پیاده‌سازیِ UTF-8-امن: همهٔ برش‌ها با الگوهای `/u`؛ هیچ `trim()` بایتی.
+ * معادلِ JS: `window.CpmsText.doctorDisplayName()` در `assets/js/cpms-ui-text.js`.
+ * برابریِ PHP/JS از یک منبعِ واحد بررسی می‌شود:
+ * `tests/fixtures/doctor-display-name-vectors.json`.
  */
 final class DoctorDisplayName {
 
-	/** عنوانِ پزشک با «ک»ِ فارسی. */
+	/** عنوانِ پزشک با «ک»ِ فارسی — شکلِ خروجی. */
 	public const TITLE = 'دکتر';
 
-	/** جداکننده‌های مجازِ میان عنوان و نام: فاصله‌ها، فاصلهٔ سخت، ZWNJ، نقطه. */
-	private const SEPARATOR_CLASS = '[\s\x{00A0}\x{200C}.]';
+	/** جداکننده‌های مجاز پیرامونِ عنوان: فاصله‌ها، NBSP، ZWNJ، نقطه. */
+	private const SEPARATORS = ' \t\n\r\f\v\x{00A0}\x{200C}.';
+
+	/** واژهٔ عنوان، با هر دو شکلِ کاف (ک U+06A9 / ك U+0643). */
+	private const TITLE_WORD = 'د[\x{06A9}\x{0643}]تر';
 
 	/**
-	 * نامِ پزشک با عنوانِ «دکتر» — دقیقاً یک‌بار.
+	 * نامِ پزشک با عنوانِ «دکتر» — دقیقاً یک‌بار، بدون بازنویسیِ داخلِ نام.
 	 *
-	 * @param string $name نامِ ذخیره‌شده (هرگز تغییر نمی‌کند).
+	 * @param string|null $name نامِ ذخیره‌شده (null/خالی → رشتهٔ خالی).
 	 */
-	public static function with_title( string $name ): string {
-		$clean = self::squeeze( $name );
+	public static function with_title( ?string $name ): string {
+		$clean = self::normalize( $name );
 		if ( '' === $clean ) {
 			return '';
 		}
 
-		if ( self::starts_with_title( $clean ) ) {
-			$rest = self::strip_leading_title( $clean );
-
-			return self::TITLE . ( '' === $rest ? '' : ' ' . $rest );
+		$pattern = '/^(?:' . self::TITLE_WORD . '|dr)(?=[' . self::SEPARATORS . ']|$)/iu';
+		while ( 1 === preg_match( $pattern, $clean, $matches ) ) {
+			$rest  = (string) substr( $clean, strlen( $matches[0] ) );
+			$clean = self::trim_whitespace( self::strip_leading_separators( $rest ) );
+			if ( '' === $clean ) {
+				return self::TITLE;
+			}
 		}
 
 		return self::TITLE . ' ' . $clean;
 	}
 
 	/**
-	 * آیا نام از پیش عنوانِ «دکتر» را دارد؟ (با نقطه/ZWNJ/فاصلهٔ اضافه)
+	 * آیا نام از پیش با عنوانِ کاملِ «دکتر»/«Dr» شروع می‌شود؟
 	 *
-	 * @param string $name نامِ نمایشی.
+	 * @param string|null $name نامِ نمایشی.
 	 */
-	public static function starts_with_title( string $name ): bool {
-		$trimmed = self::trim_separators( $name );
+	public static function starts_with_title( ?string $name ): bool {
+		$clean = self::normalize( $name );
+		if ( '' === $clean ) {
+			return false;
+		}
 
-		return '' !== $trimmed && self::strip_leading_title( $trimmed ) !== $trimmed;
+		$pattern = '/^(?:' . self::TITLE_WORD . '|dr)(?=[' . self::SEPARATORS . ']|$)/iu';
+
+		return 1 === preg_match( $pattern, $clean );
 	}
 
 	/**
 	 * حذفِ تکرارِ عنوان در متنی که از قبل ساخته شده است.
 	 *
-	 * برای Templateهای SMSِ ذخیره‌شده‌ای که خودشان «دکتر {{doctor_name}}» را
-	 * در متن دارند (و نام هم اکنون عنوان‌دار است) — خروجی هرگز «دکتر دکتر»
-	 * ندارد. نقطه/فاصلهٔ اضافه/ZWNJ میان دو عنوان هم پوشش داده می‌شود.
+	 * تنها عنوانِ «کامل» (با جداکننده/پایان پس از خودش) جفت می‌شود؛ بنابراین
+	 * «دکتر دکتری» دست‌نخورده می‌ماند و «دکتر دکتر رضایی» → «دکتر رضایی».
 	 *
 	 * @param string $text متنِ نهاییِ Template.
 	 */
@@ -79,7 +87,11 @@ final class DoctorDisplayName {
 			return '';
 		}
 
-		$pattern = '/' . self::TITLE . self::SEPARATOR_CLASS . '*' . self::TITLE . '/u';
+		$pattern = '/' . self::TITLE_WORD
+			. '[' . self::SEPARATORS . ']*'
+			. self::TITLE_WORD
+			. '(?=[' . self::SEPARATORS . ']|$)/u';
+
 		do {
 			$before = $text;
 			$text   = (string) preg_replace( $pattern, self::TITLE, $text );
@@ -89,44 +101,32 @@ final class DoctorDisplayName {
 	}
 
 	/**
-	 * فشرده‌سازیِ فاصله‌های تکراری و حذفِ فاصله/نقطهٔ لبه‌ای.
+	 * فشرده‌سازیِ فاصله‌های معمولی + حذفِ فاصلهٔ ابتدا/انتها.
 	 *
-	 * @param string $value ورودیِ خام.
+	 * @param string|null $value ورودیِ خام.
 	 */
-	private static function squeeze( string $value ): string {
-		$value = str_replace( array( "\u{00A0}", "\u{200C}" ), ' ', $value );
-		$value = (string) preg_replace( '/\s+/u', ' ', $value );
-		$value = (string) preg_replace( '/\s*\.\s*/u', ' ', $value );
+	private static function normalize( ?string $value ): string {
+		$value = null === $value ? '' : $value;
+		$value = (string) preg_replace( '/[ \t\n\r\f\v]+/u', ' ', $value );
 
-		return self::trim_separators( $value );
+		// NBSP هم «فاصله» است و در دو سر حذف می‌شود؛ ZWNJ و نقطه فاصله نیستند.
+		// (\s در PCRE/UTF-8 فقط ASCII است؛ NBSP صریحاً افزوده می‌شود.)
+		$value = (string) preg_replace( '/^[\s\x{00A0}]+|[\s\x{00A0}]+$/u', '', $value );
+
+		return $value;
 	}
 
 	/**
-	 * حذفِ فاصله/نقطه/ZWNJ از دو سرِ رشته — کاملاً امن برای UTF-8.
-	 *
 	 * @param string $value ورودی.
 	 */
-	private static function trim_separators( string $value ): string {
-		$pattern = '/^' . self::SEPARATOR_CLASS . '+|' . self::SEPARATOR_CLASS . '+$/u';
-
-		return (string) preg_replace( $pattern, '', $value );
+	private static function trim_whitespace( string $value ): string {
+		return (string) preg_replace( '/^[\s\x{00A0}]+|[\s\x{00A0}]+$/u', '', $value );
 	}
 
 	/**
-	 * بخشِ نام پس از عنوان (اگر عنوان در ابتدا نباشد، همان ورودیِ پیراسته).
-	 *
-	 * @param string $name نامِ نمایشی.
+	 * @param string $value ورودی.
 	 */
-	private static function strip_leading_title( string $name ): string {
-		$trimmed = self::trim_separators( $name );
-		if ( ! str_starts_with( $trimmed, self::TITLE ) ) {
-			return $trimmed;
-		}
-
-		// TITLE فقط حروفِ UTF-8 است؛ برشِ بایتی مرزِ کاراکتر را دقیقاً روی
-		// طولِ TITLE نگه می‌دارد (نه وسطِ یک حرفِ دیگر).
-		$rest = substr( $trimmed, strlen( self::TITLE ) );
-
-		return self::trim_separators( (string) $rest );
+	private static function strip_leading_separators( string $value ): string {
+		return (string) preg_replace( '/^[' . self::SEPARATORS . ']+/u', '', $value );
 	}
 }

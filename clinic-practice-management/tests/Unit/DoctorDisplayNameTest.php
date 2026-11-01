@@ -13,40 +13,100 @@ use PHPUnit\Framework\TestCase;
  * Package E — the ONE doctor-title normalizer (PHP side) and the SMS text
  * boundary that must never emit a doubled title.
  *
- * The JS equivalent (`assets/js/cpms-ui-text.js`) is exercised by
- * tests/js/pkg-e-texts.spec.js with the exact same expectations.
+ * The rule is owner decision D1: a leading title is recognized ONLY as a whole
+ * token — the word «دکتر» (Persian kaf U+06A9, or Arabic kaf U+0643 for
+ * comparison) or Latin "Dr"/"Dr." (case-insensitive) — followed by end-of-string
+ * or a separator (ASCII whitespace, NBSP, ZWNJ, dot). A word that merely starts
+ * with those letters is a NAME and stays intact. Nothing inside the remaining
+ * name is rewritten.
+ *
+ * The expectations live in ONE shared fixture that the JS spec reads too, so
+ * PHP/JS parity is checked from a single source:
+ *   tests/fixtures/doctor-display-name-vectors.json
  */
 final class DoctorDisplayNameTest extends TestCase
 {
-    public function testTitleIsAddedWhenTheStoredNameHasNone(): void
+    private const FIXTURE_REL = 'tests/fixtures/doctor-display-name-vectors.json';
+
+    /**
+     * @return array{title: string, vectors: list<array{id: string, input: ?string, expected: string, note: string}>}
+     */
+    private static function fixture(): array
     {
-        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('رضایی'));
-        self::assertSame('دکتر سارا کریمی', DoctorDisplayName::with_title('سارا کریمی'));
+        $path = \dirname(__DIR__, 2) . '/' . self::FIXTURE_REL;
+        self::assertFileExists($path, 'the shared doctor-title fixture must exist');
+
+        $decoded = json_decode((string) file_get_contents($path), true);
+        self::assertIsArray($decoded, 'the fixture must decode to an array');
+        self::assertArrayHasKey('vectors', $decoded);
+
+        return $decoded;
     }
 
-    public function testTitleIsNeverDoubledForAnyAcceptedPrefixForm(): void
+    public function testSharedFixtureVectorsMatchThePhpHelper(): void
     {
-        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('دکتر رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('دکتر. رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('دکتر .رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title("دکتر\u{200C}رضایی"));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::with_title('  دکتر   رضایی  '));
-        self::assertSame('دکتر', DoctorDisplayName::with_title('دکتر'));
-        self::assertSame('دکتر', DoctorDisplayName::with_title("دکتر.\u{200C} "));
+        $fixture = self::fixture();
+        self::assertNotEmpty($fixture['vectors'], 'the fixture must carry vectors');
+
+        $seen = [];
+        foreach ($fixture['vectors'] as $vector) {
+            $id  = (string) $vector['id'];
+            $in  = $vector['input'];
+            $exp = (string) $vector['expected'];
+
+            self::assertArrayNotHasKey($id, $seen, "duplicate fixture id: {$id}");
+            $seen[$id] = true;
+
+            self::assertSame(
+                $exp,
+                DoctorDisplayName::with_title(is_string($in) ? $in : null),
+                "vector ‘{$id}’ ({$vector['note']})"
+            );
+        }
     }
 
-    public function testEmptyNameStaysEmptySoTheCallerOwnsItsFallback(): void
+    public function testNullAndBlankAreAcceptedAndCollapseToEmpty(): void
     {
+        // D1: with_title accepts ?string and returns '' for null/blank.
+        self::assertSame('', DoctorDisplayName::with_title(null));
         self::assertSame('', DoctorDisplayName::with_title(''));
-        self::assertSame('', DoctorDisplayName::with_title('   '));
+        self::assertSame('', DoctorDisplayName::with_title("   \t "));
+        self::assertSame('', DoctorDisplayName::with_title("\u{00A0}"));
     }
 
-    public function testDoubledTitleInsideRenderedTextCollapses(): void
+    public function testStartsWithTitleUsesTheSameWholeTokenRule(): void
     {
-        self::assertSame('با دکتر رضایی', DoctorDisplayName::collapse_doubled_title('با دکتر دکتر رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::collapse_doubled_title('دکتر  دکتر رضایی'));
-        self::assertSame('دکتر رضایی', DoctorDisplayName::collapse_doubled_title("دکتر\u{200C}دکتر رضایی"));
-        self::assertSame('با دکتر رضایی', DoctorDisplayName::collapse_doubled_title('با دکتر رضایی'));
+        $fixture = self::fixture();
+        foreach ($fixture['vectors'] as $vector) {
+            $in = $vector['input'];
+            self::assertSame(
+                (bool) $vector['had_title'],
+                DoctorDisplayName::starts_with_title(is_string($in) ? $in : null),
+                "starts_with_title disagrees with vector ‘{$vector['id']}’"
+            );
+        }
+    }
+
+    public function testDoubledTitleInsideRenderedTextCollapsesButNamesStayIntact(): void
+    {
+        $suffix = ' رضایی';
+        self::assertSame(
+            'با ' . DoctorDisplayName::TITLE . $suffix,
+            DoctorDisplayName::collapse_doubled_title('با دکتر دکتر' . $suffix)
+        );
+        self::assertSame(
+            DoctorDisplayName::TITLE . ' رضایی',
+            DoctorDisplayName::collapse_doubled_title("دکتر\u{200C}دکتر رضایی")
+        );
+        // A WORD that merely starts with the title letters must never be eaten.
+        self::assertSame(
+            'دکتر دکتری',
+            DoctorDisplayName::collapse_doubled_title('دکتر دکتری')
+        );
+        self::assertSame(
+            DoctorDisplayName::TITLE . ' دکترزاده',
+            DoctorDisplayName::collapse_doubled_title('دکتر دکترزاده')
+        );
     }
 
     public function testDefaultSmsTemplatesDoNotHardcodeTheTitle(): void

@@ -9,22 +9,80 @@
 (function () {
   'use strict';
 
-  // 1) Dangerous-action confirmations — با یک Modal قابل‌دسترس و قابل‌رندر (نه confirm مرورگر).
-  //    پیام فارسی از data-cpms-confirm. اگر JS اجرا نشود، nonce + capability سمت سرور
-  //    همچنان مرجع authorize هستند (توضیح در گزارش: confirmation = UX، نه authorization).
-  //    تأییدِ عملیات از مؤلفهٔ مشترکِ درون‌صفحه‌ای می‌آید (assets/js/cpms-dialog.js):
-  //    RTL، تلهٔ فوکوس، Escape، بازگردانی فوکوس — نه confirmِ مرورگر.
-  //    اگر آن asset بار نشود، هیچ تأییدی جا زده نمی‌شود و ارسالِ فرم به مسیر
-  //    طبیعیِ خودش برمی‌گردد (nonce + capability سمت سرور مرجعِ authorize است).
-  function showConfirm(message) {
-    if (window.CpmsDialog && typeof window.CpmsDialog.confirm === 'function') {
-      return window.CpmsDialog.confirm(message, { title: 'تأیید عملیات' });
-    }
-    return Promise.resolve(null);
-  }
-
+  // 1) Dangerous-action confirmations — Persian, accessible, in-page (assets/js/cpms-dialog.js).
+  //    D2 (fail-closed): if the shared dialog asset is missing, we fall back to the
+  //    NATIVE window.confirm. There is no code path that proceeds without a
+  //    confirmation of some kind. Confirmation stays UX only — nonce + capability
+  //    on the server are the authorization boundary.
   function dialogAvailable() {
     return !!(window.CpmsDialog && typeof window.CpmsDialog.confirm === 'function');
+  }
+
+  function nativeConfirm(message) {
+    // window.confirm is synchronous; a thrown/blocked dialog counts as CANCEL.
+    try {
+      return window.confirm(message) === true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function showConfirm(message) {
+    if (!dialogAvailable()) {
+      return Promise.resolve(nativeConfirm(message));
+    }
+    return window.CpmsDialog.confirm(message, { title: 'تأیید عملیات' });
+  }
+
+  // D3: a second activation of the SAME trigger while its dialog is pending is
+  // ignored (no second dialog, no second action).
+  var pendingTriggers = [];
+  function isPending(trigger) {
+    return pendingTriggers.indexOf(trigger) !== -1;
+  }
+  function markPending(trigger) {
+    pendingTriggers.push(trigger);
+  }
+  function clearPending(trigger) {
+    var i = pendingTriggers.indexOf(trigger);
+    if (i !== -1) {
+      pendingTriggers.splice(i, 1);
+    }
+  }
+
+  /**
+   * One confirmation, then run `act`. Cancel does nothing.
+   * The synchronous native branch has already decided the outcome before any
+   * preventDefault happens; the async branch intercepts the event first.
+   */
+  function confirmThen(event, trigger, message, act) {
+    if (isPending(trigger)) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
+    if (!dialogAvailable()) {
+      // Synchronous: decide BEFORE touching the event.
+      if (!nativeConfirm(message)) {
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      act();
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    markPending(trigger);
+    showConfirm(message).then(function (ok) {
+      clearPending(trigger);
+      if (!ok) {
+        return;
+      }
+      act();
+    }, function () {
+      clearPending(trigger);
+    });
   }
 
   function bindConfirms() {
@@ -32,11 +90,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('form[data-cpms-confirm]'), function (form) {
       form.addEventListener('submit', function (e) {
         if (!form.hasAttribute('data-cpms-confirm')) { return; } // already confirmed → real submit
-        if (!dialogAvailable()) { return; } // no shared dialog → native submit (server still authorizes)
-        e.preventDefault();
-        e.stopPropagation();
-        showConfirm(form.getAttribute('data-cpms-confirm')).then(function (ok) {
-          if (!ok) { return; }
+        confirmThen(e, form, form.getAttribute('data-cpms-confirm'), function () {
           form.removeAttribute('data-cpms-confirm');
           try { form.requestSubmit(); } catch (err) { form.submit(); }
         });
@@ -46,11 +100,7 @@
     Array.prototype.forEach.call(document.querySelectorAll('a[data-cpms-confirm], button[data-cpms-confirm]:not([data-cpms-schedule-delete])'), function (el) {
       el.addEventListener('click', function (e) {
         if (!el.hasAttribute('data-cpms-confirm')) { return; }
-        if (!dialogAvailable()) { return; }
-        e.preventDefault();
-        e.stopPropagation();
-        showConfirm(el.getAttribute('data-cpms-confirm')).then(function (ok) {
-          if (!ok) { return; }
+        confirmThen(e, el, el.getAttribute('data-cpms-confirm'), function () {
           el.removeAttribute('data-cpms-confirm');
           if (el.tagName === 'A' && el.href) {
             window.location.href = el.href;
@@ -60,14 +110,12 @@
         });
       });
     });
-    // حذف برنامه (دکمه‌ای که فرم hidden را پر و submit می‌کند)
+    // حذف برنامه (دکمه‌ای که فرم hidden را پر و submit می‌کند).
+    // D2: preventDefault only AFTER the confirmation path is decided.
     Array.prototype.forEach.call(document.querySelectorAll('[data-cpms-schedule-delete]'), function (btn) {
       btn.addEventListener('click', function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (!dialogAvailable()) { return; }
-        showConfirm(btn.getAttribute('data-cpms-confirm') || 'حذف برنامه این روز؟').then(function (ok) {
-          if (!ok) { return; }
+        var message = btn.getAttribute('data-cpms-confirm') || 'حذف برنامه این روز؟';
+        confirmThen(e, btn, message, function () {
           var id = btn.getAttribute('data-cpms-schedule-delete');
           var f = document.getElementById('cpms-sched-del');
           if (f && id) {
