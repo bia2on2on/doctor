@@ -31,10 +31,10 @@
   },
   "compatibility": {
     "companion_plugin_version": "1.0.0",
-    "companion_schema_pin": "2026_10_27_0030",
+    "companion_schema_pin": "2026_10_31_0031",
     "core_plugin": "clinic-practice-management/clinic-practice-management.php",
-    "migration_count": 30,
-    "production_schema_head": "2026_10_27_0030"
+    "migration_count": 31,
+    "production_schema_head": "2026_10_31_0031"
   },
   "contract_version": 1,
   "critical_options": {
@@ -451,6 +451,7 @@
     },
     "foreign_dependency_code": "SCOPED_FOREIGN_DEPENDENCY",
     "never_owned": {
+      "cpms_audit_seq": "install-level audit serialization guard",
       "cpms_license_install": "install-level licence identity",
       "cpms_license_state": "install-level licence runtime state",
       "cpms_schema_migrations": "runner-owned migration bookkeeping"
@@ -1068,6 +1069,27 @@
       "since": "2026_09_05_0001",
       "surrogate_id": true,
       "teardown_class": "global_never",
+      "teardown_mode": "never"
+    },
+    "cpms_audit_seq": {
+      "deletion_key": [
+        "id"
+      ],
+      "feeds_id_set": null,
+      "foreign_keys": [],
+      "inventory": "system",
+      "ownership_columns": {},
+      "ownership_rule": {
+        "kind": "never",
+        "reason": "install-level audit serialization guard"
+      },
+      "primary_key": [
+        "id"
+      ],
+      "rationale": "Singleton (id = 1) guard row. Migration 2026_10_31_0031 (run by MigrationRunner) creates and fast-forwards it; AuditLogger locks it FOR UPDATE inside the same transaction as every audit append, updates only last_audit_id/updated_at, and throws when the row is absent. It has no clinic_id, no organization_id and no foreign key, so nothing in it can prove demo ownership; deleting it would break audit writes on the host site. Install-level host state, never demo-owned, never deleted in either lane.",
+      "since": "2026_10_31_0031",
+      "surrogate_id": true,
+      "teardown_class": "runner_managed",
       "teardown_mode": "never"
     },
     "cpms_clinic_memberships": {

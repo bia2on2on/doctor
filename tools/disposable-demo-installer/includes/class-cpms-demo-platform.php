@@ -718,6 +718,12 @@ class Platform {
 		if ( 1 === preg_match( '/^0900\d{7}$/', $patient_mobile ) ) {
 			$keys[] = 'otp-day:' . $patient_mobile;
 			$keys[] = 'otp-hour:' . $patient_mobile;
+			// Schema 0031 serialises OTP issuance with an UPSERT guard row keyed
+			// by `sha256(mobile)` (OtpService::request). It is bound to exactly
+			// the same synthetic `0900` mobile as the day/hour counters above, so
+			// it is fixture-owned by the same proof. Without it the teardown's
+			// fail-closed foreign-row check would block the cleanup it protects.
+			$keys[] = 'otp-send-guard:' . hash( 'sha256', $patient_mobile );
 		}
 
 		$user_ids = array_values( array_filter( array_map( 'intval', (array) ( $scope['user_ids'] ?? array() ) ), static fn ( int $v ): bool => $v > 0 ) );

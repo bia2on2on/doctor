@@ -42,7 +42,7 @@ form. Responses that ever include a credential or OTP code send
 Single site (no multisite) · HTTPS or loopback · PHP ≥ 8.1 · WP ≥ 6.9 ·
 no persistent object cache · **exactly one** WordPress account (the acting
 Administrator) · only default WordPress starter content · no other active plugin ·
-CPMS active with schema `2026_10_27_0030` · `CPMS_DEV_OTP_ECHO` undefined ·
+CPMS active with schema `2026_10_31_0031` · `CPMS_DEV_OTP_ECHO` undefined ·
 CPMS bootstrap Organization/Clinic/Location untouched · every clinical, booking,
 patient, finance, SMS, OTP, rate-limit and idempotency table empty · no unknown
 `cpms_*` table holding data · no existing demo manifest.
@@ -115,8 +115,10 @@ identifiers (`clinic_id`, `organization_id`, `patient_id`, `wp_user_id`,
   or deleted). Any unscoped, foreign, or suffix-colliding OTP audit row blocks
   teardown.
 - **`cpms_rate_limits`:** Only entity-scoped keys exclusively owned by the fixture
-  (`otp-day:<0900-mobile>`, `otp-hour:<0900-mobile>`, `login-user:<32-hex-persona>`,
-  and per-fixture-user keys such as `booking-<uid>`) are deleted during teardown.
+  (`otp-day:<0900-mobile>`, `otp-hour:<0900-mobile>`,
+  `otp-send-guard:<sha256(0900-mobile)>` — the schema 0031 OTP issue guard, keyed
+  by the same synthetic mobile — `login-user:<32-hex-persona>`, and
+  per-fixture-user keys such as `booking-<uid>`) are deleted during teardown.
   Globally shared per-IP counters (`otp-ip:<ip>`, `otp-verify-ip:<ip>`,
   `login-ip:<ip>`) cannot be proven to belong exclusively to the demo from an IP
   match alone and are **preserved** across teardown (left for production CPMS's

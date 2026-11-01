@@ -1,12 +1,12 @@
 # Scoped demo — CPMS table ownership map (preparation checkpoint)
 
-**Source of truth:** repository `main` / session base `2ae07abf2e68c8ec7c9c679016915d5be4ce7034`, pinned companion schema `2026_10_27_0030`.
+**Source of truth:** repository `main` at `805e3dfe304acf83501d14e95a1dbc3c11778bfb`, pinned companion schema `2026_10_31_0031`.
 
 **Status:** implemented in the companion and covered by real-database runtime drills (`tools/disposable-demo-installer/tests/scoped-recovery.php`, R1–R9). The tables below remain a design reference; the enforceable rules are the declarative constants listed in the correction section.
 
 ## Important correction to the mission wording
 
-The mission says “all 43 CPMS tables”. That count is from a pre-0030 schema. At schema `2026_10_27_0030`, `Preflight::OPERATIONAL_TABLES` has exactly **50** tables and `Preflight::KNOWN_TABLES` has **60** tables (50 operational + 10 system/global). `Teardown::DELETE_ORDER` has 57 entries. The scoped implementation and its tests must cover all **60**, with special treatment for the shared/global surfaces called out below.
+The mission says “all 43 CPMS tables”. That count is from a pre-0030 schema. At schema `2026_10_31_0031`, `Preflight::OPERATIONAL_TABLES` has exactly **50** tables and `Preflight::KNOWN_TABLES` has **61** tables (50 operational + 11 system/global). `Teardown::DELETE_ORDER` has 57 entries. The scoped implementation and its tests must cover all **61**, with special treatment for the shared/global surfaces called out below.
 
 The declarative source of truth for every rule below is `tools/disposable-demo-installer/compatibility.json`, and `.github/scripts/companion-compat/evaluate.py` is the gate that proves the companion still satisfies it.
 
@@ -93,7 +93,7 @@ read "actor reference that is never used to prove ownership".
 | 42 | `cpms_audit_logs` | append-only global hash chain; nullable `C`, resource/actor/meta JSON | **Never delete, update, or selectively remove any row.** Keep all demo and foreign audit entries; verify full chain and immutable baseline prefix. |
 | 43 | `cpms_drug_reference` | `C`; `FK(prescription_items.drug_ref_id)` | Delete only exact synthetic drug-reference IDs after their prescription children are gone. |
 
-## The 10 system/global tables
+## The 11 system/global tables
 
 | Table | Actual ownership / scope | Scoped teardown rule |
 |---|---|---|
@@ -102,6 +102,7 @@ read "actor reference that is never used to prove ownership".
 | `cpms_locations` | `FK(clinic_id)`, clinic-unique slug. | Delete only exact synthetic Location IDs. Preserve every existing Location. |
 | `cpms_settings` | `C`, nullable `L`, unique `(clinic_id,key)`. | Delete only settings for the synthetic clinic; verify `sms.provider=log` and bounded booking settings. |
 | `cpms_schema_migrations` | Installation-wide migration registry. | **Never touch.** |
+| `cpms_audit_seq` | Schema `2026_10_31_0031` audit serialization guard: a **singleton row (`id = 1`)** with `last_audit_id`/`created_at`/`updated_at`. It has no `clinic_id`, no `organization_id` and no foreign key. Migration `2026_10_31_0031` creates and fast-forwards it via `MigrationRunner`; the production `AuditLogger` locks it `FOR UPDATE` inside the same transaction as every audit append, updates only `last_audit_id`/`updated_at`, and throws when the row is absent. | **Never touch, never own.** Shared audit-chain guard state: nothing in it can prove demo ownership, and deleting it would break audit writes on the host site. Preserved in both lanes; the scoped baseline covers its identity and excludes only the two columns production rewrites, so a demo append is not reported as drift. |
 | `cpms_jobs` | Installation-wide queue; `payload_json` is the only ownership hint. | Preserve recurring/global jobs and all foreign jobs. Delete only exact job IDs whose payload references the synthetic clinic or synthetic SMS message IDs. Acquire `GET_LOCK('cpms_jobs_tick', 0)` to block the runner; any `processing` owned job or unavailable lock fails closed. New fixture-owned jobs found at post-verification mean teardown is incomplete. |
 | `cpms_operational_logs` | Installation-wide append-oriented log; `context_json`, request ID and IP are shared. | Preserve all baseline and foreign rows. Delete only exact log IDs whose `context_json` carries a verified fixture entity ID or reserved synthetic marker. Never match by timestamp, request ID, IP, or 4-digit mobile suffix. |
 | `cpms_rate_limits` | Composite `(window_key,window_id)`; shared IP/global counters. | Preserve all shared `otp-ip:*`, `otp-verify-ip:*`, `login-ip:*` rows and all foreign entity keys. Delete only a closed allowlist of exact fixture-derived keys proven absent from the baseline. |

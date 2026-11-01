@@ -30,6 +30,94 @@ use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Bootstrap\App;
 
+/*
+ * Fail-closed diagnostics.
+ *
+ * A PHP fatal or an uncaught Throwable aborts this script before the summary
+ * line is printed, so the CI step reports only "exit code 255" and the cause is
+ * invisible in the check-run annotations. These handlers add ONE single-line
+ * annotation (kind, file, line, redacted message) so a fatal can be identified
+ * from the annotations alone. They never swallow a failure and never mask it:
+ * every path here still terminates the script with a non-zero exit code.
+ */
+$cpdd_annotate = static function ( string $kind, string $detail ): void {
+	$detail = (string) preg_replace( '/\s+/', ' ', trim( $detail ) );
+	$detail = (string) preg_replace(
+		'/(pass(?:word)?|passwd|pepper|secret|token|apikey|api_key|salt|nonce)(\s*[=:]\s*)[^\s,;]+/i',
+		'$1$2[redacted]',
+		$detail
+	);
+	if ( strlen( $detail ) > 400 ) {
+		$detail = substr( $detail, 0, 400 ) . '...';
+	}
+	if ( '' === (string) getenv( 'GITHUB_ACTIONS' ) ) {
+		echo 'CPDD_INTEGRATION_FATAL=' . $kind . ' ' . $detail . PHP_EOL;
+		return;
+	}
+	echo '::error title=CPDD integration fatal::' . $kind . ' ' . $detail . PHP_EOL;
+};
+
+/**
+ * Annotate the *shape* of every `cpms_rate_limits` window_key present, with all
+ * identifiers masked, so a fail-closed ownership block can be traced back to the
+ * production caller that created the unexpected row without printing IPs,
+ * mobiles or username hashes.
+ *
+ * @return string
+ */
+$cpdd_rate_shape = static function (): string {
+	global $wpdb;
+	$table = $wpdb->prefix . 'cpms_rate_limits';
+	// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- read-only diagnostic.
+	$keys = $wpdb->get_col( 'SELECT window_key FROM `' . $table . '`' );
+	if ( ! is_array( $keys ) ) {
+		return '<unreadable>';
+	}
+	$shapes = array();
+	foreach ( $keys as $key ) {
+		$key = (string) preg_replace( '/:.*$/', ':#', (string) $key );
+		$key = (string) preg_replace( '/[0-9].*$/', '#', $key );
+		$shapes[ $key ] = (int) ( $shapes[ $key ] ?? 0 ) + 1;
+	}
+	ksort( $shapes );
+	$parts = array();
+	foreach ( $shapes as $shape => $count ) {
+		$parts[] = $shape . '=' . $count;
+	}
+
+	return 'total=' . count( $keys ) . ' ' . implode( ' ', $parts );
+};
+
+set_exception_handler(
+	static function ( \Throwable $e ) use ( $cpdd_annotate, $cpdd_rate_shape ): void {
+		$cpdd_annotate(
+			'uncaught ' . get_class( $e ),
+			basename( (string) $e->getFile() ) . ':' . (int) $e->getLine() . ' ' . (string) $e->getMessage()
+		);
+		if ( $e instanceof DemoException && 'TEARDOWN_BLOCKED' === (string) $e->demo_code() ) {
+			$cpdd_annotate( 'rate-limit shape', $cpdd_rate_shape() );
+		}
+		exit( 255 );
+	}
+);
+
+register_shutdown_function(
+	static function () use ( $cpdd_annotate ): void {
+		$err = error_get_last();
+		if ( ! is_array( $err ) || ! isset( $err['type'], $err['file'], $err['line'], $err['message'] ) ) {
+			return;
+		}
+		if ( ! in_array( (int) $err['type'], array( E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR ), true ) ) {
+			return;
+		}
+		$cpdd_annotate(
+			'php fatal',
+			basename( (string) $err['file'] ) . ':' . (int) $err['line'] . ' ' . (string) $err['message']
+		);
+		exit( 255 );
+	}
+);
+
 $GLOBALS['cpdd_fail'] = 0;
 
 /**
@@ -50,7 +138,7 @@ $admin_id = get_current_user_id();
 
 cpdd_assert( $admin_id > 0 && user_can( $admin_id, 'manage_options' ), 'administrator session with manage_options' );
 cpdd_assert( class_exists( App::class ), 'CPMS Classic is active in the same request' );
-cpdd_assert( '2026_10_27_0030' === $platform->schema_version(), 'CPMS schema is the pinned supported version' );
+cpdd_assert( '2026_10_31_0031' === $platform->schema_version(), 'CPMS schema is the pinned supported version' );
 
 // --- 1. Preflight ----------------------------------------------------------
 $preflight = new Preflight( $env, $platform, $manifest );
