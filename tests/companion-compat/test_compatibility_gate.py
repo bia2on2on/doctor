@@ -387,12 +387,20 @@ class AuditGuardOwnership(unittest.TestCase):
             if "cpms_audit_seq" in finding["message"]
         ]
         self.assertEqual([], guard_findings)
-        inventory_and_teardown = {
-            finding["check"]
-            for finding in result["findings"]
-            if finding["check"] in {"table_inventory", "inventory_partition", "teardown_coverage", "ownership_rules"}
-        }
-        self.assertEqual(set(), inventory_and_teardown)
+        # Inventory and teardown must be clean at BOTH severities: an
+        # "info" row here would still mean the table is not fully evaluated.
+        for check in ("table_inventory", "inventory_partition", "teardown_coverage"):
+            self.assertEqual(
+                [],
+                [f["message"] for f in result["findings"] if f["check"] == check],
+                f"{check} must report nothing for the resolved 0031 inventory",
+            )
+        guard_blockers = [
+            f["message"]
+            for f in result["findings"]
+            if f["check"] == "ownership_rules" and f["severity"] == evaluate.BLOCKER
+        ]
+        self.assertEqual([], guard_blockers)
 
     def test_scoped_baseline_excludes_only_the_two_guard_columns(self) -> None:
         """A demo audit append must not read as baseline drift.
