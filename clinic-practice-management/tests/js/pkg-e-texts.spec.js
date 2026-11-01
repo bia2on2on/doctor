@@ -160,7 +160,7 @@ check('finance board clears the "select a location" hint', function () {
 // NOTE: the staff-pricing half-space (ZWNJ) repair is NOT part of this change.
 // The corrected spellings (e.g. «تعرفه ثبت‌شده هنگام پذیرش») are asserted with the
 // OLD glued spelling by acceptance/pilot paths outside this package
-// (tests/scoped-demo, tests/disposable-site, bin/pilot-finance-board.py and the
+// (the scoped-demo and disposable-site harnesses under tests/, bin/pilot-finance-board.py and the
 // companion tool's own acceptance suite), so repairing the copy here turns those
 // guards red. That repair needs its own PR which updates those expectations
 // together — including the companion path — rather than mixing production and
