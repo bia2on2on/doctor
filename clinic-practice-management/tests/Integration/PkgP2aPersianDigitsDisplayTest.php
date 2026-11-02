@@ -13,6 +13,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Time\PersianDigits;
+use ClinicCore\Infrastructure\Repository\NotificationRepository;
 use ClinicCore\Settings\Settings;
 use WP_REST_Request;
 use WP_UnitTestCase;
@@ -367,6 +368,129 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 
 		// Initial profile config preserves historical ISO birth_date 1915-05-10 untouched.
 		self::assertStringContainsString( '"birth_date":"1915-05-10"', $html );
+	}
+
+	public function test_notification_time_renders_for_repository_written_database_shape(): void {
+		$clinic_id  = (int) App::scope()->clinicId;
+		$patient_id = $this->seed_portal_patient( $clinic_id, '09197770222', '1915-05-10' );
+		$user_id    = $this->make_user( 'p2a_time', RolesAndCapabilities::ROLE_PATIENT );
+
+		global $wpdb;
+		$now = App::db()->nowUtcSql();
+		$wpdb->insert(
+			$wpdb->prefix . 'cpms_patient_user_links',
+			[
+				'clinic_id'      => $clinic_id,
+				'patient_id'     => $patient_id,
+				'wp_user_id'     => $user_id,
+				'mobile_at_link' => '09197770222',
+				'is_primary'     => 1,
+				'linked_at'      => $now,
+			],
+			[ '%d', '%d', '%d', '%s', '%d', '%s' ]
+		);
+
+		// Real write path: NotificationRepository::insert() fills created_at only when the
+		// caller omits it, so this row carries CpmsDb::nowUtcSql() — the production shape.
+		$repository = new NotificationRepository( App::db() );
+		$payload    = (string) json_encode(
+			[ 'title' => 'عنوان', 'body' => 'متن' ],
+			JSON_UNESCAPED_UNICODE
+		);
+		$shape_row  = $repository->insert(
+			$clinic_id,
+			[
+				'recipient_patient_id' => $patient_id,
+				'channel'              => 'internal',
+				'template'             => NotificationEvents::APPT_CONFIRMED,
+				'payload_json'         => $payload,
+				'status'               => 'queued',
+			]
+		);
+		$fixed_row  = $repository->insert(
+			$clinic_id,
+			[
+				'recipient_patient_id' => $patient_id,
+				'channel'              => 'internal',
+				'template'             => NotificationEvents::APPT_REMINDER,
+				'payload_json'         => $payload,
+				'status'               => 'queued',
+				'created_at'           => '2026-03-21 10:00:00',
+			]
+		);
+		self::assertGreaterThan( 0, $shape_row );
+		self::assertGreaterThan( 0, $fixed_row );
+
+		$stored = (string) App::db()->fetchValue(
+			'SELECT created_at FROM ' . App::db()->table( 'cpms_notifications' ) . ' WHERE id = %d',
+			[ $shape_row ]
+		);
+		self::assertMatchesRegularExpression(
+			'/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}$/',
+			$stored,
+			'fixture: DATETIME(3) read-back carries milliseconds'
+		);
+
+		wp_set_current_user( $user_id );
+		ob_start();
+		try {
+			PatientPortalPage::render();
+			$html = (string) ob_get_contents();
+		} finally {
+			ob_end_clean();
+		}
+
+		$time_re = '/<time class="description" datetime="\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00">'
+			. '<span dir="ltr">[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2} [۰-۹]{2}:[۰-۹]{2}<\/span><\/time>/u';
+		self::assertSame(
+			2,
+			preg_match_all( $time_re, $html ),
+			'every queued row renders one localized <time>'
+		);
+
+		$shape_li = $this->notification_row_markup( $html, $shape_row );
+		self::assertMatchesRegularExpression(
+			$time_re,
+			$shape_li,
+			'production DATETIME(3) shape renders a <time>'
+		);
+
+		$fixed_li = $this->notification_row_markup( $html, $fixed_row );
+		self::assertStringContainsString( 'datetime="2026-03-21T10:00:00+00:00"', $fixed_li );
+		self::assertStringContainsString( '۱۴۰۵/۰۱/۰۱ ۱۳:۳۰', $fixed_li );
+	}
+
+	public function test_notification_time_parses_plain_values_and_rejects_garbage(): void {
+		$method = new \ReflectionMethod( PatientPortalPage::class, 'notification_time' );
+		$method->setAccessible( true );
+		$tz = new \DateTimeZone( 'Asia/Tehran' );
+
+		$fraction = $method->invoke( null, '2026-03-21 10:00:00.000', $tz );
+		$plain    = $method->invoke( null, '2026-03-21 10:00:00', $tz );
+
+		self::assertIsString( $fraction );
+		self::assertSame(
+			$plain,
+			$fraction,
+			'millisecond precision must not change the label'
+		);
+		self::assertStringContainsString( 'datetime="2026-03-21T10:00:00+00:00"', (string) $fraction );
+		self::assertStringContainsString( '۱۴۰۵/۰۱/۰۱ ۱۳:۳۰', (string) $fraction );
+		self::assertSame(
+			'',
+			$method->invoke( null, 'not-a-date', $tz ),
+			'fail-closed: junk renders no <time>'
+		);
+	}
+
+	private function notification_row_markup( string $html, int $notification_id ): string {
+		$needle = 'data-notification-id="' . $notification_id . '"';
+		$start  = strpos( $html, $needle );
+		self::assertNotFalse( $start, 'notification row must render: ' . $needle );
+		$end = strpos( $html, '</li>', (int) $start );
+		self::assertNotFalse( $end, 'notification row must be closed' );
+
+		return substr( $html, (int) $start, (int) $end - (int) $start );
 	}
 
 	private function make_user( string $prefix, string $role ): int {

@@ -1211,9 +1211,26 @@ final class PatientPortalPage
     /**
      * زمانِ ثبتِ اعلان (UTC در DB) → `<time datetime="ISO-8601">` با برچسبِ جلالی و
      * ساعتِ محلیِ Clinic — همان قالبِ جدول‌های همین صفحه (`1405/07/14` و `HH:MM`, dir=ltr).
+     *
+     * `cpms_notifications.created_at` از نوع DATETIME(3) است.
+     * مقدارِ برگشتی از DB کسرِ ثانیه دارد؛ اول با `.u` و بعد
+     * بدونِ کسر parse می‌شود (مثل ClinicalService و MedicalFileService).
+     * مقدارِ غیرقابل‌parse همچنان '' برمی‌گرداند (fail-closed).
      */
     private static function notification_time( string $created_at_utc, \DateTimeZone $tz ): string {
-        $utc = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $created_at_utc, new \DateTimeZone( 'UTC' ) );
+        $utc_zone = new \DateTimeZone( 'UTC' );
+        $utc      = \DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s.u',
+            $created_at_utc,
+            $utc_zone
+        );
+        if ( $utc === false ) {
+            $utc = \DateTimeImmutable::createFromFormat(
+                'Y-m-d H:i:s',
+                $created_at_utc,
+                $utc_zone
+            );
+        }
         if ( $utc === false ) {
             return '';
         }
