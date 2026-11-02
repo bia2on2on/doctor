@@ -789,9 +789,12 @@ def run_journey(browser, run):
         if appt_status(ok_appt) != "confirmed":
             raise RuntimeError("a rejected cancel must not mutate the appointment")
         err_posts = cancel_posts[posts_before:]
-        if len(err_posts) != 1 or err_posts[0]["has_nonce"] or not err_posts[0]["same_origin"]:
+        # NOTE: request headers recorded by the `request` event are the pre-strip ones
+        # (stage 1c never asserts has_nonce on a stripped request either); the 403 +
+        # CLINIC_INVALID_NONCE above are the proof that the nonce was stripped.
+        if len(err_posts) != 1 or not err_posts[0]["same_origin"] or err_posts[0]["body"].strip() != "{}":
             raise RuntimeError(
-                f"exactly one same-origin cancel POST without nonce expected, got {[(p['has_nonce'], p['same_origin']) for p in err_posts]}"
+                f"exactly one same-origin empty-body cancel POST expected, got {[(p['body'][:40], p['same_origin']) for p in err_posts]}"
             )
         if not is_frontend_portal_url(page.url) and page.locator(SHELL_ROOT).count() == 0:
             raise RuntimeError(f"a cancel error must not navigate away from the frontend portal (url={page.url})")
@@ -891,6 +894,7 @@ def run_journey(browser, run):
             page.screenshot(path=screenshot("FAIL"), full_page=True)
         except Exception:
             pass
+        print(f"ERROR {key0}-{stage}: {type(e).__name__}: {e}")
         fail(f"{key0}-{stage}", f"portal cancel {run['vp']}", e)
         raise
     finally:
