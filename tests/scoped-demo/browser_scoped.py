@@ -127,6 +127,80 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         raise AssertionError(name + ": " + detail)
 
 
+# --- Shared in-page dialog (assets/js/cpms-dialog.js) — DUAL-MODE answers ----
+# The next product round converts the remaining native window.confirm()/prompt()
+# call sites to this in-page dialog. These helpers let the journey answer BOTH
+# forms without weakening it: the existing page.on("dialog") handler keeps
+# answering the native form, and answer_shared_dialogs() answers the in-page one.
+# A step that needs a dialog still FAILS when neither form appears.
+DIALOG_OVERLAY = ".cpms-modal-overlay"
+DIALOG_ROOT = ".cpms-modal[role='dialog']"
+DIALOG_CONFIRM = ".cpms-modal-confirm"
+DIALOG_CANCEL = ".cpms-modal-cancel"
+DIALOG_INPUT = ".cpms-dialog__input"
+DIALOG_POLL_MS = 100
+
+
+def shared_dialog_available(page) -> bool:
+    """True when this page shipped the shared in-page dialog asset.
+
+    Probe this BEFORE clicking the trigger: the answer it gives decides whether
+    the in-page form or the still-shipped native form owns the confirmation.
+    """
+    try:
+        return bool(page.evaluate("() => !!(window.CpmsDialog && window.CpmsDialog.confirm)"))
+    except Exception:
+        return False
+
+
+def answer_shared_dialogs(page, steps, *, shared_expected, timeout_ms, native_seen=None):
+    """Answer the SHARED in-page dialog in sequence — one step per dialog.
+
+    steps: [{"action": "accept" | "cancel" | "prompt", "value": "<text>"}].
+    native_seen: the caller's own record of native dialogs; when truthy the
+        existing native handler already answered this step and we stay out.
+    shared_expected: shared_dialog_available(page), probed before the trigger.
+    timeout_ms: the caller's EXISTING timeout — never widened here.
+
+    Returns "native" (the native handler owned the step) or "shared". Raises
+    RuntimeError when the in-page dialog was expected but never appeared, so the
+    step fails instead of passing on a dialog nobody answered.
+    """
+    if native_seen:
+        return "native"
+    if not shared_expected:
+        return "native"
+
+    overlay = page.locator(DIALOG_OVERLAY)
+    budget = max(1, int(timeout_ms / DIALOG_POLL_MS))
+    for index, step in enumerate(steps, start=1):
+        for _ in range(budget):
+            if overlay.count() > 0 and overlay.first.is_visible():
+                break
+            if native_seen:
+                return "native"
+            page.wait_for_timeout(DIALOG_POLL_MS)
+        else:
+            raise RuntimeError(
+                "neither the native nor the shared in-page dialog appeared within "
+                f"{timeout_ms}ms (dialog {index} of {len(steps)})"
+            )
+        root = overlay.locator(DIALOG_ROOT).first
+        action = step.get("action", "accept")
+        if action == "cancel":
+            root.locator(DIALOG_CANCEL).first.click()
+        elif action == "prompt":
+            root.locator(DIALOG_INPUT).first.fill(str(step.get("value", "")))
+            root.locator(DIALOG_CONFIRM).first.click()
+        else:
+            root.locator(DIALOG_CONFIRM).first.click()
+        for _ in range(budget):
+            if overlay.count() == 0 or not overlay.first.is_visible():
+                break
+            page.wait_for_timeout(DIALOG_POLL_MS)
+    return "shared"
+
+
 def submit_form(page, action: str, phrase: str | None = None) -> None:
     """Submit one scoped action, asserting exactly the phrase policy it has.
 
@@ -1672,7 +1746,22 @@ def iran_v1_phase(browser, creds: dict, targets: dict) -> None:
             dialog.accept()
 
     page.on("dialog", answer_prompt)
+    # DUAL-MODE: three sequential window.prompt()s today; the next product round
+    # collects the same three values with three sequential shared in-page prompts.
+    # The native handler above is untouched — when it consumed nothing, the values
+    # are collected from the in-page dialog instead, and the step still fails if
+    # neither form appears within the same 45s the assertions below already use.
+    edit_shared = shared_dialog_available(page)
+    answers_before = list(answers)
     page.locator('[data-role="pricing-charges"] tr').first.locator("button", has_text="اصلاح").click()
+    native_prompts = len(answers_before) - len(answers)
+    answer_shared_dialogs(
+        page,
+        [{"action": "prompt", "value": value} for value in answers],
+        shared_expected=edit_shared,
+        timeout_ms=45000,
+        native_seen=native_prompts > 0,
+    )
     page.wait_for_function(
         "() => document.querySelector('[data-role=\"pricing-charges\"]')"
         ".textContent.includes('اصلاح‌شده')",

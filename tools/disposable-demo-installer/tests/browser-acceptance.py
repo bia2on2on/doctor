@@ -107,6 +107,80 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         raise RuntimeError(f"Check failed: {name} ({safe_detail})")
 
 
+# --- Shared in-page dialog (assets/js/cpms-dialog.js) — DUAL-MODE answers ----
+# The next product round converts the remaining native window.confirm()/prompt()
+# call sites to this in-page dialog. These helpers let the journey answer BOTH
+# forms without weakening it: the existing page.on("dialog") handler keeps
+# answering the native form, and answer_shared_dialogs() answers the in-page one.
+# A step that needs a dialog still FAILS when neither form appears.
+DIALOG_OVERLAY = ".cpms-modal-overlay"
+DIALOG_ROOT = ".cpms-modal[role='dialog']"
+DIALOG_CONFIRM = ".cpms-modal-confirm"
+DIALOG_CANCEL = ".cpms-modal-cancel"
+DIALOG_INPUT = ".cpms-dialog__input"
+DIALOG_POLL_MS = 100
+
+
+def shared_dialog_available(page) -> bool:
+    """True when this page shipped the shared in-page dialog asset.
+
+    Probe this BEFORE clicking the trigger: the answer it gives decides whether
+    the in-page form or the still-shipped native form owns the confirmation.
+    """
+    try:
+        return bool(page.evaluate("() => !!(window.CpmsDialog && window.CpmsDialog.confirm)"))
+    except Exception:
+        return False
+
+
+def answer_shared_dialogs(page, steps, *, shared_expected, timeout_ms, native_seen=None):
+    """Answer the SHARED in-page dialog in sequence — one step per dialog.
+
+    steps: [{"action": "accept" | "cancel" | "prompt", "value": "<text>"}].
+    native_seen: the caller's own record of native dialogs; when truthy the
+        existing native handler already answered this step and we stay out.
+    shared_expected: shared_dialog_available(page), probed before the trigger.
+    timeout_ms: the caller's EXISTING timeout — never widened here.
+
+    Returns "native" (the native handler owned the step) or "shared". Raises
+    RuntimeError when the in-page dialog was expected but never appeared, so the
+    step fails instead of passing on a dialog nobody answered.
+    """
+    if native_seen:
+        return "native"
+    if not shared_expected:
+        return "native"
+
+    overlay = page.locator(DIALOG_OVERLAY)
+    budget = max(1, int(timeout_ms / DIALOG_POLL_MS))
+    for index, step in enumerate(steps, start=1):
+        for _ in range(budget):
+            if overlay.count() > 0 and overlay.first.is_visible():
+                break
+            if native_seen:
+                return "native"
+            page.wait_for_timeout(DIALOG_POLL_MS)
+        else:
+            raise RuntimeError(
+                "neither the native nor the shared in-page dialog appeared within "
+                f"{timeout_ms}ms (dialog {index} of {len(steps)})"
+            )
+        root = overlay.locator(DIALOG_ROOT).first
+        action = step.get("action", "accept")
+        if action == "cancel":
+            root.locator(DIALOG_CANCEL).first.click()
+        elif action == "prompt":
+            root.locator(DIALOG_INPUT).first.fill(str(step.get("value", "")))
+            root.locator(DIALOG_CONFIRM).first.click()
+        else:
+            root.locator(DIALOG_CONFIRM).first.click()
+        for _ in range(budget):
+            if overlay.count() == 0 or not overlay.first.is_visible():
+                break
+            page.wait_for_timeout(DIALOG_POLL_MS)
+    return "shared"
+
+
 def wp_cli(args: list[str], env_vars: dict | None = None) -> str:
     merged = os.environ.copy()
     if env_vars:
@@ -206,6 +280,56 @@ def staff_module_url(link: str, module: str) -> str:
     query = {key: list(value) for key, value in parse_qs(parsed.query).items()}
     query["cpms-module"] = [module]
     return parsed._replace(query=urlencode(query, doseq=True)).geturl()
+
+
+def select_public_booking_location(page, root, location_id: int, timeout_ms: int = 25000) -> str:
+    """Satisfy the visit-Location step of the public booking widget, both flows.
+
+    Since the location-first contract (`cpms-public-booking.js`, initLocationFirst)
+    the widget publishes `[data-role="location-picker"]` and, when the server
+    offers MORE THAN ONE eligible Location for the Clinic, it keeps the doctor
+    list hidden AND disabled until a Location is chosen. With exactly one Location
+    it selects that Location itself, and with none it keeps the previous
+    doctor-first flow — so a harness must satisfy the picker only when it is
+    actually offered.
+
+    Returns the chosen Location id as text, or "0" when the page is in the legacy
+    doctor-first flow (nothing to choose). Waits are bounded by the caller's own
+    timeout budget; a page in neither state is a genuine failure.
+    """
+    picker = root.locator('[data-role="location-picker"]')
+    options = root.locator('[data-role="location-option"]:not([disabled])')
+    clinician = root.locator("button.cpms-public-booking__clinician")
+    budget = max(1, int(timeout_ms // 100))
+    for _ in range(budget):
+        if picker.count() > 0 and picker.first.is_visible() and options.count() > 0:
+            break
+        if clinician.count() > 0 and clinician.first.is_visible():
+            return "0"
+        page.wait_for_timeout(100)
+    else:
+        raise RuntimeError(
+            "the public booking widget exposed neither a visit-Location picker nor a "
+            f"selectable doctor within {timeout_ms}ms"
+        )
+
+    preferred = root.locator(
+        f'[data-role="location-option"][data-location-id="{int(location_id)}"]:not([disabled])'
+    )
+    if int(location_id) > 0 and preferred.count() > 0:
+        option = preferred.first
+    else:
+        raise RuntimeError(
+            "the public booking widget offers Locations but not the fixture Location "
+            f"{int(location_id)}; offered ids: "
+            + ",".join(
+                str(node.get_attribute("data-location-id"))
+                for node in options.all()
+            )
+        )
+    option.wait_for(state="visible")
+    option.click()
+    return option.get_attribute("data-location-id") or "0"
 
 
 def assert_rtl_and_no_overflow(page, label: str, widths=(320, 390)) -> None:
@@ -525,7 +649,21 @@ def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fix
             dialog.accept()
 
     doctor_page.on("dialog", answer_prompt)
+    # DUAL-MODE: three sequential window.prompt()s today; the next product round
+    # collects the same three values with three sequential shared in-page prompts.
+    # The native handler above is untouched — when it consumed nothing, the values
+    # come from the in-page dialog, and the step still fails if neither form
+    # appears within the same 35s the assertions below already use.
+    edit_shared = shared_dialog_available(doctor_page)
+    answers_before = list(prompt_answers)
     doctor_page.locator('[data-role="pricing-charges"] tr').first.locator("button", has_text="اصلاح").click()
+    answer_shared_dialogs(
+        doctor_page,
+        [{"action": "prompt", "value": value} for value in prompt_answers],
+        shared_expected=edit_shared,
+        timeout_ms=35000,
+        native_seen=len(answers_before) > len(prompt_answers),
+    )
     doctor_page.wait_for_function(
         "() => { const t = document.querySelector('[data-role=\"pricing-charges\"]');"
         " return !!t && t.textContent.includes('اصلاح‌شده'); }",
@@ -1180,6 +1318,20 @@ def main() -> None:
             root.wait_for()
             check("public booking shortcode rendered", root.count() == 1)
 
+            # The fixture Clinic has TWO Locations, so the widget is location-first
+            # and keeps the doctor list hidden + disabled until a visit Location is
+            # chosen (initLocationFirst). A Clinic with one Location is auto-selected
+            # and a Clinic with none keeps the doctor-first flow; in both of those
+            # the helper is a no-op returning "0".
+            chosen_location = select_public_booking_location(
+                booking_page, root, int(fixture_meta["location_id"])
+            )
+            check(
+                "public booking visit Location resolved (location-first or legacy doctor-first)",
+                chosen_location == "0" or chosen_location == str(int(fixture_meta["location_id"])),
+                f"location_id={chosen_location} fixture_location_id={fixture_meta['location_id']}",
+            )
+
             clinician_btn = root.locator("button.cpms-public-booking__clinician", has_text=fixture_meta["clinician_name"]).first
             clinician_btn.wait_for(state="visible")
             clinician_btn.click()
@@ -1332,7 +1484,19 @@ def main() -> None:
             finalize_btn.wait_for(state="visible", timeout=30000)
             finalize_btn.click()
             doc_page.locator('[data-role="workspace-rx-item"][data-status="finalized"]').wait_for(state="visible", timeout=30000)
+            # DUAL-MODE: the visit-completion confirmation is the shared in-page
+            # dialog in the next product round and native window.confirm() today
+            # (the native handler above is untouched). Answering the in-page form
+            # keeps this stage honest in both worlds; if neither form appears the
+            # success wait below still fails the stage.
+            complete_shared = shared_dialog_available(doc_page)
             doc_page.locator('[data-role="workspace-consult-complete-submit"]').click()
+            answer_shared_dialogs(
+                doc_page,
+                [{"action": "accept"}],
+                shared_expected=complete_shared,
+                timeout_ms=30000,
+            )
             doc_page.locator('[data-role="workspace-consult-complete-success"]').wait_for(state="visible", timeout=30000)
             check("doctor clinical workflow completed in browser", True)
             doc_ctx.close()
