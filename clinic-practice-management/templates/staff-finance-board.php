@@ -293,8 +293,9 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     var config;
     try { config = JSON.parse(configNode.textContent); } catch (error) { return; }
     var root = String(config.rest_root || '').replace(/\/$/, '');
-    var state = { clinicId: null, locationId: null, locations: [], mutating: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null, selectedReceiptVisit: null, receiptLabel: '', billingVisitId: null };
+    var state = { clinicId: null, locationId: null, locations: [], mutating: false, canIssue: false, canCapture: false, canCheckOut: false, selectedVisit: null, selectedInvoice: null, paymentKey: null, selectedCheckoutVisit: null, selectedReceiptVisit: null, receiptLabel: '', billingVisitId: null, locationHintShown: false };
     var locationSelect = document.querySelector('[data-role="finance-location"]');
+    var LOCATION_HINT = 'برای مشاهدهٔ اطلاعات مالی، یک موقعیت را انتخاب کنید.';
     var rowsNode = document.querySelector('[data-role="finance-rows"]');
     var eligiblePanel = document.querySelector('[data-role="finance-eligible"]');
     var eligibleRowsNode = document.querySelector('[data-role="finance-eligible-rows"]');
@@ -364,6 +365,13 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     function setStatus(message, kind) {
         statusNode.textContent = message || '';
         statusNode.dataset.kind = kind || '';
+        // هر پیام تازه، نشانهٔ «راهنمای انتخاب موقعیت» را باطل می‌کند؛ در غیر
+        // این صورت پاک‌سازیِ هدفمند (clearLocationHint) پیام تازه را نمی‌زند.
+        state.locationHintShown = (message || '') === LOCATION_HINT;
+    }
+    // راهنمای «یک موقعیت انتخاب کنید» فقط تا انتخابِ موقعیت معتبر است.
+    function clearLocationHint() {
+        if (state.locationHintShown) { setStatus('', ''); }
     }
     function headers() {
         var value = { 'X-WP-Nonce': String(config.nonce || ''), 'Accept': 'application/json' };
@@ -810,7 +818,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     }
     function loadBoard() {
         if (state.locations.length > 1 && !state.locationId) {
-            setStatus('برای مشاهدهٔ اطلاعات مالی، یک موقعیت را انتخاب کنید.', 'error');
+            setStatus(LOCATION_HINT, 'error');
             return Promise.resolve();
         }
         return enqueue(function () {
@@ -818,6 +826,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             return request('/staff/portal/finance/awaiting-payment').then(function (result) {
                 if (!result.ok) { setStatus(showError(result, 'دریافت تختهٔ مالی ناموفق بود.'), 'error'); return; }
                 renderBoard(payload(result));
+                clearLocationHint();
             }).catch(function () {
                 setStatus('ارتباط با تختهٔ مالی برقرار نشد.', 'error');
             }).then(function () {
@@ -1070,6 +1079,8 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     cancelNode.addEventListener('click', function () { closeIssueForm(); });
     locationSelect.addEventListener('change', function () {
         state.locationId = Number(locationSelect.value || 0) || null;
+        // انتخاب موقعیت، راهنمای قبلی را باطل می‌کند (پیش از هر درخواست).
+        clearLocationHint();
         rowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="5">در حال بارگذاری…</td></tr>';
         eligibleRowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="5">در حال بارگذاری…</td></tr>';
         paidRowsNode.innerHTML = '<tr><td class="cpms-finance-board__empty" colspan="6">در حال بارگذاری…</td></tr>';

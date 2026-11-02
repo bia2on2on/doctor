@@ -93,7 +93,10 @@ final class SmsSettingsPage
         <table class="form-table" role="presentation">
             <tr>
                 <th scope="row">وضعیت</th>
-                <td><span id="cpms-sms-state">در حال بارگذاری…</span></td>
+                <td>
+                    <span id="cpms-sms-state" role="status" aria-live="polite"
+                        >در حال بارگذاری…</span>
+                </td>
             </tr>
             <tr>
                 <th scope="row">ارائه‌دهنده (Provider)</th>
@@ -163,7 +166,7 @@ final class SmsSettingsPage
                     <input type="text" id="cpms-sms-test-mobile" class="regular-text" dir="ltr" placeholder="09xxxxxxxxx">
                     <input type="text" id="cpms-sms-test-message" class="regular-text" value="پیام آزمایشی سیستم مطب">
                     <button type="button" class="button" id="cpms-sms-test-send">Send Test</button>
-                    <span id="cpms-sms-test-send-result"></span>
+                    <span id="cpms-sms-test-send-result" role="status" aria-live="polite"></span>
                 </td>
             </tr>
             <tr>
@@ -178,8 +181,8 @@ final class SmsSettingsPage
         <table class="widefat striped" id="cpms-sms-logs" dir="ltr">
             <thead>
             <tr>
-                <th>ID</th><th>Event</th><th>Recipient</th><th>Message</th><th>Provider</th>
-                <th>Status</th><th>Attempts</th><th>Provider Msg ID</th><th>Failure</th><th>Created (UTC)</th>
+                <th>شناسه</th><th>رویداد</th><th>گیرنده</th><th>متن پیام</th><th>ارائه‌دهنده</th>
+                <th>وضعیت</th><th>تلاش‌ها</th><th>شناسهٔ پیام ارائه‌دهنده</th><th>خطا</th><th>زمان ثبت</th>
             </tr>
             </thead>
             <tbody></tbody>
@@ -416,7 +419,8 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
                 span.textContent = r.status === 'SENT' ? '✓ ارسال شد' : ('نتیجه: ' + r.status);
                 span.style.color = r.status === 'SENT' ? 'green' : '#b32d2e';
             })
-            .catch(function (err) { alert('خطا: ' + err.message); });
+            // خطای درون‌صفحه‌ای (نه alert مرورگر): همان محلِ نتیجهٔ ارسال.
+            .catch(function (err) { result('cpms-sms-test-send-result', 'خطا: ' + err.message, false); });
     }
 
     // Persian/Jalali presentation of a stored UTC SMS timestamp (Owner B).
@@ -526,7 +530,8 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
     // ===== Init =====
     Promise.all([loadProviders(), loadStatus(), loadTemplates()])
         .then(function () { loadLogs(); loadBalance(); })
-        .catch(function (err) { alert('خطا در بارگذاری تنظیمات پیامک: ' + err.message); });
+        // خطای درون‌صفحه‌ای (نه alert مرورگر) در ناحیهٔ وضعیتِ همین صفحه.
+        .catch(function (err) { el('cpms-sms-state').textContent = 'خطا در بارگذاری تنظیمات پیامک: ' + err.message; });
 })();
 </script>
         <?php

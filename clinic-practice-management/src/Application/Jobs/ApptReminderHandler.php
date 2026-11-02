@@ -7,6 +7,7 @@ namespace ClinicCore\Application\Jobs;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Domain\Booking\BookingWindow;
+use ClinicCore\Domain\Clinical\DoctorDisplayName;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Time\Jalali;
@@ -666,7 +667,8 @@ final class ApptReminderHandler
 
         return [
             'patient_name' => $patientName !== '' ? $patientName : 'بیمار گرامی',
-            'doctor_name' => $doctor !== '' ? $doctor : 'پزشک',
+            // عنوان «دکتر» فقط یک‌بار (پیش از این، متنِ الگو خودش «دکتر» می‌گذاشت).
+            'doctor_name'      => $doctor !== '' ? DoctorDisplayName::with_title( $doctor ) : 'پزشک',
             'appointment_date' => Jalali::formatYmd((string) $row['slot_date']),
             'appointment_time' => substr((string) $row['slot_time'], 0, 5),
             'clinic_name' => $clinic !== '' ? $clinic : 'مطب',

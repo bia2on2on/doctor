@@ -368,6 +368,33 @@ final class StaffPortalShell {
 		DoctorPortalShell::register_handles();
 	}
 
+	/** Shared Persian UI text helper (`window.CpmsText`). */
+	public const UI_TEXT_HANDLE = 'cpms-ui-text';
+
+	/** Shared in-page confirm/prompt dialog (`window.CpmsDialog`). */
+	public const DIALOG_HANDLE = 'cpms-dialog';
+
+	/**
+	 * Register the shared Persian UI helpers. Both are pure local assets
+	 * (no network, no build step) and are loaded in the HEAD so inline
+	 * module scripts can rely on them at parse time.
+	 */
+	public static function register_ui_handles(): void {
+		$base = defined( 'CPMS_PLUGIN_URL' ) && '' !== CPMS_PLUGIN_URL
+			? rtrim( (string) CPMS_PLUGIN_URL, '/' )
+			: '';
+		if ( '' === $base ) {
+			return;
+		}
+		$version = defined( 'CPMS_VERSION' ) ? (string) CPMS_VERSION : 'dev';
+		if ( ! wp_script_is( self::UI_TEXT_HANDLE, 'registered' ) ) {
+			wp_register_script( self::UI_TEXT_HANDLE, $base . '/assets/js/cpms-ui-text.js', [], $version, false );
+		}
+		if ( ! wp_script_is( self::DIALOG_HANDLE, 'registered' ) ) {
+			wp_register_script( self::DIALOG_HANDLE, $base . '/assets/js/cpms-dialog.js', [ self::UI_TEXT_HANDLE ], $version, false );
+		}
+	}
+
 	/**
 	 * Register the local, network-free Jalali date UX bundle (idempotent).
 	 * Same file/handle as the CPMS admin asset registration.
@@ -401,6 +428,12 @@ final class StaffPortalShell {
 		self::register_jalali_handles();
 		wp_enqueue_style( self::JALALI_HANDLE );
 		wp_enqueue_script( self::JALALI_HANDLE );
+		// Shared Persian UI text + in-page confirm/prompt dialog for EVERY
+		// mounted module. HEAD (not footer): the module templates' inline
+		// scripts call these helpers while they initialise.
+		self::register_ui_handles();
+		wp_enqueue_script( self::UI_TEXT_HANDLE );
+		wp_enqueue_script( self::DIALOG_HANDLE );
 		if ( self::MODULE_DOCTOR !== self::select_module( get_current_user_id() ) ) {
 			return;
 		}
