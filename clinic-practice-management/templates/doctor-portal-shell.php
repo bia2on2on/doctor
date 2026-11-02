@@ -21,6 +21,7 @@ defined('ABSPATH') || exit; // phpcs:ignore PEAR.Functions.FunctionCallSignature
 
 use ClinicCore\Frontend\DoctorPortalShell;
 use ClinicCore\Frontend\PortalLogin;
+use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Auth\RolesAndCapabilities;
 
 if ( !function_exists('wp_get_current_user' )) { // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceBeforeCloseParenthesis,WordPress.WhiteSpace.OperatorSpacing.NoSpaceAfter -- WPCS
@@ -57,14 +58,24 @@ if ( '' === $cpms_charset ) {
 }
 $cpms_site_name = (string) get_bloginfo('name'); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
 
+$cpms_body_class = 'cpms-doctor-portal-shell-body';
 if ( ! $cpms_staff_embed ) {
+    if ( $cpms_is_doctor ) {
+        $cpms_body_class .= ' cpms-jalali-scope';
+    }
+    $cpms_style_handles  = [ DoctorPortalShell::CSS_HANDLE ];
+    $cpms_script_handles = [ DoctorPortalShell::JS_HANDLE ];
+    if ( $cpms_is_doctor ) {
+        $cpms_style_handles[]  = StaffPortalShell::JALALI_HANDLE;
+        $cpms_script_handles[] = StaffPortalShell::JALALI_HANDLE;
+    }
     // In embed mode the Staff Portal shell prints these (same handles, once).
     ob_start();
-    wp_print_styles([DoctorPortalShell::CSS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+    wp_print_styles( $cpms_style_handles );
     $cpms_styles_html = (string) ob_get_clean();
 
     ob_start();
-    wp_print_scripts([DoctorPortalShell::JS_HANDLE]); // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- WPCS
+    wp_print_scripts( $cpms_script_handles );
     $cpms_scripts_html = (string) ob_get_clean();
 }
 
@@ -113,7 +124,7 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
     echo $cpms_styles_html;
     ?>
 </head>
-<body class="cpms-doctor-portal-shell-body">
+<body class="<?php echo esc_attr( $cpms_body_class ); ?>">
 <div
     id="cpms-doctor-portal-shell"
     class="cpms-doctor-portal-shell"

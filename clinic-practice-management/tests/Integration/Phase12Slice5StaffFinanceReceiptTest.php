@@ -343,8 +343,8 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         self::assertSame(Jalali::formatYmd('2026-06-15'), (string) $tehranReceipt['jalali_invoice_date']);
         self::assertSame(Jalali::formatYmd('2026-06-16'), (string) $tokyoReceipt['jalali_invoice_date']);
         self::assertSame($tehranReceipt['payments'][0]['amount'], $tokyoReceipt['payments'][0]['amount'], 'the money is identical; only the Location-local presentation differs');
-        self::assertSame('1405/03/26', (string) $tehranReceipt['jalali_invoice_date'], 'the repository Jalali utility is the authority for presentation');
-        self::assertSame('1405/03/27', (string) $tokyoReceipt['jalali_invoice_date']);
+        self::assertSame('1405/03/25', (string) $tehranReceipt['jalali_invoice_date'], 'the repository Jalali utility is the authority for presentation');
+        self::assertSame('1405/03/26', (string) $tokyoReceipt['jalali_invoice_date']);
     }
 
     /**

@@ -416,25 +416,46 @@ final class StaffPortalShell {
 	}
 
 	/**
-	 * Conditional assets: the Jalali date UX is loaded for EVERY mounted
-	 * module; the doctor stylesheet/script only for the doctor module.
+	 * Whether the given Staff Portal module renders a real `input[type="date"]`.
+	 *
+	 * @param string|null $module_id Selected Staff Portal module id.
+	 */
+	public static function date_input_module( ?string $module_id ): bool {
+		return in_array(
+			$module_id,
+			[
+				self::MODULE_DOCTOR,
+				self::MODULE_RECEPTION,
+				self::MODULE_FINANCE,
+				self::MODULE_REPORTS,
+			],
+			true
+		);
+	}
+
+	/**
+	 * Conditional assets: the Jalali date UX is loaded only for modules that
+	 * render a date input; the doctor stylesheet/script only for doctor.
 	 */
 	public static function enqueue_for_portal(): void {
 		if ( ! self::is_portal_request() ) {
 			return;
 		}
+		$active_module = self::select_module( (int) get_current_user_id() );
 		// Persian/Jalali date UX for real calendar-date inputs on the
 		// reception/finance/reports/doctor modules (Owner B).
-		self::register_jalali_handles();
-		wp_enqueue_style( self::JALALI_HANDLE );
-		wp_enqueue_script( self::JALALI_HANDLE );
+		if ( self::date_input_module( $active_module ) ) {
+			self::register_jalali_handles();
+			wp_enqueue_style( self::JALALI_HANDLE );
+			wp_enqueue_script( self::JALALI_HANDLE );
+		}
 		// Shared Persian UI text + in-page confirm/prompt dialog for EVERY
 		// mounted module. HEAD (not footer): the module templates' inline
 		// scripts call these helpers while they initialise.
 		self::register_ui_handles();
 		wp_enqueue_script( self::UI_TEXT_HANDLE );
 		wp_enqueue_script( self::DIALOG_HANDLE );
-		if ( self::MODULE_DOCTOR !== self::select_module( get_current_user_id() ) ) {
+		if ( self::MODULE_DOCTOR !== $active_module ) {
 			return;
 		}
 		self::register_handles();

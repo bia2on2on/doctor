@@ -15,11 +15,14 @@
  *    (dispatching real `input`/`change` events). The native input is never
  *    hidden or disabled — it stays independently usable. No server-side
  *    contract, validation or storage format changes.
- *  - No network dependency: the Gregorian<->Jalali conversion below is the
- *    same table-driven algorithm (+ Borkowski fallback) already used by the
- *    PHP canonical source `ClinicCore\Domain\Time\Jalali`
- *    (clinic-practice-management/src/Domain/Time/Jalali.php) — keep both in
- *    sync if the Nowruz table is ever extended.
+ *  - No network dependency: the Gregorian<->Jalali conversion below uses the
+ *    same 20-breakpoint Borkowski algorithm (truncating integer division) as
+ *    `ClinicCore\Domain\Time\Jalali` (`src/Domain/Time/Jalali.php`).
+ *    Reference: ICU `Intl` (`calendar=persian`, astronomical Tehran 52.5°E
+ *    solar-noon model) + published anchors 1400..1405 (1399 & 1403 leap;
+ *    1401 & 1405 non-leap) — NOT a future statutory table. Agrees day-for-day
+ *    with ICU 78.2 through Jalali year 1502 (first divergence at 1503 / 2124
+ *    CE); enforced valid range here is 1300..1499.
  *  - Opt a field out explicitly with `data-cpms-no-jalali="1"`.
  *
  * Accessibility: the popup is a keyboard-navigable grid (role="dialog" +
@@ -31,72 +34,44 @@
 (function () {
   'use strict';
 
-  // ===================== Gregorian <-> Jalali (ported from Jalali.php) =====================
+  if (typeof window !== 'undefined' && window.__cpmsJalaliLoaded) {
+    return;
+  }
+  if (typeof window !== 'undefined') {
+    window.__cpmsJalaliLoaded = true;
+  }
 
-  var NOWRUZ = {
-    1390: '2011-03-21', 1391: '2012-03-20', 1392: '2013-03-20', 1393: '2014-03-20',
-    1394: '2015-03-21', 1395: '2016-03-20', 1396: '2017-03-20', 1397: '2018-03-20',
-    1398: '2019-03-21', 1399: '2020-03-20', 1400: '2021-03-20', 1401: '2022-03-20',
-    1402: '2023-03-21', 1403: '2024-03-20', 1404: '2025-03-20', 1405: '2026-03-20',
-    1406: '2027-03-20', 1407: '2028-03-20', 1408: '2029-03-20', 1409: '2030-03-20',
-    1410: '2031-03-20', 1411: '2032-03-20', 1412: '2033-03-20', 1413: '2034-03-20',
-    1414: '2035-03-20', 1415: '2036-03-20', 1416: '2037-03-20', 1417: '2038-03-20',
-    1418: '2039-03-20', 1419: '2040-03-20', 1420: '2041-03-20', 1421: '2042-03-20',
-    1422: '2043-03-20', 1423: '2044-03-20', 1424: '2045-03-20', 1425: '2046-03-20',
-    1426: '2047-03-20', 1427: '2048-03-20', 1428: '2049-03-20', 1429: '2050-03-20',
-    1430: '2051-03-20', 1431: '2052-03-20', 1432: '2053-03-20', 1433: '2054-03-20',
-    1434: '2055-03-20', 1435: '2056-03-20'
-  };
-  var MIN_YEAR = 1390;
-  var MAX_YEAR = 1434;
-  var DAY_MS = 86400000;
+  // ===================== Gregorian <-> Jalali (20-breakpoint Borkowski, synced with Jalali.php) =====================
 
-  // Supported Jalali year window for TYPED entry only (client-side input
-  // sanity bound, independent of the wider table/Borkowski-fallback
-  // conversion machinery below, which remains usable for any year so the
-  // popup/companion display is never artificially truncated for existing
-  // server-side values). A clinical onboarding/admin context never needs a
-  // typed date outside ~2 centuries; rejecting outside this window at the
-  // text-entry layer is a deliberate, narrow data-integrity guard — it does
-  // NOT change canonical Gregorian/UTC storage or server-side validation.
+  // Enforced valid Jalali year window (1921-03-21 .. 2121-03-20). Outside this
+  // range conversion helpers return null/empty and typed entry rejects with
+  // reason="year", never emitting a wrong date.
   var SUPPORTED_MIN_YEAR = 1300;
   var SUPPORTED_MAX_YEAR = 1499;
 
-  function utcTsFromYmd(y, m, d) {
-    return Date.UTC(y, m - 1, d);
-  }
-
-  function yearStartTs(jy) {
-    var iso = NOWRUZ[jy];
-    var p = iso.split('-');
-    return utcTsFromYmd(parseInt(p[0], 10), parseInt(p[1], 10), parseInt(p[2], 10));
-  }
-
-  function offsetToMonthDay(offset) {
-    if (offset < 186) {
-      return [Math.floor(offset / 31) + 1, (offset % 31) + 1];
-    }
-    var k = offset - 186;
-    return [Math.floor(k / 30) + 7, (k % 30) + 1];
-  }
-
-  function isLeapJalaliYear(jy) {
-    if (jy >= MIN_YEAR && jy <= MAX_YEAR) {
-      return (yearStartTs(jy + 1) - yearStartTs(jy)) > 365 * DAY_MS;
-    }
-    return isLeapBorkowski(jy);
-  }
-
-  function monthLength(jy, jm) {
-    if (jm <= 6) { return 31; }
-    if (jm <= 11) { return 30; }
-    return isLeapJalaliYear(jy) ? 30 : 29;
-  }
-
-  // ---- Borkowski fallback (jalaali-js 1.2.6, MIT) for years outside the official table ----
   var BREAKS = [-61, 9, 38, 199, 426, 686, 756, 818, 1111, 1181, 1210, 1635, 2060, 2097, 2192, 2262, 2324, 2394, 2456, 3178];
 
-  function div(a, b) { return Math.floor(a / b); }
+  // Truncation toward zero (matching C integer `/` and PHP `intdiv`), NOT
+  // `Math.floor`. Counterexample: for March (`gm = 3`), `(3 - 8) / 6 = -5/6`
+  // must truncate to `0` (`g2d(2016, 4, 11) === 2457490`, `1370/01/01 ===
+  // 1991-03-21`); `Math.floor(-5/6) === -1` shifts JDN by 366 days and yields
+  // `1990-03-21`.
+  function div(a, b) {
+    var q = a / b;
+    return q < 0 ? Math.ceil(q) : Math.floor(q);
+  }
+
+  function isInt(n) {
+    return typeof n === 'number' && isFinite(n) && Math.floor(n) === n;
+  }
+
+  function isValidGregorianDate(gy, gm, gd) {
+    if (!isInt(gy) || !isInt(gm) || !isInt(gd)) { return false; }
+    if (gy < 1 || gy > 9999 || gm < 1 || gm > 12 || gd < 1 || gd > 31) { return false; }
+    var d = new Date(Date.UTC(gy, gm - 1, gd));
+    if (gy < 100) { d.setUTCFullYear(gy); }
+    return d.getUTCFullYear() === gy && (d.getUTCMonth() + 1) === gm && d.getUTCDate() === gd;
+  }
 
   function g2d(gy, gm, gd) {
     var d = div((gy + div(gm - 8, 6) + 100100) * 1461, 4) + div(153 * ((gm + 9) % 12) + 2, 5) + gd - 34840408;
@@ -168,54 +143,43 @@
     return [jy, 7 + div(k, 30), (k % 30) + 1];
   }
 
-  function isLeapBorkowski(jy) {
+  function isLeapJalaliYear(jy) {
     return jalCal(jy).leap === 0;
   }
 
-  function toGregorianBorkowski(jy, jm, jd) {
-    return d2g(j2d(jy, jm, jd));
+  function monthLength(jy, jm) {
+    if (jm <= 6) { return 31; }
+    if (jm <= 11) { return 30; }
+    return isLeapJalaliYear(jy) ? 30 : 29;
   }
-
-  function toJalaliBorkowski(gy, gm, gd) {
-    return d2j(g2d(gy, gm, gd));
-  }
-
-  // ---- Public conversion API (table-first, Borkowski fallback) ----
 
   function toJalali(gy, gm, gd) {
-    var ts = utcTsFromYmd(gy, gm, gd);
-    var lo = MIN_YEAR;
-    var hi = MAX_YEAR;
-    var jy = MIN_YEAR;
-    while (lo <= hi) {
-      var mid = Math.floor((lo + hi) / 2);
-      if (yearStartTs(mid) <= ts) {
-        jy = mid;
-        lo = mid + 1;
-      } else {
-        hi = mid - 1;
-      }
+    if (!isValidGregorianDate(gy, gm, gd)) {
+      return null;
     }
-    var offset = Math.round((ts - yearStartTs(jy)) / DAY_MS);
-    var leap = isLeapJalaliYear(jy);
-    if (offset < 0 || offset > (leap ? 365 : 364)) {
-      return toJalaliBorkowski(gy, gm, gd);
+    var j;
+    try {
+      j = d2j(g2d(gy, gm, gd));
+    } catch (e) {
+      return null;
     }
-    var md = offsetToMonthDay(offset);
-    return [jy, md[0], md[1]];
+    if (!j || j[0] < SUPPORTED_MIN_YEAR || j[0] > SUPPORTED_MAX_YEAR) {
+      return null;
+    }
+    return j;
   }
 
   function toGregorian(jy, jm, jd) {
+    if (!isInt(jy) || !isInt(jm) || !isInt(jd)) {
+      return null;
+    }
+    if (jy < SUPPORTED_MIN_YEAR || jy > SUPPORTED_MAX_YEAR) {
+      return null;
+    }
     if (jm < 1 || jm > 12 || jd < 1 || jd > monthLength(jy, jm)) {
       return null;
     }
-    if (jy < MIN_YEAR || jy > MAX_YEAR) {
-      return toGregorianBorkowski(jy, jm, jd);
-    }
-    var offset = (jm - 1) * 31 - div(jm, 7) * (jm - 7) + jd - 1;
-    var ts = yearStartTs(jy) + offset * DAY_MS;
-    var d = new Date(ts);
-    return [d.getUTCFullYear(), d.getUTCMonth() + 1, d.getUTCDate()];
+    return d2g(j2d(jy, jm, jd));
   }
 
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
@@ -234,6 +198,7 @@
     var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
     if (!m) { return ''; }
     var j = toJalali(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10));
+    if (!j) { return ''; }
     return toPersianDigits(j[0] + '/' + pad2(j[1]) + '/' + pad2(j[2]));
   }
 
@@ -337,7 +302,8 @@
 
   function todayJalali() {
     var now = new Date();
-    return toJalali(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    var j = toJalali(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    return j || [1405, 1, 1];
   }
 
   /**
@@ -395,7 +361,7 @@
     grid.appendChild(daysWrap);
     popup.appendChild(grid);
 
-    var view = { jy: MIN_YEAR, jm: 1 };
+    var view = { jy: 1405, jm: 1 };
     var dayButtons = [];
 
     function gregorianWeekday(gy, gm, gd) {
@@ -450,18 +416,27 @@
       if (!anyTabbable && dayButtons.length > 0) { dayButtons[0].tabIndex = 0; }
     }
 
+    function stepMonth(delta) {
+      var nextJm = view.jm + delta;
+      var nextJy = view.jy;
+      if (nextJm < 1) { nextJm = 12; nextJy -= 1; }
+      if (nextJm > 12) { nextJm = 1; nextJy += 1; }
+      if (nextJy < SUPPORTED_MIN_YEAR || nextJy > SUPPORTED_MAX_YEAR) { return false; }
+      view.jy = nextJy;
+      view.jm = nextJm;
+      return true;
+    }
+
     function moveFocus(fromDay, delta) {
       var targetIndex = (fromDay - 1) + delta;
       if (targetIndex < 0) {
-        view.jm -= 1;
-        if (view.jm < 1) { view.jm = 12; view.jy -= 1; }
+        if (!stepMonth(-1)) { return; }
         render();
         if (dayButtons.length > 0) { dayButtons[dayButtons.length - 1].tabIndex = 0; dayButtons[dayButtons.length - 1].focus(); }
         return;
       }
       if (targetIndex >= dayButtons.length) {
-        view.jm += 1;
-        if (view.jm > 12) { view.jm = 1; view.jy += 1; }
+        if (!stepMonth(1)) { return; }
         render();
         if (dayButtons.length > 0) { dayButtons[0].tabIndex = 0; dayButtons[0].focus(); }
         return;
@@ -494,20 +469,17 @@
     }
 
     prevBtn.addEventListener('click', function () {
-      view.jm -= 1;
-      if (view.jm < 1) { view.jm = 12; view.jy -= 1; }
-      render();
+      if (stepMonth(-1)) { render(); }
     });
     nextBtn.addEventListener('click', function () {
-      view.jm += 1;
-      if (view.jm > 12) { view.jm = 1; view.jy += 1; }
-      render();
+      if (stepMonth(1)) { render(); }
     });
 
     function openPopup() {
       var iso = nativeInput.value;
       var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(iso || '');
-      var j = m ? toJalali(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)) : todayJalali();
+      var j = m ? toJalali(parseInt(m[1], 10), parseInt(m[2], 10), parseInt(m[3], 10)) : null;
+      if (!j) { j = todayJalali(); }
       view.jy = j[0];
       view.jm = j[1];
       render();
@@ -524,7 +496,9 @@
     function closePopup() {
       popup.hidden = true;
       triggerBtn.setAttribute('aria-expanded', 'false');
-      document.removeEventListener('mousedown', onOutsideClick, true);
+      if (typeof document.removeEventListener === 'function') {
+        document.removeEventListener('mousedown', onOutsideClick, true);
+      }
     }
 
     function onOutsideClick(ev) {
@@ -594,9 +568,15 @@
     // validated Jalali entry (typed + confirmed, or picked from the popup)
     // and never a stale/partial intermediate the user happened to type
     // through on the way to a different final date.
+    var settingNativeIso = false;
     function setNativeIso(iso, dispatch) {
       if (input.value === iso) { return; }
-      input.value = iso;
+      settingNativeIso = true;
+      try {
+        input.value = iso;
+      } finally {
+        settingNativeIso = false;
+      }
       if (dispatch) {
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -609,6 +589,36 @@
       status.textContent = '';
       input.setCustomValidity('');
     }
+
+    (function bindProgrammaticValueSync() {
+      if (typeof Object.getOwnPropertyDescriptor !== 'function' || typeof Object.defineProperty !== 'function') {
+        return;
+      }
+      var proto = Object.getPrototypeOf ? Object.getPrototypeOf(input) : null;
+      var desc = null;
+      while (proto && !desc) {
+        desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        proto = Object.getPrototypeOf(proto);
+      }
+      if (!desc || typeof desc.get !== 'function' || typeof desc.set !== 'function') {
+        return;
+      }
+      try {
+        Object.defineProperty(input, 'value', {
+          configurable: true,
+          enumerable: desc.enumerable,
+          get: function () {
+            return desc.get.call(input);
+          },
+          set: function (val) {
+            desc.set.call(input, val);
+            if (!settingNativeIso) {
+              syncEntryFromNative();
+            }
+          }
+        });
+      } catch (e) { /* non-configurable value property: event listeners still apply */ }
+    }());
 
     // Live feedback on every keystroke — NEVER writes to the native input
     // and NEVER dispatches native input/change events (no premature
@@ -724,6 +734,28 @@
     input.addEventListener('change', syncEntryFromNative);
     triggerBtn.addEventListener('click', function () { popup.toggle(); });
 
+    function onFormReset(ev) {
+      if (ev && ev.defaultPrevented) { return; }
+      if (typeof Promise === 'function') {
+        Promise.resolve().then(syncEntryFromNative);
+      }
+      setTimeout(syncEntryFromNative, 0);
+    }
+
+    var ancestorForm = input.parentNode;
+    while (ancestorForm && ancestorForm.tagName !== 'FORM') {
+      ancestorForm = ancestorForm.parentNode;
+    }
+    if (ancestorForm && typeof ancestorForm.addEventListener === 'function') {
+      ancestorForm.addEventListener('reset', onFormReset);
+    } else if (typeof document.addEventListener === 'function') {
+      document.addEventListener('reset', function (ev) {
+        if (ev && ev.target && typeof ev.target.contains === 'function' && ev.target.contains(input)) {
+          onFormReset(ev);
+        }
+      });
+    }
+
     input.parentNode.insertBefore(wrap, input);
     wrap.appendChild(input);
     wrap.appendChild(label);
@@ -755,9 +787,57 @@
     }
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { enhanceAll(document); });
-  } else {
+  var observerStarted = false;
+  function startDynamicObserver() {
+    if (observerStarted || typeof MutationObserver !== 'function') { return; }
+    var target = document.documentElement || document.body;
+    if (!target) { return; }
+    observerStarted = true;
+    var observer = new MutationObserver(function (mutations) {
+      var needsScan = false;
+      for (var i = 0; i < mutations.length && !needsScan; i += 1) {
+        var added = mutations[i].addedNodes || [];
+        for (var j = 0; j < added.length; j += 1) {
+          var node = added[j];
+          if (!node || node.nodeType !== 1) { continue; }
+          if (
+            node.tagName === 'INPUT' &&
+            node.type === 'date' &&
+            (!node.dataset || node.dataset.cpmsJalaliEnhanced !== '1')
+          ) {
+            needsScan = true;
+            break;
+          }
+          if (node.querySelectorAll) {
+            var candidates = node.querySelectorAll('input[type="date"]');
+            for (var k = 0; k < candidates.length; k += 1) {
+              if (!candidates[k].dataset || candidates[k].dataset.cpmsJalaliEnhanced !== '1') {
+                needsScan = true;
+                break;
+              }
+            }
+            if (needsScan) { break; }
+          }
+        }
+      }
+      if (needsScan) {
+        enhanceAll(document);
+        if (typeof observer.takeRecords === 'function') {
+          observer.takeRecords();
+        }
+      }
+    });
+    observer.observe(target, { childList: true, subtree: true });
+  }
+
+  function initJalaliDateUx() {
     enhanceAll(document);
+    startDynamicObserver();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initJalaliDateUx);
+  } else {
+    initJalaliDateUx();
   }
 }());

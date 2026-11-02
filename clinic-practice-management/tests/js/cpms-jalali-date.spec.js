@@ -86,20 +86,20 @@ assertEqual(reasonFor140512_30.reason, 'day', 'REGRESSION: 1405/12/30 reason is 
 // would (if it were valid), proving they must never be conflated:
 var intermediate = CpmsJalali.jalaliTextToIso('1405/12/3');
 assertNotNull(intermediate, '1405/12/3 (a real, different, complete date) is independently valid');
-assertEqual(intermediate, '2027-02-21', '1405/12/3 resolves to its own correct Gregorian date (not a stand-in for 1405/12/30)');
+assertEqual(intermediate, '2027-02-22', '1405/12/3 resolves to its own correct Gregorian date (not a stand-in for 1405/12/30)');
 
 // ===================== Positive: a real leap-Esfand-30 date must be
-// accepted (1401 IS a leap Jalali year in the canonical table: Nowruz 1401 →
-// 2022-03-20, Nowruz 1402 → 2023-03-21 — 366 days apart). =====================
-var leapIso = CpmsJalali.jalaliTextToIso('1401/12/30');
-assertNotNull(leapIso, 'POSITIVE: 1401/12/30 (leap Esfand 30) must be accepted');
-var leapResult = CpmsJalali.classifyCompleteJalaliEntry('1401/12/30');
-assertEqual(leapResult.ok, true, 'POSITIVE: 1401/12/30 classifies ok');
+// accepted (1403 IS a leap Jalali year: Nowruz 1403 → 2024-03-20,
+// Nowruz 1404 → 2025-03-21 — 366 days apart). =====================
+var leapIso = CpmsJalali.jalaliTextToIso('1403/12/30');
+assertNotNull(leapIso, 'POSITIVE: 1403/12/30 (leap Esfand 30) must be accepted');
+var leapResult = CpmsJalali.classifyCompleteJalaliEntry('1403/12/30');
+assertEqual(leapResult.ok, true, 'POSITIVE: 1403/12/30 classifies ok');
 
 // Persian-digit input must behave identically to ASCII-digit input.
 assertEqual(
-  CpmsJalali.jalaliTextToIso('۱۴۰۱/۱۲/۳۰'),
-  CpmsJalali.jalaliTextToIso('1401/12/30'),
+  CpmsJalali.jalaliTextToIso('۱۴۰۳/۱۲/۳۰'),
+  CpmsJalali.jalaliTextToIso('1403/12/30'),
   'Persian-digit entry matches ASCII-digit entry'
 );
 
@@ -128,8 +128,8 @@ assertNull(CpmsJalali.jalaliTextToIso('1404/01/32'), 'day 32 is never valid, eve
 // ===================== Round-trip sanity: display and entry agree =====================
 assertEqual(
   CpmsJalali.toPersianDigits(CpmsJalali.toJalali(2027, 2, 21).join('/')),
-  CpmsJalali.toPersianDigits('1405/12/3'.split('/').map(Number).join('/')),
-  'toJalali(2027-02-21) matches the 1405/12/3 entry used above'
+  CpmsJalali.toPersianDigits('1405/12/2'.split('/').map(Number).join('/')),
+  'toJalali(2027-02-21) matches 1405/12/2'
 );
 
 // ===================== Scope: standalone Staff Portal shell (Owner B) =====================
