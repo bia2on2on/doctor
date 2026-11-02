@@ -12,6 +12,7 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Settings\Settings;
@@ -176,7 +177,13 @@ final class CpmsSetupWizard
         ?>
         <?php $shell_profile = self::current_facility_profile(); ?>
         <div class="wrap" dir="rtl">
-            <h1><?php echo esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ); ?> — <?php echo esc_html( (string) $step['title'] ); ?> (قدم <?php echo esc_html( (string) ( $index + 1 ) ); ?> از <?php echo esc_html( (string) count( $steps ) ); ?>)</h1>
+			<?php
+			$wizard_h1 = FacilityTypeCatalog::wizard_heading( self::selected_facility_type() )
+				. ' — ' . (string) $step['title']
+				. ' (قدم ' . PersianDigits::format_int( $index + 1 )
+				. ' از ' . PersianDigits::format_int( count( $steps ) ) . ')';
+			?>
+			<h1><?php echo esc_html( $wizard_h1 ); ?></h1>
             <?php self::render_active_clinic_banner(); ?>
             <p class="description">
                 این راهنما به شما کمک می‌کند بدون نیاز به دانش فنی، <?php echo esc_html( $shell_profile['unit'] ); ?> را راه بیندازید.
@@ -215,7 +222,11 @@ final class CpmsSetupWizard
                         aria-current="<?php echo $current ? 'step' : 'false'; ?>"
                         class="dashicons-before <?php echo esc_attr( $icon_class ); ?>"
                         style="display:inline-block;text-decoration:none;box-sizing:border-box;max-width:100%;padding:6px 8px;min-height:36px;line-height:1.8;<?php echo esc_attr( $icon_style ); ?>">
-                        <?php echo esc_html( (string) ( $i + 1 ) . '. ' . $s['title'] . ( $s['required'] ? ' (الزامی)' : ' (اختیاری)' ) ); ?>
+						<?php
+						$pill_label = PersianDigits::format_int( $i + 1 ) . '. ' . $s['title']
+							. ( $s['required'] ? ' (الزامی)' : ' (اختیاری)' );
+						echo esc_html( $pill_label );
+						?>
                     </a>
                 <?php endforeach; ?>
             </nav>
@@ -383,7 +394,12 @@ final class CpmsSetupWizard
         ?>
         <div class="card">
             <h2>چه کاری انجام می‌شود؟</h2>
-            <p>این راهنما در <?php echo esc_html( (string) count( self::steps() ) ); ?> گام به شما کمک می‌کند مطب را به‌صورت امن راه‌اندازی کنید؛ از اطلاعات کلینیک و رزرو تا بررسی سلامت و شروع عملیات.</p>
+			<?php $steps_total_fa = PersianDigits::format_int( count( self::steps() ) ); ?>
+			<p>
+				این راهنما در <?php echo esc_html( $steps_total_fa ); ?> گام به شما کمک می‌کند
+				مطب را به‌صورت امن راه‌اندازی کنید؛ از اطلاعات کلینیک و رزرو
+				تا بررسی سلامت و شروع عملیات.
+			</p>
             <p>همهٔ مراحل ذخیره می‌شوند؛ اگر وسط کار خارج شوید، از همان‌جا ادامه می‌دهید.</p>
             <p><strong>توجه:</strong> این صفحه هیچ دادهٔ پزشکی/حساس بیمار را نمایش یا ذخیره نمی‌کند.</p>
         </div>
@@ -511,7 +527,11 @@ final class CpmsSetupWizard
             <h2>کاربران و نقش‌ها</h2>
             <p class="description" data-cpms-users-step-optional="1">این گام اختیاری است: هیچ کاربر جدیدی اینجا ساخته نمی‌شود و راه‌اندازی بدون آن متوقف نمی‌شود؛ پرسنل پذیرش و مالی را هر زمان که نیاز داشتید اضافه کنید.</p>
             <p>کاربران، نقش‌ها، مجوزهای پیش‌فرض و مجوزهای پیشرفته را می‌توانید از صفحهٔ «کاربران و دسترسی‌ها» مدیریت کنید.</p>
-            <p>تعداد کاربران دارای نقش‌های CPMS/ادمین: <strong><?php echo esc_html((string) $users); ?></strong></p>
+			<?php $users_fa = PersianDigits::format_int( $users ); ?>
+			<p>
+				تعداد کاربران دارای نقش‌های CPMS/ادمین:
+				<strong><?php echo esc_html( $users_fa ); ?></strong>
+			</p>
             <ul>
                 <li><strong>نقش‌های پیش‌فرض:</strong> مدیر کلینیک (cpms_config)، منشی، پزشک، بیمار.</li>
                 <li>مجوزهای پیش‌فرض انسانی و قابل‌فهم هستند؛ مجوزهای پیشرفته به‌صورت جمع‌شده و با توضیح فارسی است.</li>
@@ -536,7 +556,11 @@ final class CpmsSetupWizard
         <div class="card">
             <h2><?php echo esc_html( $facility_profile['clinicians'] ); ?></h2>
             <p><?php echo esc_html( $facility_profile['clinicians'] ); ?> را اضافه و به کاربر و برنامهٔ کاری متصل کنید. افزودن <?php echo esc_html( $facility_profile['clinician'] ); ?> بدون حذف تاریخچه انجام می‌شود.</p>
-            <p>تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال: <strong><?php echo esc_html( (string) $count ); ?></strong></p>
+			<?php $active_clinicians_fa = PersianDigits::format_int( $count ); ?>
+			<p>
+				تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال:
+				<strong><?php echo esc_html( $active_clinicians_fa ); ?></strong>
+			</p>
             <?php if ( $can_manage_clinicians ) : ?>
                 <p><a class="button" data-cpms-wizard-action="clinicians" href="<?php echo esc_url( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-clinicians' ) ) ); ?>">رفتن به «پزشکان و برنامه کاری»</a></p>
             <?php endif; ?>
@@ -804,10 +828,38 @@ final class CpmsSetupWizard
             <h2>بازبینی پیش از شروع</h2>
             <table class="form-table" role="presentation">
                 <tr><th><?php echo esc_html( $facility_profile['name_label'] ); ?></th><td><?php echo esc_html( $clinic_name !== '' ? $clinic_name : '—' ); ?></td></tr>
-                <tr><th><?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال</th><td><?php echo esc_html( (string) $doctor_count ); ?></td></tr>
-                <tr><th>تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> موردنظر</th><td><?php echo esc_html( (string) self::intended_clinicians( $settings ) ); ?></td></tr>
-                <tr><th>مکان‌های فعال</th><td><?php echo esc_html( (string) count( array_filter( App::locationRepository()->listForClinic( (int) App::scope()->clinicId ), static fn ( $loc ) => (int) ( $loc['is_active'] ?? 0 ) === 1 ) ) ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase ?></td></tr>
-                <tr><th>مدت پیش‌فرض نوبت (دقیقه)</th><td><?php echo esc_html( (string) (int) $settings->get( 'booking.duration_default_min', 20 ) ); ?></td></tr>
+<?php
+	// phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ID.
+	$active_clinic_id = (int) App::scope()->clinicId;
+		$active_locs      = array_filter(
+			App::locationRepository()->listForClinic( $active_clinic_id ),
+			static fn ( $loc ) => 1 === (int) ( $loc['is_active'] ?? 0 )
+		);
+		$doctors_fa       = PersianDigits::format_int( $doctor_count );
+		$intended_num     = self::intended_clinicians( $settings );
+		$intended_fa      = PersianDigits::format_int( $intended_num );
+		$locs_fa          = PersianDigits::format_int( count( $active_locs ) );
+		$dur_min          = (int) $settings->get( 'booking.duration_default_min', 20 );
+		$duration_fa      = PersianDigits::format_int( $dur_min );
+		?>
+				<tr>
+					<th><?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال</th>
+					<td><?php echo esc_html( $doctors_fa ); ?></td>
+				</tr>
+				<tr>
+					<th>
+						تعداد <?php echo esc_html( $facility_profile['clinicians'] ); ?> موردنظر
+					</th>
+					<td><?php echo esc_html( $intended_fa ); ?></td>
+				</tr>
+				<tr>
+					<th>مکان‌های فعال</th>
+					<td><?php echo esc_html( $locs_fa ); ?></td>
+				</tr>
+				<tr>
+					<th>مدت پیش‌فرض نوبت (دقیقه)</th>
+					<td><?php echo esc_html( $duration_fa ); ?></td>
+				</tr>
                 <tr><th>گام‌های الزامیِ باقی‌مانده</th><td>
                 <?php
                 $missing_steps = self::missing_required_steps( $settings );

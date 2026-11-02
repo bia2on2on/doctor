@@ -21,6 +21,7 @@ use ClinicCore\Infrastructure\Repository\RecommendationRepository;
 use ClinicCore\Infrastructure\Repository\VisitRepository;
 use ClinicCore\Settings\SettingsFactory;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Domain\Booking\BookingException;
 
 /**
@@ -1257,8 +1258,8 @@ final class ClinicalService
         $local_date = $local->format( 'Y-m-d' );
 
         return [
-            'local'  => $local->format( 'Y-m-d H:i' ),
-            'jalali' => Jalali::formatYmd( $local_date ),
+			'local'  => $local->format( 'Y-m-d H:i' ),
+			'jalali' => Jalali::format_display_ymd( $local_date ),
         ];
     }
 
@@ -1337,7 +1338,7 @@ final class ClinicalService
         $view = [
             'prescription' => $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id'])),
             'visit_date' => $visitDate,
-            'visit_jalali' => Jalali::formatYmd($visitDate),
+			'visit_jalali' => Jalali::format_display_ymd( (string) $visit['visit_date'] ),
             'patient' => [
                 'mrn' => (string) $patient['mrn'],
                 'full_name' => trim((string) $patient['first_name'] . ' ' . (string) $patient['last_name']),
@@ -2246,27 +2247,31 @@ final class ClinicalService
             'follow_ups'      => [],
             'files'           => [],
         ];
-        foreach ( $record['recommendations'] as $item ) {
-            $presentation['recommendations'][ (int) $item['id'] ] = [
-                'created_at_jalali' => $this->format_utc_to_jalali( (string) $item['created_at'], $location_tz ),
-            ];
-        }
-        foreach ( $record['follow_ups'] as $item ) {
-            $date = (string) ( $item['suggested_date'] ?? '' );
-            try {
-                $jalali = $date !== '' ? Jalali::formatYmd( $date ) : '';
-            } catch ( \DomainException $e ) {
-                $jalali = '';
-            }
-            $presentation['follow_ups'][ (int) $item['id'] ] = [
-                'suggested_date_jalali' => $jalali,
-            ];
-        }
-        foreach ( $record['files'] as $item ) {
-            $presentation['files'][ (int) $item['id'] ] = [
-                'created_at_jalali' => $this->format_utc_to_jalali( (string) $item['created_at'], $location_tz ),
-            ];
-        }
+		foreach ( $record['recommendations'] as $item ) {
+			$rec_created    = (string) $item['created_at'];
+			$raw_rec_jalali = $this->format_utc_to_jalali( $rec_created, $location_tz );
+			$presentation['recommendations'][ (int) $item['id'] ] = [
+				'created_at_jalali' => PersianDigits::digits( $raw_rec_jalali ),
+			];
+		}
+		foreach ( $record['follow_ups'] as $item ) {
+			$date = (string) ( $item['suggested_date'] ?? '' );
+			try {
+				$jalali = '' !== $date ? Jalali::format_display_ymd( $date ) : '';
+			} catch ( \DomainException $e ) {
+				$jalali = '';
+			}
+			$presentation['follow_ups'][ (int) $item['id'] ] = [
+				'suggested_date_jalali' => $jalali,
+			];
+		}
+		foreach ( $record['files'] as $item ) {
+			$file_created    = (string) $item['created_at'];
+			$raw_file_jalali = $this->format_utc_to_jalali( $file_created, $location_tz );
+			$presentation['files'][ (int) $item['id'] ] = [
+				'created_at_jalali' => PersianDigits::digits( $raw_file_jalali ),
+			];
+		}
         return $presentation;
     }
 

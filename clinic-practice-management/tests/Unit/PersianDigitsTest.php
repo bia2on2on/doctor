@@ -48,7 +48,7 @@ final class PersianDigitsTest extends TestCase {
 		);
 	}
 
-	public function test_format_number_formats_integers_and_decimals_with_persian_separators(): void {
+	public function test_format_number_with_persian_separators(): void {
 		self::assertSame( '۱٬۵۰۰٬۰۰۰', PersianDigits::format_number( 1500000 ) );
 		self::assertSame( '۱٬۲۳۴٫۵۰', PersianDigits::format_number( 1234.5, 2 ) );
 		self::assertSame( '-۱٬۲۳۴٫۵۶', PersianDigits::format_number( -1234.56, 2 ) );

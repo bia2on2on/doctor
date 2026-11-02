@@ -1656,7 +1656,7 @@ final class PublicBookingShortcode
             $date       = $cursor->format( 'Y-m-d' );
             $calendar[] = [
                 'date'    => $date,
-                'jalali'  => Jalali::formatYmd( $date ),
+				'jalali'  => Jalali::format_display_ymd( $date ),
                 'weekday' => self::weekday_label_from_db( (int) $cursor->format( 'w' ) ),
             ];
             $cursor     = $cursor->modify( '+1 day' );

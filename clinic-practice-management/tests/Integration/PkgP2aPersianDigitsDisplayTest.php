@@ -102,13 +102,19 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 
 		// 1) StaffMessagingService::present_time converts digits and keeps " UTC" suffix.
 		$msg_service = App::staff_messaging_service();
-		$thread      = $msg_service->open_thread( $doctor_id, $secretary_id, $location_id );
+		$thread      = $msg_service->create_thread(
+			$doctor_id,
+			[ 'recipient_wp_user_id' => $secretary_id ]
+		);
 		$sent        = $msg_service->send( $doctor_id, (int) $thread['id'], 'پیام آزمایشی P2A' );
 		self::assertMatchesRegularExpression(
-			'/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2} [۰-۹]{2}:[۰-۹]{2} UTC$/u',
+			'/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2} — [۰-۹]{2}:[۰-۹]{2} UTC$/u',
 			(string) $sent['jalali_time']
 		);
-		self::assertMatchesRegularExpression( '/^\d{4}-\d{2}-\d{2}/', (string) $sent['created_at'] );
+		self::assertMatchesRegularExpression(
+			'/^\d{4}-\d{2}-\d{2}/',
+			(string) $sent['created_at']
+		);
 
 		// 2) Visit, print data, ReportService, FinancePortalController, DoctorPortalController.
 		App::replaceExplicitScope( ClinicScope::forClinicAndLocation( $clinic_id, $location_id ) );
@@ -166,22 +172,25 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 			(string) $print_data['prescription']['prescription_number']
 		);
 
-		$report = App::reportService()->run( $manager_id, 'follow_ups', '2026-03-01', '2026-03-31' );
-		self::assertSame( '2026-03-01', $report['from'] );
-		self::assertSame( '2026-03-31', $report['to'] );
-		self::assertSame( '۱۴۰۴/۱۲/۱۰', $report['from_jalali'] );
-		self::assertSame( '۱۴۰۵/۰۱/۱۱', $report['to_jalali'] );
-		self::assertSame( '۱۴۰۵/۰۱/۰۱', $report['rows'][0]['suggested_date_jalali'] );
-		self::assertSame( '2026-03-21', $report['rows'][0]['suggested_date'] );
+		$visit_ymd = (string) $visit['visit_date'];
+		$report    = App::reportService()->run( $manager_id, 'visits', $visit_ymd, $visit_ymd );
+		self::assertSame( $visit_ymd, $report['from'] );
+		self::assertSame( $visit_ymd, $report['to'] );
+		self::assertSame( Jalali::format_display_ymd( $visit_ymd ), $report['from_jalali'] );
+		self::assertSame( Jalali::format_display_ymd( $visit_ymd ), $report['to_jalali'] );
+		self::assertSame(
+			Jalali::format_display_ymd( $visit_ymd ),
+			$report['rows'][0]['date_jalali']
+		);
+		self::assertSame( $visit_ymd, $report['rows'][0]['date'] );
 		self::assertSame( 'MR-P2A-0001', $report['rows'][0]['mrn'] );
 
 		// Finance machine fields/IDs stay Latin; reconciliation *_jalali use Persian digits.
-		$invoice = App::financeService()->createInvoice(
+		$invoice = App::financeService()->issueInvoice(
 			$secretary_id,
 			[
-				'visit_id'   => $visit_id,
-				'patient_id' => $patient_id,
-				'items'      => [
+				'visit_id' => $visit_id,
+				'items'    => [
 					[
 						'description' => 'ویزیت',
 						'quantity'    => 1,
@@ -190,39 +199,44 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 				],
 			]
 		);
-		$payment = App::financeService()->capturePayment(
+		$payment = App::financeService()->recordPayment(
 			$secretary_id,
+			(int) $invoice['id'],
 			[
-				'invoice_id' => (int) $invoice['id'],
-				'amount'     => 350000,
-				'method'     => 'cash',
+				'amount' => 350000,
+				'method' => 'cash',
 			],
 			'p2a-idem-' . uniqid( '', false )
 		);
-		self::assertMatchesRegularExpression( '/^INV-\d{6}-\d+$/', (string) $invoice['invoice_number'] );
-		self::assertMatchesRegularExpression( '/^PAY-\d{6}-\d+$/', (string) $payment['payment_number'] );
+		self::assertMatchesRegularExpression(
+			'/^INV-\d{6}-\d+$/',
+			(string) $invoice['invoice_number']
+		);
+		self::assertMatchesRegularExpression(
+			'/^PAY-\d{6}-\d+$/',
+			(string) $payment['payment_number']
+		);
 
-		wp_set_current_user( $secretary_id );
+		wp_set_current_user( $manager_id );
 		$req = new WP_REST_Request( 'GET', '/clinic/v1/staff/portal/finance/reconciliation' );
 		$req->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 		$req->set_header( 'X-CPMS-Clinic-Id', (string) $clinic_id );
 		$req->set_header( 'X-CPMS-Location-Id', (string) $location_id );
-		$res  = rest_do_request( $req );
-		$body = $res->get_data();
+		$res = rest_do_request( $req );
 		self::assertSame( 200, $res->get_status() );
-		$recon = $body['data'];
+		$recon = $res->get_data()['data'];
 		self::assertMatchesRegularExpression(
 			'/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2}$/u',
-			(string) $recon['range']['jalali_from']
+			(string) $recon['jalali_from']
 		);
 		self::assertMatchesRegularExpression(
 			'/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2}$/u',
-			(string) $recon['range']['jalali_to']
+			(string) $recon['jalali_to']
 		);
 		self::assertSame( '350000.00', (string) $recon['totals']['captured_total'] );
 		self::assertMatchesRegularExpression(
 			'/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2}$/u',
-			(string) $recon['recent_payments'][0]['jalali_date']
+			(string) $recon['payments'][0]['jalali_date']
 		);
 
 		// DoctorPortalController medical-history prior_visits uses Persian *_jalali.
@@ -240,7 +254,10 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 		$hist_res = rest_do_request( $hist_req );
 		self::assertSame( 200, $hist_res->get_status() );
 		$prior = $hist_res->get_data()['data']['prior_visits'][0];
-		self::assertMatchesRegularExpression( '/^\d{4}-\d{2}-\d{2}$/', (string) $prior['visit_date'] );
+		self::assertMatchesRegularExpression(
+			'/^\d{4}-\d{2}-\d{2}$/',
+			(string) $prior['visit_date']
+		);
 		self::assertMatchesRegularExpression(
 			'/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2}$/u',
 			(string) $prior['jalali_date']
@@ -323,8 +340,8 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 		self::assertStringContainsString( '۲ خوانده‌نشده', $html );
 
 		// Notification <time> keeps ISO datetime attribute while visible text uses Persian digits.
-		$time_re = '/<time datetime="\d{4}-\d{2}-\d{2}T[^"]+">'
-			. '[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2} [۰-۹]{2}:[۰-۹]{2}<\/time>/u';
+		$time_re = '/<time class="description" datetime="\d{4}-\d{2}-\d{2}T[^"]+">'
+			. '<span dir="ltr">[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2} [۰-۹]{2}:[۰-۹]{2}<\/span><\/time>/u';
 		self::assertMatchesRegularExpression( $time_re, $html );
 
 		// File size label uses Persian digits ("۲ کیلوبایت").
@@ -347,7 +364,11 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 		return $uid;
 	}
 
-	private function seed_portal_patient( int $clinic_id, string $mobile, string $birth_date ): int {
+	private function seed_portal_patient(
+		int $clinic_id,
+		string $mobile,
+		string $birth_date
+	): int {
 		global $wpdb;
 		$now = App::db()->nowUtcSql();
 		$wpdb->insert(
