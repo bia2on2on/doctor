@@ -55,6 +55,7 @@ declare( strict_types=1 );
 namespace ClinicCore\Application\Clinic;
 
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use Throwable;
 
 /**
@@ -203,8 +204,64 @@ final class PublicClinicDirectory {
 	}
 
 	/**
-	 * Consent value of one Clinic (public, read-only helper for tests/admin).
+	 * Location-first mapping for the public booking surface: the ACTIVE
+	 * Locations of ONE Clinic that currently have at least one eligible
+	 * clinician, each with exactly the clinicians eligible THERE.
+	 *
+	 * Eligibility is answered by the SAME single query the reception surface
+	 * uses (MembershipRepository::clinicians_at_location()), so the two
+	 * surfaces cannot drift apart. No rule is re-implemented here.
+	 *
+	 * Fail closed: a non-positive Clinic, a Location of another Clinic or an
+	 * unknown Location can never appear; a read failure returns an empty
+	 * mapping, so the caller offers nothing. Ordered by Location id.
+	 *
+	 * @return array<int, list<array{id:int,name:string}>>
 	 */
+	public function clinicians_by_location( int $clinic_id ): array {
+		if ( $clinic_id <= 0 ) {
+			return [];
+		}
+
+		$db          = App::db();
+		$memberships = new MembershipRepository( $db );
+		$limit       = self::MAX_CLINICIANS_PER_CLINIC;
+
+		try {
+			$rows = $db->fetchAll(
+				'SELECT id FROM ' . $db->table( 'cpms_locations' )
+				. ' WHERE clinic_id = %d AND is_active = 1 ORDER BY id ASC LIMIT %d',
+				[ $clinic_id, $limit ]
+			);
+		} catch ( Throwable $e ) {
+			$this->log_failure( $e );
+
+			return [];
+		}
+
+		$map = [];
+		foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
+			$location_id = (int) ( $row['id'] ?? 0 );
+			if ( $location_id <= 0 ) {
+				continue;
+			}
+			$eligible = $memberships->clinicians_at_location(
+				$clinic_id,
+				$location_id,
+				null,
+				$limit
+			);
+			if ( [] !== $eligible ) {
+				$map[ $location_id ] = $eligible;
+			}
+		}
+
+		return $map;
+	}
+
+    /**
+     * Consent value of one Clinic (public, read-only helper for tests/admin).
+     */
 	public function is_listed( int $clinic_id ): bool {
 		if ( $clinic_id <= 0 ) {
 			return false;

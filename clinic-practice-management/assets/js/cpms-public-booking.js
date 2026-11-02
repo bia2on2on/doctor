@@ -422,6 +422,38 @@
 			return payload;
 		}
 		var availableLocations = [];
+		/** قراردادِ سروریِ «اول محل مراجعه» فعال است؟ (نبودِ آن = رفتارِ پیشین) */
+		var locationFirst = false;
+
+		/**
+		 * Locationهای واجدِ شرایطِ یک Clinic از قراردادِ منتشرشدهٔ سرور
+		 * (`config.locations_by_clinic`). `null` یعنی سرور این قرارداد را منتشر
+		 * نکرده است ⇒ رفتارِ پیشین (Locationها از پاسخِ A1) دست‌نخورده می‌ماند.
+		 * هیچ Locationِ غیرفعال/دیگر-کلینیک/ناشناخته‌ای این‌جا ساخته نمی‌شود؛ فقط
+		 * همان چیزی که سرور تأیید کرده است.
+		 */
+		function serverLocationsFor(clinicId) {
+			var byClinic = config.locations_by_clinic;
+			if (!byClinic || typeof byClinic !== 'object') {
+				return null;
+			}
+			var rows = byClinic[String(toInt(clinicId))];
+			if (!Array.isArray(rows)) {
+				return [];
+			}
+			var out = [];
+			for (var i = 0; i < rows.length; i++) {
+				var row = rows[i];
+				var id = toInt(row && row.id);
+				if (id <= 0) { continue; }
+				out.push({
+					id: id,
+					name: row && isNonEmptyString(row.name) ? row.name : '',
+					address: row && isNonEmptyString(row.address) ? row.address : ''
+				});
+			}
+			return out;
+		}
 
 		/* -------------- Phase 8 Slice 2 — وضعیت continuation -------------- */
 		/* فقط از قراردادِ منتشرشدهٔ سرور خوانده می‌شود؛ هیچ حدسی در کار نیست:
@@ -614,7 +646,7 @@
 		}
 
 		function unfreeze() {
-			setDisabled(clinicianButtons, false);
+			applyLocationGate();
 			setDisabled(slotButtons(), false);
 			setDisabled(locationOptionButtons(), holdToken !== '');
 		}
@@ -694,6 +726,52 @@
 			return null;
 		}
 
+		/**
+		 * Locationهای واجدِ شرایطِ یک دکمهٔ پزشک — از `data-locations` که **سرور**
+		 * برای همان پزشک نوشته است. در JS هیچ نگاشتِ تازه‌ای ساخته نمی‌شود.
+		 */
+		function clinicianLocations(button) {
+			var item = (button && typeof button.closest === 'function')
+				? button.closest('.cpms-public-booking__clinician-item')
+				: null;
+			var raw = item ? String(item.getAttribute('data-locations') || '') : '';
+			var parts = raw.split(/\s+/);
+			var out = [];
+			for (var i = 0; i < parts.length; i++) {
+				var id = toInt(parts[i]);
+				if (id > 0) { out.push(id); }
+			}
+			return out;
+		}
+
+		function clinicianEligibleAt(button, locationId) {
+			if (toInt(locationId) <= 0) { return false; }
+			var ids = clinicianLocations(button);
+			for (var i = 0; i < ids.length; i++) {
+				if (ids[i] === toInt(locationId)) { return true; }
+			}
+			return false;
+		}
+
+		/**
+		 * دروازهٔ «اول محل مراجعه»: تا Location انتخاب نشود هیچ پزشکی قابل انتخاب
+		 * نیست؛ پس از انتخاب، فقط پزشکانِ واجدِ شرایط در همان Location فعال‌اند.
+		 * بدونِ قراردادِ سروری، رفتارِ پیشین (همه فعال) حفظ می‌شود.
+		 */
+		function applyLocationGate() {
+			if (!locationFirst) {
+				setDisabled(clinicianButtons, false);
+				return;
+			}
+			for (var i = 0; i < clinicianButtons.length; i++) {
+				if (busy) {
+					clinicianButtons[i].disabled = true;
+					continue;
+				}
+				clinicianButtons[i].disabled = !clinicianEligibleAt(clinicianButtons[i], selectedLocationId);
+			}
+		}
+
 		function renderLocationOptions(locations) {
 			if (!locationList) { return; }
 			while (locationList.firstChild) { locationList.removeChild(locationList.firstChild); }
@@ -751,6 +829,11 @@
 			if (locationHint) { locationHint.hidden = true; }
 
 			if (invalidateSelection !== false) {
+				// تغییرِ محل مراجعه، انتخابِ پزشک و روز و نوبت‌ها را پاک می‌کند:
+				// هیچ پزشک/روز/نوبتی از Locationِ قبلی زنده نمی‌ماند.
+				selectedClinicianId = 0;
+				availableDays = [];
+				setPressed(clinicianButtons, null);
 				lastSelection = null;
 				clearStoredSelection();
 				holdToken = '';
@@ -770,7 +853,14 @@
 			setText(daysHost, '');
 			clearDetail();
 			var count = renderDays(filterDaysForLocation(availableDays, selectedLocationId));
-			panelState(count > 0 ? STATE_SELECTABLE : STATE_EMPTY);
+			if (locationFirst && invalidateSelection !== false) {
+				// پس از تغییرِ محل، گامِ درست «انتخابِ پزشک» است، نه «نوبتِ خالی».
+				panelState(STATE_IDLE);
+			} else {
+				panelState(count > 0 ? STATE_SELECTABLE : STATE_EMPTY);
+			}
+			applyLocationGate();
+			applyDoctorFilters();
 			return true;
 		}
 
@@ -957,12 +1047,24 @@
 				var haystack = String(item.getAttribute('data-search') || '');
 				var nameMatch = query === '' || haystack.indexOf(query) !== -1;
 				var specialtyMatch = specialty === '' || String(item.getAttribute('data-specialty') || '') === specialty;
-				var show = clinicMatch && nameMatch && specialtyMatch;
+				// «اول محل مراجعه»: تا Location انتخاب نشود هیچ پزشکی دیده نمی‌شود و
+				// پس از آن فقط پزشکانِ واجدِ شرایط در همان Location.
+				var locationMatch = true;
+				if (locationFirst) {
+					var owner = typeof item.querySelector === 'function'
+						? item.querySelector(CLINICIAN_SELECTOR)
+						: null;
+					locationMatch = clinicianEligibleAt(owner || item, selectedLocationId);
+				}
+				var show = clinicMatch && nameMatch && specialtyMatch && locationMatch;
 				item.hidden = !show;
 				if (show) { visible++; }
 			}
 			if (filterEmpty) {
-				filterEmpty.hidden = visible > 0 || activeClinicId <= 0;
+				// با «اول محل مراجعه»، پیش از انتخابِ Location هیچ پیامِ «تطابق
+				// ندارد»ی نشان داده نمی‌شود؛ فهرست فقط هنوز باز نشده است.
+				filterEmpty.hidden = visible > 0 || activeClinicId <= 0
+					|| (locationFirst && selectedLocationId <= 0);
 			}
 			return visible;
 		}
@@ -971,11 +1073,14 @@
 			clearDetail();
 			setText(daysHost, '');
 			availableDays = [];
-			availableLocations = [];
-			selectedLocationId = 0;
-			if (locationPicker) { locationPicker.hidden = true; }
-			if (locationList) { setText(locationList, ''); }
-			showLocationDetails(null);
+			if (!locationFirst) {
+				// قراردادِ پیشین: Locationها از پاسخِ A1 می‌آمدند.
+				availableLocations = [];
+				selectedLocationId = 0;
+				if (locationPicker) { locationPicker.hidden = true; }
+				if (locationList) { setText(locationList, ''); }
+				showLocationDetails(null);
+			}
 			if (locationHint) { locationHint.hidden = true; }
 			if (!restoreSelection) {
 				lastSelection = null;
@@ -999,7 +1104,7 @@
 				headers: { Accept: 'application/json' }
 			}).then(function (result) {
 				setBusy(false);
-				setDisabled(clinicianButtons, false);
+				applyLocationGate();
 
 				var payload = result.body && result.body.data ? result.body.data : null;
 				var days = payload && Array.isArray(payload.days) ? payload.days : null;
@@ -1011,14 +1116,16 @@
 				}
 
 				availableDays = days;
-				availableLocations = collectLocations(days);
-				renderLocationOptions(availableLocations);
-				if (availableLocations.length === 0) {
-					panelState(STATE_EMPTY);
-					clearDetail();
-					return;
+				if (!locationFirst) {
+					availableLocations = collectLocations(days);
+					renderLocationOptions(availableLocations);
+					if (availableLocations.length === 0) {
+						panelState(STATE_EMPTY);
+						clearDetail();
+						return;
+					}
+					if (locationPicker) { locationPicker.hidden = false; }
 				}
-				if (locationPicker) { locationPicker.hidden = false; }
 
 				if (restoreSelection) {
 					var matches = [];
@@ -1064,6 +1171,16 @@
 					return;
 				}
 
+				if (locationFirst) {
+					// Location از پیش انتخاب شده است؛ فقط نوبت‌های همان Location.
+					var visibleSlots = renderDays(filterDaysForLocation(availableDays, selectedLocationId));
+					panelState(visibleSlots > 0 ? STATE_SELECTABLE : STATE_EMPTY);
+					if (visibleSlots === 0) { clearDetail(); }
+					applyLocationGate();
+					applyDoctorFilters();
+					return;
+				}
+
 				if (availableLocations.length === 1) {
 					setLocationChoice(availableLocations[0].id, false);
 					return;
@@ -1079,7 +1196,7 @@
 				clearDetail();
 			}, function () {
 				setBusy(false);
-				setDisabled(clinicianButtons, false);
+				applyLocationGate();
 				panelState(STATE_ERROR);
 				clearDetail();
 			});
@@ -1675,6 +1792,49 @@
 			});
 		}
 
+		/* ---------- «اول محل مراجعه»: مقدارگذاریِ اولیهٔ قراردادِ سروری ---------- */
+
+		/**
+		 * Locationهای واجدِ شرایط را از قراردادِ سرور می‌نشاند و اگر تنها یک
+		 * Locationِ مجاز وجود داشته باشد همان را انتخاب می‌کند (تأییدشده سمت
+		 * سرور). با بیش از یکی هیچ Locationای پیش‌انتخاب نمی‌شود. اگر سرور برای
+		 * این Clinic هیچ Locationِ واجدِ شرایطی نداشته باشد (پزشکان بدونِ انتسابِ
+		 * پایدارِ Location)، مرحلهٔ Location اصلاً فعال نمی‌شود و همان جریانِ
+		 * پیشینِ «پزشک، سپس پاسخِ A1» برقرار می‌ماند — وگرنه هیچ پزشکی قابلِ
+		 * انتخاب نمی‌شد و صفحه عملاً غیرقابلِ رزرو بود.
+		 */
+		function initLocationFirst() {
+			var clinicId = currentClinicId();
+			if (clinicId <= 0 && clinicSelect) { clinicId = toInt(clinicSelect.value); }
+			var rows = serverLocationsFor(clinicId);
+			if (rows === null || rows.length === 0) {
+				// سرور هیچ Locationِ واجدِ شرایطی برای این Clinic ندارد ⇒ رفتارِ پیشین.
+				return;
+			}
+
+			locationFirst = true;
+			availableLocations = rows;
+			selectedLocationId = 0;
+			renderLocationOptions(availableLocations);
+			if (locationPicker) { locationPicker.hidden = availableLocations.length === 0; }
+
+			if (availableLocations.length === 1) {
+				setLocationChoice(availableLocations[0].id, false);
+				panelState(STATE_IDLE);
+			} else if (availableLocations.length > 1) {
+				if (locationHint) { locationHint.hidden = false; }
+				panelState(STATE_LOCATION_REQUIRED);
+				clearDetail();
+			} else {
+				panelState(STATE_IDLE);
+			}
+
+			applyLocationGate();
+			applyDoctorFilters();
+		}
+
+		initLocationFirst();
+
 		/* ---------- راه‌اندازیِ continuation در بارگذاری ---------- */
 
 		if (authMode === 'patient') {
@@ -1843,6 +2003,11 @@
 				setText(daysHost, '');
 				setPressed(clinicianButtons, null);
 				panelState(STATE_IDLE);
+				// Clinicِ دیگر ⇒ Locationِ قبلی بی‌اعتبار است؛ فهرستِ Locationها از
+				// قراردادِ همان Clinic دوباره نشانده می‌شود (نگهبانِ هیچ Locationِ
+				// Clinicِ قبلی نمی‌ماند).
+				availableLocations = [];
+				initLocationFirst();
 				updateTimezoneLabel();
 				applyDoctorFilters();
 			});
