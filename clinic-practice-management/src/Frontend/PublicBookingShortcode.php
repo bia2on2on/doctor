@@ -205,8 +205,8 @@ final class PublicBookingShortcode
     private const NO_CLINICIAN_NOTICE = 'در حال حاضر پزشک فعالی برای انتخاب نوبت در این مرکز ثبت نشده است.';
 
     private const TITLE = 'رزرو نوبت';
-    private const STEP_CLINICIAN = '۱. انتخاب پزشک';
-    private const STEP_LOCATION  = '۲. انتخاب محل مراجعه';
+    private const STEP_LOCATION  = '۱. انتخاب محل مراجعه';
+    private const STEP_CLINICIAN = '۲. انتخاب پزشک';
     private const STEP_SLOT      = '۳. انتخاب روز و ساعت';
     private const CAPACITY_LABEL = 'ظرفیت باقی‌مانده';
     private const DURATION_LABEL = 'دقیقه';
@@ -636,7 +636,17 @@ final class PublicBookingShortcode
 
         $lines[] = sprintf('<div class="%s">', esc_attr(self::ROOT_CLASS . '__body'));
 
-        // ---- گام ۱: پزشکان (server-rendered؛ هیچ endpoint عمومیِ لیست پزشک) ----
+        // Location-first contract, server-rendered: `locations` holds only the
+        // ACTIVE Locations of THIS Clinic that have an eligible clinician, and
+        // `clinician_locations` holds, per clinician, only the Locations where
+        // it is eligible. The eligibility rule itself is NOT repeated here.
+        $location_contract = self::location_contract( $clinic_ids );
+
+        // ---- Step 1: Site of care (server-rendered; no new endpoint) ----
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $lines[] = self::render_location_picker( (string) $surface_id );
+
+        // ---- Step 2: doctors (server-rendered; no public list endpoint) ----
         $legend_id        = $surface_id . '-clinicians';
         $lines[] = sprintf('<div class="%s">', esc_attr(self::ROOT_CLASS . '__clinicians'));
         $lines[] = sprintf(
@@ -657,7 +667,10 @@ final class PublicBookingShortcode
                 // Bounded page: the public directory never renders an unbounded list.
                 break;
             }
-            $lines[] = self::render_clinician_item( $row, (int) $row['clinic_id'] );
+            $row_clinic_id = (int) $row['clinic_id'];
+            $row_loc       = $location_contract[ $row_clinic_id ]['clinician_locations'] ?? [];
+            $row_locations = $row_loc[ (int) $row['id'] ] ?? [];
+            $lines[]       = self::render_clinician_item( $row, $row_clinic_id, $row_locations );
             ++$rendered_doctors;
         }
         $lines[] = '</ul>';
@@ -667,9 +680,6 @@ final class PublicBookingShortcode
             esc_html( self::NO_MATCH_NOTICE )
         );
         $lines[] = '</div>';
-
-        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $lines[] = self::render_location_picker( (string) $surface_id );
 
         // ---- گام ۳: تقویم هفتگی Jalali (منبعِ حقیقت: A1 موجود) ----
         $panel_legend_id = $surface_id . '-calendar';
@@ -731,7 +741,8 @@ final class PublicBookingShortcode
         $lines[] = self::render_config(
             $is_discovery ? 0 : $clinic_id,
             $surface_id,
-            $is_discovery ? $discovery : null
+            $is_discovery ? $discovery : null,
+            $location_contract
         );
         $lines[] = '</div>'; // root
 
@@ -780,22 +791,33 @@ final class PublicBookingShortcode
      * محتوایی در JS تولید نمی‌شود.
      *
      * @param array{id:int,name:string,specialty?:string,weekdays?:list<int>} $clinician
+     * @param list<int> $location_ids Server-computed eligible Locations of THIS clinician.
      */
-    private static function render_clinician_item( array $clinician, int $clinic_id ): string {
+    private static function render_clinician_item(
+        array $clinician,
+        int $clinic_id,
+        array $location_ids = []
+    ): string {
         $id        = (int) ( $clinician['id'] ?? 0 );
         $name      = trim( (string) ( $clinician['name'] ?? '' ) );
         $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
         $weekdays  = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
         $lines   = [];
-        $lines[] = sprintf(
-            '<li class="%1$s %2$s" data-clinic-id="%3$d" data-clinician-id="%4$d" data-specialty="%5$s" data-search="%6$s">',
+        // `data-locations` = only the Locations the SERVER found eligible for
+        // this clinician. The Location-first order filters on this value alone;
+        // JS never guesses a Location. Empty => not selectable anywhere.
+        $locations_attr = implode( ' ', array_map( 'intval', $location_ids ) );
+        $lines[]        = sprintf(
+            '<li class="%1$s %2$s" data-clinic-id="%3$d" data-clinician-id="%4$d"'
+            . ' data-specialty="%5$s" data-search="%6$s" data-locations="%7$s">',
             esc_attr( self::ROOT_CLASS . '__clinician-item' ),
             esc_attr( self::ROOT_CLASS . '__doctor' ),
             $clinic_id,
             $id,
             esc_attr( $specialty ),
-            esc_attr( self::normalize_search_text( $name ) )
+            esc_attr( self::normalize_search_text( $name ) ),
+            esc_attr( $locations_attr )
         );
         $lines[] = sprintf(
             '<button type="button" class="%1$s" data-clinician-id="%2$d" data-clinic-id="%3$d" aria-pressed="false">'
@@ -1379,6 +1401,84 @@ final class PublicBookingShortcode
     }
 
     /**
+     * Server-side Location-first contract for one or more Clinics.
+     *
+     * Per Clinic: `locations` = the ACTIVE Locations that have at least one
+     * eligible clinician (id, name, address; ascending id) and
+     * `clinician_locations` = per clinician, only the Locations where that
+     * clinician is eligible.
+     *
+     * The eligibility rule lives in MembershipRepository::
+     * clinicians_at_location() and PublicClinicDirectory::clinicians_by_location()
+     * — the same rule the reception surface uses. Nothing is re-derived here,
+     * and any read failure yields an empty contract (fail closed), never a
+     * guessed Location.
+     *
+     * @param list<int> $clinic_ids
+     * @return array<int, array{
+     *     locations: list<array{id:int,name:string,address:string}>,
+     *     clinician_locations: array<int, list<int>>
+     * }>
+     */
+    private static function location_contract( array $clinic_ids ): array {
+        $contract  = [];
+        $directory = new PublicClinicDirectory();
+
+        foreach ( $clinic_ids as $clinic_id ) {
+            $clinic_id = (int) $clinic_id;
+            if ( $clinic_id <= 0 ) {
+                continue;
+            }
+
+            $locations           = [];
+            $clinician_locations = [];
+
+            try {
+                $by_location = $directory->clinicians_by_location( $clinic_id );
+                $rows        = App::locationRepository()->listForClinic( $clinic_id );
+            } catch ( Throwable $e ) {
+                self::logFailure( $e );
+                $by_location = [];
+                $rows        = [];
+            }
+
+            $row_by_id = [];
+            foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
+                $row_by_id[ (int) ( $row['id'] ?? 0 ) ] = $row;
+            }
+
+            $location_ids = array_keys( $by_location );
+            sort( $location_ids, SORT_NUMERIC );
+
+            foreach ( $location_ids as $location_id ) {
+                $location_id = (int) $location_id;
+                $row         = $row_by_id[ $location_id ] ?? null;
+                if ( null === $row ) {
+                    // Not in the Location reference read => fail closed.
+                    continue;
+                }
+
+                $locations[] = [
+                    'id'      => $location_id,
+                    'name'    => trim( (string) ( $row['name'] ?? '' ) ),
+                    'address' => trim( (string) ( $row['address'] ?? '' ) ),
+                ];
+
+                foreach ( (array) $by_location[ $location_id ] as $clinician ) {
+                    $clinician_locations[ (int) $clinician['id'] ][] = $location_id;
+                }
+            }
+
+            $contract[ $clinic_id ] = [
+                'locations'           => $locations,
+                'clinician_locations' => $clinician_locations,
+            ];
+        }
+
+        return $contract;
+    }
+
+    /**
      * Accessible Location chooser; its options are populated from Location
      * metadata carried by the existing A1 availability response.
      */
@@ -1537,10 +1637,19 @@ final class PublicBookingShortcode
      * JSON.parse/readConfig بی‌تفاوت) و رشتهٔ خامِ مسیر به‌صورت literal در
      * markup ظاهر نمی‌شود — گاردهای «نبودِ affordance» (pilot/Slice 1) و
      * منتشرشدهٔ decoded (Slice 2) همزمان معنادار می‌مانند.
+     *
+     * @param array<int, array{
+     *     locations: list<array{id:int,name:string,address:string}>,
+     *     clinician_locations: array<int, list<int>>
+     * }> $location_contract
      */
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names of this method.
-    private static function render_config( int $clinic_id, string $surface_id, ?array $discovery = null ): string
-    {
+    private static function render_config(
+        int $clinic_id,
+        string $surface_id,
+        ?array $discovery = null,
+        array $location_contract = []
+    ): string {
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published method contract keeps its established camelCase parameters.
         $config = [
             'surface_id'        => $surface_id,
@@ -1554,6 +1663,13 @@ final class PublicBookingShortcode
             'availability_path' => self::AVAILABILITY_PATH,
             'quote_path' => self::QUOTE_PATH,
             'clinic_id'         => $clinic_id,
+            // Location-first: only the Locations of THIS Clinic (or these
+            // Clinics) that have an eligible clinician. No foreign, inactive
+            // or unknown Location. Clinic keys become JSON object keys.
+            'locations_by_clinic' => array_map(
+                static fn ( array $row ): array => $row['locations'],
+                $location_contract
+            ),
             'state_vocabulary' => self::STATE_VOCABULARY,
             'initial_state' => 'idle',
         ];

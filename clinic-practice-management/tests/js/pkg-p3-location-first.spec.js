@@ -223,6 +223,14 @@ function el(tag, attrs, children) {
   return node;
 }
 
+// A minimal stand-in for `template.content`: a fragment whose children are the
+// template's top-level nodes (what `templateNode()` clones and unwraps).
+function frag(children) {
+  var node = new Node('fragment');
+  (children || []).forEach(function (c) { node.appendChild(c); });
+  return node;
+}
+
 function text(value) {
   var node = new Node('span');
   node.textContent = value;
@@ -322,7 +330,7 @@ function buildSurface(config) {
   }, [text('دکتر ب')])]);
 
   var optionTemplate = el('template', { 'data-template': 'location-option' });
-  optionTemplate.content = el('div', {}, [
+  optionTemplate.content = frag([
     el('li', {}, [
       el('button', { 'type': 'button', 'data-role': 'location-option', 'aria-pressed': 'false' }, [
         el('span', { 'data-fill': 'name' }),
@@ -332,13 +340,15 @@ function buildSurface(config) {
   ]);
 
   var dayTemplate = el('template', { 'data-template': 'day' });
-  dayTemplate.content = el('div', {}, [
-    el('p', { 'data-fill': 'jalali' }),
-    el('div', { 'data-host': 'slots' })
+  dayTemplate.content = frag([
+    el('div', { 'class': 'cpms-public-booking__day' }, [
+      el('p', { 'data-fill': 'jalali' }),
+      el('div', { 'data-host': 'slots' })
+    ])
   ]);
 
   var slotTemplate = el('template', { 'data-template': 'slot' });
-  slotTemplate.content = el('div', {}, [
+  slotTemplate.content = frag([
     el('button', { 'type': 'button', 'class': 'cpms-public-booking__slot' }, [
       el('span', { 'data-fill': 'time' })
     ])

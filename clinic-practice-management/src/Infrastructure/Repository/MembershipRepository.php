@@ -423,6 +423,69 @@ final class MembershipRepository {
     }
 
     /**
+     * Eligible clinicians of one (Clinic, Location) — ONE rule for the
+     * reception surface and the public booking surface.
+     *
+     * All conditions must hold: the clinician is active and has a linked
+     * WordPress user; a durable assignment row exists for this Location; that
+     * Location belongs to THIS Clinic and is active; the clinician's user has
+     * an ACTIVE membership in this Clinic, and a location-scoped membership
+     * includes this Location.
+     *
+     * `clinicians.clinic_id` (home Clinic) is deliberately never read. One
+     * bounded query; the optional id narrows it to a single selector check.
+     * Any non-positive selector answers with an empty list (fail closed).
+     *
+     * @return list<array{id: int, name: string}>
+     */
+    public function clinicians_at_location(
+        int $clinic_id,
+        int $location_id,
+        ?int $clinician_id = null,
+        int $limit = 100
+    ): array {
+        if ( $clinic_id <= 0 || $location_id <= 0 ) {
+            return [];
+        }
+
+        $assigned = $this->db->table( 'cpms_clinician_locations' );
+        $places   = $this->db->table( 'cpms_locations' );
+        $members  = $this->db->table( 'cpms_clinic_memberships' );
+        $scoped   = $this->db->table( 'cpms_membership_locations' );
+
+        $sql = 'SELECT c.id, c.full_name FROM ' . $this->db->table( 'cpms_clinicians' ) . ' c'
+            . ' INNER JOIN ' . $assigned
+            . ' cl ON cl.clinician_id = c.id AND cl.location_id = %d'
+            . ' INNER JOIN ' . $places
+            . ' l ON l.id = cl.location_id AND l.clinic_id = %d AND l.is_active = 1'
+            . ' INNER JOIN ' . $members
+            . " m ON m.wp_user_id = c.wp_user_id AND m.clinic_id = %d"
+            . " AND m.status = 'active'"
+            . ' WHERE c.is_active = 1 AND c.wp_user_id > 0'
+            . " AND ( m.scope_mode = 'clinic' OR EXISTS ( SELECT 1 FROM " . $scoped
+            . ' ml WHERE ml.membership_id = m.id AND ml.location_id = cl.location_id ) )';
+
+        $params = [ $location_id, $clinic_id, $clinic_id ];
+        if ( null !== $clinician_id ) {
+            $sql     .= ' AND c.id = %d';
+            $params[] = $clinician_id;
+        }
+        $sql     .= ' ORDER BY c.full_name ASC, c.id ASC LIMIT %d';
+        $params[] = max( 1, $limit );
+
+        $rows = $this->db->fetchAll( $sql, $params );
+        $out  = [];
+        foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
+            $out[] = [
+                'id'   => (int) $row['id'],
+                'name' => (string) $row['full_name'],
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
      * @return list<int>
      */
     public function clinician_location_ids( int $clinician_id ): array {
