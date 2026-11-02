@@ -245,6 +245,10 @@ final class PatientPortalPage
                 $past[] = $row;
             }
         }
+        // Package D — تصمیمِ مهلتِ لغو/جابه‌جایی برای ردیف‌های پیش‌رو، از همان
+        // منبعِ سرور (BookingService → BookingWindow + تنظیمات Clinic/Location)؛
+        // هیچ محاسبهٔ زمانی در این قالب تکرار نمی‌شود و سرور مرجع می‌ماند.
+        $change_policy = self::change_policy_for( $upcoming );
         // شماره تماس «تماس با مطب»: پس از resolve شدن رکوردهای linkedِ کاربر
         // (پایین‌تر) از Clinic Profileِ رسمی (cpms_clinics.phone) خوانده می‌شود —
         // نه از کلید legacyِ نصب (`clinic.phone`).
@@ -343,7 +347,7 @@ final class PatientPortalPage
         $html .= '<p class="description">سلام! نوبت‌های ثبت‌شده شما در این صفحه است. تغییرات نوبت با پیامک هم اطلاع داده می‌شود.</p>';
         $html .= '<h2>نوبت‌های پیش‌رو</h2>';
         $html .= '<p class="description">نوبت‌های تأییدشده را می‌توانید تا پیش از مهلتِ تعیین‌شدهٔ مطب همین‌جا جابه‌جا یا لغو کنید.</p>';
-        $html .= self::table( $upcoming, 'نوبت پیش‌رویی ندارید.', true );
+        $html .= self::table( $upcoming, 'نوبت پیش‌رویی ندارید.', true, $change_policy );
         $html .= '<div class="notice notice-error inline cpms-patient-portal__error" role="alert" data-role="cancel-error" hidden><p></p></div>';
         $html .= self::reschedule_panel();
         $html .= self::notifications_section( $inbox, $clinic_tz );
@@ -456,7 +460,7 @@ final class PatientPortalPage
                                 $parts[] = (string) $med['route'];
                             }
                             if ( ! empty( $med['duration_days'] ) ) {
-                                $parts[] = (int) $med['duration_days'] . ' روز';
+                                $parts[] = self::persian_digits( (string) (int) $med['duration_days'] ) . ' روز';
                             }
                             $item_line = implode( ' — ', $parts );
                             if ( ! empty( $med['instructions'] ) ) {
@@ -740,7 +744,7 @@ final class PatientPortalPage
 
             $mrn_raw = (string) ( $initial['record']['mrn'] ?? '' );
 
-            $mrn_text = $mrn_raw !== '' ? 'MRN: ' . $mrn_raw : '';
+            $mrn_text = $mrn_raw !== '' ? 'شمارهٔ پرونده: ' . $mrn_raw : '';
         }
 
         $html .= '<div class="cpms-pp-profile__context" data-role="profile-context"' . $hidden_attr . '>';
@@ -766,7 +770,7 @@ final class PatientPortalPage
 
                 $mrn = (string) ( $r['mrn'] ?? '' );
 
-                $label = $clinic . ' — ' . $display . ' (MRN: ' . $mrn . ')';
+                $label = $clinic . ' — ' . $display . ' (شمارهٔ پرونده: ' . $mrn . ')';
 
                 $html .= '<option data-role="profile-record-option" data-link-id="' . $link_id_attr . '" value="' . $link_id_attr . '">' . esc_html( $label ) . '</option>';
             }
@@ -851,10 +855,13 @@ final class PatientPortalPage
                 'label'   => 'جنسیت',
                 'type'    => 'select',
                 'options' => [
-                    ''       => 'انتخاب کنید',
-                    'male'   => 'مرد',
-                    'female' => 'زن',
-                    'other'  => 'سایر',
+                    ''        => 'انتخاب کنید',
+                    'male'    => 'مرد',
+                    'female'  => 'زن',
+                    'other'   => 'سایر',
+                    // مقدارِ پیش‌فرضِ ستون در پایگاه‌داده `unknown` است؛ بدونِ این
+                    // گزینه مقدارِ موجود در فرم پیش‌انتخاب نمی‌شد.
+                    'unknown' => 'نامشخص',
                 ],
             ],
             'address'                 => [
@@ -1247,10 +1254,63 @@ final class PatientPortalPage
     }
 
     /**
-     * @param list<array<string, mixed>> $rows
-     * @param bool $with_actions ستون «عملیات» فقط برای جدول پیش‌رو؛ دکمهٔ لغو فقط روی `confirmed`.
+     * نصابِ «تماس با مطب» برای ردیفی که مهلتِ سیاستِ مطب یک یا هر دو دکمهٔ آن را
+     * پنهان کرده است — همان جملهٔ کارتِ پایینِ صفحه، در قالبِ کوتاهِ ردیف.
      */
-    private static function table( array $rows, string $empty_text, bool $with_actions ): string {
+    private const CONTACT_CLINIC_NOTE = 'برای تغییر یا لغو این نوبت، با مطب در تماس باشید.';
+
+    /**
+     * نگاشتِ id نوبت ⇒ اجازهٔ لغو/جابه‌جایی از همان قاعدهٔ سرور
+     * (`BookingService::patient_change_deadlines()`).
+     *
+     * هر شکست (پیوند غیرفعال، نوبتِ غیرِ `confirmed`، Location/Timezone نامعتبر،
+     * خطای DB) ⇒ fail-closed: هر دو دکمه پنهان و یادداشتِ «تماس با مطب» نمایان.
+     * سرور همچنان مرجع نهایی است؛ این فقط نمایش است.
+     *
+     * @param list<array<string, mixed>> $rows
+     * @return array<int, array{cancel: bool, reschedule: bool}>
+     */
+    private static function change_policy_for( array $rows ): array {
+        $policy = [];
+
+        foreach ( $rows as $row ) {
+            $id = (int) ( $row['id'] ?? 0 );
+
+            if ( $id <= 0 ) {
+                continue;
+            }
+
+            $policy[ $id ] = [
+                'cancel'     => false,
+                'reschedule' => false,
+            ];
+
+            if ( 'confirmed' !== (string) ( $row['status'] ?? '' ) ) {
+                continue;
+            }
+
+            try {
+                $decision = App::bookingService()->patient_change_deadlines( get_current_user_id(), $id );
+            } catch ( \Throwable $e ) {
+                continue;
+            }
+
+            $policy[ $id ] = [
+                'cancel'     => ! empty( $decision['cancel_allowed'] ),
+                'reschedule' => ! empty( $decision['reschedule_allowed'] ),
+            ];
+        }
+
+        return $policy;
+    }
+
+    /**
+     * @param list<array<string, mixed>> $rows
+     * @param bool $with_actions ستون «عملیات» فقط برای جدول پیش‌رو؛ دکمه‌ها فقط روی `confirmed`
+     *                           و فقط تا پیش از مهلتِ سیاستِ مطب.
+     * @param array<int, array{cancel: bool, reschedule: bool}> $change_policy تصمیمِ سرور برای هر ردیف.
+     */
+    private static function table( array $rows, string $empty_text, bool $with_actions, array $change_policy = [] ): string {
         if ($rows === []) {
             return '<p class="description">' . esc_html( $empty_text ) . '</p>';
         }
@@ -1281,15 +1341,83 @@ final class PatientPortalPage
                 . '<td data-label="کد رهگیری"><span dir="ltr">' . esc_html( (string) $r['reference_code'] ) . '</span></td>';
             if ( $with_actions ) {
                 $html .= '<td class="cpms-actions-cell" data-label="عملیات">'
-                    . ( $status === 'confirmed'
-                        ? self::reschedule_button( (int) $r['id'], $jalali, $time ) . ' ' . self::cancel_button( (int) $r['id'], $jalali, $time )
-                        : '<span aria-hidden="true">—</span>' )
+                    . self::row_actions( $r, $jalali, $time, $change_policy )
                     . '</td>';
             }
             $html .= '</tr>';
         }
 
         return $html . '</tbody></table>';
+    }
+
+    /**
+     * دکمه‌های یک ردیف از جدول «نوبت‌های پیش‌رو».
+     *
+     * قاعده: هر دکمه فقط وقتی رندر می‌شود که تصمیمِ سرور برای همان نوبت مجاز باشد
+     * (`change_policy_for`). اگر مهلتِ لغو یا جابه‌جایی گذشته باشد، دکمهٔ مربوط
+     * پنهان و یادداشتِ «تماس با مطب» افزوده می‌شود؛ ردیفِ بدونِ تصمیمِ معتبر نیز
+     * fail-closed همین رفتار را دارد. سرور همچنان درخواست را رد می‌کند.
+     *
+     * @param array<string, mixed> $row
+     * @param array<int, array{cancel: bool, reschedule: bool}> $change_policy
+     */
+    private static function row_actions( array $row, string $jalali, string $time, array $change_policy ): string {
+        if ( 'confirmed' !== (string) ( $row['status'] ?? '' ) ) {
+            return '<span aria-hidden="true">—</span>';
+        }
+
+        $id = (int) ( $row['id'] ?? 0 );
+
+        $flags = [
+            'cancel'     => false,
+            'reschedule' => false,
+        ];
+
+        if ( isset( $change_policy[ $id ] ) && is_array( $change_policy[ $id ] ) ) {
+            $flags['cancel']     = ! empty( $change_policy[ $id ]['cancel'] );
+            $flags['reschedule'] = ! empty( $change_policy[ $id ]['reschedule'] );
+        }
+
+        $parts = [];
+
+        if ( $flags['reschedule'] ) {
+            $parts[] = self::reschedule_button( $id, $jalali, $time );
+        }
+
+        if ( $flags['cancel'] ) {
+            $parts[] = self::cancel_button( $id, $jalali, $time );
+        }
+
+        $hidden_any = ! $flags['cancel'] || ! $flags['reschedule'];
+
+        if ( $hidden_any ) {
+            $parts[] = '<span class="cpms-patient-portal__deadline-note" data-role="change-deadline-note">'
+                . esc_html( self::CONTACT_CLINIC_NOTE )
+                . '</span>';
+        }
+
+        return implode( ' ', $parts );
+    }
+
+    /**
+     * ارقامِ لاتین → ارقامِ فارسی برای نمایشِ متنِ فارسی (بدون تغییرِ مقدارِ داده).
+     */
+    private static function persian_digits( string $value ): string {
+        return strtr(
+            $value,
+            [
+                '0' => '۰',
+                '1' => '۱',
+                '2' => '۲',
+                '3' => '۳',
+                '4' => '۴',
+                '5' => '۵',
+                '6' => '۶',
+                '7' => '۷',
+                '8' => '۸',
+                '9' => '۹',
+            ]
+        );
     }
 
     /**

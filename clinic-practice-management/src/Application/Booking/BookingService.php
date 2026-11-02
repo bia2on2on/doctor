@@ -1143,6 +1143,69 @@ final class BookingService
     // ================= B5 — Reschedule (Patient) =================
 
     /**
+     * Package D — تصمیمِ «آیا بیمار هنوز می‌تواند این نوبت را لغو/جابه‌جا کند؟»
+     * برای پورتالِ بیمار.
+     *
+     * منبعِ یکتا: همان `BookingWindow::checkCancelWithTimezone` و همان کلیدهای
+     * تنظیمات (`booking.cancel_deadline_hours` / `booking.reschedule_deadline_hours`)
+     * که `cancel()` و `rescheduleAs()` اعمال می‌کنند، در timezone همان Location و
+     * با همان ساعت (UTC). هیچ محاسبهٔ زمانی در قالب تکرار نمی‌شود و این متد فقط
+     * می‌خواند. مرجع نهایی همچنان سرور است.
+     *
+     * مالکیت و مرزِ دامنه مثل `reschedule_options()` است؛ هر شکست (پیوند غیرفعال،
+     * نوبتِ غیرِ `confirmed`، Location/Timezone نامعتبر) استثنا می‌دهد تا فراخوان
+     * fail-closed رفتار کند.
+     *
+     * @return array{cancel_allowed: bool, reschedule_allowed: bool}
+     */
+    public function patient_change_deadlines( int $actor_user_id, int $appointment_id, ?\DateTimeImmutable $now_utc = null ): array {
+        if ( $appointment_id <= 0 ) {
+            throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'شناسهٔ نوبت نامعتبر است', 422 );
+        }
+
+        try {
+            $appt = $this->appointments->find( $appointment_id );
+            if ( null === $appt ) {
+                throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
+            }
+
+            if ( ! $this->user_has_active_patient_in_clinic( $actor_user_id, (int) $appt['patient_id'], (int) $appt['clinic_id'] ) ) {
+                throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
+            }
+
+            if ( 'confirmed' !== (string) $appt['status'] ) {
+                throw BookingException::of( 'CLINIC_INVALID_TRANSITION', 'فقط نوبت‌های تأییدشده قابل جابه‌جایی هستند', 409 );
+            }
+
+            $clock_utc = $now_utc ?? $this->now();
+
+            return [
+                'cancel_allowed'     => null === $this->patient_change_violation( $appt, 'booking.cancel_deadline_hours', 24, $clock_utc ),
+                'reschedule_allowed' => null === $this->patient_change_violation( $appt, 'booking.reschedule_deadline_hours', 24, $clock_utc ),
+            ];
+        } catch ( Throwable $e ) {
+            throw $this->toBookingException( $e );
+        }
+    }
+
+    /**
+     * قاعدهٔ مشترکِ مهلتِ تغییر (لغو/جابه‌جایی) — تنها پیاده‌سازیِ تصمیمِ سیاستِ
+     * بیماران؛ `cancel()`, `rescheduleAs()`, `reschedule_options()` و پورتال از
+     * همین‌جا می‌گذرند. `null` = مجاز، غیرِ `null` = نقضِ سیاست (کد `BookingWindow`).
+     *
+     * @param array<string, mixed> $appt ردیفِ نوبت (slot_date/slot_time/location_id/clinic_id).
+     */
+    private function patient_change_violation( array $appt, string $settings_key, int $default_hours, \DateTimeImmutable $now_utc ): ?string {
+        return BookingWindow::checkCancelWithTimezone(
+            (string) $appt['slot_date'],
+            (string) $appt['slot_time'],
+            $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] ),
+            $now_utc,
+            (int) $this->settingsFor( (int) $appt['clinic_id'] )->get( $settings_key, $default_hours )
+        );
+    }
+
+    /**
      * گزینه‌های اسلات آزاد برای جابه‌جایی نوبتِ خودِ بیمار در همان Location و
      * بر اساس سیاست `booking.max_future_days` و `booking.min_lead_hours` کلینیکِ
      * پایدارِ همان نوبت (بدون افشای clinic_id/location_id/patient_id).
@@ -1193,6 +1256,14 @@ final class BookingService
             }
 
             $this->assertNoActiveVisit( $appointment_id );
+
+            // Package D — سیاستِ مهلتِ جابه‌جایی همان‌جا که POST هم اجرا می‌کند
+            // (rescheduleAs) اعمال می‌شود تا بیمار هرگز به بن‌بست نرسد: اگر
+            // POST پاسخ 409 CLINIC_POLICY_VIOLATION می‌دهد، همین درخواستِ
+            // GET هم پیش از هر فهرستِ اسلات همان پاسخ را می‌دهد (fail closed).
+            if ( null !== $this->patient_change_violation( $appt, 'booking.reschedule_deadline_hours', 24, $now_utc ?? $this->now() ) ) {
+                throw BookingException::of( 'CLINIC_POLICY_VIOLATION', 'زمان جابه‌جایی این نوبت گذشته است (سیاست مطب)', 409 );
+            }
 
             $filtered_days = [];
             if ( ! $this->clinic_is_suspended( $clinic_id ) && $this->clinic_organization_is_active( $clinic_id ) ) {
@@ -1423,14 +1494,7 @@ final class BookingService
 
                     if ( $actor === 'patient' ) {
                         // Policy نوبت فعلی — از location_id خود appointment + timezone آن Location
-                        $old_location_tz = $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] );
-                        $err             = BookingWindow::checkCancelWithTimezone(
-                            (string) $appt['slot_date'],
-                            (string) $appt['slot_time'],
-                            $old_location_tz,
-                            $this->now(),
-                            (int) $this->settingsFor( (int) $appt['clinic_id'] )->get( 'booking.reschedule_deadline_hours', 24 )
-                        );
+                        $err = $this->patient_change_violation( $appt, 'booking.reschedule_deadline_hours', 24, $this->now() );
                         if ( $err !== null ) {
                             throw BookingException::of( 'CLINIC_POLICY_VIOLATION', 'زمان جابه‌جایی این نوبت گذشته است (سیاست مطب)', 409 );
                         }
@@ -1727,7 +1791,6 @@ final class BookingService
 
                     $duration = (int) $slot['duration_min'];
                     $now_sql  = $this->db->nowUtcSql();
-                    $is_today = $slot_date === gmdate( 'Y-m-d' );
                     // The final decision is after capacity/Location lock waits.
                     $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
                     $appt_id = $this->appointments->create(
@@ -1743,7 +1806,7 @@ final class BookingService
                             'slot_end_time'     => DurationResolver::slotEndTime( $slot_time, $duration ),
                             'reason'            => is_string( $reason_value ) && $reason_value !== '' ? mb_substr( $reason_value, 0, 255 ) : null,
                             'status'            => 'confirmed', // N-2: create→pending→confirm در یک operation ( مطابه State Machine )
-                            'is_walkin_express' => $is_today ? 1 : 0,
+                            'is_walkin_express' => 0,
                             'booked_at'         => $now_sql,
                             'confirmed_at'      => $now_sql,
                             'created_at'        => $now_sql,
@@ -1941,14 +2004,7 @@ final class BookingService
 
             if ($actor === 'patient') {
                 // SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
-                $location_tz = $this->resolveLocationTimezone( (int) $appt['location_id'], (int) $appt['clinic_id'] );
-                $err = BookingWindow::checkCancelWithTimezone(
-                    (string) $appt['slot_date'],
-                    (string) $appt['slot_time'],
-                    $location_tz,
-                    $this->now(),
-                    (int) $this->settingsFor((int) $appt['clinic_id'])->get('booking.cancel_deadline_hours', 24)
-                );
+                $err = $this->patient_change_violation( $appt, 'booking.cancel_deadline_hours', 24, $this->now() );
                 if ($err !== null) {
                     throw BookingException::of('CLINIC_POLICY_VIOLATION', 'زمان لغو این نوبت گذشته است (سیاست مطب)', 409);
                 }
