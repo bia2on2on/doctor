@@ -189,13 +189,15 @@ final class PatientPortalPage
     }
 
     /**
-     * اسکریپتِ لغو نوبت — فقط روی همین صفحه و فقط برای بیمارِ خالص.
+     * اسکریپتِ لغو نوبت + دیالوگِ مشترکِ داخل‌صفحه — فقط روی همین صفحه و فقط
+     * برای بیمارِ خالص.
      *
      * گیت دوگانه (hook suffix + نقش) یعنی هیچ صفحهٔ مدیریتی دیگری (و هیچ
-     * کاربر ستادی‌ای) این فایل را بار نمی‌کند؛ `cpms-admin` (CpmsAssets) هم
-     * دست‌نخورده می‌ماند. بدون وابستگی به handle دیگر: اگر روزی `cpms-admin`
-     * روی این صفحه نباشد، اسکریپتِ لغو همچنان چاپ می‌شود (fail-open برای
-     * خودِ کنترل، fail-closed برای هر صفحهٔ دیگر).
+     * کاربر ستادی‌ای) این فایل‌ها را بار نمی‌کند؛ `cpms-admin` (CpmsAssets) هم
+     * دست‌نخورده می‌ماند. handle خودِ پورتال بدون وابستگی می‌ماند (fail-open
+     * برای خودِ کنترل، fail-closed برای هر صفحهٔ دیگر — قرارداد موجود G3) و
+     * دیالوگِ مشترک با همان handleهای CpmsAssets در <head> انکیو می‌شود تا
+     * قبل از اسکریپتِ footerِ پورتال در دسترس باشد.
      */
     public static function enqueue_assets( string $hook_suffix ): void {
         if ( $hook_suffix !== self::HOOK_SUFFIX ) {
@@ -208,12 +210,30 @@ final class PatientPortalPage
         if ( $base === '' ) {
             return;
         }
+        $version = \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev';
+
+        // Shared in-page dialog (PR #297 asset) — same handles/URLs as CpmsAssets,
+        // so WP de-duplicates when both run on the same page.
+        wp_enqueue_script(
+            'cpms-ui-text',
+            $base . '/assets/js/cpms-ui-text.js',
+            [],
+            $version,
+            false
+        );
+        wp_enqueue_script(
+            'cpms-dialog',
+            $base . '/assets/js/cpms-dialog.js',
+            [ 'cpms-ui-text' ],
+            $version,
+            false
+        );
 
         wp_enqueue_script(
             self::JS_HANDLE,
             $base . '/assets/js/cpms-patient-portal.js',
             [],
-            \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev',
+            $version,
             true
         );
     }

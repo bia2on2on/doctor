@@ -193,6 +193,15 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
     var REC_TYPES = { diet: 'رژیم', rest: 'استراحت', activity: 'فعالیت', care: 'مراقبت', lab: 'آزمایش', followup: 'پیگیری', other: 'سایر' };
     var FILE_CATS = { lab_result: 'نتیجه آزمایش', image: 'تصویر', scan: 'اسکن', document: 'مدرک', other: 'سایر' };
 
+    // دیالوگِ مشترکِ داخل‌صفحه (assets/js/cpms-dialog.js؛ در <head> لود می‌شود).
+    // fail-closed: اگر در دسترس نبود، «لغو» فرض می‌شود و هیچ عملی انجام نمی‌شود.
+    function askPrompt(message, options) {
+        if (!window.CpmsDialog || typeof window.CpmsDialog.prompt !== 'function') {
+            return Promise.resolve(null);
+        }
+        return window.CpmsDialog.prompt(message, options);
+    }
+
     function apiUrl(path) {
         // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
         // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
@@ -502,9 +511,13 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
                 });
                 break;
             case 'reopen':
-                var reason = window.prompt('دلیل بازگشایی ویزیت (الزامی — در Audit ثبت می‌شود):');
-                if (!reason) { return; }
-                api('POST', 'visits/' + id + '/reopen', { reason: reason }).then(reloadOrError);
+                askPrompt('دلیل بازگشایی ویزیت (الزامی — در Audit ثبت می‌شود):', {
+                    required: true,
+                    requiredMessage: 'دلیل بازگشایی ویزیت الزامی است.'
+                }).then(function (reason) {
+                    if (reason === null) { return; }
+                    api('POST', 'visits/' + id + '/reopen', { reason: reason }).then(reloadOrError);
+                });
                 break;
             case 'add-note':
                 api('POST', 'visits/' + CFG.visit_id + '/notes', {
