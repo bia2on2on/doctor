@@ -9,7 +9,9 @@ Fixture (created by the workflow step before this script):
   PORTAL_CANCEL="login|pass|clinic_id|patient_id|ok_appt_390|ok_appt_1366|fail_appt|pending_appt|history_appt|notif_unread_ids|notif_read_id"
 
   - ok_appt_*   : own CONFIRMED appointments far in the future (one per viewport) → cancel succeeds
-  - fail_appt   : own CONFIRMED appointment starting in ~2h → B4 rejects (409 CLINIC_POLICY_VIOLATION)
+  - fail_appt   : own CONFIRMED appointment starting in ~2h → inside booking.cancel_deadline_hours,
+                  so NO control renders (Package D) and a direct same-origin POST still gets
+                  409 CLINIC_POLICY_VIOLATION (server remains authoritative)
   - pending_appt: own PENDING upcoming appointment → no cancel control may render
   - history_appt: own already-cancelled appointment → history table, no control
   - notif_unread_ids: comma-separated ids of the patient's own UNREAD internal notifications (Slice 2)
@@ -27,8 +29,11 @@ Journey (per viewport 390x844 and 1366x768):
   1d. Slice 2 success path: click → same-origin POST with X-WP-Nonce and body exactly {"all":true} → 200 → page
      reloads → badge and control gone, every row still visible and data-read="1"; DB unread = 0.
   2. Keyboard: Enter on the control opens the accessible confirm dialog; Escape closes it, no request sent.
-  3. Failure path: confirm on fail_appt → same-origin POST with X-WP-Nonce and body {} → 409 →
-     Persian role=alert error visible, control was disabled/aria-busy in flight and is re-enabled; DB unchanged.
+  3. Failure path: no control for fail_appt (inside the cancel deadline) + Persian
+     contact-the-clinic note on its row; a direct same-origin POST with X-WP-Nonce and
+     body {} → 409 CLINIC_POLICY_VIOLATION; DB unchanged. (The button-level 409 UX — busy state,
+     inline Persian alert, focus restore — is no longer reachable by design: the control is withheld
+     inside the deadline. It is covered for the nonce/in-flight path by 1c and for the success path by 4.)
   4. Success path: confirm on ok_appt → 200 → page reloads → row gone from upcoming, listed in history as
      cancelled; DB status cancelled_by_patient, slot capacity released, audit row written.
   5. UX: no horizontal overflow, no page errors, no failed same-origin requests, only the four expected REST calls.
@@ -445,18 +450,41 @@ def run_journey(browser, run):
         btn_ids = sorted(int(x) for x in page.evaluate(
             "() => Array.from(document.querySelectorAll('button[data-role=\"cancel-appointment\"]')).map(b => b.getAttribute('data-appointment-id'))"
         ))
-        # Every owned appointment whose server-known status is still `confirmed` (and upcoming) gets a
-        # control — including the other viewport's not-yet-cancelled appointment. Derive the expectation
-        # from the DB at check time, never from the viewport plan.
+        # Package D contract: a control renders ONLY while the appointment is still
+        # OUTSIDE `booking.cancel_deadline_hours` (default 24h) — the same rule the
+        # server applies in BookingService (BookingWindow + Clinic settings). The
+        # near-start `fail_appt` (~2h) therefore renders NO control any more; server
+        # authority is proved in step 3 with a direct same-origin POST (409).
+        # Every other owned appointment whose server-known status is still
+        # `confirmed` (and upcoming) keeps its control — including the other
+        # viewport's not-yet-cancelled appointment. Derive the expectation from the
+        # DB at check time, never from the viewport plan.
         confirmed_upcoming = sorted(set(list(CFG["ok_appts"].values()) + [fail_appt]))
-        expected_ids = sorted(a for a in confirmed_upcoming if appt_status(a) == "confirmed")
-        if ok_appt not in expected_ids or fail_appt not in expected_ids:
-            raise RuntimeError(f"precondition: this run's ok/fail appointments must still be confirmed (expected={expected_ids})")
+        if appt_status(fail_appt) != "confirmed":
+            raise RuntimeError("precondition: the near-start appointment must still be confirmed server-side (server rule, not the UI, is what rejects it)")
+        expected_ids = sorted(
+            a for a in confirmed_upcoming if a != fail_appt and appt_status(a) == "confirmed"
+        )
+        if ok_appt not in expected_ids:
+            raise RuntimeError(f"precondition: this run's ok appointment must still be confirmed (expected={expected_ids})")
         if btn_ids != expected_ids:
-            raise RuntimeError(f"cancel controls must exist exactly for the confirmed upcoming rows {expected_ids}, got {btn_ids}")
-        for appt_id in (CFG["pending_appt"], CFG["history_appt"]):
+            raise RuntimeError(
+                f"cancel controls must exist exactly for the confirmed upcoming rows OUTSIDE the cancel deadline {expected_ids}, got {btn_ids}"
+            )
+        for appt_id in (CFG["pending_appt"], CFG["history_appt"], fail_appt):
             if page.locator(f'{BTN}[data-appointment-id="{appt_id}"]').count() != 0:
-                raise RuntimeError(f"non-cancellable appointment #{appt_id} must render no control")
+                raise RuntimeError(
+                    f"appointment #{appt_id} must render no control (non-cancellable status, history row, or inside booking.cancel_deadline_hours)"
+                )
+        # The row whose control was withheld must tell the patient to contact the clinic.
+        fail_ref = appt_ref(fail_appt)
+        deadline_row = page.locator("tr", has_text=fail_ref)
+        deadline_row.wait_for(state="visible")
+        if deadline_row.locator('[data-role="change-deadline-note"]').count() != 1:
+            raise RuntimeError("the appointment inside the cancel deadline must render exactly one contact-the-clinic note")
+        note_text = (deadline_row.locator('[data-role="change-deadline-note"]').inner_text() or "").strip()
+        if note_text == "" or not re.search(r"[\u0600-\u06FF]", note_text):
+            raise RuntimeError("the contact-the-clinic note must be non-empty and Persian")
         ok_btn = page.locator(f'{BTN}[data-appointment-id="{ok_appt}"]')
         if not ok_btn.is_visible() or not ok_btn.is_enabled():
             raise RuntimeError("control for the confirmed upcoming appointment must be visible and enabled")
@@ -659,52 +687,40 @@ def run_journey(browser, run):
             raise RuntimeError("Escape must leave the control enabled and the appointment confirmed")
         ok(f"{key0}-02-keyboard", "Keyboard: Enter opens accessible confirm, Escape aborts (no request)", "requests=0 status=confirmed")
 
-        # ---------- 3) failure path (deadline policy) ----------
+        # ---------- 3) failure path (deadline policy — server remains authoritative) ----------
+        # The UI no longer offers the control inside the deadline (Package D), so the
+        # server rule is exercised directly: same-origin POST with the portal's
+        # `wp_rest` nonce against the SAME route/config the browser control used.
         stage = "fail-path"
-        fail_btn = page.locator(f'{BTN}[data-appointment-id="{fail_appt}"]')
-        install_trace(page, f'{BTN}[data-appointment-id="{fail_appt}"]')
-        fail_btn.click()
-        dialog = confirm_dialog(page)
-        with page.expect_response(lambda r: r.request.method == "POST" and wp_route(r.url) == f"/clinic/v1/appointments/{fail_appt}/cancel", timeout=20000) as resp_info:
-            dialog.locator(".cpms-modal-confirm").click()
-        resp = resp_info.value
-        if resp.status != 409:
-            raise RuntimeError(f"B4 must reject the near-start appointment with 409, got {resp.status}")
-        body = resp.json()
-        if body.get("code") != "CLINIC_POLICY_VIOLATION":
-            raise RuntimeError(f"expected CLINIC_POLICY_VIOLATION envelope, got {body.get('code')!r}")
-        page.wait_for_selector(f"{ERROR_BOX}:not([hidden])", state="visible", timeout=10000)
-        err_text = (error_box.inner_text() or "").strip()
-        if err_text == "" or error_box.get_attribute("data-error-code") != "CLINIC_POLICY_VIOLATION":
-            raise RuntimeError("canonical failure must surface a non-empty inline alert with the server code")
-        if not re.search(r"[\u0600-\u06FF]", err_text):
-            raise RuntimeError("inline error must be Persian")
-        page.wait_for_function(
-            "(id) => { const b = document.querySelector('button[data-role=\"cancel-appointment\"][data-appointment-id=\"' + id + '\"]'); return b && !b.disabled && b.getAttribute('aria-busy') === 'false'; }",
-            arg=str(fail_appt), timeout=10000,
+        if page.locator(f'{BTN}[data-appointment-id="{fail_appt}"]').count() != 0:
+            raise RuntimeError("no cancel control may render inside booking.cancel_deadline_hours")
+        fail_target = cfg["rest_root"] + cfg["cancel_path"].replace("{id}", str(fail_appt))
+        fail_result = page.evaluate(
+            """async ({route, nonce}) => {
+                const r = await fetch(route, {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: {'X-WP-Nonce': nonce, 'Content-Type': 'application/json'},
+                    body: '{}'
+                });
+                let body = null;
+                try { body = await r.json(); } catch (e) { body = null; }
+                const code = body ? (body.code || (body.data && body.data.code) || '') : '';
+                return {status: r.status, code: code};
+            }""",
+            {"route": fail_target, "nonce": cfg["nonce"]},
         )
-        trace = page.evaluate("() => window.__cpmsTrace || []")
-        was_busy = any(t.get("disabled") is True and t.get("busy") == "true" for t in trace)
-        if not was_busy:
-            raise RuntimeError(f"control must be disabled + aria-busy while the request is in flight (trace={trace[:3]})")
-        if fail_btn.inner_text().strip() != "لغو نوبت":
-            raise RuntimeError("control label must be restored after failure")
-        focused = page.evaluate("() => document.activeElement && document.activeElement.getAttribute('data-appointment-id')")
-        posts = [p for p in cancel_posts if p["route"] == f"/clinic/v1/appointments/{fail_appt}/cancel"]
-        if len(posts) != 1:
-            raise RuntimeError(f"exactly one POST expected for the failing control, got {len(posts)}")
-        p0 = posts[0]
-        if not p0["has_nonce"] or not p0["same_origin"]:
-            raise RuntimeError("cancel POST must be same-origin and carry X-WP-Nonce")
-        if p0["body"].strip() not in ("{}", ""):
-            raise RuntimeError(f"cancel POST body must carry no authority fields, got {p0['body'][:80]!r}")
+        if fail_result.get("status") != 409:
+            raise RuntimeError(f"B4 must reject the near-start appointment with 409, got {fail_result.get('status')}")
+        if fail_result.get("code") != "CLINIC_POLICY_VIOLATION":
+            raise RuntimeError(f"expected CLINIC_POLICY_VIOLATION envelope, got {fail_result.get('code')!r}")
         if appt_status(fail_appt) != "confirmed":
             raise RuntimeError("rejected cancel must not mutate the appointment")
         if not is_frontend_portal_url(page.url) and page.locator(SHELL_ROOT).count() == 0:
             raise RuntimeError(f"failure must not navigate away from frontend portal (url={page.url})")
-        page.screenshot(path=screenshot("fail-alert"), full_page=True)
-        ok(f"{key0}-03-fail", "Failure path: 409 → Persian role=alert, control busy in flight then re-enabled, DB unchanged",
-           f"status=409 code=CLINIC_POLICY_VIOLATION nonce={p0['has_nonce']} same_origin={p0['same_origin']} body_empty=True busy_seen={was_busy} focus_restored={focused == str(fail_appt)}")
+        page.screenshot(path=screenshot("fail-no-control"), full_page=True)
+        ok(f"{key0}-03-fail", "Failure path: deadline row renders no control + Persian contact-the-clinic note; direct same-origin POST still 409 → DB unchanged",
+           f"status=409 code=CLINIC_POLICY_VIOLATION nonce=True same_origin=True body_empty=True control_rendered=False note=True")
 
         # ---------- 4) success path ----------
         stage = "success-path"

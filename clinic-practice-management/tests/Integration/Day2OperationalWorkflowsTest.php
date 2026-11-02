@@ -100,8 +100,10 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         $patientLink  = $this->linkPatient($clinicA, $patientA, $patientUser, '09121112233');
         $this->linkPatient($clinicA, $otherPatient, $otherPtUser, '09124445566');
 
-        $tomorrow   = $this->localDate(self::TZ, '+1 day');
-        $dayAfter   = $this->localDate(self::TZ, '+2 days');
+        // Package D: نوبت باید بیرونِ مهلتِ پیش‌فرضِ جابه‌جایی (۲۴ ساعت) باشد؛
+        // reschedule-options اکنون پیش از فهرستِ اسلات همان سیاستِ POST را اعمال می‌کند.
+        $tomorrow   = $this->localDate(self::TZ, '+3 days');
+        $dayAfter   = $this->localDate(self::TZ, '+4 days');
         $curSlot    = $this->insertSlot($clinicA, $locA, $clinician, $tomorrow, '09:00:00', 1, ['booked' => 1]);
         $altSlotLocA = $this->insertSlot($clinicA, $locA, $clinician, $dayAfter, '10:30:00', 2, ['booked' => 0]);
         $slotLocB   = $this->insertSlot($clinicA, $locB, $clinician, $dayAfter, '11:00:00', 2, ['booked' => 0]);
