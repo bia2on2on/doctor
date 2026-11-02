@@ -127,6 +127,55 @@ def answer_shared_dialogs(page, steps, *, shared_expected, timeout_ms, native_se
     return "shared"
 
 
+# --- Money and pricing digits (Defect 11) — DUAL-MODE normalization ----------
+# The upcoming Defect 11 production change converts staff pricing and finance
+# display from raw Latin digits ("500000 ریال") to Persian digits with thousands
+# separators ("۵۰۰٬۰۰۰ ریال"). These helpers normalize Persian (۰-۹) and
+# Arabic-Indic (٠-٩) digits to ASCII, strip thousands separators (٬ and ,)
+# between digits, and map ٫ to . before running the existing checks, so wrong
+# amounts and missing "ریال" units still fail.
+MONEY_DIGIT_MAP = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫",
+    "01234567890123456789.",
+)
+MONEY_THOUSANDS_RE = re.compile(r"(?<=\d)[\u066c,](?=\d)")
+MONEY_NORMALIZE_JS = (
+    "(value => String(value == null ? '' : value)"
+    ".replace(/[\\u06F0-\\u06F9]/g, d => String(d.charCodeAt(0) - 0x06F0))"
+    ".replace(/[\\u0660-\\u0669]/g, d => String(d.charCodeAt(0) - 0x0660))"
+    ".replace(/(\\d)[\\u066C,](?=\\d)/g, '$1')"
+    ".replace(/\\u066B/g, '.'))"
+)
+
+
+def normalize_money_digits(text) -> str:
+    """Normalize Persian/Arabic-Indic digits and number separators to ASCII."""
+    if text is None:
+        return ""
+    return MONEY_THOUSANDS_RE.sub("", str(text).translate(MONEY_DIGIT_MAP))
+
+
+def has_money_text(text, expected: str) -> bool:
+    """True when `expected` appears in normalized `text` with exact number bounds."""
+    target = normalize_money_digits(expected)
+    if not target:
+        raise ValueError("expected money substring must be non-empty")
+    prefix = r"(?<![0-9.])" if target[0].isdigit() else ""
+    suffix = r"(?![0-9.])" if target[-1].isdigit() else ""
+    return bool(re.search(f"{prefix}{re.escape(target)}{suffix}", normalize_money_digits(text)))
+
+
+def digit_agnostic_suffix_pattern(prefix: str, number: int):
+    """Match `<prefix><number>` at end of text in ASCII or Persian/Arabic digits."""
+    digits = str(int(number))
+    if not digits.isdigit():
+        raise ValueError("number must be a non-negative integer")
+    fa = "۰۱۲۳۴۵۶۷۸۹"
+    ar = "٠١٢٣٤٥٦٧٨٩"
+    body = "[\u066c,]?".join(f"[{d}{fa[int(d)]}{ar[int(d)]}]" for d in digits)
+    return re.compile(f"{re.escape(prefix)}{body}\\s*$")
+
+
 def protected_json(path):
     if not path or not os.path.isabs(path):
         raise RuntimeError("protected JSON path must be absolute")
@@ -786,11 +835,15 @@ def iran_v1_messaging_pricing(browser, credentials, links, fixture):
         iran_v1_step("default_fee_write")
         doctor_page.click('[data-role="pricing-save-default"]')
         doctor_page.wait_for_function(
-            'document.querySelector(`[data-role="pricing-context-label"]`).textContent.includes("350000")'
+            f"() => {MONEY_NORMALIZE_JS}("
+            "document.querySelector('[data-role=\"pricing-context-label\"]').textContent"
+            ").includes('350000')"
         )
         check("iran v1 doctor default fee is labelled in Rial",
-              "ریال" in doctor_page.locator('[data-role="pricing-context-label"]').inner_text()
-              and "350000" in doctor_page.locator('[data-role="pricing-context-label"]').inner_text())
+              has_money_text(
+                  doctor_page.locator('[data-role="pricing-context-label"]').inner_text(),
+                  "350000 ریال",
+              ))
 
         iran_v1_step("messaging_module")
         reception_page.goto(messages_url, wait_until="domcontentloaded")

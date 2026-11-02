@@ -181,6 +181,55 @@ def answer_shared_dialogs(page, steps, *, shared_expected, timeout_ms, native_se
     return "shared"
 
 
+# --- Money and pricing digits (Defect 11) — DUAL-MODE normalization ----------
+# The upcoming Defect 11 production change converts staff pricing and finance
+# display from raw Latin digits ("500000 ریال") to Persian digits with thousands
+# separators ("۵۰۰٬۰۰۰ ریال"). These helpers normalize Persian (۰-۹) and
+# Arabic-Indic (٠-٩) digits to ASCII, strip thousands separators (٬ and ,)
+# between digits, and map ٫ to . before running the existing checks, so wrong
+# amounts and missing "ریال" units still fail.
+MONEY_DIGIT_MAP = str.maketrans(
+    "۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫",
+    "01234567890123456789.",
+)
+MONEY_THOUSANDS_RE = re.compile(r"(?<=\d)[\u066c,](?=\d)")
+MONEY_NORMALIZE_JS = (
+    "(value => String(value == null ? '' : value)"
+    ".replace(/[\\u06F0-\\u06F9]/g, d => String(d.charCodeAt(0) - 0x06F0))"
+    ".replace(/[\\u0660-\\u0669]/g, d => String(d.charCodeAt(0) - 0x0660))"
+    ".replace(/(\\d)[\\u066C,](?=\\d)/g, '$1')"
+    ".replace(/\\u066B/g, '.'))"
+)
+
+
+def normalize_money_digits(text) -> str:
+    """Normalize Persian/Arabic-Indic digits and number separators to ASCII."""
+    if text is None:
+        return ""
+    return MONEY_THOUSANDS_RE.sub("", str(text).translate(MONEY_DIGIT_MAP))
+
+
+def has_money_text(text, expected: str) -> bool:
+    """True when `expected` appears in normalized `text` with exact number bounds."""
+    target = normalize_money_digits(expected)
+    if not target:
+        raise ValueError("expected money substring must be non-empty")
+    prefix = r"(?<![0-9.])" if target[0].isdigit() else ""
+    suffix = r"(?![0-9.])" if target[-1].isdigit() else ""
+    return bool(re.search(f"{prefix}{re.escape(target)}{suffix}", normalize_money_digits(text)))
+
+
+def digit_agnostic_suffix_pattern(prefix: str, number: int):
+    """Match `<prefix><number>` at end of text in ASCII or Persian/Arabic digits."""
+    digits = str(int(number))
+    if not digits.isdigit():
+        raise ValueError("number must be a non-negative integer")
+    fa = "۰۱۲۳۴۵۶۷۸۹"
+    ar = "٠١٢٣٤٥٦٧٨٩"
+    body = "[\u066c,]?".join(f"[{d}{fa[int(d)]}{ar[int(d)]}]" for d in digits)
+    return re.compile(f"{re.escape(prefix)}{body}\\s*$")
+
+
 def wp_cli(args: list[str], env_vars: dict | None = None) -> str:
     merged = os.environ.copy()
     if env_vars:
@@ -608,7 +657,8 @@ def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fix
     )
 
     visit_button = doctor_page.locator(
-        '[data-role="pricing-visits"] li button', has_text=re.compile(rf"ویزیت {pricing_visit}\s*$")
+        '[data-role="pricing-visits"] li button',
+        has_text=digit_agnostic_suffix_pattern("ویزیت ", pricing_visit),
     )
     visit_button.wait_for(state="visible", timeout=35000)
     visit_button.click()
@@ -670,10 +720,11 @@ def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fix
         timeout=35000,
     )
     doctor_page.wait_for_function(
-        "() => { const rows = document.querySelectorAll('[data-role=\"pricing-charges\"] tr');"
+        f"() => {{ const norm = {MONEY_NORMALIZE_JS};"
+        " const rows = document.querySelectorAll('[data-role=\"pricing-charges\"] tr');"
         " if (rows.length !== 1) return false;"
         " const cells = rows[0].querySelectorAll('td');"
-        " return cells.length > 2 && cells[2].textContent.trim() === '2'; }",
+        " return cells.length > 2 && norm(cells[2].textContent).trim() === '2'; }",
         timeout=35000,
     )
     check("the doctor edits the charge quantity through the real UI", True, "quantity cell is 2")
@@ -826,7 +877,8 @@ def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fix
     frozen_page.goto(staff_module_url(links["doctor"], "pricing"), wait_until="domcontentloaded")
     frozen_page.locator('[data-role="pricing-root"]').wait_for(state="visible")
     frozen_page.locator(
-        '[data-role="pricing-visits"] li button', has_text=re.compile(rf"ویزیت {pricing_visit}\s*$")
+        '[data-role="pricing-visits"] li button',
+        has_text=digit_agnostic_suffix_pattern("ویزیت ", pricing_visit),
     ).click()
     frozen_page.locator('[data-role="pricing-billing"]').wait_for(state="visible", timeout=35000)
     frozen_page.wait_for_function(
