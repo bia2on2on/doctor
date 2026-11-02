@@ -1923,37 +1923,22 @@ final class ReceptionPortalController extends RestBase {
 	 * (membership of the bound user in THIS Clinic; a location-scoped
 	 * membership must include this Location) + durable assignment to this
 	 * ACTIVE Location of this Clinic. clinicians.clinic_id (home Clinic) is
-	 * deliberately never read. One bounded query; optional id narrows it to
-	 * a single selector check.
+	 * deliberately never read.
+	 *
+	 * The rule itself lives in ONE place — MembershipRepository::
+	 * clinicians_at_location() — so this reception surface and the public
+	 * booking surface can never drift apart. Optional id narrows it to a
+	 * single selector check.
 	 *
 	 * @return list<array{id: int, name: string}>
 	 */
 	private function eligible_clinicians( int $clinic_id, int $location_id, ?int $clinician_id ): array {
-		$db     = App::db();
-		$sql    = 'SELECT c.id, c.full_name FROM ' . $db->table( 'cpms_clinicians' ) . ' c' .
-			' INNER JOIN ' . $db->table( 'cpms_clinician_locations' ) . ' cl ON cl.clinician_id = c.id AND cl.location_id = %d' .
-			' INNER JOIN ' . $db->table( 'cpms_locations' ) . ' l ON l.id = cl.location_id AND l.clinic_id = %d AND l.is_active = 1' .
-			' INNER JOIN ' . $db->table( 'cpms_clinic_memberships' ) . " m ON m.wp_user_id = c.wp_user_id AND m.clinic_id = %d AND m.status = 'active'" .
-			' WHERE c.is_active = 1 AND c.wp_user_id > 0' .
-			" AND ( m.scope_mode = 'clinic' OR EXISTS ( SELECT 1 FROM " . $db->table( 'cpms_membership_locations' ) . ' ml WHERE ml.membership_id = m.id AND ml.location_id = cl.location_id ) )';
-		$params = [ $location_id, $clinic_id, $clinic_id ];
-		if ( null !== $clinician_id ) {
-			$sql     .= ' AND c.id = %d';
-			$params[] = $clinician_id;
-		}
-		$sql     .= ' ORDER BY c.full_name ASC, c.id ASC LIMIT %d';
-		$params[] = self::CLINICIAN_OPTION_LIMIT;
-
-		$rows = $db->fetchAll( $sql, $params );
-		$out  = [];
-		foreach ( ( is_array( $rows ) ? $rows : [] ) as $row ) {
-			$out[] = [
-				'id'   => (int) $row['id'],
-				'name' => (string) $row['full_name'],
-			];
-		}
-
-		return $out;
+		return $this->memberships->clinicians_at_location(
+			$clinic_id,
+			$location_id,
+			$clinician_id,
+			self::CLINICIAN_OPTION_LIMIT
+		);
 	}
 
 	/**
