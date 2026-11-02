@@ -57,6 +57,18 @@ final class BookingService
     private const EP_CONFIRM = 'booking/confirm';
     private const EP_RESCHEDULE = 'booking/reschedule';
 
+    /** A failed SELECT ... FOR UPDATE is transient, never a missing Location. */
+    private const LOCK_BUSY_CODE = 'CLINIC_BOOKING_BUSY';
+    private const LOCK_BUSY_HTTP = 503;
+    private const LOCK_BUSY_TEXT = 'سامانه موقتاً مشغول است؛ لطفاً دوباره تلاش کنید.';
+
+    /**
+     * Non-PII context of the failed locking read, emitted after rollback.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $lock_failure_context = null;
+
     private readonly MembershipRepository $memberships;
 
     /** فعال‌سازِ هویتِ سازمانی برای مسیرِ N-1 ( ساختِ بیمارِ جدیدِ OTP-verified ). */
@@ -560,7 +572,7 @@ final class BookingService
 
         $has_patient_col = $this->holdsHasPatientIdColumn();
         $wp_user_id      = (int) func_get_arg( 0 );
-        $this->db->transactional(
+        $this->booking_transaction(
             function () use (
                 $slot,
                 $wp_user_id,
@@ -581,6 +593,14 @@ final class BookingService
                 // booking path follows the same order so no ABBA cycle exists.
                 $this->lock_booking_tenant_prefix( (int) $slot['clinic_id'] );
                 $locked_slot = $this->slots->findForUpdate( (int) $slot['id'] );
+                $this->assert_lock_read_succeeded(
+                    'slot',
+                    [
+                        'slot_id'     => (int) $slot['id'],
+                        'clinic_id'   => (int) $slot['clinic_id'],
+                        'location_id' => (int) $slot['location_id'],
+                    ]
+                );
                 if (
                     $locked_slot === null
                     || (int) ( $locked_slot['clinic_id'] ?? 0 ) !== (int) $slot['clinic_id']
@@ -869,7 +889,7 @@ final class BookingService
         $confirmation_input = compact( 'newPatientNames' );
 
         try {
-            $confirmation = $this->db->transactional(
+            $confirmation = $this->booking_transaction(
                 function () use (
                     $hold,
                     $reason,
@@ -1441,7 +1461,7 @@ final class BookingService
         }
 
         try {
-            [ $old_appt, $new_appt_id, $new_slot ] = $this->db->transactional(
+            [ $old_appt, $new_appt_id, $new_slot ] = $this->booking_transaction(
                 function () use (
                     $actor_user_id,
                     $appointment_id,
@@ -1734,7 +1754,7 @@ final class BookingService
         $this->assertWindowWithTimezone( $slot_date, $slot_time, $location_tz, 0, $settings );
 
         try {
-            $staff_appointment = $this->db->transactional(
+            $staff_appointment = $this->booking_transaction(
                 function () use (
                     $patient_id,
                     $clinician_id,
@@ -2160,6 +2180,64 @@ final class BookingService
     }
 
     /**
+     * Tell a failed locking read apart from a genuinely absent/inactive row.
+     * CpmsDb soft mode returns null on SQL error; wpdb keeps the driver text.
+     *
+     * @param string $read Locking read label for the diagnostic.
+     * @param array<string, int> $ids Non-PII identifiers for the diagnostic.
+     * @return void
+     */
+    private function assert_lock_read_succeeded( string $read, array $ids ): void
+    {
+        $wpdb  = $this->db->wpdb();
+        $error = (string) $wpdb->last_error;
+        if ( $error === '' ) {
+            return;
+        }
+        $dbh   = $wpdb->dbh ?? null;
+        $errno = $dbh instanceof \mysqli ? (int) $dbh->errno : 0;
+        $this->lock_failure_context = array_merge(
+            [
+                'read'      => $read,
+                'sql_errno' => $errno,
+                'sql_error' => mb_substr( $error, 0, 200 ),
+            ],
+            $ids
+        );
+
+        throw BookingException::of(
+            self::LOCK_BUSY_CODE,
+            self::LOCK_BUSY_TEXT,
+            self::LOCK_BUSY_HTTP
+        );
+    }
+
+    /**
+     * Run a booking transaction. OpLogger writes are transactional, so the
+     * diagnostic is emitted only after CpmsDb has rolled the failure back.
+     *
+     * @template T
+     * @param callable(): T $callback Transaction body.
+     * @return T
+     */
+    private function booking_transaction( callable $callback ): mixed
+    {
+        $this->lock_failure_context = null;
+        try {
+            return $this->db->transactional( $callback );
+        } catch ( BookingException $e ) {
+            if (
+                $e->errorCode === self::LOCK_BUSY_CODE
+                && $this->lock_failure_context !== null
+            ) {
+                $this->op->error( 'booking.lock_read_failed', $this->lock_failure_context );
+                $this->lock_failure_context = null;
+            }
+            throw $e;
+        }
+    }
+
+    /**
      * Resolve authoritative Location timezone for a concrete slot/appointment.
      * Validates Location belongs to same Clinic and timezone is valid IANA.
      * Fail-closed on invalid/missing.
@@ -2208,6 +2286,10 @@ final class BookingService
         $row = $this->db->fetchRowForUpdate(
             'SELECT id, clinic_id, timezone, is_active FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
             [ $location_id ]
+        );
+        $this->assert_lock_read_succeeded(
+            'location',
+            [ 'location_id' => $location_id, 'clinic_id' => $clinic_id ]
         );
         if ( $row === null ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'Location یافت نشد', 404 );
@@ -2456,6 +2538,10 @@ final class BookingService
             'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
             [ $organization_id ]
         );
+        $this->assert_lock_read_succeeded(
+            'organization',
+            [ 'organization_id' => $organization_id, 'clinic_id' => $clinic_id ]
+        );
         if (
             $organization === null
             || (int) ( $organization['id'] ?? 0 ) !== $organization_id
@@ -2467,6 +2553,10 @@ final class BookingService
         $clinic = $this->db->fetchRowForUpdate(
             'SELECT id, organization_id, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
             [ $clinic_id ]
+        );
+        $this->assert_lock_read_succeeded(
+            'clinic',
+            [ 'organization_id' => $organization_id, 'clinic_id' => $clinic_id ]
         );
         if ( $clinic === null || (int) ( $clinic['organization_id'] ?? 0 ) !== $organization_id ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
