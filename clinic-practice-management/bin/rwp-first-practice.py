@@ -1448,7 +1448,7 @@ with sync_playwright() as p:
                 # POSITIVE: a real, valid (leap-Esfand-30) typed date commits
                 # the exact correct Gregorian value and clears the block.
                 jalali_entry.fill("")
-                jalali_entry.fill("1401/12/30")
+                jalali_entry.fill("1403/12/30")
                 jalali_entry.blur()
                 admin_page.wait_for_timeout(150)
                 native_value_after_valid = native_date.input_value()
@@ -1456,8 +1456,8 @@ with sync_playwright() as p:
                     "document.getElementById('cpms-exception-date').checkValidity()"
                 )
                 check("admin.jalali_widget.valid_entry_commits_exact_gregorian_date",
-                      native_value_after_valid == "2023-03-20",
-                      f"typing 1401/12/30 (a real leap-Esfand-30 date) must commit exactly 2023-03-20, got {native_value_after_valid!r}")
+                      native_value_after_valid == "2025-03-20",
+                      f"typing 1403/12/30 (a real leap-Esfand-30 date) must commit exactly 2025-03-20, got {native_value_after_valid!r}")
                 check("admin.jalali_widget.valid_entry_unblocks_submission",
                       is_valid_after_valid is True,
                       "a confirmed valid typed date must clear the submission block")

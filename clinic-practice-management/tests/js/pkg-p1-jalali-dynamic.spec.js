@@ -344,13 +344,13 @@ check('initial input[type="date"] inside html[dir="rtl"] is enhanced on load wit
   assert.strictEqual(initial.dataset.cpmsJalaliEnhanced, '1', 'initial input must be enhanced');
   var entries = env.findByClass(env.body, 'cpms-jalali-entry');
   assert.strictEqual(entries.length, 1, 'one Shamsi entry companion must exist');
-  assert.strictEqual(entries[0].value, '۱۴۰۵/۰۱/۰۱', 'Shamsi entry must display Persian digits');
+  assert.strictEqual(entries[0].value, '۱۴۰۴/۱۲/۲۹', 'Shamsi entry must display Persian digits');
 
   var triggers = env.findByClass(env.body, 'cpms-jalali-trigger');
   triggers[0].dispatchEvent(new env.Event('click', { bubbles: true }));
   var titles = env.findByClass(env.body, 'cpms-jalali-popup-title');
-  assert.ok(titles[0].textContent.indexOf('فروردین') !== -1, 'popup header must show Persian month name');
-  assert.ok(titles[0].textContent.indexOf('۱۴۰۵') !== -1, 'popup header must show Persian year digits');
+  assert.ok(titles[0].textContent.indexOf('اسفند') !== -1, 'popup header must show Persian month name');
+  assert.ok(titles[0].textContent.indexOf('۱۴۰۴') !== -1, 'popup header must show Persian year digits');
 });
 
 // 2) Dynamic wrapper subtree inserted after load inside html[dir="rtl"]
@@ -417,7 +417,7 @@ check('dynamically appended input[type="date"] directly inside .wrap[dir="rtl"] 
   assert.ok(days.length >= 29, 'calendar popup must render day buttons');
   assert.strictEqual(days[0].textContent, '۱', 'day buttons must use Persian digits');
   days[9].dispatchEvent(new env.Event('click', { bubbles: true }));
-  assert.strictEqual(dynInput.value, '2026-10-31', 'clicking day ۱۰ آبان ۱۴۰۵ must write Gregorian ISO 2026-10-31');
+  assert.strictEqual(dynInput.value, '2026-11-01', 'clicking day ۱۰ آبان ۱۴۰۵ must write Gregorian ISO 2026-11-01');
 });
 
 // 4) Programmatic .value updates after enhancement keep Shamsi entry synchronized
