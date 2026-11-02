@@ -90,7 +90,9 @@ final class PkgP1JalaliAssetsTest extends WP_UnitTestCase {
 			],
 		];
 
-		$portal_url = StaffPortalShell::portal_url();
+		$staff_page_id = StaffPortalShell::ensure_portal_page();
+		self::assertGreaterThan( 0, $staff_page_id );
+		$portal_url = home_url( '/?page_id=' . $staff_page_id );
 		foreach ( $cases as $module_id => $spec ) {
 			$this->reset_asset_state();
 			$html = $this->render_shell(
@@ -141,8 +143,13 @@ final class PkgP1JalaliAssetsTest extends WP_UnitTestCase {
 	}
 
 	public function test_doctor_portal_shell_loads_jalali_assets_for_doctor(): void {
-		$fx   = $this->build_portal_stage( 'doc_standalone' );
-		$html = $this->render_shell( $fx['doctor_id'], DoctorPortalShell::portal_url() );
+		$fx             = $this->build_portal_stage( 'doc_standalone' );
+		$doctor_page_id = DoctorPortalShell::ensure_portal_page();
+		self::assertGreaterThan( 0, $doctor_page_id );
+		$html = $this->render_shell(
+			$fx['doctor_id'],
+			home_url( '/?page_id=' . $doctor_page_id )
+		);
 
 		self::assertStringContainsString( 'dir="rtl"', $html );
 		self::assertStringContainsString( 'id="cpms-doc-ws-fu-date"', $html );
@@ -179,7 +186,12 @@ final class PkgP1JalaliAssetsTest extends WP_UnitTestCase {
 			'precondition: patient user holds pure cpms_patient role.'
 		);
 
-		$html = $this->render_shell( $fx['patient_user_id'], PatientPortalShell::portal_url() );
+		$patient_page_id = PatientPortalShell::ensure_portal_page();
+		self::assertGreaterThan( 0, $patient_page_id );
+		$html = $this->render_shell(
+			$fx['patient_user_id'],
+			home_url( '/?page_id=' . $patient_page_id )
+		);
 
 		self::assertStringContainsString( 'dir="rtl"', $html );
 		self::assertStringContainsString( 'id="cpms-pp-birth_date"', $html );
@@ -214,7 +226,13 @@ final class PkgP1JalaliAssetsTest extends WP_UnitTestCase {
 
 		// 1) ManagementPortalShell has no input[type="date"].
 		$this->reset_asset_state();
-		$mgmt_html = $this->render_shell( $fx['manager_id'], ManagementPortalShell::portal_url() );
+		$mgmt_page_id = ManagementPortalShell::ensure_portal_page();
+		self::assertGreaterThan( 0, $mgmt_page_id );
+		$mgmt_html = $this->render_shell(
+			$fx['manager_id'],
+			home_url( '/?page_id=' . $mgmt_page_id )
+		);
+		ManagementPortalShell::enqueue_for_portal();
 		self::assertStringNotContainsString( 'type="date"', $mgmt_html );
 		self::assertFalse(
 			wp_style_is( StaffPortalShell::JALALI_HANDLE, 'enqueued' ),
@@ -237,8 +255,7 @@ final class PkgP1JalaliAssetsTest extends WP_UnitTestCase {
 			]
 		);
 		self::assertGreaterThan( 0, $booking_page_id );
-		$booking_permalink = (string) get_permalink( $booking_page_id );
-		$this->go_to( $booking_permalink );
+		$this->go_to( home_url( '/?page_id=' . $booking_page_id ) );
 		PublicBookingAssets::enqueueForCurrentPage();
 		$booking_html = (string) do_shortcode( '[clinic_booking]' );
 		self::assertStringNotContainsString( 'type="date"', $booking_html );
@@ -252,13 +269,20 @@ final class PkgP1JalaliAssetsTest extends WP_UnitTestCase {
 		);
 
 		// 3) Anonymous login views and StaffPortalShell messages module have no input[type="date"].
+		$patient_page_id = PatientPortalShell::ensure_portal_page();
+		$doctor_page_id  = DoctorPortalShell::ensure_portal_page();
+		$staff_page_id   = StaffPortalShell::ensure_portal_page();
+		self::assertGreaterThan( 0, $patient_page_id );
+		self::assertGreaterThan( 0, $doctor_page_id );
+		self::assertGreaterThan( 0, $staff_page_id );
+
 		$non_date_views = [
-			'patient_anon'   => [ 0, PatientPortalShell::portal_url(), [] ],
-			'doctor_anon'    => [ 0, DoctorPortalShell::portal_url(), [] ],
-			'staff_anon'     => [ 0, StaffPortalShell::portal_url(), [] ],
+			'patient_anon'   => [ 0, home_url( '/?page_id=' . $patient_page_id ), [] ],
+			'doctor_anon'    => [ 0, home_url( '/?page_id=' . $doctor_page_id ), [] ],
+			'staff_anon'     => [ 0, home_url( '/?page_id=' . $staff_page_id ), [] ],
 			'staff_messages' => [
 				$fx['secretary_id'],
-				StaffPortalShell::portal_url(),
+				home_url( '/?page_id=' . $staff_page_id ),
 				[ StaffPortalShell::MODULE_PARAM => StaffPortalShell::MODULE_MESSAGES ],
 			],
 		];
