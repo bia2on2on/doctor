@@ -304,9 +304,18 @@ final class ClinicalAuditAtomicityTest extends WP_UnitTestCase
             self::assertSame(['id', 'visit_id', 'type', 'text', 'is_patient_visible', 'created_at'], array_keys($record['recommendations'][0]));
             self::assertSame(['id', 'visit_id', 'is_needed', 'suggested_date', 'interval_days', 'reason', 'status', 'created_at'], array_keys($record['follow_ups'][0]));
             self::assertSame(['id', 'original_filename', 'category', 'visibility', 'mime_type', 'file_size', 'uploaded_by_wp_user_id', 'created_at'], array_keys($record['files'][0]));
-            self::assertSame('1404/12/28', $record['presentation']['recommendations'][$recId]['created_at_jalali']);
-            self::assertSame('1404/12/28', $record['presentation']['files'][$fileId]['created_at_jalali']);
-            self::assertSame('1404/12/29', $record['presentation']['follow_ups'][$fuId]['suggested_date_jalali']);
+            self::assertSame(
+                '۱۴۰۴/۱۲/۲۸',
+                $record['presentation']['recommendations'][$recId]['created_at_jalali']
+            );
+            self::assertSame(
+                '۱۴۰۴/۱۲/۲۸',
+                $record['presentation']['files'][$fileId]['created_at_jalali']
+            );
+            self::assertSame(
+                '۱۴۰۴/۱۲/۲۹',
+                $record['presentation']['follow_ups'][$fuId]['suggested_date_jalali']
+            );
             self::assertStringStartsWith($utc, $record['recommendations'][0]['created_at']);
             self::assertStringStartsWith($utc, $record['files'][0]['created_at']);
             self::assertSame('2026-03-20', $record['follow_ups'][0]['suggested_date']);

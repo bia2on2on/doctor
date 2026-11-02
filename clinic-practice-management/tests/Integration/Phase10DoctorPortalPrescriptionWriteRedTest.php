@@ -934,7 +934,11 @@ final class Phase10DoctorPortalPrescriptionWriteRedTest extends WP_UnitTestCase
             'P13: print projection has only the minimum prescription display contract'
         );
         self::assertSame('2026-03-21 00:30', $view['finalized_at_local'], 'P13: use trusted Location timezone before extracting local date/time');
-        self::assertSame('1405/01/01', $view['finalized_at_jalali'], 'P13: Jalali conversion receives the Location-local Gregorian date');
+        self::assertSame(
+            '۱۴۰۵/۰۱/۰۱',
+            $view['finalized_at_jalali'],
+            'P13: Jalali conversion receives the Location-local Gregorian date'
+        );
         self::assertSame(trim((string) $patientRow['first_name'] . ' ' . (string) $patientRow['last_name']), $view['patient']['name']);
         self::assertSame('Dr QA p13print', $view['clinician']['name']);
         self::assertSame('Stage Loc p13print', $view['location']['name']);
