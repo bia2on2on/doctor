@@ -1797,14 +1797,18 @@
 		/**
 		 * Locationهای واجدِ شرایط را از قراردادِ سرور می‌نشاند و اگر تنها یک
 		 * Locationِ مجاز وجود داشته باشد همان را انتخاب می‌کند (تأییدشده سمت
-		 * سرور). با بیش از یکی هیچ Locationای پیش‌انتخاب نمی‌شود.
+		 * سرور). با بیش از یکی هیچ Locationای پیش‌انتخاب نمی‌شود. اگر سرور برای
+		 * این Clinic هیچ Locationِ واجدِ شرایطی نداشته باشد (پزشکان بدونِ انتسابِ
+		 * پایدارِ Location)، مرحلهٔ Location اصلاً فعال نمی‌شود و همان جریانِ
+		 * پیشینِ «پزشک، سپس پاسخِ A1» برقرار می‌ماند — وگرنه هیچ پزشکی قابلِ
+		 * انتخاب نمی‌شد و صفحه عملاً غیرقابلِ رزرو بود.
 		 */
 		function initLocationFirst() {
 			var clinicId = currentClinicId();
 			if (clinicId <= 0 && clinicSelect) { clinicId = toInt(clinicSelect.value); }
 			var rows = serverLocationsFor(clinicId);
-			if (rows === null) {
-				// سرور این قرارداد را منتشر نکرده است ⇒ رفتارِ پیشین.
+			if (rows === null || rows.length === 0) {
+				// سرور هیچ Locationِ واجدِ شرایطی برای این Clinic ندارد ⇒ رفتارِ پیشین.
 				return;
 			}
 

@@ -1468,6 +1468,17 @@ final class PublicBookingShortcode
                 }
             }
 
+            if ( [] === $locations ) {
+                // No Location of this Clinic has an eligible clinician, so there is
+                // nothing for the visitor to choose. Publishing the Clinic with an
+                // EMPTY list would render a Location step without options and
+                // disable every doctor (the page could not be booked at all), while
+                // the pre-change surface resolved the Location from the availability
+                // answer. The clinic therefore stays unpublished and, on the client,
+                // the pre-change flow remains in force.
+                continue;
+            }
+
             $contract[ $clinic_id ] = [
                 'locations'           => $locations,
                 'clinician_locations' => $clinician_locations,
@@ -1669,7 +1680,9 @@ final class PublicBookingShortcode
         // Location-first: only the Locations of THIS Clinic (or these Clinics)
         // that have an eligible clinician. No foreign, inactive or unknown
         // Location is published; the Clinic keys become JSON object keys.
-        $config['locations_by_clinic'] = array_map(
+        // Cast keeps the published shape an OBJECT (`{}` when no Clinic qualifies)
+        // so the client always reads a map keyed by Clinic id.
+        $config['locations_by_clinic'] = (object) array_map(
             static fn ( array $row ): array => $row['locations'],
             $location_contract
         );
