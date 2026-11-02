@@ -21,6 +21,7 @@ use ClinicCore\Admin\PatientPortalPage;
 use ClinicCore\Frontend\PatientOtpLogin;
 use ClinicCore\Frontend\PatientPortalShell;
 use ClinicCore\Frontend\PublicBookingAssets;
+use ClinicCore\Frontend\StaffPortalShell;
 
 // Fail-safe: if loaded outside the normal request lifecycle, exit quietly.
 if ( ! function_exists( 'wp_get_current_user' ) ) {
@@ -73,6 +74,13 @@ $cpms_body_html = (string) ob_get_clean();
 $cpms_style_handles    = [ PatientPortalShell::CSS_HANDLE ];
 $cpms_script_handles   = [ PatientPortalShell::JS_HANDLE ];
 $cpms_has_booking_body = str_contains( $cpms_body_html, 'class="cpms-public-booking' );
+if ( $cpms_is_patient ) {
+	$cpms_style_handles[]  = StaffPortalShell::JALALI_HANDLE;
+	$cpms_script_handles[] = StaffPortalShell::JALALI_HANDLE;
+}
+$cpms_body_class = $cpms_is_patient
+	? 'cpms-patient-portal-shell-body cpms-jalali-scope'
+	: 'cpms-patient-portal-shell-body';
 if ( $cpms_has_booking_body && ( wp_style_is( PublicBookingAssets::HANDLE, 'enqueued' ) || wp_style_is( PublicBookingAssets::HANDLE, 'queue' ) ) ) {
 	$cpms_style_handles[] = PublicBookingAssets::HANDLE;
 }
@@ -100,7 +108,7 @@ $cpms_scripts_html = (string) ob_get_clean();
 echo $cpms_styles_html;
 ?>
 </head>
-<body class="cpms-patient-portal-shell-body">
+<body class="<?php echo esc_attr( $cpms_body_class ); ?>">
 <div
 	id="cpms-patient-portal-shell"
 	class="cpms-patient-portal-shell"

@@ -5,83 +5,20 @@ declare(strict_types=1);
 namespace ClinicCore\Domain\Time;
 
 /**
- * تبدیل تقویم میلادی ↔ جلالی (شما‌شی) — خالص، بدون وابستگی (Unit-Testable).
+ * تبدیل تقویم میلادی ↔ جلالی (شمسی) — خالص، بدون وابستگی (Unit-Testable).
  *
- * روش: **جدول تاریخ رسمی شروع هر سال (Nowruz)** برای 1390–1435 — مطابق تقویم رسمی
- * ایران (روز لحظه اعتدال بهاری در ساعت محلی تهران، UTC+3:30). مقادیر جدول از
- * الگوریتم نجومی Meeus محاسبه و با تاریخ‌های Nowruz منتشرشده (timeanddate/USNO)
- * برای سال‌های 2020–2035 صحت‌سنجی شده‌اند (انحراف ≤ ۲۰ دقیقه؛ هیچ اعتدالی نزدیک
- * مرز نیمه‌شب تهران نبود).
- *
- * چرا جدول و نه الگوریتم اریتمتیکی (Borkowski/jalaali-js)؟ الگوریتم ۳۳ ساله
- * اریتمتیکی در برخی سال‌ها (مثل ۱۴۰۴ و ۱۴۰۵) یک روز با تقویم رسمی اختلاف دارد —
- * برای اپلیکیشن بالینی غیرقابل‌قبول است. ساختار ماه‌ها درون‌سال ثابت است
- * (۳۱×۶، ۳۰×۵، ۲۹/۳۰) — تنها مقدار متغیر، شروع سال است.
- *
- * خارج از بازه جدول (1390..1434): Fallback اریتمتیکی Borkowski (تقریبی — فقط
- * برای مقاومت، استفاده کلینیک خارج از بازه تقریباً صفر است).
+ * روش: الگوریتم ۲۰ نقطه‌شکست Borkowski (همگام با `assets/js/cpms-jalali-date.js`).
+ * مرجع صحت‌سنجی: تقویم `persian` در ICU (`Intl`) بر پایهٔ مدل نجومی ظهر شرعی تهران
+ * (`52.5°E`) و لنگرهای منتشرشدهٔ ۱۴۰۰ تا ۱۴۰۵ (۱۳۹۹ و ۱۴۰۳ کبیسه؛ ۱۴۰۱ و ۱۴۰۵
+ * غیرکبیسه). این مرجع جدول قانونی آینده نیست و توافق روزبه‌روز آن با الگوریتم
+ * نقطه‌شکست تا پایان سال ۱۵۰۲ جلالی (اولین واگرایی در ۱۵۰۳ / ۲۱۲۴ میلادی) برقرار است؛
+ * بازهٔ عملیاتی پشتیبانی‌شده در رابط کاربری ۱۳۰۰..۱۴۹۹ است.
  *
  * کاربرد: فقط Presentation (فیلدهای `_jalali` در Responses — Contract §0).
  * ذخیره‌سازی همیشه UTC/میلادی (ADR-0013).
  */
 final class Jalali
 {
-    /**
-     * شروع رسمی هر سال جلالی (Nowruz) — تاریخ میلادی که ۱ فروردین همان سال است.
-     * سال 1435 فقط برای Delimit پایان بازه 1434 استفاده می‌شود.
-     */
-    private const NOWRUZ = [
-        1390 => '2011-03-21',
-        1391 => '2012-03-20',
-        1392 => '2013-03-20',
-        1393 => '2014-03-20',
-        1394 => '2015-03-21',
-        1395 => '2016-03-20',
-        1396 => '2017-03-20',
-        1397 => '2018-03-20',
-        1398 => '2019-03-21',
-        1399 => '2020-03-20',
-        1400 => '2021-03-20',
-        1401 => '2022-03-20',
-        1402 => '2023-03-21',
-        1403 => '2024-03-20',
-        1404 => '2025-03-20',
-        1405 => '2026-03-20',
-        1406 => '2027-03-20',
-        1407 => '2028-03-20',
-        1408 => '2029-03-20',
-        1409 => '2030-03-20',
-        1410 => '2031-03-20',
-        1411 => '2032-03-20',
-        1412 => '2033-03-20',
-        1413 => '2034-03-20',
-        1414 => '2035-03-20',
-        1415 => '2036-03-20',
-        1416 => '2037-03-20',
-        1417 => '2038-03-20',
-        1418 => '2039-03-20',
-        1419 => '2040-03-20',
-        1420 => '2041-03-20',
-        1421 => '2042-03-20',
-        1422 => '2043-03-20',
-        1423 => '2044-03-20',
-        1424 => '2045-03-20',
-        1425 => '2046-03-20',
-        1426 => '2047-03-20',
-        1427 => '2048-03-20',
-        1428 => '2049-03-20',
-        1429 => '2050-03-20',
-        1430 => '2051-03-20',
-        1431 => '2052-03-20',
-        1432 => '2053-03-20',
-        1433 => '2054-03-20',
-        1434 => '2055-03-20',
-        1435 => '2056-03-20',
-    ];
-
-    private const MIN_YEAR = 1390;
-    private const MAX_YEAR = 1434; // بزرگ‌ترین سالی که Start سال بعدش هم موجود است
-
     /**
      * @return array{0: int, 1: int, 2: int} [jy, jm, jd]
      */
@@ -92,31 +29,7 @@ final class Jalali
             throw new \DomainException("CLINIC_VALIDATION_FAILED: invalid Gregorian date {$gy}-{$gm}-{$gd}");
         }
 
-        // Binary search: بزرگ‌ترین jی که start(jy) <= date
-        $lo = self::MIN_YEAR;
-        $hi = self::MAX_YEAR;
-        $jy = self::MIN_YEAR;
-        while ($lo <= $hi) {
-            $mid = intdiv($lo + $hi, 2);
-            if (self::yearStartTs($mid) <= $ts) {
-                $jy = $mid;
-                $lo = $mid + 1;
-            } else {
-                $hi = $mid - 1;
-            }
-        }
-
-        $offset = intdiv($ts - self::yearStartTs($jy), 86400);
-        $leap = self::isLeapJalaaliYear($jy);
-
-        if ($offset < 0 || $offset > ($leap ? 365 : 364)) {
-            // خارج از بازه جدول → Fallback اریتمتیکی
-            return self::toJalaliBorkowski($gy, $gm, $gd);
-        }
-
-        $md = self::offsetToMonthDay($offset);
-
-        return [$jy, $md[0], $md[1]];
+        return self::toJalaliBorkowski( $gy, $gm, $gd );
     }
 
     /**
@@ -127,28 +40,21 @@ final class Jalali
         if ($jm < 1 || $jm > 12 || $jd < 1 || $jd > self::monthLength($jy, $jm)) {
             throw new \DomainException("CLINIC_VALIDATION_FAILED: invalid Jalaali date {$jy}/{$jm}/{$jd}");
         }
-        if ($jy < self::MIN_YEAR || $jy > self::MAX_YEAR) {
-            return self::toGregorianBorkowski($jy, $jm, $jd);
-        }
 
-        $offset = ($jm - 1) * 31 - intdiv($jm, 7) * ($jm - 7) + $jd - 1;
-        $ts = self::yearStartTs($jy) + $offset * 86400;
-        $d = (new \DateTimeImmutable('@' . $ts))->setTimezone(new \DateTimeZone('UTC'));
-
-        return [(int) $d->format('Y'), (int) $d->format('n'), (int) $d->format('j')];
+        return self::toGregorianBorkowski( $jy, $jm, $jd );
     }
 
     public static function isValidJalaliDate(int $jy, int $jm, int $jd): bool
     {
+        if ( $jy < self::BREAKS[0] || $jy >= self::BREAKS[ count( self::BREAKS ) - 1 ] ) {
+            return false;
+        }
+
         return $jm >= 1 && $jm <= 12 && $jd >= 1 && $jd <= self::monthLength($jy, $jm);
     }
 
     public static function isLeapJalaaliYear(int $jy): bool
     {
-        if ($jy >= self::MIN_YEAR && $jy <= self::MAX_YEAR) {
-            return self::yearStartTs($jy + 1) - self::yearStartTs($jy) > 365 * 86400;
-        }
-
         return self::isLeapBorkowski($jy);
     }
 
@@ -188,26 +94,6 @@ final class Jalali
 
     // ============ Internal ============
 
-    /**
-     * @return array{0: int, 1: int} [jm, jd]
-     */
-    private static function offsetToMonthDay(int $offset): array
-    {
-        if ($offset < 186) {
-            return [intdiv($offset, 31) + 1, $offset % 31 + 1];
-        }
-        $k = $offset - 186;
-
-        return [intdiv($k, 30) + 7, $k % 30 + 1];
-    }
-
-    private static function yearStartTs(int $jy): int
-    {
-        $d = (new \DateTimeImmutable(self::NOWRUZ[$jy], new \DateTimeZone('UTC')));
-
-        return $d->getTimestamp();
-    }
-
     private static function gregorianTs(int $gy, int $gm, int $gd): ?int
     {
         $d = \DateTimeImmutable::createFromFormat('Y-m-d', sprintf('%04d-%02d-%02d', $gy, $gm, $gd), new \DateTimeZone('UTC'));
@@ -241,6 +127,12 @@ final class Jalali
         return self::d2g(self::j2d($jy, $jm, $jd));
     }
 
+    /**
+     * تقسیم صحیح این فرمول‌ها باید گردشدن به سمت صفر (`intdiv`) باشد، نه `floor`.
+     * نمونهٔ اثبات: برای مارس (`$gm = 3`)، `intdiv(3 - 8, 6) === 0` است و
+     * `g2d(2016, 4, 11) === 2457490` و `1370/01/01 === 1991-03-21` به دست می‌آید؛
+     * اما با `floor(-5 / 6) === -1.0` مقدار JDN به اندازهٔ ۳۶۶ روز جابه‌جا می‌شود.
+     */
     public static function g2d(int $gy, int $gm, int $gd): int
     {
         $d = intdiv(($gy + intdiv($gm - 8, 6) + 100100) * 1461, 4)

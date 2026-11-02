@@ -220,7 +220,7 @@ final class BookingWindowTest extends TestCase
         $instant = new DateTimeImmutable('2026-03-08 07:00:00', new DateTimeZone('UTC'));
         $local = $instant->setTimezone($timezone);
 
-        $this->assertSame('1404/12/18', Jalali::formatYmd($local->format('Y-m-d')));
+        $this->assertSame('1404/12/17', Jalali::formatYmd($local->format('Y-m-d')));
         $this->assertSame('America/New_York', $local->getTimezone()->getName());
         $this->assertSame('2026-03-08T07:00:00Z', $instant->format('Y-m-d\\TH:i:s\\Z'));
     }
