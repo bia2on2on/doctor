@@ -2187,19 +2187,15 @@ final class BookingService
      * @param array<string, int> $ids Non-PII identifiers for the diagnostic.
      * @return void
      */
-    private function assert_lock_read_succeeded( string $read, array $ids ): void
-    {
-        $wpdb  = $this->db->wpdb();
-        $error = (string) $wpdb->last_error;
+    private function assert_lock_read_succeeded( string $read, array $ids ): void {
+        $error = (string) $this->db->wpdb()->last_error;
         if ( $error === '' ) {
             return;
         }
-        $dbh   = $wpdb->dbh ?? null;
-        $errno = $dbh instanceof \mysqli ? (int) $dbh->errno : 0;
         $this->lock_failure_context = array_merge(
             [
                 'read'      => $read,
-                'sql_errno' => $errno,
+                'sql_errno' => $this->sql_errno(),
                 'sql_error' => mb_substr( $error, 0, 200 ),
             ],
             $ids
@@ -2212,6 +2208,13 @@ final class BookingService
         );
     }
 
+    /** Best-effort driver errno; no query is issued and no PHI is read. */
+    private function sql_errno(): int {
+        $dbh = $this->db->wpdb()->dbh ?? null;
+
+        return $dbh instanceof \mysqli ? (int) $dbh->errno : 0;
+    }
+
     /**
      * Run a booking transaction. OpLogger writes are transactional, so the
      * diagnostic is emitted only after CpmsDb has rolled the failure back.
@@ -2220,16 +2223,12 @@ final class BookingService
      * @param callable(): T $callback Transaction body.
      * @return T
      */
-    private function booking_transaction( callable $callback ): mixed
-    {
+    private function booking_transaction( callable $callback ): mixed {
         $this->lock_failure_context = null;
         try {
             return $this->db->transactional( $callback );
         } catch ( BookingException $e ) {
-            if (
-                $e->errorCode === self::LOCK_BUSY_CODE
-                && $this->lock_failure_context !== null
-            ) {
+            if ( $this->lock_failure_context !== null ) {
                 $this->op->error( 'booking.lock_read_failed', $this->lock_failure_context );
                 $this->lock_failure_context = null;
             }
