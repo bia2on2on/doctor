@@ -1056,12 +1056,12 @@ final class PatientPortalPage
 			$jalali     = PersianDigits::digits( $raw_jalali );
 			$time       = PersianDigits::digits( (string) ( $next['time'] ?? '' ) );
 
-            $html  .= '<article class="cpms-pp-dashboard__next" data-role="next-appointment">';
-            $html  .= '<div><p class="cpms-pp-dashboard__eyebrow">نزدیک‌ترین نوبت</p>';
-            $html  .= '<p class="cpms-pp-dashboard__when"><span>' . esc_html( $jalali ) . '</span>، ساعت <span dir="ltr">' . esc_html( $time ) . '</span></p></div>';
-            $html  .= self::appointment_details( $next );
-            $html  .= '<a class="cpms-pp-btn cpms-pp-btn--ghost" href="#appointments">مدیریت نوبت</a>';
-            $html  .= '</article>';
+            $html .= '<article class="cpms-pp-dashboard__next" data-role="next-appointment">';
+            $html .= '<div><p class="cpms-pp-dashboard__eyebrow">نزدیک‌ترین نوبت</p>';
+            $html .= '<p class="cpms-pp-dashboard__when"><span>' . esc_html( $jalali ) . '</span>، ساعت <span dir="ltr">' . esc_html( $time ) . '</span></p></div>';
+            $html .= self::appointment_details( $next );
+            $html .= '<a class="cpms-pp-btn cpms-pp-btn--ghost" href="#appointments">مدیریت نوبت</a>';
+            $html .= '</article>';
         } else {
             $html .= '<div class="cpms-empty" data-role="dashboard-no-upcoming"><span class="cpms-empty-title">نوبت پیش‌رویی ندارید</span>';
             $html .= '<span class="cpms-empty-desc">برای انتخاب پزشک، محل و زمان مراجعه از رزرو آنلاین استفاده کنید.</span></div>';

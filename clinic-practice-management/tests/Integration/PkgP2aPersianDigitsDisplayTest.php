@@ -173,7 +173,14 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 			(string) $print_data['prescription']['prescription_number']
 		);
 
-		$visit_ymd = (string) $visit['visit_date'];
+		// VisitService's display contract (presentVisit) exposes no visit_date key;
+		// the operational date is the stored cpms_visits column (same convention as
+		// PkgB3VisitNamesTest::persistedVisitDate()).
+		$visit_ymd = (string) App::db()->fetchValue(
+			'SELECT visit_date FROM ' . App::db()->table( 'cpms_visits' )
+			. ' WHERE id = %d AND clinic_id = %d',
+			[ $visit_id, $clinic_id ]
+		);
 		$report    = App::reportService()->run( $manager_id, 'visits', $visit_ymd, $visit_ymd );
 		self::assertSame( $visit_ymd, $report['from'] );
 		self::assertSame( $visit_ymd, $report['to'] );
