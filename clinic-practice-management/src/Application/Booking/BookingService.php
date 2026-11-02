@@ -70,6 +70,9 @@ final class BookingService
      */
     private ?array $lock_failure_context = null;
 
+    /** Depth of booking_transaction() frames; >0 means defer diagnostics. */
+    private int $booking_tx_depth = 0;
+
     private readonly MembershipRepository $memberships;
 
     /** فعال‌سازِ هویتِ سازمانی برای مسیرِ N-1 ( ساختِ بیمارِ جدیدِ OTP-verified ). */
@@ -1048,7 +1051,7 @@ final class BookingService
                     ];
                 }
             );
-        } catch (Throwable $e) {
+        } catch ( Throwable $e ) {
             // Free the Idempotency key on every failure: check() claimed it as
             // pending, so without release() the retry with the same key would be
             // answered by a stale 409 in-flight replay. A retryable read failure
@@ -1057,7 +1060,7 @@ final class BookingService
             // rolled back, so the active Hold and its capacity must survive
             // untouched for that retry. Only these two codes skip the historical
             // destructive compensation outside the rolled-back transaction.
-            $denial      = $this->toBookingException( $e );
+            $denial = $this->toBookingException( $e );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
             $denial_code = $denial->errorCode;
             if ( 'CLINIC_SUSPENDED' !== $denial_code && self::LOCK_BUSY_CODE !== $denial_code ) {
@@ -1986,9 +1989,6 @@ final class BookingService
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_CANCEL);
 
-        // Body intentionally keeps its legacy indentation: reindenting ~90
-        // lines would put unchanged camelCase locals on WPCS added lines.
-        try {
         [$appt, $toState, $slotId] = $this->db->transactional(function () use ($wpUserId, $appointmentId, $reason, $actor): array {
             $appt = $this->appointments->findForUpdate($appointmentId);
             if ($appt === null) {
@@ -2078,9 +2078,6 @@ final class BookingService
 
             return [$appt, $toState, $slotId];
         });
-        } finally {
-            $this->flush_lock_failure_diagnostic();
-        }
 
         // Mandatory APPOINTMENT_CANCELLED audit now commits inside the
         // cancellation transaction above (D6 atomicity).
@@ -2193,15 +2190,15 @@ final class BookingService
      * inactive row. CpmsDb soft mode returns null/false on SQL error while
      * wpdb keeps the driver text. OpLogger writes are NOT transactional, so a
      * diagnostic written inside the SQL transaction would be discarded by its
-     * rollback: defer it to booking_transaction()/cancel() until after the
-     * rollback, and write it immediately when no transaction is open.
+     * rollback: defer it to booking_transaction() until after the rollback,
+     * and write it immediately when no booking transaction is open.
      *
      * @param string $read Read label for the diagnostic.
      * @param array<string, int> $ids Non-PII identifiers for the diagnostic.
      * @return void
      */
     private function assert_read_succeeded( string $read, array $ids ): void {
-        $error   = (string) $this->db->wpdb()->last_error;
+        $error = (string) $this->db->wpdb()->last_error;
         if ( $error === '' ) {
             return;
         }
@@ -2213,7 +2210,7 @@ final class BookingService
             ],
             $ids
         );
-        if ( $this->db->in_transaction() ) {
+        if ( $this->booking_tx_depth > 0 ) {
             $this->lock_failure_context = $context;
         } else {
             $this->op->error( 'booking.lock_read_failed', $context );
@@ -2245,11 +2242,14 @@ final class BookingService
      */
     private function booking_transaction( callable $callback ): mixed {
         $this->lock_failure_context = null;
+        ++$this->booking_tx_depth;
         try {
             return $this->db->transactional( $callback );
         } catch ( BookingException $e ) {
             $this->flush_lock_failure_diagnostic();
             throw $e;
+        } finally {
+            --$this->booking_tx_depth;
         }
     }
 
