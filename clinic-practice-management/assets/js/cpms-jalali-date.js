@@ -524,7 +524,9 @@
     function closePopup() {
       popup.hidden = true;
       triggerBtn.setAttribute('aria-expanded', 'false');
-      document.removeEventListener('mousedown', onOutsideClick, true);
+      if (typeof document.removeEventListener === 'function') {
+        document.removeEventListener('mousedown', onOutsideClick, true);
+      }
     }
 
     function onOutsideClick(ev) {
@@ -594,9 +596,15 @@
     // validated Jalali entry (typed + confirmed, or picked from the popup)
     // and never a stale/partial intermediate the user happened to type
     // through on the way to a different final date.
+    var settingNativeIso = false;
     function setNativeIso(iso, dispatch) {
       if (input.value === iso) { return; }
-      input.value = iso;
+      settingNativeIso = true;
+      try {
+        input.value = iso;
+      } finally {
+        settingNativeIso = false;
+      }
       if (dispatch) {
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -609,6 +617,36 @@
       status.textContent = '';
       input.setCustomValidity('');
     }
+
+    (function bindProgrammaticValueSync() {
+      if (typeof Object.getOwnPropertyDescriptor !== 'function' || typeof Object.defineProperty !== 'function') {
+        return;
+      }
+      var proto = Object.getPrototypeOf ? Object.getPrototypeOf(input) : null;
+      var desc = null;
+      while (proto && !desc) {
+        desc = Object.getOwnPropertyDescriptor(proto, 'value');
+        proto = Object.getPrototypeOf(proto);
+      }
+      if (!desc || typeof desc.get !== 'function' || typeof desc.set !== 'function') {
+        return;
+      }
+      try {
+        Object.defineProperty(input, 'value', {
+          configurable: true,
+          enumerable: desc.enumerable,
+          get: function () {
+            return desc.get.call(input);
+          },
+          set: function (val) {
+            desc.set.call(input, val);
+            if (!settingNativeIso) {
+              syncEntryFromNative();
+            }
+          }
+        });
+      } catch (e) { /* non-configurable value property: event listeners still apply */ }
+    }());
 
     // Live feedback on every keystroke — NEVER writes to the native input
     // and NEVER dispatches native input/change events (no premature
@@ -755,9 +793,48 @@
     }
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { enhanceAll(document); });
-  } else {
+  var observerStarted = false;
+  function startDynamicObserver() {
+    if (observerStarted || typeof MutationObserver !== 'function') { return; }
+    var target = document.documentElement || document.body;
+    if (!target) { return; }
+    observerStarted = true;
+    var observer = new MutationObserver(function (mutations) {
+      var needsScan = false;
+      for (var i = 0; i < mutations.length && !needsScan; i += 1) {
+        var added = mutations[i].addedNodes || [];
+        for (var j = 0; j < added.length; j += 1) {
+          var node = added[j];
+          if (!node || node.nodeType !== 1) { continue; }
+          if (
+            node.tagName === 'INPUT' &&
+            node.type === 'date' &&
+            (!node.dataset || node.dataset.cpmsJalaliEnhanced !== '1')
+          ) {
+            needsScan = true;
+            break;
+          }
+          if (node.querySelectorAll && node.querySelectorAll('input[type="date"]').length > 0) {
+            needsScan = true;
+            break;
+          }
+        }
+      }
+      if (needsScan) {
+        enhanceAll(document);
+      }
+    });
+    observer.observe(target, { childList: true, subtree: true });
+  }
+
+  function initJalaliDateUx() {
     enhanceAll(document);
+    startDynamicObserver();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initJalaliDateUx);
+  } else {
+    initJalaliDateUx();
   }
 }());

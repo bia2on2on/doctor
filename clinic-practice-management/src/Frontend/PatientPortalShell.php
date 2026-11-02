@@ -17,6 +17,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Frontend;
 
+use ClinicCore\Admin\PatientPortalPage;
 use WP_Post;
 
 /**
@@ -181,6 +182,7 @@ final class PatientPortalShell {
 		$version = \defined( 'CPMS_VERSION' ) ? (string) CPMS_VERSION : 'dev';
 		wp_register_style( self::CSS_HANDLE, $base . '/assets/css/cpms-patient-portal.css', [], $version );
 		wp_register_script( self::JS_HANDLE, $base . '/assets/js/cpms-patient-portal.js', [], $version, true );
+		StaffPortalShell::register_jalali_handles();
 	}
 
 	/** Enqueue portal CSS/JS only on the Patient Portal frontend surface. */
@@ -193,6 +195,12 @@ final class PatientPortalShell {
 		// The same portal-scoped script binds guest OTP login and authenticated
 		// Patient actions; each branch requires its own server-published config.
 		wp_enqueue_script( self::JS_HANDLE );
+		$user_id = (int) get_current_user_id();
+		if ( $user_id > 0 && PatientPortalPage::isPatientOnly( $user_id ) ) {
+			StaffPortalShell::register_jalali_handles();
+			wp_enqueue_style( StaffPortalShell::JALALI_HANDLE );
+			wp_enqueue_script( StaffPortalShell::JALALI_HANDLE );
+		}
 	}
 
 	private static function plugin_url_base(): string {
