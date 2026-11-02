@@ -107,80 +107,6 @@ def check(name: str, ok: bool, detail: str = "") -> None:
         raise RuntimeError(f"Check failed: {name} ({safe_detail})")
 
 
-# --- Shared in-page dialog (assets/js/cpms-dialog.js) — DUAL-MODE answers ----
-# The next product round converts the remaining native window.confirm()/prompt()
-# call sites to this in-page dialog. These helpers let the journey answer BOTH
-# forms without weakening it: the existing page.on("dialog") handler keeps
-# answering the native form, and answer_shared_dialogs() answers the in-page one.
-# A step that needs a dialog still FAILS when neither form appears.
-DIALOG_OVERLAY = ".cpms-modal-overlay"
-DIALOG_ROOT = ".cpms-modal[role='dialog']"
-DIALOG_CONFIRM = ".cpms-modal-confirm"
-DIALOG_CANCEL = ".cpms-modal-cancel"
-DIALOG_INPUT = ".cpms-dialog__input"
-DIALOG_POLL_MS = 100
-
-
-def shared_dialog_available(page) -> bool:
-    """True when this page shipped the shared in-page dialog asset.
-
-    Probe this BEFORE clicking the trigger: the answer it gives decides whether
-    the in-page form or the still-shipped native form owns the confirmation.
-    """
-    try:
-        return bool(page.evaluate("() => !!(window.CpmsDialog && window.CpmsDialog.confirm)"))
-    except Exception:
-        return False
-
-
-def answer_shared_dialogs(page, steps, *, shared_expected, timeout_ms, native_seen=None):
-    """Answer the SHARED in-page dialog in sequence — one step per dialog.
-
-    steps: [{"action": "accept" | "cancel" | "prompt", "value": "<text>"}].
-    native_seen: the caller's own record of native dialogs; when truthy the
-        existing native handler already answered this step and we stay out.
-    shared_expected: shared_dialog_available(page), probed before the trigger.
-    timeout_ms: the caller's EXISTING timeout — never widened here.
-
-    Returns "native" (the native handler owned the step) or "shared". Raises
-    RuntimeError when the in-page dialog was expected but never appeared, so the
-    step fails instead of passing on a dialog nobody answered.
-    """
-    if native_seen:
-        return "native"
-    if not shared_expected:
-        return "native"
-
-    overlay = page.locator(DIALOG_OVERLAY)
-    budget = max(1, int(timeout_ms / DIALOG_POLL_MS))
-    for index, step in enumerate(steps, start=1):
-        for _ in range(budget):
-            if overlay.count() > 0 and overlay.first.is_visible():
-                break
-            if native_seen:
-                return "native"
-            page.wait_for_timeout(DIALOG_POLL_MS)
-        else:
-            raise RuntimeError(
-                "neither the native nor the shared in-page dialog appeared within "
-                f"{timeout_ms}ms (dialog {index} of {len(steps)})"
-            )
-        root = overlay.locator(DIALOG_ROOT).first
-        action = step.get("action", "accept")
-        if action == "cancel":
-            root.locator(DIALOG_CANCEL).first.click()
-        elif action == "prompt":
-            root.locator(DIALOG_INPUT).first.fill(str(step.get("value", "")))
-            root.locator(DIALOG_CONFIRM).first.click()
-        else:
-            root.locator(DIALOG_CONFIRM).first.click()
-        for _ in range(budget):
-            if overlay.count() == 0 or not overlay.first.is_visible():
-                break
-            page.wait_for_timeout(DIALOG_POLL_MS)
-    return "shared"
-
-
 def wp_cli(args: list[str], env_vars: dict | None = None) -> str:
     merged = os.environ.copy()
     if env_vars:
@@ -599,21 +525,7 @@ def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fix
             dialog.accept()
 
     doctor_page.on("dialog", answer_prompt)
-    # DUAL-MODE: three sequential window.prompt()s today; the next product round
-    # collects the same three values with three sequential shared in-page prompts.
-    # The native handler above is untouched — when it consumed nothing, the values
-    # come from the in-page dialog, and the step still fails if neither form
-    # appears within the same 35s the assertions below already use.
-    edit_shared = shared_dialog_available(doctor_page)
-    answers_before = list(prompt_answers)
     doctor_page.locator('[data-role="pricing-charges"] tr').first.locator("button", has_text="اصلاح").click()
-    answer_shared_dialogs(
-        doctor_page,
-        [{"action": "prompt", "value": value} for value in prompt_answers],
-        shared_expected=edit_shared,
-        timeout_ms=35000,
-        native_seen=len(answers_before) > len(prompt_answers),
-    )
     doctor_page.wait_for_function(
         "() => { const t = document.querySelector('[data-role=\"pricing-charges\"]');"
         " return !!t && t.textContent.includes('اصلاح‌شده'); }",
@@ -1420,19 +1332,7 @@ def main() -> None:
             finalize_btn.wait_for(state="visible", timeout=30000)
             finalize_btn.click()
             doc_page.locator('[data-role="workspace-rx-item"][data-status="finalized"]').wait_for(state="visible", timeout=30000)
-            # DUAL-MODE: the visit-completion confirmation is the shared in-page
-            # dialog in the next product round and native window.confirm() today
-            # (the native handler above is untouched). Answering the in-page form
-            # keeps this stage honest in both worlds; if neither form appears the
-            # success wait below still fails the stage.
-            complete_shared = shared_dialog_available(doc_page)
             doc_page.locator('[data-role="workspace-consult-complete-submit"]').click()
-            answer_shared_dialogs(
-                doc_page,
-                [{"action": "accept"}],
-                shared_expected=complete_shared,
-                timeout_ms=30000,
-            )
             doc_page.locator('[data-role="workspace-consult-complete-success"]').wait_for(state="visible", timeout=30000)
             check("doctor clinical workflow completed in browser", True)
             doc_ctx.close()
