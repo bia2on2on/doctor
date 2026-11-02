@@ -6,6 +6,7 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 
 /**
@@ -92,7 +93,11 @@ final class CpmsDashboard
                 <?php if (current_user_can(RolesAndCapabilities::APPT_READ)) : ?>
                     <div class="cpms-card">
                         <h2>نوبت‌های امروز</h2>
-                        <p class="cpms-big"><?php echo esc_html( (string) ( $today_appointments ?? 0 ) ); ?></p>
+						<?php
+						$today_cnt = (int) ( $today_appointments ?? 0 );
+						$today_fa  = PersianDigits::format_int( $today_cnt );
+						?>
+						<p class="cpms-big"><?php echo esc_html( $today_fa ); ?></p>
                         <p class="description">نوبت‌های امروز (در انتظار / تأییدشده)</p>
                     </div>
                 <?php endif; ?>
@@ -100,7 +105,11 @@ final class CpmsDashboard
                 <?php if (current_user_can(RolesAndCapabilities::QUEUE_READ)) : ?>
                     <div class="cpms-card">
                         <h2>صف فعلی</h2>
-                        <p class="cpms-big"><?php echo esc_html((string) ($queue['queued'] ?? 0)); ?></p>
+						<?php
+						$queued_cnt = (int) ( $queue['queued'] ?? 0 );
+						$queued_fa  = PersianDigits::format_int( $queued_cnt );
+						?>
+						<p class="cpms-big"><?php echo esc_html( $queued_fa ); ?></p>
                         <p class="description">
                             <?php if (($queue['stale'] ?? true) === true) : ?>
                                 <span class="cpms-badge cpms-warn">⚠️ Cron/Queue ممکن است متوقف باشد</span>
@@ -114,7 +123,11 @@ final class CpmsDashboard
                 <?php if (current_user_can(RolesAndCapabilities::CONFIG)) : ?>
                     <div class="cpms-card">
                         <h2>پزشکان فعال</h2>
-                        <p class="cpms-big"><?php echo esc_html( (string) ( $active_doctors ?? 0 ) ); ?></p>
+						<?php
+						$docs_cnt = (int) ( $active_doctors ?? 0 );
+						$docs_fa  = PersianDigits::format_int( $docs_cnt );
+						?>
+						<p class="cpms-big"><?php echo esc_html( $docs_fa ); ?></p>
                         <p class="description">پزشکان فعال</p>
                     </div>
                 <?php endif; ?>
@@ -141,7 +154,8 @@ final class CpmsDashboard
                             <p><span class="cpms-badge cpms-warn">هنوز بکاپی ثبت نشده</span></p>
                             <p class="description"><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-system')); ?>">ایجاد اولین بکاپ</a></p>
                         <?php else : ?>
-                            <p class="cpms-big"><?php echo esc_html((string) count($backups)); ?></p>
+							<?php $backups_fa = PersianDigits::format_int( count( $backups ) ); ?>
+							<p class="cpms-big"><?php echo esc_html( $backups_fa ); ?></p>
                             <p class="description">آخرین بکاپ: <code><?php echo esc_html( ( $backups[0]['created_at'] ?? '' ) !== '' ? CpmsUi::jalali_date_time( (string) $backups[0]['created_at'] ) : '—' ); ?></code></p>
                         <?php endif; ?>
                     </div>
@@ -175,7 +189,12 @@ final class CpmsDashboard
                         ?>
                         <p>
                             <span class="cpms-badge <?php echo $issues === 0 ? 'cpms-ok' : 'cpms-warn'; ?>">
-                                <?php echo $issues === 0 ? 'سالم' : ($issues . ' مورد نیازمند توجه'); ?>
+								<?php
+								$issues_txt = 0 === $issues
+									? 'سالم'
+									: PersianDigits::format_int( $issues ) . ' مورد نیازمند توجه';
+								echo esc_html( $issues_txt );
+								?>
                             </span>
                         </p>
                         <p class="description"><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=cpms-system')); ?>">مشاهده جزئیات</a></p>

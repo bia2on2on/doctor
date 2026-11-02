@@ -6,6 +6,7 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Domain\Booking\BookingException;
 
 /**
@@ -126,7 +127,8 @@ final class PatientAdminPage
             <?php elseif ($searched && $results === []) : ?>
                 <?php echo CpmsUi::emptyState('🔍', 'بیماری یافت نشد.', 'هیچ بیماری با این مشخصات پیدا نشد. املای نام/موبایل/کد ملی را بررسی کنید یا از «افزودن بیمار» استفاده کنید.', $canCreate ? 'افزودن بیمار' : '', $canCreate ? admin_url('admin.php?page=' . self::PAGE_SLUG . '#cpms-add-patient') : ''); ?>
             <?php elseif ($results !== []) : ?>
-                <h2>نتایج (تا <?php echo (int) self::SEARCH_LIMIT; ?> مورد)</h2>
+				<?php $limit_fa = PersianDigits::format_int( self::SEARCH_LIMIT ); ?>
+				<h2>نتایج (تا <?php echo esc_html( $limit_fa ); ?> مورد)</h2>
                 <table class="widefat striped" role="presentation">
                     <thead>
                         <tr><th>کد پرونده</th><th>نام و نام خانوادگی</th><th>موبایل</th><th>کد ملی</th><th>وضعیت</th></tr>

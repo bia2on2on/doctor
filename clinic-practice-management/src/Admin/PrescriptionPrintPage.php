@@ -7,6 +7,7 @@ namespace ClinicCore\Admin;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Application\Clinical\ClinicalException;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\PersianDigits;
 
 /**
  * صفحه «چاپ نسخه» — مخفی (بدون آیتم منو)؛ URL: admin.php?page=cpms-prescription-print&visit_id=…
@@ -120,7 +121,12 @@ final class PrescriptionPrintPage
     <tr>
         <td><b>بیمار:</b> <?php echo esc_html((string) $data['patient']['full_name']); ?></td>
         <td><b>شماره پرونده:</b> <span dir="ltr"><?php echo esc_html((string) $data['patient']['mrn']); ?></span></td>
-        <td><b>سن:</b> <?php echo $data['patient']['age'] !== null ? esc_html((string) $data['patient']['age']) : '—'; ?></td>
+		<?php
+		$age_txt = null !== $data['patient']['age']
+			? PersianDigits::format_int( (int) $data['patient']['age'] )
+			: '—';
+		?>
+		<td><b>سن:</b> <?php echo esc_html( $age_txt ); ?></td>
     </tr>
     <tr>
         <td><b>تاریخ ویزیت:</b> <?php echo esc_html((string) $data['visit_jalali']); ?></td>
@@ -152,13 +158,18 @@ final class PrescriptionPrintPage
     <?php endif; ?>
     <?php foreach ($rx['items'] as $i => $it) : ?>
         <tr>
-            <td><?php echo $i + 1; ?></td>
+			<td><?php echo esc_html( PersianDigits::format_int( (int) $i + 1 ) ); ?></td>
             <td><b><?php echo esc_html((string) $it['generic_name']); ?></b><?php echo $it['brand_name'] !== null ? ' <small>(' . esc_html((string) $it['brand_name']) . ')</small>' : ''; ?></td>
             <td><?php echo esc_html((string) ($it['strength'] ?? '—')); ?></td>
             <td><?php echo esc_html((string) $it['dose']); ?></td>
             <td><?php echo esc_html((string) $it['frequency']); ?></td>
             <td><?php echo esc_html((string) $it['route']); ?></td>
-            <td><?php echo $it['duration_days'] !== null ? esc_html((string) $it['duration_days']) : '—'; ?></td>
+			<?php
+			$days_txt = null !== $it['duration_days']
+				? PersianDigits::format_int( (int) $it['duration_days'] )
+				: '—';
+			?>
+			<td><?php echo esc_html( $days_txt ); ?></td>
             <td><?php echo esc_html((string) ($it['instructions'] ?? '')); ?></td>
         </tr>
     <?php endforeach; ?>

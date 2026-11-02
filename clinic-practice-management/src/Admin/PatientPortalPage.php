@@ -9,6 +9,7 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Frontend\PatientPortalShell;
 use ClinicCore\Frontend\PublicBookingShortcode;
 
@@ -575,13 +576,15 @@ final class PatientPortalPage
      */
     private static function file_item_markup( array $file ): string {
         $size = (int) ( $file['file_size'] ?? 0 );
-        if ( $size >= 1048576 ) {
-            $size_label = number_format_i18n( $size / 1048576, 1 ) . ' ' . esc_html__( 'مگابایت', 'cpms' );
-        } elseif ( $size >= 1024 ) {
-            $size_label = number_format_i18n( $size / 1024, 0 ) . ' ' . esc_html__( 'کیلوبایت', 'cpms' );
-        } else {
-            $size_label = number_format_i18n( $size ) . ' ' . esc_html__( 'بایت', 'cpms' );
-        }
+		if ( $size >= 1048576 ) {
+			$mb_fa      = PersianDigits::format_number( $size / 1048576, 1 );
+			$size_label = $mb_fa . ' ' . esc_html__( 'مگابایت', 'cpms' );
+		} elseif ( $size >= 1024 ) {
+			$kb_fa      = PersianDigits::format_number( $size / 1024, 0 );
+			$size_label = $kb_fa . ' ' . esc_html__( 'کیلوبایت', 'cpms' );
+		} else {
+			$size_label = PersianDigits::format_int( $size ) . ' ' . esc_html__( 'بایت', 'cpms' );
+		}
         $categories     = [
             'lab_result' => __( 'نتیجه آزمایش', 'cpms' ),
             'image'      => __( 'تصویر', 'cpms' ),
@@ -1030,26 +1033,35 @@ final class PatientPortalPage
         $unread = max( 0, (int) ( $inbox['unread_count'] ?? 0 ) );
         $next   = $upcoming[0] ?? null;
 
+		$upcoming_fa = PersianDigits::format_int( count( $upcoming ) );
+		$past_fa     = PersianDigits::format_int( count( $past ) );
+		$unread_fa   = PersianDigits::format_int( $unread );
+		$clinics_fa  = PersianDigits::format_int( count( $booking_clinics ) );
+
         $html  = '<section class="cpms-pp-section cpms-pp-dashboard" data-role="dashboard-section" id="dashboard" aria-labelledby="cpms-pp-dashboard-heading">';
         $html .= '<div class="cpms-pp-dashboard__head"><div><h1 id="cpms-pp-dashboard-heading">داشبورد بیمار</h1>';
         $html .= '<p class="description">خلاصهٔ نوبت‌ها و دسترسی سریع به خدمات پورتال</p></div>';
         $html .= '<a class="cpms-pp-btn cpms-pp-btn--primary" href="#booking">رزرو نوبت تازه</a></div>';
         $html .= '<dl class="cpms-pp-dashboard__stats">';
-        $html .= '<div><dt>نوبت پیش‌رو</dt><dd>' . esc_html( (string) count( $upcoming ) ) . '</dd></div>';
-        $html .= '<div><dt>سوابق نوبت</dt><dd>' . esc_html( (string) count( $past ) ) . '</dd></div>';
-        $html .= '<div><dt>اعلان خوانده‌نشده</dt><dd>' . esc_html( (string) $unread ) . '</dd></div>';
-        $html .= '<div><dt>مرکز قابل رزرو</dt><dd>' . esc_html( (string) count( $booking_clinics ) ) . '</dd></div>';
-        $html .= '</dl>';
+		$html .= '<div><dt>نوبت پیش‌رو</dt><dd>' . esc_html( $upcoming_fa ) . '</dd></div>';
+		$html .= '<div><dt>سوابق نوبت</dt><dd>' . esc_html( $past_fa ) . '</dd></div>';
+		$html .= '<div><dt>اعلان خوانده‌نشده</dt><dd>'
+			. esc_html( $unread_fa ) . '</dd></div>';
+		$html .= '<div><dt>مرکز قابل رزرو</dt><dd>' . esc_html( $clinics_fa ) . '</dd></div>';
+		$html .= '</dl>';
 
-        if ( is_array( $next ) ) {
-            $jalali = (string) ( $next['jalali'] ?? Jalali::formatYmd( (string) ( $next['date'] ?? '' ) ) );
-            $time   = (string) ( $next['time'] ?? '' );
-            $html  .= '<article class="cpms-pp-dashboard__next" data-role="next-appointment">';
-            $html  .= '<div><p class="cpms-pp-dashboard__eyebrow">نزدیک‌ترین نوبت</p>';
-            $html  .= '<p class="cpms-pp-dashboard__when"><span>' . esc_html( $jalali ) . '</span>، ساعت <span dir="ltr">' . esc_html( $time ) . '</span></p></div>';
-            $html  .= self::appointment_details( $next );
-            $html  .= '<a class="cpms-pp-btn cpms-pp-btn--ghost" href="#appointments">مدیریت نوبت</a>';
-            $html  .= '</article>';
+		if ( is_array( $next ) ) {
+			$next_date  = (string) ( $next['date'] ?? '' );
+			$raw_jalali = (string) ( $next['jalali'] ?? Jalali::formatYmd( $next_date ) );
+			$jalali     = PersianDigits::digits( $raw_jalali );
+			$time       = PersianDigits::digits( (string) ( $next['time'] ?? '' ) );
+
+            $html .= '<article class="cpms-pp-dashboard__next" data-role="next-appointment">';
+            $html .= '<div><p class="cpms-pp-dashboard__eyebrow">نزدیک‌ترین نوبت</p>';
+            $html .= '<p class="cpms-pp-dashboard__when"><span>' . esc_html( $jalali ) . '</span>، ساعت <span dir="ltr">' . esc_html( $time ) . '</span></p></div>';
+            $html .= self::appointment_details( $next );
+            $html .= '<a class="cpms-pp-btn cpms-pp-btn--ghost" href="#appointments">مدیریت نوبت</a>';
+            $html .= '</article>';
         } else {
             $html .= '<div class="cpms-empty" data-role="dashboard-no-upcoming"><span class="cpms-empty-title">نوبت پیش‌رویی ندارید</span>';
             $html .= '<span class="cpms-empty-desc">برای انتخاب پزشک، محل و زمان مراجعه از رزرو آنلاین استفاده کنید.</span></div>';
@@ -1143,9 +1155,13 @@ final class PatientPortalPage
 
         $html = '<section class="cpms-patient-portal__notifications" data-role="' . esc_attr( self::NOTIFICATIONS_SECTION_ROLE ) . '" aria-labelledby="cpms-patient-portal-notifications-title">'
             . '<h2 id="cpms-patient-portal-notifications-title">اعلان‌ها';
-        if ( $unread > 0 ) {
-            $html .= ' <span class="cpms-badge cpms-warn" data-role="' . esc_attr( self::NOTIFICATIONS_BADGE_ROLE ) . '" data-unread-count="' . $unread . '">' . $unread . ' خوانده‌نشده</span>';
-        }
+		if ( $unread > 0 ) {
+			$unread_label = PersianDigits::format_int( $unread ) . ' خوانده‌نشده';
+			$html        .= ' <span class="cpms-badge cpms-warn"'
+				. ' data-role="' . esc_attr( self::NOTIFICATIONS_BADGE_ROLE ) . '"'
+				. ' data-unread-count="' . $unread . '">'
+				. esc_html( $unread_label ) . '</span>';
+		}
         $html .= '</h2>';
 
         if ( $rows === [] ) {
@@ -1195,16 +1211,36 @@ final class PatientPortalPage
     /**
      * زمانِ ثبتِ اعلان (UTC در DB) → `<time datetime="ISO-8601">` با برچسبِ جلالی و
      * ساعتِ محلیِ Clinic — همان قالبِ جدول‌های همین صفحه (`1405/07/14` و `HH:MM`, dir=ltr).
+     *
+     * `cpms_notifications.created_at` از نوع DATETIME(3) است.
+     * مقدارِ برگشتی از DB کسرِ ثانیه دارد؛ اول با `.u` و بعد
+     * بدونِ کسر parse می‌شود (مثل ClinicalService و MedicalFileService).
+     * مقدارِ غیرقابل‌parse همچنان '' برمی‌گرداند (fail-closed).
      */
     private static function notification_time( string $created_at_utc, \DateTimeZone $tz ): string {
-        $utc = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $created_at_utc, new \DateTimeZone( 'UTC' ) );
+        $utc_zone = new \DateTimeZone( 'UTC' );
+        $utc      = \DateTimeImmutable::createFromFormat(
+            'Y-m-d H:i:s.u',
+            $created_at_utc,
+            $utc_zone
+        );
+        if ( $utc === false ) {
+            $utc = \DateTimeImmutable::createFromFormat(
+                'Y-m-d H:i:s',
+                $created_at_utc,
+                $utc_zone
+            );
+        }
         if ( $utc === false ) {
             return '';
         }
         $local = $utc->setTimezone( $tz );
 
-        return '<time class="description" datetime="' . esc_attr( $utc->format( DATE_ATOM ) ) . '">'
-            . '<span dir="ltr">' . esc_html( Jalali::formatYmd( $local->format( 'Y-m-d' ) ) . ' ' . $local->format( 'H:i' ) ) . '</span></time>';
+		$local_label = Jalali::format_display_ymd( $local->format( 'Y-m-d' ) )
+			. ' ' . PersianDigits::digits( $local->format( 'H:i' ) );
+
+		return '<time class="description" datetime="' . esc_attr( $utc->format( DATE_ATOM ) ) . '">'
+			. '<span dir="ltr">' . esc_html( $local_label ) . '</span></time>';
     }
 
     /**
@@ -1351,8 +1387,11 @@ final class PatientPortalPage
             . '</tr></thead><tbody>';
         foreach ($rows as $r) {
             $status = (string) $r['status'];
-            $jalali = (string) ( $r['jalali'] ?? Jalali::formatYmd( (string) $r['date'] ) );
-            $time   = (string) $r['time'];
+
+			$raw_jalali = (string) ( $r['jalali'] ?? Jalali::formatYmd( (string) $r['date'] ) );
+			$jalali     = PersianDigits::digits( $raw_jalali );
+			$time       = PersianDigits::digits( (string) $r['time'] );
+
             $html .= '<tr>'
                 . '<td data-label="تاریخ">' . esc_html( $jalali ) . '</td>'
                 . '<td data-label="ساعت"><span dir="ltr">' . esc_html( $time ) . '</span></td>'
@@ -1422,23 +1461,9 @@ final class PatientPortalPage
     /**
      * ارقامِ لاتین → ارقامِ فارسی برای نمایشِ متنِ فارسی (بدون تغییرِ مقدارِ داده).
      */
-    private static function persian_digits( string $value ): string {
-        return strtr(
-            $value,
-            [
-                '0' => '۰',
-                '1' => '۱',
-                '2' => '۲',
-                '3' => '۳',
-                '4' => '۴',
-                '5' => '۵',
-                '6' => '۶',
-                '7' => '۷',
-                '8' => '۸',
-                '9' => '۹',
-            ]
-        );
-    }
+	private static function persian_digits( string $value ): string {
+		return PersianDigits::digits( $value );
+	}
 
     /**
      * پنل تغییر نوبت (B5) — بدون هیچ فیلد اقتدار (clinic_id / patient_id)؛

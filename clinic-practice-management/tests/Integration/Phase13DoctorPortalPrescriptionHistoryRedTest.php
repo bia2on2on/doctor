@@ -167,7 +167,11 @@ final class Phase13DoctorPortalPrescriptionHistoryRedTest extends WP_UnitTestCas
             self::assertSame($visitId, (int) $row['visit_id'], 'P13S2: visit selector is the owning Visit');
         }
         self::assertSame('2026-03-21 00:30', $rows[0]['finalized_at_local'], 'P13S2: trusted Location timezone resolves the local instant');
-        self::assertSame('1405/01/01', $rows[0]['finalized_at_jalali'], 'P13S2: Jalali conversion receives the Location-local Gregorian date');
+        self::assertSame(
+            '۱۴۰۵/۰۱/۰۱',
+            $rows[0]['finalized_at_jalali'],
+            'P13S2: Jalali conversion receives the Location-local Gregorian date'
+        );
         self::assertSame('2026-03-11 00:30', $rows[2]['finalized_at_local'], 'P13S2: every row uses the same Location timezone authority');
         $patientRow = App::db()->fetchRow(
             'SELECT first_name, last_name FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',

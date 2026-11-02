@@ -7,6 +7,7 @@ namespace ClinicCore\Admin;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Application\System\QueueDiagnosis;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\PersianDigits;
 
 /**
  * صفحه «CPMS (فنی و لاگ)» در wp-admin — فقط برای cpms_config (فنی).
@@ -103,11 +104,20 @@ final class SettingsAdmin
             <p class="description">این مقادیر به هیچ درمانگاهی وابسته نیستند و در نصبِ چند‌درمانگاهی هم بدونِ انتخابِ درمانگاه خوانده می‌شوند.</p>
             <table class="form-table" role="presentation">
                 <tr><th>آخرین tick Queue</th><td><?php echo esc_html($queue['last_tick_at'] ? gmdate('Y-m-d H:i:s', (int) $queue['last_tick_at']) . ' UTC' : 'هرگز'); ?></td></tr>
-                <tr><th>Jobهای failed</th><td><?php echo esc_html((string) $queue['failed']); ?></td></tr>
+				<?php $failed_fa = PersianDigits::format_int( (int) $queue['failed'] ); ?>
+				<tr><th>Jobهای failed</th><td><?php echo esc_html( $failed_fa ); ?></td></tr>
                 <tr><th>نسخه افزونه</th><td><?php echo esc_html(defined('CPMS_VERSION') ? CPMS_VERSION : 'dev'); ?></td></tr>
                 <tr><th>نسخه Schema</th><td><?php echo esc_html((string) $version); ?></td></tr>
-                <tr><th>تعداد جداول cpms_</th><td><?php echo esc_html((string) $tables); ?></td></tr>
-                <tr><th>Retention اعلان‌ها (روز)</th><td><?php echo esc_html( (string) App::installationSettings()->getNotifArchiveDays() ); ?></td></tr>
+				<?php
+				$tables_fa       = PersianDigits::digits( (int) $tables );
+				$archive_days    = App::installationSettings()->getNotifArchiveDays();
+				$archive_days_fa = PersianDigits::format_int( $archive_days );
+				?>
+				<tr><th>تعداد جداول cpms_</th><td><?php echo esc_html( $tables_fa ); ?></td></tr>
+				<tr>
+					<th>Retention اعلان‌ها (روز)</th>
+					<td><?php echo esc_html( $archive_days_fa ); ?></td>
+				</tr>
             </table>
 
             <h2>تنظیمات درمانگاه‌محور (Clinic-local)</h2>
