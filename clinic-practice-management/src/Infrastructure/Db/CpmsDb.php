@@ -320,6 +320,11 @@ final class CpmsDb
         return $this->wpdb;
     }
 
+    /** True while a CpmsDb transaction or nested savepoint is open. */
+    public function in_transaction(): bool {
+        return $this->tx_depth > 0;
+    }
+
     /**
      * NOW(3) UTC — مقدار را در PHP می‌سازیم تا مستقل از TZ سرور MySQL باشد (ADR-0013).
      */

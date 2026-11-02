@@ -11,11 +11,11 @@ use WP_REST_Response;
 use WP_UnitTestCase;
 
 /**
- * B1 hold — a failed SELECT ... FOR UPDATE on the Location row is a transient
- * SQL failure, not a missing Location. Only the FOR UPDATE read is rewritten:
- * the non-locking preflight reads are left untouched, so the transaction gets
- * as far as the locking helper. Fault injection follows the established
- * add_filter('query') + suppress_errors() pattern in BookingAuditAtomicityTest.
+ * Driver-level read failures in the public booking path must be honest 503s,
+ * never a false "Location/Clinic/Slot not found" 404. Locking and non-locking
+ * reads are injected separately with add_filter('query') + suppress_errors(),
+ * following BookingAuditAtomicityTest. A genuinely absent or inactive row
+ * keeps today's exact 404 envelope, code and Persian text.
  */
 final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
 {
@@ -23,6 +23,7 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
     private const LOG_MESSAGE = 'booking.lock_read_failed';
     private const BUSY_CODE = 'CLINIC_BOOKING_BUSY';
     private const LEGACY_TEXT = 'Location یافت نشد';
+    private const IDEM_ENDPOINT = 'booking/confirm';
 
     private int $clinicianId = 0;
     private int $patientUserId = 0;
@@ -107,12 +108,7 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        if ($this->fault !== null) {
-            remove_filter('query', $this->fault, 5);
-            $this->fault = null;
-            global $wpdb;
-            $wpdb->suppress_errors($this->previousSuppression);
-        }
+        $this->removeFault();
         wp_set_current_user(0);
         parent::tearDown();
     }
@@ -192,48 +188,255 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
         self::assertCount($this->logBaseline, $this->diagnosticLogs());
     }
 
+    public function testConfirmLockFailureKeepsHoldAndIdempotencyKeyRetryable(): void
+    {
+        wp_set_current_user($this->patientUserId);
+        $slot = $this->makeSlot('15:00');
+        $hold = $this->dispatch($this->holdBody($slot));
+        self::assertSame(200, $hold->get_status());
+        $token = (string) ($hold->get_data()['data']['hold_token'] ?? '');
+        self::assertNotSame('', $token);
+        $key = $this->uuid();
+
+        $this->installFault('error');
+        $busy = $this->dispatchConfirm($token, $key);
+        self::assertSame(503, $busy->get_status());
+        self::assertSame(self::BUSY_CODE, (string) ($busy->get_data()['code'] ?? ''));
+        self::assertSame('active', $this->holdStatus($token), '503 must not release the Hold');
+        self::assertSame(1, $this->heldCount($slot['id']), 'capacity must survive the retry');
+        self::assertSame(0, $this->idemRows($key), 'pending Idempotency key must be released');
+
+        $context = $this->lastDiagnostic();
+        self::assertSame('location', (string) ($context['read'] ?? ''));
+        self::assertIsInt($context['sql_errno'] ?? null);
+        self::assertGreaterThan(0, (int) ($context['sql_errno'] ?? 0));
+        self::assertNotSame('', (string) ($context['sql_error'] ?? ''));
+
+        $this->removeFault();
+        $retry = $this->dispatchConfirm($token, $key);
+        self::assertSame(200, $retry->get_status(), 'same key must succeed after release');
+        self::assertSame('confirmed', (string) ($retry->get_data()['data']['status'] ?? ''));
+        self::assertSame('converted', $this->holdStatus($token));
+    }
+
+    public function testDiagnosticSqlErrnoIsPositiveInteger(): void
+    {
+        wp_set_current_user($this->patientUserId);
+        $slot = $this->makeSlot('20:00');
+        $this->installFault('error');
+
+        $response = $this->dispatch($this->holdBody($slot));
+        self::assertSame(503, $response->get_status());
+        $context = $this->lastDiagnostic();
+        self::assertIsInt($context['sql_errno'] ?? null);
+        self::assertGreaterThan(0, (int) ($context['sql_errno'] ?? 0));
+        self::assertNotSame('', (string) ($context['sql_error'] ?? ''));
+    }
+
+    public function testSlotLockFailureIsRetryable(): void
+    {
+        $this->assertLockFailure('slot_lock', 'slot');
+    }
+
+    public function testOrganizationLockFailureIsRetryable(): void
+    {
+        $this->assertLockFailure('organization_lock', 'organization');
+    }
+
+    public function testClinicLockFailureIsRetryable(): void
+    {
+        $this->assertLockFailure('clinic_lock', 'clinic');
+    }
+
+    public function testPersistedSlotReadFailureIsRetryable(): void
+    {
+        $this->assertNonLockingFailure('persisted_slot', 'persisted_slot');
+    }
+
+    public function testOrganizationActiveReadFailureIsRetryable(): void
+    {
+        $this->assertNonLockingFailure('organization_active', 'organization_active');
+    }
+
+    public function testLocationActiveReadFailureIsRetryable(): void
+    {
+        $this->assertNonLockingFailure('location_active', 'location_active');
+    }
+
+    public function testLocationTimezoneReadFailureIsRetryable(): void
+    {
+        $this->assertNonLockingFailure('location_timezone', 'location_timezone');
+    }
+
+    public function testPersistedSlotAbsentRowKeepsLegacy404(): void
+    {
+        $this->assertNonLockingAbsent('persisted_slot', 'اسلات با شناسه داده‌شده یافت نشد');
+    }
+
+    public function testOrganizationActiveAbsentRowKeepsLegacy404(): void
+    {
+        $this->assertNonLockingAbsent('organization_active', 'کلینیک یافت نشد');
+    }
+
+    public function testLocationActiveAbsentRowKeepsLegacy404(): void
+    {
+        $this->assertNonLockingAbsent('location_active', 'محل نوبت یافت نشد');
+    }
+
+    public function testLocationTimezoneAbsentRowKeepsLegacy404(): void
+    {
+        $this->assertNonLockingAbsent('location_timezone', self::LEGACY_TEXT);
+    }
+
+    public function testQuoteShowsRetryableErrorOnFailedLocationRead(): void
+    {
+        $slot = $this->makeSlot('19:00');
+        $this->installFault('error', 'location_active');
+
+        $response = $this->dispatchQuote($this->holdBody($slot));
+        self::assertSame(503, $response->get_status());
+        self::assertSame(self::BUSY_CODE, (string) ($response->get_data()['code'] ?? ''));
+        self::assertSame('location_active', (string) ($this->lastDiagnostic()['read'] ?? ''));
+    }
+
+    private function assertLockFailure(string $target, string $label): void
+    {
+        wp_set_current_user($this->patientUserId);
+        $slot = $this->makeSlot('16:00');
+        $this->installFault('error', $target);
+
+        $response = $this->dispatch($this->holdBody($slot));
+        self::assertSame(503, $response->get_status());
+        self::assertSame(self::BUSY_CODE, (string) ($response->get_data()['code'] ?? ''));
+        self::assertSame(0, $this->activeHolds($slot['id']));
+        self::assertSame(0, $this->heldCount($slot['id']));
+        self::assertSame($label, (string) ($this->lastDiagnostic()['read'] ?? ''));
+    }
+
+    private function assertNonLockingFailure(string $target, string $label): void
+    {
+        wp_set_current_user($this->patientUserId);
+        $slot = $this->makeSlot('17:00');
+        $this->installFault('error', $target);
+
+        $response = $this->dispatch($this->holdBody($slot));
+        self::assertSame(503, $response->get_status());
+        self::assertSame(self::BUSY_CODE, (string) ($response->get_data()['code'] ?? ''));
+        self::assertStringNotContainsString(
+            self::LEGACY_TEXT,
+            (string) ($response->get_data()['message'] ?? '')
+        );
+        self::assertSame(0, $this->activeHolds($slot['id']));
+        self::assertSame($label, (string) ($this->lastDiagnostic()['read'] ?? ''));
+    }
+
+    private function assertNonLockingAbsent(string $target, string $text): void
+    {
+        wp_set_current_user($this->patientUserId);
+        $slot = $this->makeSlot('18:00');
+        $this->installFault('absent', $target);
+
+        $response = $this->dispatch($this->holdBody($slot));
+        self::assertSame(404, $response->get_status());
+        self::assertSame('CLINIC_NOT_FOUND', (string) ($response->get_data()['code'] ?? ''));
+        self::assertSame($text, (string) ($response->get_data()['message'] ?? ''));
+        self::assertCount($this->logBaseline, $this->diagnosticLogs());
+    }
+
     /**
-     * Rewrite only the Location FOR UPDATE read. 'error' makes the driver
-     * fail, 'missing' returns no row and 'inactive' returns is_active = 0.
+     * Rewrite exactly one matched read class. 'error' makes the driver fail,
+     * 'missing'/'absent' return no row and 'inactive' returns is_active = 0.
      */
-    private function installFault(string $mode): void
+    private function installFault(string $mode, string $target = 'location_lock'): void
     {
         global $wpdb;
         self::assertNull($this->fault, 'fault injection must be installed once per test');
 
-        $fault = static function (string $query) use ($mode): string {
-            if (
-                stripos($query, 'cpms_locations') === false
-                || stripos($query, 'FOR UPDATE') === false
-            ) {
+        $fault = static function (string $query) use ($mode, $target): string {
+            if (!self::matchesTarget($query, $target)) {
                 return $query;
             }
-            $matched = preg_match(
-                '/FROM\s+(`?[A-Za-z0-9_]+`?)\s+WHERE\s+id\s*=\s*(\d+)/i',
-                $query,
-                $parts
-            );
-            if ($matched !== 1) {
+            $table = self::tableFrom($query);
+            if ($table === '') {
                 return $query;
             }
-            $table = $parts[1];
-            $id    = $parts[2];
-            if ($mode === 'error') {
-                return 'SELECT id, clinic_id, timezone, is_active FROM ' . $table
-                    . ' WHERE cpms_fault_injection_no_such_column = 1 LIMIT 1 FOR UPDATE';
+            if ($mode === 'inactive' && $target === 'location_lock') {
+                $id = 0;
+                if (preg_match('/WHERE\s+id\s*=\s*(\d+)/i', $query, $parts) === 1) {
+                    $id = (int) $parts[1];
+                }
+
+                return 'SELECT id, clinic_id, timezone, 0 AS is_active FROM ' . $table
+                    . ' WHERE id = ' . $id . ' LIMIT 1 FOR UPDATE';
             }
-            if ($mode === 'missing') {
-                return 'SELECT id, clinic_id, timezone, is_active FROM ' . $table
-                    . ' WHERE id = 0 LIMIT 1 FOR UPDATE';
+            if ($mode === 'missing' || $mode === 'absent') {
+                return 'SELECT 1 FROM ' . $table . ' WHERE 1 = 0 LIMIT 1';
             }
 
-            return 'SELECT id, clinic_id, timezone, 0 AS is_active FROM ' . $table
-                . ' WHERE id = ' . $id . ' LIMIT 1 FOR UPDATE';
+            return 'SELECT 1 FROM ' . $table
+                . ' WHERE cpms_fault_injection_no_such_column = 1 LIMIT 1';
         };
 
         $this->previousSuppression = (bool) $wpdb->suppress_errors(true);
         $this->fault               = $fault;
         add_filter('query', $fault, 5);
+    }
+
+    private function removeFault(): void
+    {
+        if ($this->fault === null) {
+            return;
+        }
+        global $wpdb;
+        remove_filter('query', $this->fault, 5);
+        $this->fault = null;
+        $wpdb->suppress_errors($this->previousSuppression);
+    }
+
+    /** Match one read class, never a whole table, so later reads stay real. */
+    private static function matchesTarget(string $query, string $target): bool
+    {
+        switch ($target) {
+            case 'location_lock':
+                return stripos($query, 'cpms_locations') !== false
+                    && stripos($query, 'FOR UPDATE') !== false;
+            case 'organization_lock':
+                return stripos($query, 'SELECT id, status FROM') !== false
+                    && stripos($query, 'cpms_organizations') !== false
+                    && stripos($query, 'FOR UPDATE') !== false;
+            case 'clinic_lock':
+                return stripos($query, 'SELECT id, organization_id, status FROM') !== false
+                    && stripos($query, 'cpms_clinics') !== false
+                    && stripos($query, 'FOR UPDATE') !== false;
+            case 'slot_lock':
+                return stripos($query, 'SELECT * FROM') !== false
+                    && stripos($query, 'cpms_schedule_slots') !== false
+                    && stripos($query, 'FOR UPDATE') !== false;
+            case 'persisted_slot':
+                return stripos($query, 'SELECT id, clinic_id, clinician_id FROM') !== false
+                    && stripos($query, 'cpms_schedule_slots') !== false;
+            case 'organization_active':
+                return stripos($query, 'SELECT o.status FROM') !== false;
+            case 'location_active':
+                return stripos($query, 'SELECT id FROM') !== false
+                    && stripos($query, 'cpms_locations') !== false
+                    && stripos($query, 'is_active = 1') !== false;
+            case 'location_timezone':
+                return stripos($query, 'SELECT id, clinic_id, timezone FROM') !== false
+                    && stripos($query, 'cpms_locations') !== false
+                    && stripos($query, 'WHERE id = ') !== false;
+        }
+
+        return false;
+    }
+
+    private static function tableFrom(string $query): string
+    {
+        if (preg_match('/FROM\s+(`?[A-Za-z0-9_]+`?)/i', $query, $parts) === 1) {
+            return $parts[1];
+        }
+
+        return '';
     }
 
     /**
@@ -320,5 +523,65 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
             . ' WHERE id = %d LIMIT 1',
             [$slotId]
         );
+    }
+
+    private function holdStatus(string $token): string
+    {
+        return (string) App::db()->fetchValue(
+            'SELECT status FROM ' . App::db()->table('cpms_slot_holds')
+            . ' WHERE token = %s LIMIT 1',
+            [$token]
+        );
+    }
+
+    private function idemRows(string $key): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_idempotency_keys')
+            . ' WHERE `key` = %s AND endpoint = %s',
+            [$key, self::IDEM_ENDPOINT]
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private function lastDiagnostic(): array
+    {
+        $rows = $this->diagnosticLogs();
+        self::assertCount($this->logBaseline + 1, $rows, 'exactly one new diagnostic');
+        $context = json_decode((string) $rows[count($rows) - 1]['context_json'], true);
+        self::assertIsArray($context);
+
+        return $context;
+    }
+
+    private function dispatchConfirm(string $token, string $key): WP_REST_Response
+    {
+        $request = new WP_REST_Request('POST', self::NS . '/booking/confirm');
+        $request->set_param('hold_token', $token);
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+        $request->set_header('Idempotency-Key', $key);
+
+        return rest_do_request($request);
+    }
+
+    /** @param array<string, mixed> $body */
+    private function dispatchQuote(array $body): WP_REST_Response
+    {
+        $request = new WP_REST_Request('POST', self::NS . '/booking/quote');
+        foreach ($body as $key => $value) {
+            $request->set_param($key, $value);
+        }
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+
+        return rest_do_request($request);
+    }
+
+    private function uuid(): string
+    {
+        $bytes = random_bytes(16);
+        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($bytes), 4));
     }
 }
