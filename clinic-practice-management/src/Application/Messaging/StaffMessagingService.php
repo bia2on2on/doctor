@@ -9,6 +9,7 @@ use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Messaging\MessageText;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
@@ -580,7 +581,7 @@ final class StaffMessagingService {
      * @return array{wp_user_id: int, display_name: string, staff_class: string, label: string}
      */
     private function present_user( int $user_id, string $staff_class ): array {
-        $name = 'کاربر شماره ' . $user_id;
+		$name = 'کاربر شماره ' . PersianDigits::format_int( $user_id );
         if ( function_exists( 'get_userdata' ) ) {
             $user = get_userdata( $user_id );
             if ( $user !== false && $user !== null ) {
@@ -605,7 +606,12 @@ final class StaffMessagingService {
         $date = substr( $utc_sql, 0, 10 );
         $time = substr( $utc_sql, 11, 5 );
 
-        return $date !== '' ? Jalali::formatYmd( $date ) . ' — ' . $time . ' UTC' : '';
+		if ( '' === $date ) {
+			return '';
+		}
+
+		$time_fa = PersianDigits::digits( $time );
+		return Jalali::format_display_ymd( $date ) . ' — ' . $time_fa . ' UTC';
     }
 
     /**

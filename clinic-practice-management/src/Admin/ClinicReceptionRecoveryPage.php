@@ -8,6 +8,7 @@ use ClinicCore\Application\Membership\ReceptionRecoveryService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
 /**
@@ -132,7 +133,10 @@ final class ClinicReceptionRecoveryPage {
         // Header with Clinic context.
         echo '<div class="wrap cpms-reception-recovery" dir="rtl">';
         echo '<h1>بازیابی پذیرش — انتساب پزشک به محل</h1>';
-        echo '<p>درمانگاهِ فعال: <strong>' . \esc_html( $clinic_name ) . '</strong> (شناسه ' . \esc_html( (string) $clinic_id ) . ') — ' . \esc_html( Jalali::todayJalali() ) . '</p>';
+		$clinic_id_fa = PersianDigits::format_int( $clinic_id );
+		echo '<p>درمانگاهِ فعال: <strong>' . \esc_html( $clinic_name ) . '</strong>'
+			. ' (شناسه ' . \esc_html( $clinic_id_fa ) . ') — '
+			. \esc_html( Jalali::today_display_jalali() ) . '</p>';
 
         if ( $notice !== null ) {
             $class = $notice['type'] === 'success' ? 'notice notice-success is-dismissible' : 'notice notice-error is-dismissible';
