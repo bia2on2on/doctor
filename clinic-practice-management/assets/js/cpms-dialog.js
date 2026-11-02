@@ -24,6 +24,11 @@
  * class tokens are therefore kept on the shared dialog's overlay and confirm
  * button, so replacing the per-page modal with this component does not weaken
  * or bypass the existing browser gate.
+ *
+ * The dialog ROOT likewise carries `cpms-modal` next to `cpms-dialog` because
+ * `bin/pilot-slice-portal-cancel.py` waits for `.cpms-modal[role="dialog"]`.
+ * Classes are only ever ADDED here; a token that a shipped harness selects on
+ * must never be dropped.
  */
 (function () {
     'use strict';
@@ -92,7 +97,10 @@
         // `cpms-modal-overlay` is the legacy/shipped acceptance token — see the
         // markup contract in this file's header.
         var overlay = el('div', 'cpms-dialog-overlay cpms-modal-overlay');
-        var dialog = el('div', 'cpms-dialog');
+        // `cpms-modal` is the selector the shipped Chromium journey
+        // (bin/pilot-slice-portal-cancel.py: DIALOG = '.cpms-modal[role="dialog"]')
+        // waits for. Added alongside `cpms-dialog`, never instead of it.
+        var dialog = el('div', 'cpms-dialog cpms-modal');
         dialog.setAttribute('role', 'dialog');
         dialog.setAttribute('aria-modal', 'true');
         dialog.setAttribute('dir', 'rtl');

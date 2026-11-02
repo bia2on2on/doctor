@@ -182,6 +182,10 @@ final class PatientPortalShell {
 		$version = \defined( 'CPMS_VERSION' ) ? (string) CPMS_VERSION : 'dev';
 		wp_register_style( self::CSS_HANDLE, $base . '/assets/css/cpms-patient-portal.css', [], $version );
 		wp_register_script( self::JS_HANDLE, $base . '/assets/js/cpms-patient-portal.js', [], $version, true );
+		// Shared Persian text helper + in-page confirm/prompt dialog (same handles,
+		// URLs and dependency order as the staff/doctor shells). The portal script
+		// keeps its empty dependency list; the dialog loads alongside it.
+		StaffPortalShell::register_ui_handles();
 		StaffPortalShell::register_jalali_handles();
 	}
 
@@ -195,6 +199,11 @@ final class PatientPortalShell {
 		// The same portal-scoped script binds guest OTP login and authenticated
 		// Patient actions; each branch requires its own server-published config.
 		wp_enqueue_script( self::JS_HANDLE );
+		// Cancelling an appointment must be an explicit, in-product confirmation:
+		// print the shared dialog on this surface instead of relying on the
+		// portal-owned fallback modal in cpms-patient-portal.js.
+		wp_enqueue_script( StaffPortalShell::UI_TEXT_HANDLE );
+		wp_enqueue_script( StaffPortalShell::DIALOG_HANDLE );
 		$user_id = (int) get_current_user_id();
 		if ( $user_id > 0 && PatientPortalPage::isPatientOnly( $user_id ) ) {
 			StaffPortalShell::register_jalali_handles();

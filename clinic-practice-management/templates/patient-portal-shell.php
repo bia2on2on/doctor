@@ -92,6 +92,24 @@ ob_start();
 wp_print_styles( $cpms_style_handles );
 $cpms_styles_html = (string) ob_get_clean();
 
+// The shared Persian text helper and the in-page confirm/prompt dialog load in
+// the HEAD, in the same dependency order the staff/doctor shells register them
+// (`cpms-dialog` depends on `cpms-ui-text`), so inline server-rendered scripts
+// can rely on `window.CpmsDialog` while they parse. Styles are injected by the
+// script itself — there is no separate dialog stylesheet to print.
+$cpms_dialog_handles = [];
+foreach ( [ StaffPortalShell::UI_TEXT_HANDLE, StaffPortalShell::DIALOG_HANDLE ] as $cpms_handle ) {
+	if ( wp_script_is( $cpms_handle, 'registered' ) ) {
+		$cpms_dialog_handles[] = $cpms_handle;
+	}
+}
+$cpms_dialog_scripts_html = '';
+if ( [] !== $cpms_dialog_handles ) {
+	ob_start();
+	wp_print_scripts( $cpms_dialog_handles );
+	$cpms_dialog_scripts_html = (string) ob_get_clean();
+}
+
 ob_start();
 wp_print_scripts( $cpms_script_handles );
 $cpms_scripts_html = (string) ob_get_clean();
@@ -106,6 +124,10 @@ $cpms_scripts_html = (string) ob_get_clean();
 <?php
 // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- style tags from wp_print_styles (registered local handles only).
 echo $cpms_styles_html;
+?>
+<?php
+// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- wp_print_scripts tags.
+echo $cpms_dialog_scripts_html;
 ?>
 </head>
 <body class="<?php echo esc_attr( $cpms_body_class ); ?>">
