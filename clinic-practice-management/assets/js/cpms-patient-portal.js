@@ -10,8 +10,9 @@
  *
  * رفتار:
  *  - کلیک/کیبورد روی `<button data-role="cancel-appointment">` ⇒ (اگر `data-cpms-confirm`
- *    هنوز روی دکمه باشد، ابتدا Modal تأیید موجودِ cpms-admin.js اجرا می‌شود و بعد
- *    از تأیید همان دکمه دوباره click می‌شود) ⇒ دکمه disabled + aria-busy ⇒ POST.
+ *    هنوز روی دکمه باشد، ابتدا دیالوگِ مشترکِ داخل‌صفحه (window.CpmsDialog، یعنی
+ *    assets/js/cpms-dialog.js) باز می‌شود — وگرنه Modalِ خودِ پورتال — و بعد
+ *    از تأیید همان دکمه hànhِ لغو اجرا می‌شود) ⇒ دکمه disabled + aria-busy ⇒ POST.
  *  - موفقیت ⇒ بارگذاری مجددِ صفحه (جدول از سرور می‌آید؛ ردیف به تاریخچه می‌رود).
  *  - شکست (پاکتِ canonical `{code, message}` یا خطای شبکه) ⇒ پیام فارسیِ سرور در
  *    ناحیهٔ `role="alert"` + دکمه دوباره فعال و focus روی آن.
@@ -265,7 +266,7 @@
 		});
 	}
 
-	function cancelAppointment(config, button) {
+	function cancelAppointment(config, button, confirmMessage) {
 		var appointmentId = parseInt(button.getAttribute('data-appointment-id') || '', 10);
 		if (!(appointmentId > 0) || button.disabled) {
 			return;
@@ -288,10 +289,14 @@
 				window.location.reload();
 				return;
 			}
+			// خطای لغو: دکمه دوباره قابل استفاده می‌شود و data-cpms-confirm بازگردانده می‌شود
+			// تا کلیکِ بعدی دوباره تأیید بخواهد.
+			if (confirmMessage) { button.setAttribute(CONFIRM_ATTR, confirmMessage); }
 			setBusy(button, false, idleLabel);
 			showError(errorBox(), serverMessage(result) || TEXT_FAILED, serverCode(result));
 			button.focus();
 		}, function () {
+			if (confirmMessage) { button.setAttribute(CONFIRM_ATTR, confirmMessage); }
 			setBusy(button, false, idleLabel);
 			showError(errorBox(), TEXT_FAILED, 'NETWORK');
 			button.focus();
@@ -1270,9 +1275,15 @@
 	/**
 	 * Accessible confirm dialog owned by the Patient Portal surface.
 	 * (Same contract as cpms-admin.js modal — UX only; B4 remains authorization.)
-	 * Lives here so the independent frontend shell does not depend on cpms-admin assets.
+	 * Prefers the SHARED in-page dialog (window.CpmsDialog / assets/js/cpms-dialog.js,
+	 * loaded on every surface that ships it); the portal-owned modal below stays as
+	 * the fallback for the standalone frontend shell, which prints only the portal
+	 * script handle. Never a native browser dialog.
 	 */
 	function showConfirm(message) {
+		if (window.CpmsDialog && typeof window.CpmsDialog.confirm === 'function') {
+			return window.CpmsDialog.confirm(message, { title: 'تأیید عملیات' });
+		}
 		return new Promise(function (resolve) {
 			var old = document.querySelector('.cpms-modal-overlay');
 			if (old && old.parentNode) {
@@ -1341,24 +1352,34 @@
 		});
 	}
 
+	// جلوگیری از ارسال دوباره: تا دیالوگِ تأییدِ یک دکمه باز است،
+	// کلیکِ دوبارهٔ همان دکمه نادیده گرفته می‌شود.
+	var pendingConfirms = [];
+
 	function bind(config) {
 		var buttons = document.querySelectorAll(BUTTON_SELECTOR);
 		Array.prototype.forEach.call(buttons, function (button) {
 			button.addEventListener('click', function () {
+				if (button.disabled) { return; }
 				if (button.hasAttribute(CONFIRM_ATTR)) {
+					if (pendingConfirms.indexOf(button) !== -1) { return; }
 					var message = button.getAttribute(CONFIRM_ATTR) || '';
-					// First click: open portal-owned confirm. On accept, drop the attr
-					// and re-click so cancelAppointment runs (same contract as cpms-admin).
+					// First click: open the confirm dialog. On accept, drop the attr and
+					// run the cancel directly (same contract as cpms-admin); on error the
+					// attr is restored inside cancelAppointment.
+					pendingConfirms.push(button);
 					showConfirm(message).then(function (ok) {
+						var i = pendingConfirms.indexOf(button);
+						if (i !== -1) { pendingConfirms.splice(i, 1); }
 						if (!ok) {
 							return;
 						}
 						button.removeAttribute(CONFIRM_ATTR);
-						button.click();
+						cancelAppointment(config, button, message);
 					});
 					return;
 				}
-				cancelAppointment(config, button);
+				cancelAppointment(config, button, '');
 			});
 		});
 	}

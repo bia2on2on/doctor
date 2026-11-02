@@ -34,6 +34,10 @@ Journey (per viewport 390x844 and 1366x768):
      body {} → 409 CLINIC_POLICY_VIOLATION; DB unchanged. (The button-level 409 UX — busy state,
      inline Persian alert, focus restore — is no longer reachable by design: the control is withheld
      inside the deadline. It is covered for the nonce/in-flight path by 1c and for the success path by 4.)
+  3b. Button-level cancel error (added coverage): the same cancel control with the X-WP-Nonce
+     stripped on the cancel route → 403 CLINIC_INVALID_NONCE → Persian role=alert; the control is
+     disabled + aria-busy in flight, then re-enabled with its label restored, data-cpms-confirm
+     RESTORED on the button, and focus back on the trigger; DB unchanged; no navigation.
   4. Success path: confirm on ok_appt → 200 → page reloads → row gone from upcoming, listed in history as
      cancelled; DB status cancelled_by_patient, slot capacity released, audit row written.
   5. UX: no horizontal overflow, no page errors, no failed same-origin requests, only the four expected REST calls.
@@ -685,7 +689,12 @@ def run_journey(browser, run):
             raise RuntimeError("Escape must not send any request")
         if not ok_btn.is_enabled() or appt_status(ok_appt) != "confirmed":
             raise RuntimeError("Escape must leave the control enabled and the appointment confirmed")
-        ok(f"{key0}-02-keyboard", "Keyboard: Enter opens accessible confirm, Escape aborts (no request)", "requests=0 status=confirmed")
+        if page.evaluate("() => document.activeElement && document.activeElement.getAttribute('data-appointment-id')") != str(ok_appt):
+            raise RuntimeError("focus must return to the cancel trigger after the dialog closes")
+        if not ok_btn.get_attribute("data-cpms-confirm"):
+            raise RuntimeError("data-cpms-confirm must stay on the control after Escape")
+        ok(f"{key0}-02-keyboard", "Keyboard: Enter opens accessible confirm, Escape aborts (no request)",
+           "requests=0 status=confirmed focus_restored=True confirm_hook_kept=True")
 
         # ---------- 3) failure path (deadline policy — server remains authoritative) ----------
         # The UI no longer offers the control inside the deadline (Package D), so the
@@ -721,6 +730,77 @@ def run_journey(browser, run):
         page.screenshot(path=screenshot("fail-no-control"), full_page=True)
         ok(f"{key0}-03-fail", "Failure path: deadline row renders no control + Persian contact-the-clinic note; direct same-origin POST still 409 → DB unchanged",
            f"status=409 code=CLINIC_POLICY_VIOLATION nonce=True same_origin=True body_empty=True control_rendered=False note=True")
+
+        # ---------- 3b) button-level cancel error: nonce stripped on the cancel route → 403 ----------
+        # (added coverage: cancel-error path, aria-busy in flight, data-cpms-confirm restored,
+        #  focus return to the trigger — nothing existing is removed or loosened)
+        stage = "cancel-error"
+        install_trace(page, f'{BTN}[data-appointment-id="{ok_appt}"]')
+        posts_before = len(cancel_posts)
+
+        def strip_cancel_nonce(route, request):
+            headers = {k: v for k, v in request.headers.items() if k.lower() != "x-wp-nonce"}
+            route.continue_(headers=headers)
+
+        def is_cancel_rest(url):
+            return "/clinic/v1" in url and CANCEL_ROUTE_RE.match(wp_route(url)) is not None
+
+        page.route(is_cancel_rest, strip_cancel_nonce)
+        try:
+            with page.expect_response(
+                lambda r: r.request.method == "POST"
+                and wp_route(r.url) == f"/clinic/v1/appointments/{ok_appt}/cancel",
+                timeout=20000,
+            ) as err_info:
+                ok_btn.click()
+                err_dialog = confirm_dialog(page)
+                err_dialog.locator(".cpms-modal-confirm").click()
+            err_resp = err_info.value
+        finally:
+            page.unroute(is_cancel_rest, strip_cancel_nonce)
+        if err_resp.status != 403:
+            raise RuntimeError(f"the nonce-less cancel POST must be rejected with 403, got {err_resp.status}")
+        err_body = err_resp.json()
+        if err_body.get("code") != "CLINIC_INVALID_NONCE":
+            raise RuntimeError(f"expected the canonical CLINIC_INVALID_NONCE envelope, got {err_body.get('code')!r}")
+        page.wait_for_selector(f"{ERROR_BOX}:not([hidden])", state="visible", timeout=10000)
+        cerr_text = (error_box.inner_text() or "").strip()
+        if cerr_text == "" or error_box.get_attribute("data-error-code") != "CLINIC_INVALID_NONCE":
+            raise RuntimeError("failure must surface a non-empty inline alert carrying the server code")
+        if not PERSIAN_RE.search(cerr_text):
+            raise RuntimeError("the cancel inline error must be Persian")
+        page.wait_for_function(
+            "(sel) => { const b = document.querySelector(sel); return b && !b.disabled && b.getAttribute('aria-busy') === 'false'; }",
+            arg=f'{BTN}[data-appointment-id="{ok_appt}"]', timeout=10000,
+        )
+        ctrace = page.evaluate("() => window.__cpmsTrace || []")
+        c_was_busy = any(t.get("disabled") is True and t.get("busy") == "true" for t in ctrace)
+        if not c_was_busy:
+            raise RuntimeError(f"the cancel control must be disabled + aria-busy while in flight (trace={ctrace[:3]})")
+        if ok_btn.inner_text().strip() != "لغو نوبت":
+            raise RuntimeError("the cancel label must be restored after the error")
+        restored_confirm = ok_btn.get_attribute("data-cpms-confirm") or ""
+        if not restored_confirm:
+            raise RuntimeError("data-cpms-confirm must be RESTORED after a cancel error")
+        if not PERSIAN_RE.search(restored_confirm):
+            raise RuntimeError("the restored data-cpms-confirm must be a Persian message")
+        if page.evaluate("() => document.activeElement && document.activeElement.getAttribute('data-appointment-id')") != str(ok_appt):
+            raise RuntimeError("focus must return to the cancel trigger after the error")
+        if appt_status(ok_appt) != "confirmed":
+            raise RuntimeError("a rejected cancel must not mutate the appointment")
+        err_posts = cancel_posts[posts_before:]
+        # NOTE: request headers recorded by the `request` event are the pre-strip ones
+        # (stage 1c never asserts has_nonce on a stripped request either); the 403 +
+        # CLINIC_INVALID_NONCE above are the proof that the nonce was stripped.
+        if len(err_posts) != 1 or not err_posts[0]["same_origin"] or err_posts[0]["body"].strip() != "{}":
+            raise RuntimeError(
+                f"exactly one same-origin empty-body cancel POST expected, got {[(p['body'][:40], p['same_origin']) for p in err_posts]}"
+            )
+        if not is_frontend_portal_url(page.url) and page.locator(SHELL_ROOT).count() == 0:
+            raise RuntimeError(f"a cancel error must not navigate away from the frontend portal (url={page.url})")
+        page.screenshot(path=screenshot("cancel-error"), full_page=True)
+        ok(f"{key0}-03b-cancel-error", "Button-level cancel error: 403 CLINIC_INVALID_NONCE → Persian alert; busy in flight, re-enabled + label restored, data-cpms-confirm restored, focus on trigger; DB unchanged",
+           f"status=403 code=CLINIC_INVALID_NONCE busy_seen={c_was_busy} confirm_restored=True focus=trigger db=confirmed posts=1")
 
         # ---------- 4) success path ----------
         stage = "success-path"
@@ -798,6 +878,7 @@ def run_journey(browser, run):
             ("POST", READ_ROUTE, 403),
             ("POST", READ_ROUTE, 200),
             ("POST", f"/clinic/v1/appointments/{fail_appt}/cancel", 409),
+            ("POST", f"/clinic/v1/appointments/{ok_appt}/cancel", 403),
             ("POST", f"/clinic/v1/appointments/{ok_appt}/cancel", 200),
         ])
         if sorted(rest_calls) != expected_calls:
@@ -813,6 +894,7 @@ def run_journey(browser, run):
             page.screenshot(path=screenshot("FAIL"), full_page=True)
         except Exception:
             pass
+        print(f"ERROR {key0}-{stage}: {type(e).__name__}: {e}")
         fail(f"{key0}-{stage}", f"portal cancel {run['vp']}", e)
         raise
     finally:
