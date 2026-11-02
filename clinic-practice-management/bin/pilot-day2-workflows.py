@@ -503,6 +503,42 @@ def run_journey_a_public_booking(browser, cfg):
         c1_btn = page_pub.locator(f'.cpms-public-booking__clinician[data-clinician-id="{cfg["clinician_1"]}"]')
         assert c2_btn.count() == 1 and c1_btn.count() == 1, "both clinicians must render in public switcher"
 
+        def choose_location_for(button):
+            """Location-first surface: a Location is chosen before the doctor.
+
+            Additive: when the surface publishes no Location option (pre-change
+            rendering) or a single Location was already selected automatically,
+            nothing is clicked. Otherwise the first published Location the target
+            clinician is eligible at is chosen, so that doctor becomes selectable.
+            """
+            options = page_pub.locator('[data-role="location-option"]')
+            if options.count() == 0:
+                return
+            if page_pub.locator('[data-role="location-option"][aria-pressed="true"]').count() > 0:
+                return
+            for location_id in (button.get_attribute("data-locations") or "").split():
+                candidate = page_pub.locator(
+                    f'[data-role="location-option"][data-location-id="{location_id}"]'
+                )
+                if candidate.count() == 1:
+                    candidate.click()
+                    page_pub.wait_for_function(
+                        "document.querySelector('[data-role=\"location-option\"][aria-pressed=\"true\"]') !== null"
+                    )
+                    return
+
+        def reselect_after_location_switch(button):
+            """Changing the Location clears the chosen doctor by design.
+
+            Additive: only when the selection was actually cleared is the same
+            doctor chosen again; the pre-change surface keeps its selection and
+            this is a no-op.
+            """
+            if button.get_attribute("aria-pressed") != "true":
+                button.click()
+
+        choose_location_for(c2_btn)
+
         with page_pub.expect_response(lambda r: "/clinic/v1/availability" in r.url, timeout=25000) as av2_info:
             c2_btn.click()
         assert av2_info.value.status == 200, "Clinician 2 availability failed"
@@ -525,10 +561,12 @@ def run_journey_a_public_booking(browser, cfg):
         assert loc2_btn.count() == 1 and loc1_btn.count() == 1, "both Location options must render"
 
         loc2_btn.click()
+        reselect_after_location_switch(c1_btn)
         page_pub.locator(f'.cpms-public-booking__slot[data-slot-id="{cfg["pub_slot_doc1_loc2"]}"]').wait_for(state="visible")
         assert page_pub.locator(f'.cpms-public-booking__slot[data-slot-id="{cfg["pub_slot_doc1_loc1"]}"]').count() == 0
 
         loc1_btn.click()
+        reselect_after_location_switch(c1_btn)
         target_slot = page_pub.locator(f'.cpms-public-booking__slot[data-slot-id="{cfg["pub_slot_doc1_loc1"]}"]')
         target_slot.wait_for(state="visible")
         assert page_pub.locator(f'.cpms-public-booking__slot[data-slot-id="{cfg["pub_slot_doc1_loc2"]}"]').count() == 0
