@@ -66,16 +66,28 @@ if ( '' === $cpms_charset ) {
 }
 $cpms_site_name = (string) get_bloginfo( 'name' );
 
+$cpms_jalali_mod     = StaffPortalShell::date_input_module( $cpms_module_id );
+$cpms_style_handles  = array();
+$cpms_script_handles = array();
+if ( $cpms_doctor_mod ) {
+    $cpms_style_handles[]  = StaffPortalShell::DOCTOR_CSS_HANDLE;
+    $cpms_script_handles[] = StaffPortalShell::DOCTOR_JS_HANDLE;
+}
+if ( $cpms_jalali_mod ) {
+    $cpms_style_handles[]  = StaffPortalShell::JALALI_HANDLE;
+    $cpms_script_handles[] = StaffPortalShell::JALALI_HANDLE;
+}
+
 $cpms_styles_html  = '';
 $cpms_scripts_html = '';
-if ( $cpms_doctor_mod ) {
-    // REUSE of the delivered doctor assets: same handles, printed once.
+if ( array() !== $cpms_style_handles ) {
     ob_start();
-    wp_print_styles( array( StaffPortalShell::DOCTOR_CSS_HANDLE ) );
+    wp_print_styles( $cpms_style_handles );
     $cpms_styles_html = (string) ob_get_clean();
-
+}
+if ( array() !== $cpms_script_handles ) {
     ob_start();
-    wp_print_scripts( array( StaffPortalShell::DOCTOR_JS_HANDLE ) );
+    wp_print_scripts( $cpms_script_handles );
     $cpms_scripts_html = (string) ob_get_clean();
 }
 

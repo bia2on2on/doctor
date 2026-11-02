@@ -232,6 +232,9 @@ final class DoctorPortalShell {
 		$version = defined( 'CPMS_VERSION' ) ? (string) CPMS_VERSION : 'dev';
 		wp_register_style( self::CSS_HANDLE, $base . '/assets/css/cpms-doctor-portal.css', [], $version );
 		wp_register_script( self::JS_HANDLE, $base . '/assets/js/cpms-doctor-portal.js', [], $version, true );
+		if ( class_exists( StaffPortalShell::class ) ) {
+			StaffPortalShell::register_jalali_handles();
+		}
 	}
 
 	public const HANDWRITING_HANDLE = 'cpms-doctor-handwriting';
@@ -273,6 +276,11 @@ final class DoctorPortalShell {
 			\ClinicCore\Frontend\StaffPortalShell::register_ui_handles();
 			wp_enqueue_script( \ClinicCore\Frontend\StaffPortalShell::UI_TEXT_HANDLE );
 			wp_enqueue_script( \ClinicCore\Frontend\StaffPortalShell::DIALOG_HANDLE );
+			if ( self::isDoctorUser( wp_get_current_user() ) ) {
+				\ClinicCore\Frontend\StaffPortalShell::register_jalali_handles();
+				wp_enqueue_style( \ClinicCore\Frontend\StaffPortalShell::JALALI_HANDLE );
+				wp_enqueue_script( \ClinicCore\Frontend\StaffPortalShell::JALALI_HANDLE );
+			}
 		}
 	}
 
