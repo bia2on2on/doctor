@@ -282,6 +282,56 @@ def staff_module_url(link: str, module: str) -> str:
     return parsed._replace(query=urlencode(query, doseq=True)).geturl()
 
 
+def select_public_booking_location(page, root, location_id: int, timeout_ms: int = 25000) -> str:
+    """Satisfy the visit-Location step of the public booking widget, both flows.
+
+    Since the location-first contract (`cpms-public-booking.js`, initLocationFirst)
+    the widget publishes `[data-role="location-picker"]` and, when the server
+    offers MORE THAN ONE eligible Location for the Clinic, it keeps the doctor
+    list hidden AND disabled until a Location is chosen. With exactly one Location
+    it selects that Location itself, and with none it keeps the previous
+    doctor-first flow — so a harness must satisfy the picker only when it is
+    actually offered.
+
+    Returns the chosen Location id as text, or "0" when the page is in the legacy
+    doctor-first flow (nothing to choose). Waits are bounded by the caller's own
+    timeout budget; a page in neither state is a genuine failure.
+    """
+    picker = root.locator('[data-role="location-picker"]')
+    options = root.locator('[data-role="location-option"]:not([disabled])')
+    clinician = root.locator("button.cpms-public-booking__clinician")
+    budget = max(1, int(timeout_ms // 100))
+    for _ in range(budget):
+        if picker.count() > 0 and picker.first.is_visible() and options.count() > 0:
+            break
+        if clinician.count() > 0 and clinician.first.is_visible():
+            return "0"
+        page.wait_for_timeout(100)
+    else:
+        raise RuntimeError(
+            "the public booking widget exposed neither a visit-Location picker nor a "
+            f"selectable doctor within {timeout_ms}ms"
+        )
+
+    preferred = root.locator(
+        f'[data-role="location-option"][data-location-id="{int(location_id)}"]:not([disabled])'
+    )
+    if int(location_id) > 0 and preferred.count() > 0:
+        option = preferred.first
+    else:
+        raise RuntimeError(
+            "the public booking widget offers Locations but not the fixture Location "
+            f"{int(location_id)}; offered ids: "
+            + ",".join(
+                str(node.get_attribute("data-location-id"))
+                for node in options.all()
+            )
+        )
+    option.wait_for(state="visible")
+    option.click()
+    return option.get_attribute("data-location-id") or "0"
+
+
 def assert_rtl_and_no_overflow(page, label: str, widths=(320, 390)) -> None:
     for width in widths:
         page.set_viewport_size({"width": width, "height": 844})
@@ -1267,6 +1317,20 @@ def main() -> None:
             root = booking_page.locator(".cpms-public-booking")
             root.wait_for()
             check("public booking shortcode rendered", root.count() == 1)
+
+            # The fixture Clinic has TWO Locations, so the widget is location-first
+            # and keeps the doctor list hidden + disabled until a visit Location is
+            # chosen (initLocationFirst). A Clinic with one Location is auto-selected
+            # and a Clinic with none keeps the doctor-first flow; in both of those
+            # the helper is a no-op returning "0".
+            chosen_location = select_public_booking_location(
+                booking_page, root, int(fixture_meta["location_id"])
+            )
+            check(
+                "public booking visit Location resolved (location-first or legacy doctor-first)",
+                chosen_location == "0" or chosen_location == str(int(fixture_meta["location_id"])),
+                f"location_id={chosen_location} fixture_location_id={fixture_meta['location_id']}",
+            )
 
             clinician_btn = root.locator("button.cpms-public-booking__clinician", has_text=fixture_meta["clinician_name"]).first
             clinician_btn.wait_for(state="visible")
