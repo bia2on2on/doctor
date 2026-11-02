@@ -459,7 +459,7 @@ final class MembershipRepository {
             . ' INNER JOIN ' . $places
             . ' l ON l.id = cl.location_id AND l.clinic_id = %d AND l.is_active = 1'
             . ' INNER JOIN ' . $members
-            . " m ON m.wp_user_id = c.wp_user_id AND m.clinic_id = %d"
+            . ' m ON m.wp_user_id = c.wp_user_id AND m.clinic_id = %d'
             . " AND m.status = 'active'"
             . ' WHERE c.is_active = 1 AND c.wp_user_id > 0'
             . " AND ( m.scope_mode = 'clinic' OR EXISTS ( SELECT 1 FROM " . $scoped

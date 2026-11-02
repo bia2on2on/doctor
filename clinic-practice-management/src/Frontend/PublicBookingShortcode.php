@@ -807,8 +807,7 @@ final class PublicBookingShortcode
         // `data-locations` = only the Locations the SERVER found eligible for
         // this clinician. The Location-first order filters on this value alone;
         // JS never guesses a Location. Empty => not selectable anywhere.
-        $locations_attr = implode( ' ', array_map( 'intval', $location_ids ) );
-        $lines[]        = sprintf(
+        $lines[] = sprintf(
             '<li class="%1$s %2$s" data-clinic-id="%3$d" data-clinician-id="%4$d"'
             . ' data-specialty="%5$s" data-search="%6$s" data-locations="%7$s">',
             esc_attr( self::ROOT_CLASS . '__clinician-item' ),
@@ -817,7 +816,7 @@ final class PublicBookingShortcode
             $id,
             esc_attr( $specialty ),
             esc_attr( self::normalize_search_text( $name ) ),
-            esc_attr( $locations_attr )
+            esc_attr( implode( ' ', array_map( 'intval', $location_ids ) ) )
         );
         $lines[] = sprintf(
             '<button type="button" class="%1$s" data-clinician-id="%2$d" data-clinic-id="%3$d" aria-pressed="false">'
@@ -1663,16 +1662,17 @@ final class PublicBookingShortcode
             'availability_path' => self::AVAILABILITY_PATH,
             'quote_path' => self::QUOTE_PATH,
             'clinic_id'         => $clinic_id,
-            // Location-first: only the Locations of THIS Clinic (or these
-            // Clinics) that have an eligible clinician. No foreign, inactive
-            // or unknown Location. Clinic keys become JSON object keys.
-            'locations_by_clinic' => array_map(
-                static fn ( array $row ): array => $row['locations'],
-                $location_contract
-            ),
             'state_vocabulary' => self::STATE_VOCABULARY,
             'initial_state' => 'idle',
         ];
+
+        // Location-first: only the Locations of THIS Clinic (or these Clinics)
+        // that have an eligible clinician. No foreign, inactive or unknown
+        // Location is published; the Clinic keys become JSON object keys.
+        $config['locations_by_clinic'] = array_map(
+            static fn ( array $row ): array => $row['locations'],
+            $location_contract
+        );
 
         $continuation = self::continuationState();
         if ($continuation === self::CONTINUATION_ANONYMOUS) {
