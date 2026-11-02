@@ -318,6 +318,9 @@ BOOKING_ROUTES = (
 )
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{1,40}$")
 _REQUEST_ID_KEYS = ("slot_id", "clinician_id", "location_id")
+_REQUEST_KEYS = ("slot_id", "slot_date", "slot_time", "clinician_id", "location_id", "patient_id")
+_SLOT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_SLOT_TIME_RE = re.compile(r"^\d{2}:\d{2}(:\d{2})?$")
 
 
 class BookingProbe:
@@ -349,6 +352,13 @@ class BookingProbe:
         except Exception:  # noqa: BLE001 - non-JSON error pages are still recorded by status
             payload = None
         if isinstance(payload, dict):
+            raw_message = payload.get("message")
+            if not isinstance(raw_message, str):
+                data_payload = payload.get("data")
+                raw_message = data_payload.get("message") if isinstance(data_payload, dict) else None
+            if isinstance(raw_message, str):
+                # Server-generated error text only (the envelope message), bounded.
+                entry["message"] = " ".join(raw_message.split())[:300]
             for candidate in (payload.get("code"), (payload.get("data") or {}).get("code")
                               if isinstance(payload.get("data"), dict) else None):
                 if isinstance(candidate, str) and _ERROR_CODE.match(candidate):
@@ -365,6 +375,15 @@ class BookingProbe:
                         entry[key] = int(posted[key])
                     except (TypeError, ValueError):
                         continue
+            # Key NAMES only (allowlist), plus the two slot time coordinates when
+            # they are well formed: enough to tell "stale tuple" from "server guard".
+            entry["keys"] = ",".join(key for key in _REQUEST_KEYS if key in posted)
+            posted_date = posted.get("slot_date")
+            if isinstance(posted_date, str) and _SLOT_DATE_RE.match(posted_date):
+                entry["slot_date"] = posted_date
+            posted_time = posted.get("slot_time")
+            if isinstance(posted_time, str) and _SLOT_TIME_RE.match(posted_time):
+                entry["slot_time"] = posted_time
         self.entries.append(entry)
 
     def hold_attempts(self, since=0):
@@ -451,6 +470,10 @@ def visible_or_diagnose(page, selector, stage, probe=None, since=0, hold_attempt
                     f" hold_attempt=slot={hold_attempt.get('slot_id')}"
                     f" http={hold_attempt['status']}"
                     f"{' code=' + hold_attempt['code'] if hold_attempt['code'] else ''}"
+                    f"{' msg=' + hold_attempt['message'] if hold_attempt.get('message') else ''}"
+                    f"{' keys=' + hold_attempt['keys'] if hold_attempt.get('keys') else ''}"
+                    f"{' slot_date=' + hold_attempt['slot_date'] if hold_attempt.get('slot_date') else ''}"
+                    f"{' slot_time=' + hold_attempt['slot_time'] if hold_attempt.get('slot_time') else ''}"
                 )
             widget = hold_widget_fingerprint(page)
             if widget:
@@ -503,6 +526,51 @@ def run_journey_a_public_booking(browser, cfg):
         c1_btn = page_pub.locator(f'.cpms-public-booking__clinician[data-clinician-id="{cfg["clinician_1"]}"]')
         assert c2_btn.count() == 1 and c1_btn.count() == 1, "both clinicians must render in public switcher"
 
+        def choose_location_for(button):
+            """Location-first surface: a Location is chosen before the doctor.
+
+            Additive: when the surface publishes no Location option (pre-change
+            rendering) or a single Location was already selected automatically,
+            nothing is clicked. Otherwise the first published Location the target
+            clinician is eligible at is chosen, so that doctor becomes selectable.
+
+            `data-locations` belongs to the LIST ITEM that wraps the doctor button
+            (PublicBookingShortcode renders it on `li.cpms-public-booking__clinician-item`);
+            the button itself does not carry it, so it is read exactly the way the
+            product's own `clinicianLocations()` reads it — from the closest item.
+            """
+            options = page_pub.locator('[data-role="location-option"]')
+            if options.count() == 0:
+                return
+            if page_pub.locator('[data-role="location-option"][aria-pressed="true"]').count() > 0:
+                return
+            holder = button.evaluate(
+                "el => { var item = el.closest('.cpms-public-booking__clinician-item');"
+                " return item ? String(item.getAttribute('data-locations') || '') : ''; }"
+            )
+            for location_id in str(holder or "").split():
+                candidate = page_pub.locator(
+                    f'[data-role="location-option"][data-location-id="{location_id}"]'
+                )
+                if candidate.count() == 1:
+                    candidate.click()
+                    page_pub.wait_for_function(
+                        "document.querySelector('[data-role=\"location-option\"][aria-pressed=\"true\"]') !== null"
+                    )
+                    return
+
+        def reselect_after_location_switch(button):
+            """Changing the Location clears the chosen doctor by design.
+
+            Additive: only when the selection was actually cleared is the same
+            doctor chosen again; the pre-change surface keeps its selection and
+            this is a no-op.
+            """
+            if button.get_attribute("aria-pressed") != "true":
+                button.click()
+
+        choose_location_for(c2_btn)
+
         with page_pub.expect_response(lambda r: "/clinic/v1/availability" in r.url, timeout=25000) as av2_info:
             c2_btn.click()
         assert av2_info.value.status == 200, "Clinician 2 availability failed"
@@ -525,10 +593,12 @@ def run_journey_a_public_booking(browser, cfg):
         assert loc2_btn.count() == 1 and loc1_btn.count() == 1, "both Location options must render"
 
         loc2_btn.click()
+        reselect_after_location_switch(c1_btn)
         page_pub.locator(f'.cpms-public-booking__slot[data-slot-id="{cfg["pub_slot_doc1_loc2"]}"]').wait_for(state="visible")
         assert page_pub.locator(f'.cpms-public-booking__slot[data-slot-id="{cfg["pub_slot_doc1_loc1"]}"]').count() == 0
 
         loc1_btn.click()
+        reselect_after_location_switch(c1_btn)
         target_slot = page_pub.locator(f'.cpms-public-booking__slot[data-slot-id="{cfg["pub_slot_doc1_loc1"]}"]')
         target_slot.wait_for(state="visible")
         assert page_pub.locator(f'.cpms-public-booking__slot[data-slot-id="{cfg["pub_slot_doc1_loc2"]}"]').count() == 0
