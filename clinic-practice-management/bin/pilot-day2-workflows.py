@@ -510,13 +510,22 @@ def run_journey_a_public_booking(browser, cfg):
             rendering) or a single Location was already selected automatically,
             nothing is clicked. Otherwise the first published Location the target
             clinician is eligible at is chosen, so that doctor becomes selectable.
+
+            `data-locations` belongs to the LIST ITEM that wraps the doctor button
+            (PublicBookingShortcode renders it on `li.cpms-public-booking__clinician-item`);
+            the button itself does not carry it, so it is read exactly the way the
+            product's own `clinicianLocations()` reads it — from the closest item.
             """
             options = page_pub.locator('[data-role="location-option"]')
             if options.count() == 0:
                 return
             if page_pub.locator('[data-role="location-option"][aria-pressed="true"]').count() > 0:
                 return
-            for location_id in (button.get_attribute("data-locations") or "").split():
+            holder = button.evaluate(
+                "el => { var item = el.closest('.cpms-public-booking__clinician-item');"
+                " return item ? String(item.getAttribute('data-locations') || '') : ''; }"
+            )
+            for location_id in str(holder or "").split():
                 candidate = page_pub.locator(
                     f'[data-role="location-option"][data-location-id="{location_id}"]'
                 )
