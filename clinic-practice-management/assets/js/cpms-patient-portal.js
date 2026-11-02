@@ -46,6 +46,13 @@
 		return typeof value === 'string' && value !== '';
 	}
 
+	/** ارقامِ لاتین → ارقامِ فارسی برای نمایشِ متنِ فارسی (بدون تغییرِ مقدارِ داده). */
+	function toPersianDigits(value) {
+		return String(value).replace(/[0-9]/g, function (ch) {
+			return String.fromCharCode(0x06F0 + (ch.charCodeAt(0) - 48));
+		});
+	}
+
 	/** خواندنِ ایمنِ پیکربندیِ منتشرشده توسط سرور؛ در هر شکست `null` (fail-closed). */
 	function readConfig() {
 		var element = document.querySelector(CONFIG_SELECTOR);
@@ -404,7 +411,7 @@
 			var clinicEl = el(ctx, PROFILE_CLINIC_LABEL);
 			var mrnEl = el(ctx, PROFILE_MRN);
 			if (clinicEl) { clinicEl.textContent = (record && record.clinic_name) || ''; }
-			if (mrnEl) { mrnEl.textContent = record && record.mrn ? ('MRN: ' + record.mrn) : ''; }
+			if (mrnEl) { mrnEl.textContent = record && record.mrn ? ('شمارهٔ پرونده: ' + record.mrn) : ''; }
 			ctx.hidden = !(record && (record.clinic_name || record.mrn));
 		}
 		var hid = el(section, PROFILE_LINK_ID);
@@ -527,7 +534,7 @@
 			{key:'last_name', label:'نام خانوادگی', type:'text', attrs:'autocomplete="family-name"'},
 			{key:'national_id', label:'کد ملی', type:'text', attrs:'inputmode="numeric" autocomplete="off" dir="ltr"'},
 			{key:'birth_date', label:'تاریخ تولد', type:'date', attrs:'dir="ltr"'},
-			{key:'gender', label:'جنسیت', type:'select', options:{'':'انتخاب کنید','male':'مرد','female':'زن','other':'سایر'}},
+			{key:'gender', label:'جنسیت', type:'select', options:{'':'انتخاب کنید','male':'مرد','female':'زن','other':'سایر','unknown':'نامشخص'}},
 			{key:'address', label:'آدرس', type:'textarea', full:true},
 			{key:'phone', label:'تلفن ثابت', type:'tel', attrs:'autocomplete="tel" dir="ltr"'},
 			{key:'emergency_contact_name', label:'نام تماس اضطراری', type:'text'},
@@ -754,7 +761,7 @@
 						if (med.dose) { parts.push(med.dose); }
 						if (med.frequency) { parts.push(med.frequency); }
 						if (med.route) { parts.push(med.route); }
-						if (med.duration_days) { parts.push(med.duration_days + ' روز'); }
+						if (med.duration_days) { parts.push(toPersianDigits(med.duration_days) + ' روز'); }
 						var line = parts.join(' — ');
 						if (med.instructions) { line += ' — دستور: ' + med.instructions; }
 						text(itemsList, 'li', line);
@@ -1413,7 +1420,11 @@
 			selectedDayIndex: -1,
 			selectedSlot: null,
 			busy: false,
-			requestSeq: 0
+			requestSeq: 0,
+			// یک کلیدِ Idempotency برای هر «تلاشِ تأیید»؛ تلاشِ دوباره پس از خطای
+			// شبکه همان کلید را می‌فرستد تا سرور پاسخِ ثبت‌شده را Replay کند و
+			// جابه‌جاییِ تکراری رخ ندهد. انتخابِ اسلاتِ تازه کلید را بازنشانی می‌کند.
+			idemKey: ''
 		};
 
 		function resetMessages() {
@@ -1516,6 +1527,7 @@
 					});
 					btn.classList.add('is-selected');
 					btn.setAttribute('aria-pressed', 'true');
+					state.idemKey = '';
 					state.selectedSlot = {
 						slot_id: Number(slot.slot_id || 0),
 						slot_date: String(day.date || ''),
@@ -1662,6 +1674,9 @@
 				}
 				state.busy = true;
 				resetMessages();
+				if (!isNonEmptyString(state.idemKey)) {
+					state.idemKey = generateUuid4();
+				}
 				setBusy(confirmBtn, true, 'تأیید تغییر نوبت', 'در حال ثبت جابه‌جایی…');
 				var path = cancelPath(reschedulePath, state.appointmentId);
 				requestJson(apiUrl(config.rest_root, path), {
@@ -1670,7 +1685,7 @@
 					headers: {
 						'Content-Type': 'application/json',
 						'X-WP-Nonce': config.nonce,
-						'Idempotency-Key': generateUuid4()
+						'Idempotency-Key': state.idemKey
 					},
 					body: JSON.stringify({
 						slot_date: state.selectedSlot.slot_date,
