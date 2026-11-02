@@ -318,6 +318,9 @@ BOOKING_ROUTES = (
 )
 _ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{1,40}$")
 _REQUEST_ID_KEYS = ("slot_id", "clinician_id", "location_id")
+_REQUEST_KEYS = ("slot_id", "slot_date", "slot_time", "clinician_id", "location_id", "patient_id")
+_SLOT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_SLOT_TIME_RE = re.compile(r"^\d{2}:\d{2}(:\d{2})?$")
 
 
 class BookingProbe:
@@ -349,6 +352,13 @@ class BookingProbe:
         except Exception:  # noqa: BLE001 - non-JSON error pages are still recorded by status
             payload = None
         if isinstance(payload, dict):
+            raw_message = payload.get("message")
+            if not isinstance(raw_message, str):
+                data_payload = payload.get("data")
+                raw_message = data_payload.get("message") if isinstance(data_payload, dict) else None
+            if isinstance(raw_message, str):
+                # Server-generated error text only (the envelope message), bounded.
+                entry["message"] = " ".join(raw_message.split())[:300]
             for candidate in (payload.get("code"), (payload.get("data") or {}).get("code")
                               if isinstance(payload.get("data"), dict) else None):
                 if isinstance(candidate, str) and _ERROR_CODE.match(candidate):
@@ -365,6 +375,15 @@ class BookingProbe:
                         entry[key] = int(posted[key])
                     except (TypeError, ValueError):
                         continue
+            # Key NAMES only (allowlist), plus the two slot time coordinates when
+            # they are well formed: enough to tell "stale tuple" from "server guard".
+            entry["keys"] = ",".join(key for key in _REQUEST_KEYS if key in posted)
+            posted_date = posted.get("slot_date")
+            if isinstance(posted_date, str) and _SLOT_DATE_RE.match(posted_date):
+                entry["slot_date"] = posted_date
+            posted_time = posted.get("slot_time")
+            if isinstance(posted_time, str) and _SLOT_TIME_RE.match(posted_time):
+                entry["slot_time"] = posted_time
         self.entries.append(entry)
 
     def hold_attempts(self, since=0):
@@ -451,6 +470,10 @@ def visible_or_diagnose(page, selector, stage, probe=None, since=0, hold_attempt
                     f" hold_attempt=slot={hold_attempt.get('slot_id')}"
                     f" http={hold_attempt['status']}"
                     f"{' code=' + hold_attempt['code'] if hold_attempt['code'] else ''}"
+                    f"{' msg=' + hold_attempt['message'] if hold_attempt.get('message') else ''}"
+                    f"{' keys=' + hold_attempt['keys'] if hold_attempt.get('keys') else ''}"
+                    f"{' slot_date=' + hold_attempt['slot_date'] if hold_attempt.get('slot_date') else ''}"
+                    f"{' slot_time=' + hold_attempt['slot_time'] if hold_attempt.get('slot_time') else ''}"
                 )
             widget = hold_widget_fingerprint(page)
             if widget:
