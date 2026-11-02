@@ -21,7 +21,7 @@ is a union, substitute or prerequisite for another.
 | --- | --- | --- |
 | `coexistence-persian-woocommerce-diagnosis` / `persian-woocommerce-diagnosis` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.7 | Explicitly disabled; this Stage-A-only diagnosis never installs CPMS and is not an acceptance lane |
 | `coexistence-persian-woocommerce-acceptance` / `persian-woocommerce-acceptance` | `woocommerce` 11.2.0 + `persian-woocommerce` 10.0.7 | Mandatory Stage B after healthy complete A; official CPMS ZIP installation and existing browser acceptance required |
-| `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.3.2 | Reused Stage B is eligible only after materially healthy, complete A |
+| `coexistence-persian-woocommerce-sms` / `persian-woocommerce-sms` | `woocommerce` 11.2.0 + `persian-woocommerce-sms` 7.3.3 | Reused Stage B is eligible only after materially healthy, complete A |
 | `coexistence-combined-nineteen` / `combined-nineteen` | 18 of the 19 authoritative free-plugin subjects below, simultaneously active (Persian WooCommerce 10.0.7 excluded by the Phase 19 quarantine; name kept as the historical scenario identity) | Reused Stage B is eligible only after materially healthy, complete A |
 
 The original five-plugin lane remains `persian-five`; its selection and pins are
@@ -92,10 +92,11 @@ review; no result is automatically labeled D.
 ### Persian WooCommerce SMS group
 
 The independent baseline pins exactly WooCommerce **11.2.0** and Persian
-WooCommerce SMS **7.3.2**. The official WordPress.org Plugins API response verified
-on 2026-10-20 advertises stable 7.3.2 (`last_updated` 2026-10-20 via CI runner and
-WordPressBugBounty mirror 2026-10-20); the previous pin was 7.3.1 (7.3.0 after 7.2.3
-on 2026-10-11, then 7.3.1 on 2026-10-14). Earlier results remain bound
+WooCommerce SMS **7.3.3**. The official WordPress.org Plugins API response verified
+on 2026-11-01 advertises stable 7.3.3 (`last_updated` 2026-11-01 1:50pm GMT,
+`download_link` `https://downloads.wordpress.org/plugin/persian-woocommerce-sms.zip`);
+the previous pin was 7.3.2 (7.3.0 after 7.2.3 on 2026-10-11, 7.3.1 on 2026-10-14,
+then 7.3.2 on 2026-10-20). Earlier results remain bound
 to the exact version they measured. Stage A begins with clean WordPress
 and CPMS absent. It
 records exact package/version/active-set identity, bootstrap and administrator
@@ -122,7 +123,7 @@ scenario's set and versions directly to that matrix. Every active subject is
 installed before activation and all remain active together. WP Rocket and
 Gravity Forms are not subjects.
 
-Phase 19 owner decision (2026-10-09, pins refreshed 2026-10-21): **Persian WooCommerce 10.0.7 is
+Phase 19 owner decision (2026-10-09, pins refreshed 2026-11-01): **Persian WooCommerce 10.0.7 is
 temporarily excluded from this active combined set** — 18 of the 19 authoritative
 free subjects remain, each at its unchanged exact pin. This is a narrow
 quarantine for the combined scenario, **not** a declaration that Persian
@@ -144,7 +145,7 @@ their original names; that evidence is preserved, not rewritten or reclassified.
 | 6 | `elementor` | 4.3.4 | yes |
 | 7 | `persian-elementor` | 2.8.4 | yes |
 | 8 | `wp-parsidate` | 6.4 | yes |
-| 9 | `persian-woocommerce-sms` | 7.3.2 | yes |
+| 9 | `persian-woocommerce-sms` | 7.3.3 | yes |
 | 10 | `contact-form-7` | 6.2 | yes |
 | 11 | `wordfence` | 9.0.2 | yes |
 | 12 | `really-simple-ssl` | 9.8.3 | yes |

@@ -125,7 +125,7 @@ final class SecretaryFinancePage
     <div id="cpms-fin-tab-balances" class="cpms-fin-tab" style="display:none">
         <table class="widefat striped">
             <thead>
-                <tr><th>شماره فاکتور</th><th>بیمار</th><th>MRN</th><th>باقیمانده (ریال)</th><th>وضعیت</th><th>اقدام</th></tr>
+                <tr><th>شماره فاکتور</th><th>بیمار</th><th>کد پرونده</th><th>باقیمانده (ریال)</th><th>وضعیت</th><th>اقدام</th></tr>
             </thead>
             <tbody id="cpms-fin-balances-tbody">
                 <tr><td colspan="6">در حال بارگذاری…</td></tr>

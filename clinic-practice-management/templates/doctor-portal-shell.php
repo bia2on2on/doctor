@@ -365,7 +365,7 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
                                 </div>
                                 <div data-role="workspace-rx-compose-items">
                                     <fieldset class="cpms-doc-ws-rx-compose-item" data-role="workspace-rx-compose-item">
-                                        <legend data-role="workspace-rx-item-title">دارو 1</legend>
+                                        <legend data-role="workspace-rx-item-title">دارو ۱</legend>
                                         <div class="cpms-doc-ws-rx-fields">
                                 <div class="cpms-doc-ws-field">
                                     <label for="cpms-doc-ws-rx-generic">نام ژنریک دارو</label>
@@ -689,7 +689,8 @@ function renderContext(doctor, clinic, location){
         titleEl.textContent = 'اطلاعات پزشک یافت نشد';
         return;
     }
-    titleEl.textContent = 'دکتر ' + (doctor.clinician_name || doctor.display_name || '');
+    // عنوان «دکتر» فقط یک‌بار — CpmsText.doctorDisplayName (معادلِ PHP).
+    titleEl.textContent = cpmsDoctorDisplayName(doctor.clinician_name || doctor.display_name || '');
     var parts = [];
     if ( clinic ) parts.push('<span data-role="context-clinic">مطب: ' + esc(clinic.name) + '</span>');
     if ( location ) parts.push('<span data-role="context-location">شعبه: ' + esc(location.name) + ' (' + esc(location.timezone) + ')</span>');
@@ -801,6 +802,11 @@ function renderToday(){
     }).join('');
 }
 
+function visitSourceLabel(source){
+    // ENUM دیتابیس (scheduled/walk_in) هرگز خام نمایش داده نمی‌شود.
+    return { scheduled: 'نوبت‌دار', walk_in: 'حضوری' }[source] || 'نامشخص';
+}
+
 function appointmentStatusLabel(status){
     return {
         pending: 'در انتظار تأیید',
@@ -810,7 +816,7 @@ function appointmentStatusLabel(status){
         rescheduled: 'جابه‌جا شده',
         completed: 'انجام شده',
         no_show: 'عدم حضور'
-    }[status] || status || '';
+    }[status] || 'وضعیت نامشخص';
 }
 
 function visitStatusLabel(status){
@@ -825,7 +831,7 @@ function visitStatusLabel(status){
         checked_out: 'ترخیص‌شده',
         cancelled: 'لغو شده',
         skipped: 'رد شده'
-    }[status] || status || '';
+    }[status] || 'وضعیت نامشخص';
 }
 
 function renderAppointments(){
@@ -904,7 +910,7 @@ function renderQueue(){
             var statusClass = 'status-' + (v.status||'');
             return '<li class="cpms-doc-queue-item" data-role="queue-item" data-visit-id="' + esc(v.id) + '" data-status="' + esc(v.status||'') + '">' +
                 '<div class="cpms-doc-queue-main"><strong data-role="patient-name">' + esc(v.patient_name || 'بیمار') + '</strong>' +
-                '<span class="cpms-doc-queue-source">' + esc(v.source||'') + '</span></div>' +
+                '<span class="cpms-doc-queue-source">' + esc(visitSourceLabel(v.source)) + '</span></div>' +
                 '<div class="cpms-doc-queue-aside">' + badge +
                 '<span class="cpms-doc-badge ' + esc(statusClass) + '">' + esc(statusLabel) + '</span>' +
                 '<span class="cpms-doc-wait">انتظار <b>' + esc(v.waiting_since||'—') + '</b></span></div>' +
@@ -1239,8 +1245,36 @@ function openWorkspace(visitId){
     });
 }
 
+// ---- helpers مشترک: نامِ نمایشی پزشک، رقم فارسی و گفت‌وگوی درون‌صفحه‌ای ----
+// منبعِ واحد: assets/js/cpms-ui-text.js و assets/js/cpms-dialog.js.
+// اگر asset بار نشود، صفحه نمی‌شکند و تأییدِ درون‌صفحه انجام نمی‌شود (fail-closed UX).
+function cpmsDoctorDisplayName(name){
+    return (window.CpmsText && typeof window.CpmsText.doctorDisplayName === 'function')
+        ? window.CpmsText.doctorDisplayName(name)
+        : String(name == null ? '' : name);
+}
+
+function cpmsFaDigits(value){
+    return (window.CpmsText && typeof window.CpmsText.faDigits === 'function')
+        ? window.CpmsText.faDigits(value)
+        : String(value == null ? '' : value);
+}
+
+function cpmsConfirm(message, options){
+    return (window.CpmsDialog && typeof window.CpmsDialog.confirm === 'function')
+        ? window.CpmsDialog.confirm(message, options)
+        : Promise.resolve(false);
+}
+
+function cpmsPrompt(message, options){
+    return (window.CpmsDialog && typeof window.CpmsDialog.prompt === 'function')
+        ? window.CpmsDialog.prompt(message, options)
+        : Promise.resolve(null);
+}
+
 function genderLabel(value){
-    return { male: 'مرد', female: 'زن' }[value] || value || '';
+    // مقدار خام (male/female) هرگز به کاربر نشان داده نمی‌شود.
+    return { male: 'مرد', female: 'زن', unknown: 'نامشخص' }[value] || 'نامشخص';
 }
 
 function renderWorkspace(data){
@@ -1271,7 +1305,7 @@ function renderWorkspaceHeader(data){
     var p = (data && data.patient) || {};
     var v = (data && data.visit) || {};
     var meta = [];
-    if ( p.mrn ) meta.push('<span class="cpms-doc-ws-meta-item">MRN: <b>' + esc(p.mrn) + '</b></span>');
+    if ( p.mrn ) meta.push('<span class="cpms-doc-ws-meta-item">کد پرونده: <b>' + esc(p.mrn) + '</b></span>');
     if ( p.age != null && p.age !== '' ) meta.push('<span class="cpms-doc-ws-meta-item">سن: <b>' + esc(p.age) + '</b></span>');
     if ( p.gender ) meta.push('<span class="cpms-doc-ws-meta-item">جنسیت: <b>' + esc(genderLabel(p.gender)) + '</b></span>');
     if ( v.visit_date ) meta.push('<span class="cpms-doc-ws-meta-item">تاریخ ویزیت: <b>' + esc(v.jalali_date || v.visit_date) + '</b></span>');
@@ -1403,10 +1437,10 @@ function clearRxItem(row){
 function numberRxItems(){
     var rows = document.querySelectorAll('[data-role="workspace-rx-compose-item"]');
     Array.prototype.forEach.call(rows, function(row, i){
-        row.querySelector('[data-role="workspace-rx-item-title"]').textContent = 'دارو ' + (i + 1);
+        row.querySelector('[data-role="workspace-rx-item-title"]').textContent = 'دارو ' + cpmsFaDigits(i + 1);
         var remove = row.querySelector('[data-role="workspace-rx-remove"]');
         remove.hidden = i === 0;
-        remove.setAttribute('aria-label', 'حذف دارو ' + (i + 1));
+        remove.setAttribute('aria-label', 'حذف دارو ' + cpmsFaDigits(i + 1));
     });
 }
 
@@ -1446,7 +1480,7 @@ function clearRxComposer(){
 }
 
 function rxStatusLabel(status){
-    return { draft: 'پیش‌نویس', finalized: 'نهایی‌شده — فقط خواندنی' }[status] || status || '';
+    return { draft: 'پیش‌نویس', finalized: 'نهایی‌شده — فقط خواندنی' }[status] || 'وضعیت نامشخص';
 }
 
 function renderWorkspaceRx(){
@@ -1467,7 +1501,7 @@ function renderWorkspaceRx(){
             return '<li class="cpms-doc-ws-rx-item-row" data-role="workspace-rx-item-row">' +
                 '<strong>' + esc(it.generic_name || '') + '</strong>' +
                 ' — ' + esc(it.dose || '') + ' · ' + esc(it.frequency || '') +
-                (it.duration_days != null && it.duration_days !== '' ? ' · ' + esc(it.duration_days) + ' روز' : '') +
+                (it.duration_days != null && it.duration_days !== '' ? ' · ' + esc(cpmsFaDigits(it.duration_days)) + ' روز' : '') +
                 (it.instructions ? ' · ' + esc(it.instructions) : '') +
                 '</li>';
         }).join('');
@@ -1538,7 +1572,7 @@ function buildPrescriptionPrintSurface(data){
         var routeLabels = {oral:'خوراکی', iv:'وریدی', im:'عضلانی', sc:'زیرجلدی', topical:'موضعی', inhaled:'استنشاقی', other:'سایر'};
         printText(row, 'td', drug);
         printText(row, 'td', [item.dose, formLabels[item.form] || item.form, routeLabels[item.route] || item.route].filter(Boolean).join(' · '));
-        printText(row, 'td', [item.frequency, item.duration_days == null ? '' : String(item.duration_days) + ' روز'].filter(Boolean).join(' · '));
+        printText(row, 'td', [item.frequency, item.duration_days == null ? '' : cpmsFaDigits(item.duration_days) + ' روز'].filter(Boolean).join(' · '));
         printText(row, 'td', item.instructions || '—');
         body.appendChild(row);
     });
@@ -1913,7 +1947,7 @@ function renderWorkspaceFu(){
     list.innerHTML = followUps.map(function(fu){
         var when = [];
         if ( fu.suggested_date ) when.push('تاریخ: ' + esc(workspacePresentationDate('follow_ups', fu.id, 'suggested_date_jalali') || fu.suggested_date));
-        if ( fu.interval_days != null && fu.interval_days !== '' ) when.push('بازه: ' + esc(fu.interval_days) + ' روز');
+        if ( fu.interval_days != null && fu.interval_days !== '' ) when.push('بازه: ' + esc(cpmsFaDigits(fu.interval_days)) + ' روز');
         if ( when.length === 0 ) when.push('بدون تاریخ/بازه');
         return '<li class="cpms-doc-ws-fu-item" data-role="workspace-fu-item" data-fu-id="' + esc(fu.id) + '" data-needed="' + (fu.is_needed ? '1' : '0') + '">' +
             '<div class="cpms-doc-ws-fu-head">' +

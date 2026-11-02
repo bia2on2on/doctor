@@ -267,6 +267,13 @@ final class DoctorPortalShell {
 		self::register_handles();
 		wp_enqueue_style( self::CSS_HANDLE );
 		wp_enqueue_script( self::JS_HANDLE );
+		// Shared Persian UI text + in-page confirm/prompt dialog (inline module
+		// scripts in the template use them at parse time → HEAD, not footer).
+		if ( class_exists( \ClinicCore\Frontend\StaffPortalShell::class ) ) {
+			\ClinicCore\Frontend\StaffPortalShell::register_ui_handles();
+			wp_enqueue_script( \ClinicCore\Frontend\StaffPortalShell::UI_TEXT_HANDLE );
+			wp_enqueue_script( \ClinicCore\Frontend\StaffPortalShell::DIALOG_HANDLE );
+		}
 	}
 
 	private static function plugin_url_base(): string {
