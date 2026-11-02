@@ -391,7 +391,7 @@ final class VisitService
         // شکست اعلان هرگز گردش‌کار صف را نمی‌شکند (قاعده کارفرما).
         $this->publishQueueNotification($event, $visit, $actorUserId, $meta);
 
-        return $this->presentVisit( $this->display_names_for_visit( $visit ) );
+        return $this->presentVisit($visit);
     }
 
     /**
@@ -1087,7 +1087,7 @@ final class VisitService
             throw VisitException::of('CLINIC_NOT_FOUND', 'مراجعه یافت نشد', 404);
         }
 
-        return $this->presentVisit( $this->display_names_for_visit( $visit ) );
+        return $this->presentVisit($visit);
     }
 
     // ================= Helpers — ساخت و Transition =================
@@ -1222,9 +1222,7 @@ final class VisitService
             $this->applyEnqueue($visitId, 'checked_in', $actorUserId, $now);
         }
 
-        $fresh_row = $this->visits->find( $visitId ) ?? [ 'id' => $visitId ];
-
-        return $this->presentVisit( $this->display_names_for_visit( $fresh_row ) );
+        return $this->presentVisit($this->visits->find($visitId) ?? ['id' => $visitId]);
     }
 
     /**
@@ -2014,6 +2012,8 @@ final class VisitService
      */
     private function presentVisit(array $visit): array
     {
+        $visit = $this->display_names_for_visit( $visit );
+
         return [
             'id' => (int) $visit['id'],
             'patient_id' => (int) $visit['patient_id'],
