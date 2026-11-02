@@ -201,8 +201,13 @@ final class VisitRepository
             ' c.full_name AS clinician_name,' .
             ' a.is_walkin_express AS express' .
             ' FROM ' . $this->db->table('cpms_visits') . ' v' .
-            ' JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = v.patient_id' .
-            ' JOIN ' . $this->db->table('cpms_clinicians') . ' c ON c.id = v.clinician_id' .
+            // Clinic-scoped names (fail-closed): a Visit whose patient_id or
+            // clinician_id points at ANOTHER Clinic's row stays in the queue with
+            // blank names instead of disappearing or showing a foreign name.
+            ' LEFT JOIN ' . $this->db->table( 'cpms_patients' ) .
+            ' p ON p.id = v.patient_id AND p.clinic_id = v.clinic_id' .
+            ' LEFT JOIN ' . $this->db->table( 'cpms_clinicians' ) .
+            ' c ON c.id = v.clinician_id AND c.clinic_id = v.clinic_id' .
             ' LEFT JOIN ' . $this->db->table('cpms_appointments') . ' a ON a.id = v.appointment_id' .
             ' WHERE ' . $where .
             ' ORDER BY (a.is_walkin_express = 1) DESC, v.waiting_since ASC, v.id ASC',

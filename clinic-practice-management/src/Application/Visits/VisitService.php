@@ -2012,6 +2012,8 @@ final class VisitService
      */
     private function presentVisit(array $visit): array
     {
+        $visit = $this->display_names_for_visit( $visit );
+
         return [
             'id' => (int) $visit['id'],
             'patient_id' => (int) $visit['patient_id'],
@@ -2033,6 +2035,46 @@ final class VisitService
             'skip_reason' => $visit['skip_reason'] ?? null,
             'cancel_reason' => $visit['cancel_reason'] ?? null,
         ];
+    }
+
+    /**
+     * نام نمایشی بیمار و پزشک از Clinic همان ویزیت.
+     *
+     * find()/findForUpdate() فقط ستون‌های cpms_visits را می‌خوانند.
+     * این lookup کوچک و غیرقفل پیش از presentVisit() نام‌ها را
+     * اضافه می‌کند: بدون JOIN (قفل روی جدول دیگر لازم نیست).
+     * عدم تطابق Clinic ⇒ fail-closed؛ نام Clinic دیگر هرگز
+     * برنمی‌گردد. ردیف‌های queueFor() نام Clinic-scoped دارند و
+     * دست‌نخورده می‌مانند.
+     *
+     * @param array<string, mixed> $visit ردیف cpms_visits.
+     * @return array<string, mixed>
+     */
+    private function display_names_for_visit( array $visit ): array {
+        if ( array_key_exists( 'patient_first_name', $visit ) ) {
+            return $visit;
+        }
+
+        $clinic_id = (int) ( $visit['clinic_id'] ?? 0 );
+        $patient   = $this->db->fetchRow(
+            'SELECT first_name, last_name FROM ' . $this->db->table( 'cpms_patients' ) .
+            ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [ (int) ( $visit['patient_id'] ?? 0 ), $clinic_id ]
+        );
+        $clinician = $this->db->fetchRow(
+            'SELECT full_name FROM ' . $this->db->table( 'cpms_clinicians' ) .
+            ' WHERE id = %d AND clinic_id = %d LIMIT 1',
+            [ (int) ( $visit['clinician_id'] ?? 0 ), $clinic_id ]
+        );
+
+        $visit['patient_first_name'] = (string) ( $patient['first_name'] ?? '' );
+        $visit['patient_last_name']  = (string) ( $patient['last_name'] ?? '' );
+        $visit['clinician_name']     = null;
+        if ( null !== $clinician ) {
+            $visit['clinician_name'] = (string) $clinician['full_name'];
+        }
+
+        return $visit;
     }
 
     private function appointmentStatusLabel(string $status): string
