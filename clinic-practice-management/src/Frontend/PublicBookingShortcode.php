@@ -803,7 +803,7 @@ final class PublicBookingShortcode
         $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
         $weekdays  = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
-        $lines   = [];
+        $lines = [];
         // `data-locations` = only the Locations the SERVER found eligible for
         // this clinician. The Location-first order filters on this value alone;
         // JS never guesses a Location. Empty => not selectable anywhere.
