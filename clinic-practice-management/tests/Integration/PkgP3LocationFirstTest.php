@@ -333,6 +333,31 @@ final class PkgP3LocationFirstTest extends WP_UnitTestCase
         );
     }
 
+    /**
+     * The Location-first regression spec lives under `tests/js` and, before this
+     * bridge existed, no PHP test and no workflow ran it. It is executed here on
+     * every Integration run; a missing `node` binary FAILS the test (it never
+     * skips), so the spec cannot silently stop running.
+     */
+    public function test_location_first_js_spec_passes(): void
+    {
+        $node = trim( (string) shell_exec( 'command -v node 2>/dev/null' ) );
+        self::assertNotSame( '', $node, 'node binary must be available in CI.' );
+
+        $spec = dirname( __DIR__ ) . '/js/pkg-p3-location-first.spec.js';
+        self::assertFileExists( $spec );
+
+        $output    = [];
+        $exit_code = 0;
+        exec( $node . ' ' . escapeshellarg( $spec ) . ' 2>&1', $output, $exit_code );
+
+        self::assertSame(
+            0,
+            $exit_code,
+            "pkg-p3-location-first.spec.js failed:\n" . implode( "\n", $output )
+        );
+    }
+
     // =====================================================================
     // Fixture helpers
     // =====================================================================
