@@ -63,6 +63,7 @@ final class CpmsUi
                 return $raw;
             }
             $local = $utc->setTimezone( $tz );
+
 			$ymd     = $local->format( 'Y-m-d' );
 			$date_fa = \ClinicCore\Domain\Time\Jalali::format_display_ymd( $ymd );
 			$time_fa = \ClinicCore\Domain\Time\PersianDigits::digits( $local->format( 'H:i' ) );

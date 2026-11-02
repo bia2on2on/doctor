@@ -1338,7 +1338,7 @@ final class ClinicalService
         $view = [
             'prescription' => $this->presentPrescription($rx, $this->prescriptions->itemsFor((int) $rx['id'])),
             'visit_date' => $visitDate,
-			'visit_jalali' => Jalali::format_display_ymd( (string) $visit['visit_date'] ),
+			'visit_jalali'    => Jalali::format_display_ymd( (string) $visit['visit_date'] ),
             'patient' => [
                 'mrn' => (string) $patient['mrn'],
                 'full_name' => trim((string) $patient['first_name'] . ' ' . (string) $patient['last_name']),
@@ -2250,6 +2250,7 @@ final class ClinicalService
 		foreach ( $record['recommendations'] as $item ) {
 			$rec_created    = (string) $item['created_at'];
 			$raw_rec_jalali = $this->format_utc_to_jalali( $rec_created, $location_tz );
+
 			$presentation['recommendations'][ (int) $item['id'] ] = [
 				'created_at_jalali' => PersianDigits::digits( $raw_rec_jalali ),
 			];
@@ -2268,6 +2269,7 @@ final class ClinicalService
 		foreach ( $record['files'] as $item ) {
 			$file_created    = (string) $item['created_at'];
 			$raw_file_jalali = $this->format_utc_to_jalali( $file_created, $location_tz );
+
 			$presentation['files'][ (int) $item['id'] ] = [
 				'created_at_jalali' => PersianDigits::digits( $raw_file_jalali ),
 			];

@@ -812,6 +812,19 @@ final class CpmsSetupWizard
         $clinic_name      = self::canonical_clinic_name( $settings );
         $doctor_count     = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
         $facility_profile = self::current_facility_profile();
+
+		// phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ID
+		$active_clinic_id = (int) App::scope()->clinicId;
+		$active_locs      = array_filter(
+			App::locationRepository()->listForClinic( $active_clinic_id ),
+			static fn ( $loc ) => 1 === (int) ( $loc['is_active'] ?? 0 )
+		);
+		$doctors_fa       = PersianDigits::format_int( $doctor_count );
+		$intended_num     = self::intended_clinicians( $settings );
+		$intended_fa      = PersianDigits::format_int( $intended_num );
+		$locs_fa          = PersianDigits::format_int( count( $active_locs ) );
+		$dur_min          = (int) $settings->get( 'booking.duration_default_min', 20 );
+		$duration_fa      = PersianDigits::format_int( $dur_min );
         ?>
         <?php if ( self::current_flow() === 'medical_building' ) : ?>
             <div class="notice notice-info inline" data-cpms-building-handoff="1" style="margin-bottom:12px;">
@@ -828,20 +841,6 @@ final class CpmsSetupWizard
             <h2>بازبینی پیش از شروع</h2>
             <table class="form-table" role="presentation">
                 <tr><th><?php echo esc_html( $facility_profile['name_label'] ); ?></th><td><?php echo esc_html( $clinic_name !== '' ? $clinic_name : '—' ); ?></td></tr>
-<?php
-	// phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ID.
-	$active_clinic_id = (int) App::scope()->clinicId;
-		$active_locs      = array_filter(
-			App::locationRepository()->listForClinic( $active_clinic_id ),
-			static fn ( $loc ) => 1 === (int) ( $loc['is_active'] ?? 0 )
-		);
-		$doctors_fa       = PersianDigits::format_int( $doctor_count );
-		$intended_num     = self::intended_clinicians( $settings );
-		$intended_fa      = PersianDigits::format_int( $intended_num );
-		$locs_fa          = PersianDigits::format_int( count( $active_locs ) );
-		$dur_min          = (int) $settings->get( 'booking.duration_default_min', 20 );
-		$duration_fa      = PersianDigits::format_int( $dur_min );
-		?>
 				<tr>
 					<th><?php echo esc_html( $facility_profile['clinicians'] ); ?> فعال</th>
 					<td><?php echo esc_html( $doctors_fa ); ?></td>

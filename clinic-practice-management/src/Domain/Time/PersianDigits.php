@@ -67,7 +67,7 @@ final class PersianDigits {
 		}
 
 		if ( is_string( $value ) ) {
-			$trimmed = trim( $value );
+			$trimmed    = trim( $value );
 			$is_int_str = 1 === preg_match( '/^([+-]?)(\d+)$/', $trimmed, $int_match );
 			if ( 0 === $precision && $is_int_str ) {
 				$grouped = self::group_thousands( $int_match[2] );

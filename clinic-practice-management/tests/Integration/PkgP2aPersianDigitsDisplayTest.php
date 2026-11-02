@@ -48,12 +48,14 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 		$clinic_id = (int) App::scope()->clinicId;
 		App::replaceExplicitScope( ClinicScope::forClinic( $clinic_id ) );
 
-		$secretary_id = $this->make_user( 'p2a_sec', 'cpms_secretary' );
-		$doctor_id    = $this->make_user( 'p2a_doc', 'cpms_doctor' );
-		$manager_id   = $this->make_user( 'p2a_mgr', 'cpms_manager' );
+		$secretary_id  = $this->make_user( 'p2a_sec', 'cpms_secretary' );
+		$doctor_id     = $this->make_user( 'p2a_doc', 'cpms_doctor' );
+		$manager_id    = $this->make_user( 'p2a_mgr', 'cpms_manager' );
+		$accountant_id = $this->make_user( 'p2a_acc', 'subscriber' );
 		cpms_test_seed_membership( $secretary_id, $clinic_id, 'cpms_secretary' );
 		cpms_test_seed_membership( $doctor_id, $clinic_id, 'cpms_doctor' );
 		cpms_test_seed_membership( $manager_id, $clinic_id, 'cpms_manager' );
+		cpms_test_seed_membership( $accountant_id, $clinic_id, 'cpms_accountant' );
 
 		$location_id = (int) App::db()->fetchValue(
 			'SELECT id FROM ' . App::db()->table( 'cpms_locations' )
@@ -117,8 +119,7 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 		);
 
 		// 2) Visit, print data, ReportService, FinancePortalController, DoctorPortalController.
-		App::replaceExplicitScope( ClinicScope::forClinicAndLocation( $clinic_id, $location_id ) );
-		App::settings()->set( 'queue.auto_enqueue', true );
+		App::replaceExplicitScope( ClinicScope::forClinic( $clinic_id, $location_id ) );
 		$visit    = App::visitService()->walkIn( $secretary_id, $patient_id, $clinician_id );
 		$visit_id = (int) $visit['id'];
 		App::visitService()->transition( $doctor_id, $visit_id, 'call' );
@@ -146,7 +147,7 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 			]
 		);
 		App::clinicalService()->finalizePrescription( $doctor_id, (int) $rx['id'] );
-		App::clinicalService()->createFollowUp(
+		App::clinicalService()->addFollowUp(
 			$doctor_id,
 			$visit_id,
 			[
@@ -208,6 +209,7 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 			],
 			'p2a-idem-' . uniqid( '', false )
 		);
+		App::visitService()->transition( $secretary_id, $visit_id, 'check_out' );
 		self::assertMatchesRegularExpression(
 			'/^INV-\d{6}-\d+$/',
 			(string) $invoice['invoice_number']
@@ -217,8 +219,12 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 			(string) $payment['payment_number']
 		);
 
-		wp_set_current_user( $manager_id );
+		ScopeContext::clear();
+		App::resetScope();
+		wp_set_current_user( $accountant_id );
 		$req = new WP_REST_Request( 'GET', '/clinic/v1/staff/portal/finance/reconciliation' );
+		$req->set_param( 'from', $visit_ymd );
+		$req->set_param( 'to', $visit_ymd );
 		$req->set_header( 'X-WP-Nonce', wp_create_nonce( 'wp_rest' ) );
 		$req->set_header( 'X-CPMS-Clinic-Id', (string) $clinic_id );
 		$req->set_header( 'X-CPMS-Location-Id', (string) $location_id );
@@ -240,11 +246,14 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 		);
 
 		// DoctorPortalController medical-history prior_visits uses Persian *_jalali.
+		App::replaceExplicitScope( ClinicScope::forClinic( $clinic_id, $location_id ) );
 		$second_visit = App::visitService()->walkIn( $secretary_id, $patient_id, $clinician_id );
 		$second_id    = (int) $second_visit['id'];
 		App::visitService()->transition( $doctor_id, $second_id, 'call' );
 		App::visitService()->transition( $doctor_id, $second_id, 'start' );
 
+		ScopeContext::clear();
+		App::resetScope();
 		wp_set_current_user( $doctor_id );
 		$hist_route = '/clinic/v1/doctor/portal/visits/' . $second_id . '/medical-history';
 		$hist_req   = new WP_REST_Request( 'GET', $hist_route );
@@ -294,7 +303,8 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 				'doctor_name'      => 'دکتر آزمون',
 				'appointment_date' => Jalali::format_display_ymd( '2026-03-21' ),
 				'appointment_time' => PersianDigits::digits( '10:30' ),
-			]
+			],
+			'p2a-notif-1'
 		);
 		App::notificationService()->publishToPatient(
 			$clinic_id,
@@ -304,7 +314,8 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 				'doctor_name'      => 'دکتر آزمون',
 				'appointment_date' => Jalali::format_display_ymd( '2026-03-22' ),
 				'appointment_time' => PersianDigits::digits( '11:00' ),
-			]
+			],
+			'p2a-notif-2'
 		);
 
 		$wpdb->insert(

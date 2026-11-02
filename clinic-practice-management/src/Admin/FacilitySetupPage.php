@@ -341,6 +341,7 @@ final class FacilitySetupPage {
                     return 'سیاست رزرو و ظرفیت این درمانگاه ذخیره شد.';
                 default:
                     $result = $service->activate( $actor_id, $organization_id, '1' === $field( 'confirm' ) );
+
 					$activated_fa = PersianDigits::format_int( count( $result['activated'] ) );
 					return 'راه‌اندازی فعال شد؛ ' . $activated_fa
 						. ' درمانگاه اکنون نوبت جدید می‌پذیرد.';
