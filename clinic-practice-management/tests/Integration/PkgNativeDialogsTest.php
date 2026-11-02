@@ -45,14 +45,43 @@ final class PkgNativeDialogsTest extends WP_UnitTestCase
     private const PORTAL_PAGE = 'src/Admin/PatientPortalPage.php';
     private const SPEC_JS     = 'js/pkg-native-dialogs-portal.spec.js';
 
-    private const HANDLES = ['cpms-dialog', 'cpms-ui-text', 'cpms-patient-portal'];
+    /**
+     * Every script handle CpmsAssets / PatientPortalPage may touch, so this test
+     * never leaks a dangling dependency (e.g. cpms-admin → cpms-dialog) into a
+     * later test's wp_print_scripts incorrect-usage check.
+     */
+    private const SCRIPT_HANDLES = [
+        'cpms-admin',
+        'cpms-dialog',
+        'cpms-ui-text',
+        'cpms-patient-portal',
+        'cpms-catalog-fields',
+        'cpms-jalali-date',
+    ];
 
-    protected function tearDown(): void
+    private const STYLE_HANDLES = ['cpms-admin', 'cpms-jalali-date'];
+
+    private function resetAssetState(): void
     {
-        foreach (self::HANDLES as $handle) {
+        foreach (self::SCRIPT_HANDLES as $handle) {
             wp_dequeue_script($handle);
             wp_deregister_script($handle);
         }
+        foreach (self::STYLE_HANDLES as $handle) {
+            wp_dequeue_style($handle);
+            wp_deregister_style($handle);
+        }
+    }
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->resetAssetState();
+    }
+
+    protected function tearDown(): void
+    {
+        $this->resetAssetState();
         wp_set_current_user(0);
         $_GET = [];
         parent::tearDown();
@@ -96,10 +125,7 @@ final class PkgNativeDialogsTest extends WP_UnitTestCase
     public function testTargetAdminPagesEnqueueSharedDialog(): void
     {
         foreach (self::TARGET_PAGES as $slug => $rel) {
-            foreach (self::HANDLES as $handle) {
-                wp_dequeue_script($handle);
-                wp_deregister_script($handle);
-            }
+            $this->resetAssetState();
             $_GET['page'] = $slug;
 
             CpmsAssets::enqueue();
@@ -139,10 +165,7 @@ final class PkgNativeDialogsTest extends WP_UnitTestCase
         wp_set_current_user($userId);
         self::assertTrue(PatientPortalPage::isPatientOnly(wp_get_current_user()));
 
-        foreach (self::HANDLES as $handle) {
-            wp_dequeue_script($handle);
-            wp_deregister_script($handle);
-        }
+        $this->resetAssetState();
 
         PatientPortalPage::enqueue_assets('toplevel_page_cpms-patient');
 
@@ -172,10 +195,7 @@ final class PkgNativeDialogsTest extends WP_UnitTestCase
         self::assertStringContainsString('data-cpms-confirm=', $html);
 
         // Any other admin hook enqueues nothing (existing gate stays intact).
-        foreach (self::HANDLES as $handle) {
-            wp_dequeue_script($handle);
-            wp_deregister_script($handle);
-        }
+        $this->resetAssetState();
         PatientPortalPage::enqueue_assets('toplevel_page_cpms-clinicians');
         self::assertFalse(wp_script_is('cpms-patient-portal', 'enqueued'));
         self::assertFalse(wp_script_is('cpms-dialog', 'enqueued'));

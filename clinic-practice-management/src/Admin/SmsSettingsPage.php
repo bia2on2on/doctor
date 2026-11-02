@@ -207,6 +207,15 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
     var CFG = window.CPMS_SMS;
     var state = { providers: [], status: null, templates: null };
 
+    // دیالوگِ مشترکِ داخل‌صفحه (assets/js/cpms-dialog.js؛ در <head> لود می‌شود).
+    // fail-closed: اگر در دسترس نبود، «لغو» فرض می‌شود و هیچ عملی انجام نمی‌شود.
+    function askPrompt(message, options) {
+        if (!window.CpmsDialog || typeof window.CpmsDialog.prompt !== 'function') {
+            return Promise.resolve(null);
+        }
+        return window.CpmsDialog.prompt(message, options);
+    }
+
     function apiUrl(path) {
         // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
         // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
@@ -391,36 +400,53 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
 
     function collectTemplateVars(eventId) {
         var e = state.templates.events[eventId];
-        var mobile = prompt('شماره موبایل تست:');
-        if (!mobile) return;
-        var vars = {};
-        e.required.forEach(function (v) {
-            if (v === 'otp_code') { vars[v] = '123456'; return; }
-            var val = prompt('مقدار متغیر ' + (e.variable_labels[v] || v) + ' (' + v + '):');
-            if (val === null) throw new Error('cancel');
-            vars[v] = val || '';
+        return askPrompt('شماره موبایل تست:', { inputMode: 'tel' }).then(function (mobile) {
+            if (!mobile) { return null; }
+            var vars = {};
+            var chain = Promise.resolve();
+            e.required.forEach(function (v) {
+                chain = chain.then(function () {
+                    if (v === 'otp_code') { vars[v] = '123456'; return null; }
+                    return askPrompt('مقدار متغیر ' + (e.variable_labels[v] || v) + ' (' + v + '):')
+                        .then(function (val) {
+                            if (val === null) { throw new Error('cancel'); }
+                            vars[v] = val || '';
+                        });
+                });
+            });
+            e.variables.forEach(function (v) {
+                chain = chain.then(function () {
+                    if (!vars.hasOwnProperty(v) && v.indexOf('name') >= 0
+                        || (v === 'clinic_name')) {
+                        var label2 = e.variable_labels[v] || v;
+                        return askPrompt('مقدار متغیر ' + label2 + ' (' + v + ') [اختیاری]:')
+                            .then(function (val2) {
+                                if (val2 !== null) { vars[v] = val2; }
+                            });
+                    }
+                    return null;
+                });
+            });
+            return chain.then(function () { return { mobile: mobile, vars: vars }; });
         });
-        e.variables.forEach(function (v) {
-            if (!vars.hasOwnProperty(v) && v.indexOf('name') >= 0 || (v === 'clinic_name')) {
-                var val2 = prompt('مقدار متغیر ' + (e.variable_labels[v] || v) + ' (' + v + ') [اختیاری]:');
-                if (val2 !== null) vars[v] = val2;
-            }
-        });
-        return { mobile: mobile, vars: vars };
     }
 
     function testTemplate(eventId) {
-        var input;
-        try { input = collectTemplateVars(eventId); } catch (e) { return; }
-        api('POST', 'templates/test', { event: eventId, mobile: input.mobile, vars: input.vars })
-            .then(function (r) {
-                el('cpms-sms-test-send-result').textContent = '';
-                var span = document.querySelector('[data-tmpl-status="' + eventId + '"]');
-                span.textContent = r.status === 'SENT' ? '✓ ارسال شد' : ('نتیجه: ' + r.status);
-                span.style.color = r.status === 'SENT' ? 'green' : '#b32d2e';
-            })
-            // خطای درون‌صفحه‌ای (نه alert مرورگر): همان محلِ نتیجهٔ ارسال.
-            .catch(function (err) { result('cpms-sms-test-send-result', 'خطا: ' + err.message, false); });
+        collectTemplateVars(eventId).then(function (input) {
+            if (!input) { return; }
+            var payload = { event: eventId, mobile: input.mobile, vars: input.vars };
+            api('POST', 'templates/test', payload)
+                .then(function (r) {
+                    el('cpms-sms-test-send-result').textContent = '';
+                    var span = document.querySelector('[data-tmpl-status="' + eventId + '"]');
+                    span.textContent = r.status === 'SENT' ? '✓ ارسال شد' : ('نتیجه: ' + r.status);
+                    span.style.color = r.status === 'SENT' ? 'green' : '#b32d2e';
+                })
+                // خطای درون‌صفحه‌ای (نه دیالوگِ مرورگر): همان محلِ نتیجهٔ ارسال.
+                .catch(function (err) {
+                    result('cpms-sms-test-send-result', 'خطا: ' + err.message, false);
+                });
+        }).catch(function () { /* لغوِ کاربر — nothing to do */ });
     }
 
     // Persian/Jalali presentation of a stored UTC SMS timestamp (Owner B).

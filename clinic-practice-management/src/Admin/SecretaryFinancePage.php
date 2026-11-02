@@ -226,6 +226,22 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
     };
     var METHOD_LABELS = { cash: 'نقدی', card_pos: 'کارت‌خوان', online: 'آنلاین', other: 'سایر' };
 
+    // دیالوگِ مشترکِ داخل‌صفحه (assets/js/cpms-dialog.js؛ در <head> لود می‌شود).
+    // fail-closed: اگر در دسترس نبود، «لغو» فرض می‌شود و هیچ عملی انجام نمی‌شود.
+    function askConfirm(message) {
+        if (!window.CpmsDialog || typeof window.CpmsDialog.confirm !== 'function') {
+            return Promise.resolve(false);
+        }
+        return window.CpmsDialog.confirm(message, { title: 'تأیید عملیات' });
+    }
+
+    function askPrompt(message, options) {
+        if (!window.CpmsDialog || typeof window.CpmsDialog.prompt !== 'function') {
+            return Promise.resolve(null);
+        }
+        return window.CpmsDialog.prompt(message, options);
+    }
+
     function apiUrl(path) {
         // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
         // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
@@ -440,12 +456,15 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
                 document.getElementById('cpms-fin-svc-price').value = s.price;
                 document.getElementById('cpms-fin-svc-cancel').style.display = 'inline-block';
             } else {
-                if (!window.confirm('تعرفه «' + s.name + '» غیرفعال شود؟ (اقلام فاکتور تاریخی حفظ می‌شوند)')) { return; }
-                api('DELETE', 'config/services/' + id).then(function (r) {
-                    if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
-                    notice('تعرفه غیرفعال شد', 'success');
-                    loadServices().catch(function () {});
-                });
+                askConfirm('تعرفه «' + s.name + '» غیرفعال شود؟ (اقلام فاکتور تاریخی حفظ می‌شوند)')
+                    .then(function (ok) {
+                        if (!ok) { return; }
+                        api('DELETE', 'config/services/' + id).then(function (r) {
+                            if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
+                            notice('تعرفه غیرفعال شد', 'success');
+                            loadServices().catch(function () {});
+                        });
+                    });
             }
         });
     }
@@ -700,25 +719,40 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
             btn.addEventListener('click', function () {
                 var id = parseInt(btn.getAttribute('data-id'), 10);
                 if (btn.getAttribute('data-pact') === 'void') {
-                    var vr = window.prompt('دلیل ابطال (الزامی — فقط همان روز ثبت امکان‌پذیر است):');
-                    if (!vr) { return; }
-                    api('POST', 'payments/' + id + '/void', { reason: vr }).then(function (r) {
-                        if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
-                        notice('پرداخت ابطال شد', 'success');
-                        refreshAll();
-                        openInvoice(inv.id);
+                    askPrompt('دلیل ابطال (الزامی — فقط همان روز ثبت امکان‌پذیر است):', {
+                        required: true,
+                        requiredMessage: 'دلیل ابطال الزامی است.'
+                    }).then(function (vr) {
+                        if (vr === null) { return; }
+                        api('POST', 'payments/' + id + '/void', { reason: vr }).then(function (r) {
+                            if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
+                            notice('پرداخت ابطال شد', 'success');
+                            refreshAll();
+                            openInvoice(inv.id);
+                        });
                     });
                 } else {
-                    var rr = window.prompt('دلیل بازپرداخت (الزامی):');
-                    if (!rr) { return; }
-                    var amt = window.prompt('مبلغ بازپرداخت به ریال (خالی = کل مبلغ باقیمانده قابل بازگردانی):', '');
-                    var body2 = { reason: rr };
-                    if (amt && !isNaN(parseInt(amt, 10))) { body2.amount = parseInt(amt, 10); }
-                    api('POST', 'payments/' + id + '/refund', body2).then(function (r) {
-                        if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
-                        notice('بازپرداخت ثبت شد', 'success');
-                        refreshAll();
-                        openInvoice(inv.id);
+                    askPrompt('دلیل بازپرداخت (الزامی):', {
+                        required: true,
+                        requiredMessage: 'دلیل بازپرداخت الزامی است.'
+                    }).then(function (rr) {
+                        if (rr === null) { return; }
+                        // مبلغ اختیاری: خالی = کل مبلغ باقیمانده؛ لغو = انصرافِ کامل.
+                        var amtMsg = 'مبلغ بازپرداخت به ریال'
+                            + ' (خالی = کل مبلغ باقیمانده قابل بازگردانی):';
+                        return askPrompt(amtMsg, { inputMode: 'numeric' }).then(function (amt) {
+                            if (amt === null) { return; }
+                            var body2 = { reason: rr };
+                            if (amt !== '' && !isNaN(parseInt(amt, 10))) {
+                                body2.amount = parseInt(amt, 10);
+                            }
+                            api('POST', 'payments/' + id + '/refund', body2).then(function (r) {
+                                if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
+                                notice('بازپرداخت ثبت شد', 'success');
+                                refreshAll();
+                                openInvoice(inv.id);
+                            });
+                        });
                     });
                 }
             });

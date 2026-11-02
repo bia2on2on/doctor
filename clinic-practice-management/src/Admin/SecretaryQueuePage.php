@@ -232,6 +232,15 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
     };
     var EXPRESS = 'نوبت فوری';
 
+    // دیالوگِ مشترکِ داخل‌صفحه (assets/js/cpms-dialog.js؛ در <head> لود می‌شود).
+    // fail-closed: اگر در دسترس نبود، «لغو» فرض می‌شود و هیچ عملی انجام نمی‌شود.
+    function askPrompt(message, options) {
+        if (!window.CpmsDialog || typeof window.CpmsDialog.prompt !== 'function') {
+            return Promise.resolve(null);
+        }
+        return window.CpmsDialog.prompt(message, options);
+    }
+
     function apiUrl(path) {
         // Permalink ساده: rest_url خودش شامل ?rest_route=... است — Queryِ path
         // باید با & ضمیمه شود (نه ?)؛ در غیر اینصورت route شکسته می‌شود (rest_no_route).
@@ -448,9 +457,15 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
         var act = btn.getAttribute('data-act');
         if (act === 'open') { openDrawer(parseInt(id, 10)); return; }
         if (act === 'cancel') {
-            var reason = prompt('دلیل لغو (الزامی):');
-            if (!reason) { return; }
-            doPost('visits/' + id + '/status', { to_status: 'cancelled', note: reason }, 'مراجعه لغو شد');
+            askPrompt('دلیل لغو (الزامی):', {
+                required: true,
+                requiredMessage: 'دلیل لغو الزامی است.'
+            }).then(function (reason) {
+                if (reason === null) { return; }
+                doPost('visits/' + id + '/status', {
+                    to_status: 'cancelled', note: reason
+                }, 'مراجعه لغو شد');
+            });
             return;
         }
         if (act === 'enqueue') {
@@ -464,9 +479,15 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
             return;
         }
         if (act === 'waive') {
-            var wr = prompt('دلیل معافیت از پرداخت (الزامی):');
-            if (!wr) { return; }
-            doPost('visits/' + id + '/checkout', { waive_invoice: { reason: wr } }, 'خروج ثبت شد');
+            askPrompt('دلیل معافیت از پرداخت (الزامی):', {
+                required: true,
+                requiredMessage: 'دلیل معافیت الزامی است.'
+            }).then(function (wr) {
+                if (wr === null) { return; }
+                doPost('visits/' + id + '/checkout', {
+                    waive_invoice: { reason: wr }
+                }, 'خروج ثبت شد');
+            });
             return;
         }
         if (act === 'checkout') {
