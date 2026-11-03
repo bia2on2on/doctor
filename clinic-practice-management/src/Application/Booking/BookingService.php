@@ -217,7 +217,7 @@ final class BookingService
         foreach ($grouped as $date => $slots) {
             $days[] = [
                 'date' => $date,
-                'jalali' => Jalali::format_display_ymd($date),
+                'jalali' => Jalali::format_display_ymd( $date ),
                 'slots' => $slots,
             ];
         }
@@ -3205,7 +3205,7 @@ final class BookingService
             'reference_code' => (string) $row['reference_code'],
             'date' => $date,
             'time' => substr((string) $row['slot_time'], 0, 5),
-            'jalali' => Jalali::format_display_ymd($date),
+            'jalali'            => Jalali::format_display_ymd( $date ),
             'jalali_time' => substr((string) $row['slot_time'], 0, 5),
             'status' => (string) $row['status'],
             'duration_min' => (int) ($row['duration_min'] ?? 0),
@@ -3256,7 +3256,7 @@ final class BookingService
             'clinician_name' => (string) ($doctor['full_name'] ?? ''),
             'date' => $date,
             'time' => substr((string) $slot['slot_time'], 0, 5),
-            'jalali' => Jalali::format_display_ymd($date),
+            'jalali'         => Jalali::format_display_ymd( $date ),
             'jalali_time' => substr((string) $slot['slot_time'], 0, 5),
             'duration_min' => (int) $slot['duration_min'],
             'capacity_left' => max(0, (int) $slot['capacity'] - (int) $slot['booked_count'] - (int) $slot['held_count']),

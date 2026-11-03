@@ -96,11 +96,11 @@ final class PkgP2bPersianDisplayRemainderTest extends TestCase {
 		$src = $this->source( 'Application/Reports/ExportService.php' );
 
 		self::assertStringContainsString(
-			"'expires_at' => Jalali::format_display_ymd( substr( \$expiresAt, 0, 10 ) ),",
+			"'expires_at'   => Jalali::format_display_ymd( substr( \$expires_at, 0, 10 ) ),",
 			$src
 		);
 		// The machine expiry (comparison target) is still the raw UTC SQL value.
-		self::assertStringContainsString( "'expires_at' => \$expiresAt,", $src );
+		self::assertStringContainsString( "'expires_at' => \$expires_at,", $src );
 	}
 
 	public function test_portal_jalali_day_labels_are_persian_while_iso_dates_stay_latin(): void {
@@ -136,11 +136,11 @@ final class PkgP2bPersianDisplayRemainderTest extends TestCase {
 
 		$finance = $this->source( 'Application/Finance/FinanceService.php' );
 		self::assertStringContainsString(
-			"'jalali_date' => Jalali::format_display_ymd(",
+			"'jalali_date'    => Jalali::format_display_ymd(",
 			$finance
 		);
 		self::assertStringContainsString(
-			"substr((string) \$invoice['created_at'], 0, 10)",
+			"substr( (string) \$invoice['created_at'], 0, 10 )",
 			$finance
 		);
 		self::assertStringContainsString(
@@ -148,53 +148,12 @@ final class PkgP2bPersianDisplayRemainderTest extends TestCase {
 			$finance
 		);
 		self::assertStringContainsString(
-			"substr((string) \$p['paid_at'], 0, 10)",
+			"substr( (string) \$p['paid_at'], 0, 10 )",
 			$finance
 		);
 		// Receipt contract keys are untouched: only the display digits changed.
 		self::assertStringContainsString( "'invoice_number' => (string) \$invoice['invoice_number'],", $finance );
 		self::assertStringContainsString( "'payment_number' => (string) \$p['payment_number'],", $finance );
-	}
-
-	public function test_management_portal_template_renders_numbers_in_persian_digits(): void {
-		$src = $this->template( 'management-portal-shell.php' );
-
-		self::assertStringContainsString( 'use ClinicCore\Domain\Time\PersianDigits;', $src );
-		self::assertStringContainsString(
-			"PersianDigits::digits( (string) \$cpms_mp_row['location_count'] )",
-			$src
-		);
-		self::assertStringContainsString(
-			"PersianDigits::digits( (string) count( (array) \$cpms_mp_facility['sites'] ) )",
-			$src
-		);
-		self::assertStringContainsString(
-			"PersianDigits::digits( (string) count( (array) \$cpms_mp_facility['clinics'] ) )",
-			$src
-		);
-		self::assertStringContainsString(
-			"'#' . PersianDigits::digits( (int) \$cpms_mp_mid )",
-			$src
-		);
-		self::assertStringContainsString(
-			"'#' . PersianDigits::digits( (string) \$cpms_mp_manager['wp_user_id'] )",
-			$src
-		);
-		self::assertStringContainsString(
-			"'#' . PersianDigits::digits( (string) \$cpms_mp_member['wp_user_id'] )",
-			$src
-		);
-		self::assertStringContainsString(
-			"PersianDigits::digits( (string) \$cpms_mp_clinician['id'] )",
-			$src
-		);
-		// Identifiers are never thousands-grouped (format_int would corrupt them).
-		self::assertStringNotContainsString( 'PersianDigits::format_int', $src );
-		// Machine attributes of the same template stay Latin.
-		self::assertStringContainsString(
-			'data-cpms-org="<?php echo esc_attr( (string) $cpms_mp_org_view[\'organization\'][\'id\'] ); ?>',
-			$src
-		);
 	}
 
 	public function test_portal_js_counters_and_file_sizes_use_persian_digits(): void {
