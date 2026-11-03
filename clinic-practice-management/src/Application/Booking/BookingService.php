@@ -1579,7 +1579,11 @@ final class BookingService
                         'reschedule_first_slot',
                         [ 'slot_id' => $first, 'clinic_id' => $idem_clinic_id ]
                     );
-                    $second_slot        = $second === $first ? $first_slot : $this->slots->findForUpdate( $second );
+                    $second_slot = $first_slot;
+                    if ( $second !== $first ) {
+                        $second_slot = $this->slots->findForUpdate( $second );
+                    }
+
                     $this->assert_read_succeeded(
                         'reschedule_second_slot',
                         [ 'slot_id' => $second, 'clinic_id' => $idem_clinic_id ]
