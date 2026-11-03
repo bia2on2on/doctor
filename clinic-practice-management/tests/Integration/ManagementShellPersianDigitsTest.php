@@ -222,7 +222,8 @@ final class ManagementShellPersianDigitsTest extends WP_UnitTestCase
             $sql = 'DELETE t FROM ' . $p . $table . ' t WHERE t.clinic_id IN (' . $clinics . ')';
             $wpdb->query($sql); // phpcs:ignore
         }
-        $wpdb->query( // phpcs:ignore
+        $wpdb->query(
+            // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- runtime-prefixed teardown SQL.
             'DELETE FROM ' . $p . 'cpms_clinics WHERE organization_id = ' . $org
         );
         $wpdb->query( // phpcs:ignore
