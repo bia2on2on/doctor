@@ -39,7 +39,10 @@ strictly isolated BrowserContexts per persona:
 
 Evidence lines contain only booleans, counts, HTTP statuses, and non-sensitive
 numeric IDs — never passwords, OTP codes, mobile numbers, patient names, nonces,
-or cookies.
+or cookies. One bounded exception, on a `CLINIC_BOOKING_BUSY` failure only: the
+allow-listed, sanitized `booking.lock_read_failed` cause (read label, integer
+errno, truncated/digit-redacted sql_error, numeric IDs) is read back from the
+operational-log table — see `day2_booking_busy`.
 """
 
 import hashlib
@@ -51,6 +54,8 @@ import subprocess
 import sys
 import time
 from urllib.parse import parse_qs, urlparse
+
+from day2_booking_busy import busy_suffix_for
 
 SELFTEST = "--test" in sys.argv[1:]
 
@@ -692,6 +697,26 @@ def run_journey_a_public_booking(browser, cfg):
             "Patient Public Booking: OTP handoff + first-time identity gate + confirmed receipt + 320px receipt",
             f"otp_request=200 otp_verify=200 name_gate=400 confirm=200 slot={cfg['pub_slot_doc1_loc1']}",
         )
+    except Exception as exc:  # noqa: BLE001 - enrichment only; original failure wins
+        # A 503 CLINIC_BOOKING_BUSY hides the real database cause, which the
+        # server already stored as `booking.lock_read_failed` in the
+        # operational log. Append its allow-listed excerpt (plus the viewport
+        # in effect) so the FAIL line — the text CI republishes as an
+        # annotation — names the cause instead of only the busy code.
+        try:
+            size = page_pub.viewport_size
+            viewport = f"{int(size['width'])}x{int(size['height'])}" if size else ""
+        except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
+            viewport = ""
+        try:
+            suffix = busy_suffix_for(
+                probe.entries, dbrows, T("cpms_operational_logs"), viewport
+            )
+        except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
+            suffix = ""
+        if suffix:
+            raise AssertionError(f"{exc} | journey=A1-public {suffix}") from exc
+        raise
     finally:
         ctx_pub.close()
 
