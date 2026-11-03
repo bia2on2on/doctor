@@ -123,6 +123,13 @@ body.cpms-doctor-portal-shell-body { margin: 0; font-family: Tahoma, Vazirmatn, 
     // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- style tags from wp_print_styles (registered local handles only).
     echo $cpms_styles_html;
     ?>
+    <?php
+    // Standalone document only: embed mode is owned by the Staff Portal shell,
+    // which prints these same two handles in its own HEAD before including us.
+    StaffPortalShell::register_ui_handles();
+    // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- local registered handles.
+    wp_print_scripts( [ StaffPortalShell::UI_TEXT_HANDLE, StaffPortalShell::DIALOG_HANDLE ] );
+    ?>
 </head>
 <body class="<?php echo esc_attr( $cpms_body_class ); ?>">
 <div
@@ -951,34 +958,44 @@ function actionErrorMessage(r){
 function doQueueAction(visitId, action){
     var row = document.querySelector('[data-role="queue-item"][data-visit-id="' + visitId + '"]');
     if ( row && row.getAttribute('aria-busy') === 'true' ) return;
-    var body = null;
-    if ( action === 'skip' ) {
-        var input = window.prompt('علت رد کردن را بنویسید:', '');
-        if ( input === null ) return;
-        var reason = String(input).trim().slice(0, 255);
-        if ( reason === '' ) {
-            showError('علت رد کردن الزامی است.');
-            return;
-        }
-        body = { reason: reason };
+    // Shared in-page dialog is async; send() keeps the original POST path intact.
+    function send(body){
+        setRowBusy(row, true);
+        var headers = {
+            'X-CPMS-Clinic-Id': String(state.selectedClinicId),
+            'X-CPMS-Location-Id': String(state.selectedLocationId)
+        };
+        var actionPath = '/doctor/portal/visits/'
+            + encodeURIComponent(String(visitId)) + '/' + action;
+        api('POST', actionPath, body, headers).then(function(r){
+            if ( r.status === 200 ) {
+                loadTodayAndQueue();
+                return;
+            }
+            setRowBusy(row, false);
+            showError(actionErrorMessage(r));
+        }).catch(function(){
+            setRowBusy(row, false);
+            showError('خطای ارتباط — دوباره تلاش کنید');
+        });
     }
-    setRowBusy(row, true);
-    var headers = {
-        'X-CPMS-Clinic-Id': String(state.selectedClinicId),
-        'X-CPMS-Location-Id': String(state.selectedLocationId)
-    };
-    var actionPath = '/doctor/portal/visits/' + encodeURIComponent(String(visitId)) + '/' + action;
-    api('POST', actionPath, body, headers).then(function(r){
-        if ( r.status === 200 ) {
-            loadTodayAndQueue();
-            return;
-        }
-        setRowBusy(row, false);
-        showError(actionErrorMessage(r));
-    }).catch(function(){
-        setRowBusy(row, false);
-        showError('خطای ارتباط — دوباره تلاش کنید');
-    });
+    if ( action === 'skip' ) {
+        // fail-closed: unavailable / cancelled / Escape -> null -> no request.
+        var asked = (window.CpmsDialog && typeof window.CpmsDialog.prompt === 'function')
+            ? window.CpmsDialog.prompt('علت رد کردن را بنویسید:', { value: '' })
+            : Promise.resolve(null);
+        asked.then(function(input){
+            if ( input === null ) return;
+            var reason = String(input).trim().slice(0, 255);
+            if ( reason === '' ) {
+                showError('علت رد کردن الزامی است.');
+                return;
+            }
+            send({ reason: reason });
+        });
+        return;
+    }
+    send(null);
 }
 
 function showError(msg){
@@ -2366,7 +2383,17 @@ function submitWorkspaceComplete(){
     var okEl = qs('[data-role="workspace-consult-complete-success"]');
     hide(errEl);
     hide(okEl);
-    if ( !window.confirm('پایان این ویزیت ثبت شود؟ ویزیت از صف زنده خارج می‌شود.') ) return;
+    // fail-closed: unavailable / cancelled / Escape -> false -> no request.
+    var confirmed = (window.CpmsDialog && typeof window.CpmsDialog.confirm === 'function')
+        ? window.CpmsDialog.confirm('پایان این ویزیت ثبت شود؟ ویزیت از صف زنده خارج می‌شود.')
+        : Promise.resolve(false);
+    confirmed.then(function(ok){
+        if ( !ok ) return;
+        finishWorkspaceComplete(visitId, errEl, okEl);
+    });
+}
+
+function finishWorkspaceComplete(visitId, errEl, okEl){
     setCompleteBusy(true);
     var submittedVisitId = visitId;
     var clinicId = state.selectedClinicId;

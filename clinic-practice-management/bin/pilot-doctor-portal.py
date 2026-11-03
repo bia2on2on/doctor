@@ -109,6 +109,89 @@ def shot(page, name):
     print(f"SHOT {name}")
 
 
+# --- Shared in-page dialog (assets/js/cpms-dialog.js) — DUAL-MODE answers ----
+# The doctor module now ships the shared in-page confirm/prompt dialog. Both
+# forms are answered without weakening the journey: every existing
+# page.on("dialog") handler stays registered BEFORE the click and keeps owning
+# the native form, while answer_shared_dialogs() answers the in-page form only
+# when shared_dialog_available(page) — probed before the trigger — says the page
+# shipped it. A step that needs a dialog FAILS when neither form appears.
+DIALOG_OVERLAY = ".cpms-modal-overlay"
+DIALOG_ROOT = ".cpms-modal[role='dialog']"
+DIALOG_CONFIRM = ".cpms-modal-confirm"
+# The shipped dialog's cancel button carries only `cpms-dialog__btn`, with no
+# dedicated token: match it by exclusion, and keep Escape as a fallback.
+DIALOG_CANCEL = ".cpms-dialog__btn:not(.cpms-modal-confirm)"
+DIALOG_INPUT = ".cpms-dialog__input"
+DIALOG_MESSAGE = ".cpms-dialog__message"
+DIALOG_POLL_MS = 100
+
+
+def shared_dialog_available(page) -> bool:
+    """True when this page shipped the shared in-page dialog asset."""
+    try:
+        return bool(page.evaluate("() => !!(window.CpmsDialog && window.CpmsDialog.confirm)"))
+    except Exception:
+        return False
+
+
+def answer_shared_dialogs(page, steps, *, shared_expected, timeout_ms,
+                          native_seen=None, messages=None):
+    """Answer the SHARED in-page dialog in sequence — one step per dialog.
+
+    steps: [{"action": "accept" | "cancel" | "prompt", "value": "<text>"}].
+    native_seen: the caller's own record of native dialogs; when truthy the
+        existing native handler already answered this step and we stay out.
+    shared_expected: shared_dialog_available(page), probed before the trigger.
+    messages: optional list receiving each in-page dialog's message text, so the
+        Persian-wording assertions keep real evidence in shared mode.
+    timeout_ms: the caller's EXISTING timeout — never widened here.
+
+    Returns "native" or "shared". Raises RuntimeError when the in-page dialog
+    was expected but never appeared, so the step fails instead of passing on a
+    dialog nobody answered. A step marked "cancel" is never auto-accepted.
+    """
+    if native_seen:
+        return "native"
+    if not shared_expected:
+        return "native"
+
+    overlay = page.locator(DIALOG_OVERLAY)
+    budget = max(1, int(timeout_ms / DIALOG_POLL_MS))
+    for index, step in enumerate(steps, start=1):
+        for _ in range(budget):
+            if overlay.count() > 0 and overlay.first.is_visible():
+                break
+            if native_seen:
+                return "native"
+            page.wait_for_timeout(DIALOG_POLL_MS)
+        else:
+            raise RuntimeError(
+                "neither the native nor the shared in-page dialog appeared within "
+                f"{timeout_ms}ms (dialog {index} of {len(steps)})"
+            )
+        root = overlay.locator(DIALOG_ROOT).first
+        if messages is not None:
+            messages.append(root.locator(DIALOG_MESSAGE).first.inner_text() or "")
+        action = step.get("action", "accept")
+        if action == "cancel":
+            cancel = root.locator(DIALOG_CANCEL).first
+            if cancel.count() > 0:
+                cancel.click()
+            else:
+                page.keyboard.press("Escape")
+        elif action == "prompt":
+            root.locator(DIALOG_INPUT).first.fill(str(step.get("value", "")))
+            root.locator(DIALOG_CONFIRM).first.click()
+        else:
+            root.locator(DIALOG_CONFIRM).first.click()
+        for _ in range(budget):
+            if overlay.count() == 0 or not overlay.first.is_visible():
+                break
+            page.wait_for_timeout(DIALOG_POLL_MS)
+    return "shared"
+
+
 def _parts(name, n):
     raw = os.environ.get(name, "").strip()
     parts = [p.strip() for p in raw.split("|")]
@@ -1590,15 +1673,28 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
     dialog_texts = []
     answers = [""]
     received = []
+    forms = []
 
     def _on_dialog(d):
         dialog_texts.append(d.message or "")
         received.append(d)
+        forms.append("native")
         d.accept(answers.pop(0) if answers else "")
 
+    # DUAL-MODE: the skip-reason prompt is the shared in-page dialog now and was
+    # native window.prompt() before. Probe BEFORE the first click; the native
+    # handler above stays installed and keeps ownership of the native form.
+    skip_shared = shared_dialog_available(page)
     page.on("dialog", _on_dialog)
     try:
         page.locator(row_sel(skip) + ' [data-action="skip"]').click()
+        empty_form = answer_shared_dialogs(
+            page, [{"action": "prompt", "value": ""}],
+            shared_expected=skip_shared, timeout_ms=5000,
+            native_seen=received, messages=dialog_texts,
+        )
+        if empty_form == "shared":
+            forms.append("shared")
         page.wait_for_selector('[data-role="queue-error"]:not([hidden])', timeout=5000)
         skip_posts_now = len([e for e in state["rest"] if e["method"] == "POST" and e["route"].endswith(f"/visits/{skip}/skip")])
         if skip_posts_now != skip_posts_before:
@@ -1609,6 +1705,13 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         # F. A non-empty reason skips through the server; the row leaves the queue.
         answers.append("بیمار موقتاً خارج شد")
         page.locator(row_sel(skip) + ' [data-action="skip"]').click()
+        reason_form = answer_shared_dialogs(
+            page, [{"action": "prompt", "value": "بیمار موقتاً خارج شد"}],
+            shared_expected=skip_shared, timeout_ms=20000,
+            native_seen=received, messages=dialog_texts,
+        )
+        if reason_form == "shared":
+            forms.append("shared")
         page.wait_for_selector(row_sel(skip), state="detached", timeout=20000)
     finally:
         page.remove_listener("dialog", _on_dialog)
@@ -1616,7 +1719,7 @@ def prove_queue_actions(page, state, doctor, act, skip, label):
         raise RuntimeError(f"{label} skipped visit still rendered")
     if today_queue_visit(page, doctor, skip, label):
         raise RuntimeError(f"{label} skipped visit still served")
-    if not received or not all(PERSIAN_RE.search(t) for t in dialog_texts):
+    if not forms or not all(PERSIAN_RE.search(t) for t in dialog_texts):
         raise RuntimeError(f"{label} skip prompt is not Persian")
     # Every UI mutation POST succeeded through the existing routes.
     for suffix in (f"/visits/{act}/call", f"/visits/{act}/recall",
@@ -2715,10 +2818,36 @@ def prove_workspace_complete(page, state, doctor, visit_id, label, mutate):
         time.sleep(1.0)
         route.continue_()
 
+    # DUAL-MODE helpers for the four Complete confirmations. The native listener
+    # is ALWAYS registered by _arm() before the click and keeps ownership of the
+    # native form; _answer() answers the shared in-page form only when the asset
+    # is present, and raises when an in-page dialog was expected but never came.
+    def _arm(action):
+        seen = []
+
+        def _handler(d):
+            seen.append(1)
+            if action == "cancel":
+                d.dismiss()
+            else:
+                d.accept()
+
+        page.once("dialog", _handler)
+        return shared_dialog_available(page), seen
+
+    def _answer(shared_expected, seen, action, timeout_ms):
+        return answer_shared_dialogs(
+            page, [{"action": action}],
+            shared_expected=shared_expected, timeout_ms=timeout_ms,
+            native_seen=seen,
+        )
+
     # A. The explicit confirmation is honoured: dismissing it sends nothing.
+    # Step A is a CANCEL — the dual-mode branch must never auto-accept it.
     posts_before = len(complete_posts())
-    page.once("dialog", lambda d: d.dismiss())
+    cancel_shared, cancel_seen = _arm("cancel")
     submit.click()
+    _answer(cancel_shared, cancel_seen, "cancel", 5000)
     page.wait_for_timeout(400)
     if len(complete_posts()) != posts_before:
         raise RuntimeError(f"{label} Complete was sent although the confirmation was dismissed")
@@ -2728,9 +2857,10 @@ def prove_workspace_complete(page, state, doctor, visit_id, label, mutate):
     # the backend answers 422, the UI points at the Chief Complaint control.
     if page.locator('[data-role="workspace-note-cc"]').count() != 0:
         raise RuntimeError(f"{label} fixture Visit already carries a Chief Complaint")
-    page.once("dialog", lambda d: d.accept())
+    first_shared, first_seen = _arm("accept")
     with page.expect_response(is_complete, timeout=15000) as first:
         submit.click()
+        _answer(first_shared, first_seen, "accept", 15000)
     body = first.value.json() or {}
     if (
         first.value.status != 422
@@ -2753,9 +2883,10 @@ def prove_workspace_complete(page, state, doctor, visit_id, label, mutate):
     # flight; the late response must not paint the (no longer open) Visit.
     page.route(glob, _slow_complete)
     try:
-        page.once("dialog", lambda d: d.accept())
+        stale_shared, stale_seen = _arm("accept")
         with page.expect_response(is_complete, timeout=15000) as stale:
             submit.click()
+            _answer(stale_shared, stale_seen, "accept", 15000)
             page.wait_for_selector('[data-role="workspace-consult-complete-busy"]:not([hidden])', timeout=5000)
             page.locator('[data-role="workspace-close"]').click()
             page.wait_for_selector('[data-role="workspace-section"]', state="hidden", timeout=5000)
@@ -2818,11 +2949,22 @@ def prove_workspace_complete(page, state, doctor, visit_id, label, mutate):
         d.accept()
 
     posts_before = len(complete_posts())
+    double_shared = shared_dialog_available(page)
     page.on("dialog", _accept)
     page.route(glob, _slow_complete)
     try:
         with page.expect_response(is_complete, timeout=15000) as done_info:
             submit.click()
+            # Dual-mode: answer the in-page confirm, or count the native one the
+            # handler above already accepted. Exactly one confirmation must be
+            # answered for this step — the assertion below is unchanged.
+            double_form = answer_shared_dialogs(
+                page, [{"action": "accept"}],
+                shared_expected=double_shared, timeout_ms=15000,
+                native_seen=accepted,
+            )
+            if double_form == "shared":
+                accepted.append(1)
             page.wait_for_selector('[data-role="workspace-consult-complete-busy"]:not([hidden])', timeout=5000)
             if not submit.is_disabled():
                 raise RuntimeError(f"{label} Complete control not disabled while in flight")

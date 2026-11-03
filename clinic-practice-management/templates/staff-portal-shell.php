@@ -138,6 +138,13 @@ $cpms_title_full = '' !== $cpms_site_name ? $cpms_header_title . ' — ' . $cpms
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title><?php echo esc_html( $cpms_title_full ); ?></title>
+<?php
+// Shared Persian UI text + in-page confirm/prompt dialog: print both handles in
+// the HEAD, before any mounted module's inline script can call CpmsDialog.
+StaffPortalShell::register_ui_handles();
+// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- local registered handles.
+wp_print_scripts( [ StaffPortalShell::UI_TEXT_HANDLE, StaffPortalShell::DIALOG_HANDLE ] );
+?>
 <style>
 :root { --cpms-primary: #0f5c56; --cpms-bg: #f3f6f8; --cpms-text: #1b2830; --cpms-muted: #5c6b76; --cpms-border: #e1e8ee; }
 * { box-sizing: border-box; }
