@@ -282,7 +282,20 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         });
     }
 
-    function fmt(n) { return Number(n || 0).toLocaleString('fa-IR'); }
+    // Shared deterministic money formatter (assets/js/cpms-money.js). It is an
+    // explicit digit table, never `toLocaleString`/`Intl`, so the same value
+    // renders the same way on every browser. `fmt()` = digits + «٬» grouping
+    // (counts, quantities, and amounts whose column header already says
+    // «(ریال)»); `money()` = the same digits plus the «ریال» unit.
+    var MONEY = window.CpmsMoney || null;
+    function fmt(n) {
+        if (MONEY) { return MONEY.number(n); }
+        return Number(n || 0).toLocaleString('fa-IR');
+    }
+    function money(n, currency) {
+        if (MONEY) { return MONEY.format(n, currency || 'IRR'); }
+        return fmt(n) + ' ' + String(currency || 'ریال');
+    }
 
     function fmtTime(dt) {
         if (!dt) { return '—'; }
@@ -778,10 +791,13 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         var w = window.open('', '_blank', 'width=420,height=640');
         if (!w) { notice('پنجره چاپ توسط مرورگر مسدود شد', 'error'); return; }
         var rows = (rc.items || []).map(function (i) {
-            return '<tr><td>' + esc(i.description) + '</td><td>' + fmt(i.quantity) + '</td><td>' + fmt(i.unit_price) + '</td><td>' + fmt(i.amount) + '</td></tr>';
+            return '<tr><td>' + esc(i.description) + '</td><td>' + fmt(i.quantity) + '</td><td>' +
+                money(i.unit_price) + '</td><td>' + money(i.amount) + '</td></tr>';
         }).join('');
         var pays = (rc.payments || []).map(function (p) {
-            return '<tr><td>' + esc(p.payment_number) + '</td><td>' + (METHOD_LABELS[p.method] || esc(p.method)) + '</td><td>' + fmt(p.amount) + '</td><td>' + esc(p.jalali_paid_at) + '</td></tr>';
+            return '<tr><td>' + esc(p.payment_number) + '</td><td>' +
+                (METHOD_LABELS[p.method] || esc(p.method)) + '</td><td>' + money(p.amount) +
+                '</td><td>' + esc(p.jalali_paid_at) + '</td></tr>';
         }).join('');
         var t = rc.totals || {};
         w.document.write('<!DOCTYPE html><html dir="rtl" lang="fa"><head><meta charset="utf-8">' +
@@ -797,12 +813,13 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
             '<tr><th>بیمار</th><td>' + esc((rc.patient || {}).name || '') + ' (' + esc((rc.patient || {}).mrn || '') + ')</td></tr></table>' +
             '<table><thead><tr><th>شرح</th><th>تعداد</th><th>قیمت</th><th>مبلغ</th></tr></thead><tbody>' + rows + '</tbody></table>' +
             '<table>' +
-            '<tr><th>جمع اقلام</th><td>' + fmt(t.subtotal) + '</td></tr>' +
-            '<tr><th>تخفیف</th><td>' + fmt(t.discount) + '</td></tr>' +
-            '<tr><th>مالیات</th><td>' + fmt(t.tax) + '</td></tr>' +
-            '<tr class="tot"><th>جمع کل</th><td>' + fmt(t.total) + ' ' + esc(t.currency || '') + '</td></tr>' +
-            '<tr><th>پرداخت‌شده</th><td>' + fmt(t.paid_amount) + '</td></tr>' +
-            '<tr class="tot"><th>باقیمانده</th><td>' + fmt(t.balance) + '</td></tr></table>' +
+            '<tr><th>جمع اقلام</th><td>' + money(t.subtotal, t.currency) + '</td></tr>' +
+            '<tr><th>تخفیف</th><td>' + money(t.discount, t.currency) + '</td></tr>' +
+            '<tr><th>مالیات</th><td>' + money(t.tax, t.currency) + '</td></tr>' +
+            '<tr class="tot"><th>جمع کل</th><td>' + money(t.total, t.currency) + '</td></tr>' +
+            '<tr><th>پرداخت‌شده</th><td>' + money(t.paid_amount, t.currency) + '</td></tr>' +
+            '<tr class="tot"><th>باقی‌مانده</th><td>' +
+            money(t.balance, t.currency) + '</td></tr></table>' +
             (pays ? '<table><thead><tr><th>پرداخت</th><th>روش</th><th>مبلغ</th><th>تاریخ</th></tr></thead><tbody>' + pays + '</tbody></table>' : '') +
             '<p class="muted">این رسید به‌صورت سیستمی تولید شده است.</p>' +
             '<script>window.onload=function(){window.print();}<\/script>' +
