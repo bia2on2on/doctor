@@ -42,9 +42,9 @@ class FixedDate extends Date {
 }
 
 var dashboardSource = read('src/Admin/DoctorDashboardPage.php');
-assert.ok(dashboardSource.includes(
-  "'clinician_name' => DoctorDisplayName::with_title_or_fallback( $clinician['name'] )"
-), 'the config is normalized on the PHP side');
+assert.match(dashboardSource,
+  /'clinician_name'\s*=>\s*DoctorDisplayName::with_title_or_fallback\(\s*\$clinician\['name'\]\s*\)/,
+  'the config is normalized on the PHP side');
 var begin = dashboardSource.indexOf('<script>\n(function () {');
 var end = dashboardSource.indexOf('\n</script>', begin);
 assert.ok(begin >= 0 && end > begin, 'real dashboard IIFE exists');

@@ -82,7 +82,7 @@ final class DoctorDashboardPage
             'nonce' => wp_create_nonce('wp_rest'),
             'poll_ms' => 5000, // پزشک 5s (ADR-0007)
             'clinician_id' => $clinician['id'],
-            'clinician_name' => DoctorDisplayName::with_title_or_fallback( $clinician['name'] ),
+            'clinician_name'  => DoctorDisplayName::with_title_or_fallback( $clinician['name'] ),
             'visit_id' => $visitId,
             'base_url' => admin_url('admin.php?page=cpms-doctor'),
             'can_call' => current_user_can(RolesAndCapabilities::QUEUE_CALL),
