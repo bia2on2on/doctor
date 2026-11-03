@@ -228,8 +228,8 @@ final class ReportService
         $result['label'] = $meta['label'];
         $result['from'] = $range['from'];
         $result['to'] = $range['to'];
-        $result['from_jalali'] = Jalali::formatYmd($range['from']);
-        $result['to_jalali'] = Jalali::formatYmd($range['to']);
+		$result['from_jalali'] = Jalali::format_display_ymd( $range['from'] );
+		$result['to_jalali']   = Jalali::format_display_ymd( $range['to'] );
         $result['scope'] = $scopeMode === 'own' ? 'own' : 'clinic';
 
         // Audit گزارش حساس (کارفرما: «Audit گزارش‌ها/Exportهای حساس»)
@@ -315,7 +315,7 @@ final class ReportService
                 'id' => (int) $r['id'],
                 'reference_code' => (string) $r['reference_code'],
                 'date' => (string) $r['slot_date'],
-                'date_jalali' => Jalali::formatYmd((string) $r['slot_date']),
+				'date_jalali'    => Jalali::format_display_ymd( (string) $r['slot_date'] ),
                 'time' => substr((string) $r['slot_time'], 0, 5),
                 'patient_name' => trim((string) $r['first_name'] . ' ' . (string) $r['last_name']),
                 'mrn' => (string) $r['mrn'],
@@ -353,7 +353,7 @@ final class ReportService
                 'id' => (int) $r['id'],
                 'reference_code' => (string) $r['reference_code'],
                 'date' => (string) $r['slot_date'],
-                'date_jalali' => Jalali::formatYmd((string) $r['slot_date']),
+				'date_jalali'    => Jalali::format_display_ymd( (string) $r['slot_date'] ),
                 'time' => substr((string) $r['slot_time'], 0, 5),
                 'patient_name' => trim((string) $r['first_name'] . ' ' . (string) $r['last_name']),
                 'mrn' => (string) $r['mrn'],
@@ -410,7 +410,7 @@ final class ReportService
             'rows' => array_map(static fn (array $r): array => [
                 'id' => (int) $r['id'],
                 'date' => (string) $r['visit_date'],
-                'date_jalali' => Jalali::formatYmd((string) $r['visit_date']),
+				'date_jalali'    => Jalali::format_display_ymd( (string) $r['visit_date'] ),
                 'patient_name' => trim((string) $r['first_name'] . ' ' . (string) $r['last_name']),
                 'mrn' => (string) $r['mrn'],
                 'clinician_name' => (string) $r['clinician_name'],
@@ -446,7 +446,7 @@ final class ReportService
             'summary' => $this->avgSummary($rows),
             'rows' => array_map(static fn (array $r): array => [
                 'date' => (string) $r['visit_date'],
-                'date_jalali' => Jalali::formatYmd((string) $r['visit_date']),
+				'date_jalali'  => Jalali::format_display_ymd( (string) $r['visit_date'] ),
                 'visits' => (int) $r['visits'],
                 'avg_wait_sec' => (int) $r['avg_wait_sec'],
                 'avg_wait_min' => (int) round(((int) $r['avg_wait_sec']) / 60),
@@ -478,7 +478,7 @@ final class ReportService
             'summary' => $this->avgSummary($rows, 'avg_duration_sec'),
             'rows' => array_map(static fn (array $r): array => [
                 'date' => (string) $r['visit_date'],
-                'date_jalali' => Jalali::formatYmd((string) $r['visit_date']),
+				'date_jalali'      => Jalali::format_display_ymd( (string) $r['visit_date'] ),
                 'visits' => (int) $r['visits'],
                 'avg_duration_sec' => (int) $r['avg_duration_sec'],
                 'avg_duration_min' => (int) round(((int) $r['avg_duration_sec']) / 60),
@@ -576,7 +576,7 @@ final class ReportService
             ],
             'rows' => array_map(static fn (array $d): array => [
                 'date' => (string) $d['day'],
-                'date_jalali' => Jalali::formatYmd((string) $d['day']),
+				'date_jalali' => Jalali::format_display_ymd( (string) $d['day'] ),
                 'gross' => (float) $d['gross'],
                 'refunded' => (float) $d['refunded'],
                 'net' => (float) $d['gross'] - (float) $d['refunded'],
@@ -719,7 +719,9 @@ final class ReportService
             'rows' => array_map(static fn (array $r): array => [
                 'id' => (int) $r['id'],
                 'suggested_date' => (string) $r['suggested_date'],
-                'suggested_date_jalali' => Jalali::formatYmd((string) $r['suggested_date']),
+				'suggested_date_jalali' => Jalali::format_display_ymd(
+					(string) $r['suggested_date']
+				),
                 'patient_name' => trim((string) $r['first_name'] . ' ' . (string) $r['last_name']),
                 'mrn' => (string) $r['mrn'],
                 'clinician_name' => (string) $r['clinician_name'],
@@ -919,7 +921,7 @@ final class ReportService
             'id' => (int) $r['id'],
             'reference_code' => (string) $r['reference_code'],
             'date' => (string) $r['slot_date'],
-            'date_jalali' => Jalali::formatYmd((string) $r['slot_date']),
+			'date_jalali'       => Jalali::format_display_ymd( (string) $r['slot_date'] ),
             'time' => substr((string) $r['slot_time'], 0, 5),
             'patient_name' => trim((string) $r['first_name'] . ' ' . (string) $r['last_name']),
             'mrn' => (string) $r['mrn'],

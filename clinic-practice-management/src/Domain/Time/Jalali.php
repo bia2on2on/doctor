@@ -92,6 +92,20 @@ final class Jalali
         return self::formatYmd(gmdate('Y-m-d'));
     }
 
+	/**
+	 * نمایش شمسی با ارقام فارسی برای رابط کاربری — مثال: `۱۴۰۵/۰۷/۱۴`.
+	 */
+	public static function format_display_ymd( string $gregorian_ymd ): string {
+		return PersianDigits::digits( self::formatYmd( $gregorian_ymd ) );
+	}
+
+	/**
+	 * تاریخ شمسی امروز (UTC) با ارقام فارسی برای نمایش.
+	 */
+	public static function today_display_jalali(): string {
+		return PersianDigits::digits( self::todayJalali() );
+	}
+
     // ============ Internal ============
 
     private static function gregorianTs(int $gy, int $gm, int $gd): ?int

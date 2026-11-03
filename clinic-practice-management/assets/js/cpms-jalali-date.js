@@ -185,13 +185,16 @@
   function pad2(n) { return (n < 10 ? '0' : '') + n; }
 
   var PERSIAN_DIGITS = ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'];
+  var ARABIC_INDIC_DIGITS = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
 
   function toPersianDigits(s) {
     return String(s).replace(/[0-9]/g, function (ch) { return PERSIAN_DIGITS[+ch]; });
   }
 
   function toAsciiDigits(s) {
-    return String(s).replace(/[۰-۹]/g, function (ch) { return String(PERSIAN_DIGITS.indexOf(ch)); });
+    return String(s)
+      .replace(/[۰-۹]/g, function (ch) { return String(PERSIAN_DIGITS.indexOf(ch)); })
+      .replace(/[٠-٩]/g, function (ch) { return String(ARABIC_INDIC_DIGITS.indexOf(ch)); });
   }
 
   function isoToJalaliText(iso) {
@@ -688,7 +691,12 @@
         entry.removeAttribute('aria-invalid');
         status.textContent = '';
         input.setCustomValidity('');
-        setNativeIso('', true);
+        // Preserve an existing native ISO value that isoToJalaliText cannot
+        // represent in 1300..1499 (e.g. historical birth_date 1900..1920),
+        // so tabbing/blurring an empty Shamsi field never erases stored data.
+        if (input.value === '' || isoToJalaliText(input.value) !== '') {
+          setNativeIso('', true);
+        }
         return;
       }
       if (!jalaliEntryShapeComplete(ascii)) {

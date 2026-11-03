@@ -13,6 +13,7 @@ use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Infrastructure\UserCacheRollback;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -430,8 +431,14 @@ final class ClinicianAdminPage
     <?php if ((int) $clinician['is_active'] === 1) : $impact = App::scheduleService()->impact($cid); ?>
         <div class="notice notice-info inline" style="max-width:1150px">
             <p><strong>تأثیر تغییر برنامه (پیش‌نمایش):</strong>
-                با ذخیرهٔ هر تغییر، <strong><?php echo (int) $impact['future_empty_slots']; ?></strong> اسلات خالی آینده
-                حذف و بازتولید می‌شود (بازتولید خودکار)؛ و <strong><?php echo (int) $impact['future_reserved_slots']; ?></strong>
+				<?php
+				$empty_fa    = PersianDigits::format_int( (int) $impact['future_empty_slots'] );
+				$reserved_fa = PersianDigits::format_int( (int) $impact['future_reserved_slots'] );
+				?>
+				با ذخیرهٔ هر تغییر،
+				<strong><?php echo esc_html( $empty_fa ); ?></strong> اسلات خالی آینده
+				حذف و بازتولید می‌شود (بازتولید خودکار)؛ و
+				<strong><?php echo esc_html( $reserved_fa ); ?></strong>
                 اسلات دارای رزرو/Hold <strong>هرگز حذف نمی‌شوند</strong> (امانت داده حفظ می‌شود).
             </p>
         </div>
@@ -492,7 +499,12 @@ final class ClinicianAdminPage
                 $excLocationName = $excLocationId > 0 ? ($locationNames[$excLocationId] ?? '#' . $excLocationId) : '';
                 ?>
                 <tr>
-                    <td><?php echo esc_html(Jalali::formatYmd((string) $e['date'])); ?> <span class="description">(<?php echo esc_html((string) $e['date']); ?>)</span></td>
+					<td>
+						<?php echo esc_html( Jalali::format_display_ymd( (string) $e['date'] ) ); ?>
+						<span class="description">(
+							<?php echo esc_html( (string) $e['date'] ); ?>
+						)</span>
+					</td>
                     <td><?php echo $excLocationId > 0 ? esc_html($excLocationName) : esc_html__('همهٔ محل‌ها', 'cpms'); ?></td>
                     <td><?php echo esc_html(self::exceptionTypeLabel((string) $e['type'])); ?></td>
                     <td dir="ltr"><?php echo esc_html(($e['start_time'] ?? '—') . ' تا ' . ($e['end_time'] ?? '—')); ?></td>

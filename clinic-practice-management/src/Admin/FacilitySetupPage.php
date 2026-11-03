@@ -9,6 +9,7 @@ use ClinicCore\Application\Onboarding\FacilitySetupService;
 use ClinicCore\Application\Onboarding\FacilityTypeCatalog;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 
@@ -312,8 +313,12 @@ final class FacilitySetupPage {
                         return 'همین نقش و محدودهٔ دسترسی از قبل برای این کاربر ثبت شده است؛ تغییری لازم نبود.';
                     }
                     return 'location' === $result['scope_mode']
-                        ? 'نقش کارکنان فقط برای ' . count( $result['location_ids'] ) . ' مکان انتخاب‌شده ثبت شد (منع صریح: ' . count( $result['denied'] ) . ').'
-                        : 'نقش کارکنان برای کل این درمانگاه ثبت شد (منع صریح: ' . count( $result['denied'] ) . ').';
+						? 'نقش کارکنان فقط برای '
+							. PersianDigits::format_int( count( $result['location_ids'] ) )
+							. ' مکان انتخاب‌شده ثبت شد (منع صریح: '
+							. PersianDigits::format_int( count( $result['denied'] ) ) . ').'
+						: 'نقش کارکنان برای کل این درمانگاه ثبت شد (منع صریح: '
+							. PersianDigits::format_int( count( $result['denied'] ) ) . ').';
                 case 'schedule':
                     $input  = [
                         'day_of_week'              => (int) $field( 'day_of_week' ),
@@ -336,7 +341,10 @@ final class FacilitySetupPage {
                     return 'سیاست رزرو و ظرفیت این درمانگاه ذخیره شد.';
                 default:
                     $result = $service->activate( $actor_id, $organization_id, '1' === $field( 'confirm' ) );
-                    return 'راه‌اندازی فعال شد؛ ' . count( $result['activated'] ) . ' درمانگاه اکنون نوبت جدید می‌پذیرد.';
+
+					$activated_fa = PersianDigits::format_int( count( $result['activated'] ) );
+					return 'راه‌اندازی فعال شد؛ ' . $activated_fa
+						. ' درمانگاه اکنون نوبت جدید می‌پذیرد.';
             }
         } catch ( FacilitySetupException $e ) {
             return 'خطا: ' . $e->getMessage();
@@ -671,7 +679,10 @@ final class FacilitySetupPage {
         }
         $plan = $review['plan'];
         echo '<div data-cpms-facility-review="' . ( $review['ready'] ? 'ready' : 'blocked' ) . '">';
-        echo '<p>ساختمان‌ها/سایت‌ها: ' . esc_html( (string) count( $plan['sites'] ) ) . ' — درمانگاه‌ها: ' . esc_html( (string) count( $review['clinics'] ) ) . '</p>';
+		$sites_fa   = PersianDigits::format_int( count( $plan['sites'] ) );
+		$clinics_fa = PersianDigits::format_int( count( $review['clinics'] ) );
+		echo '<p>ساختمان‌ها/سایت‌ها: ' . esc_html( $sites_fa )
+			. ' — درمانگاه‌ها: ' . esc_html( $clinics_fa ) . '</p>';
         foreach ( $review['clinics'] as $clinic ) {
             echo '<div class="card" style="max-width:100%;box-sizing:border-box;" data-cpms-review-clinic="' . esc_attr( (string) $clinic['clinic_id'] ) . '">';
             echo '<h3>' . esc_html( (string) $clinic['name'] ) . ' <small>(' . esc_html( 'active' === $clinic['status'] ? 'فعال' : 'در انتظار فعال‌سازی' ) . ')</small></h3>';

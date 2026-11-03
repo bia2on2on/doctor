@@ -378,7 +378,7 @@ final class FinancePortalController extends RestBase {
 				'patient_name'     => trim( (string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name'] ),
 				'clinician_name'   => (string) $row['clinician_name'],
 				'operational_date' => (string) $row['visit_date'],
-				'jalali_date'      => Jalali::formatYmd( (string) $row['visit_date'] ),
+				'jalali_date'      => Jalali::format_display_ymd( (string) $row['visit_date'] ),
 				'operational_time' => $this->operational_time( $row, $current['timezone'] ),
 				'visit_status'     => 'awaiting_payment',
 				'invoice_id'       => ( $invoice_exists && null !== ( $row['invoice_id'] ?? null ) ) ? (int) $row['invoice_id'] : null,
@@ -395,7 +395,7 @@ final class FinancePortalController extends RestBase {
 		return $this->success(
 			array(
 				'date'          => $date,
-				'jalali_date'   => Jalali::formatYmd( $date ),
+				'jalali_date'   => Jalali::format_display_ymd( $date ),
 				'location_id'   => $location_id,
 				'location_name' => (string) $current['name'],
 				'visits'        => $visits,
@@ -586,7 +586,7 @@ final class FinancePortalController extends RestBase {
 				'amount'         => $format_money( $net_row_cents ),
 				'currency'       => (string) ( $lrow['currency'] ?? 'IRR' ),
 				'payment_date'   => $local_ymd,
-				'jalali_date'    => Jalali::formatYmd( $local_ymd ),
+				'jalali_date'    => Jalali::format_display_ymd( $local_ymd ),
 				'payment_time'   => $local_dt->format( 'H:i' ),
 			);
 		}
@@ -595,8 +595,8 @@ final class FinancePortalController extends RestBase {
 			array(
 				'from'          => $from_date,
 				'to'            => $to_date,
-				'jalali_from'   => Jalali::formatYmd( $from_date ),
-				'jalali_to'     => Jalali::formatYmd( $to_date ),
+				'jalali_from'   => Jalali::format_display_ymd( $from_date ),
+				'jalali_to'     => Jalali::format_display_ymd( $to_date ),
 				'location_id'   => $location_id,
 				'location_name' => (string) $current['name'],
 				'currency'      => 'IRR',
@@ -670,7 +670,7 @@ final class FinancePortalController extends RestBase {
 				'patient_name'     => trim( (string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name'] ),
 				'clinician_name'   => (string) $row['clinician_name'],
 				'operational_date' => (string) $row['visit_date'],
-				'jalali_date'      => Jalali::formatYmd( (string) $row['visit_date'] ),
+				'jalali_date'      => Jalali::format_display_ymd( (string) $row['visit_date'] ),
 				'operational_time' => $this->operational_time( $row, $current['timezone'] ),
 				'visit_status'     => 'consultation_completed',
 			);
@@ -679,7 +679,7 @@ final class FinancePortalController extends RestBase {
 		return $this->success(
 			array(
 				'date'          => $date,
-				'jalali_date'   => Jalali::formatYmd( $date ),
+				'jalali_date'   => Jalali::format_display_ymd( $date ),
 				'location_id'   => $location_id,
 				'location_name' => (string) $current['name'],
 				'visits'        => $visits,
@@ -744,7 +744,7 @@ final class FinancePortalController extends RestBase {
 				'patient_name'     => trim( (string) $row['patient_first_name'] . ' ' . (string) $row['patient_last_name'] ),
 				'clinician_name'   => (string) $row['clinician_name'],
 				'operational_date' => (string) $row['visit_date'],
-				'jalali_date'      => Jalali::formatYmd( (string) $row['visit_date'] ),
+				'jalali_date'      => Jalali::format_display_ymd( (string) $row['visit_date'] ),
 				'operational_time' => $this->operational_time( $row, $current['timezone'] ),
 				'visit_status'     => 'paid',
 				// Minimal settlement summary for checkout confirmation only —
@@ -762,7 +762,7 @@ final class FinancePortalController extends RestBase {
 		return $this->success(
 			array(
 				'date'          => $date,
-				'jalali_date'   => Jalali::formatYmd( $date ),
+				'jalali_date'   => Jalali::format_display_ymd( $date ),
 				'location_id'   => $location_id,
 				'location_name' => (string) $current['name'],
 				'visits'        => $visits,

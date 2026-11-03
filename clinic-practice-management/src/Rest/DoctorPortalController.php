@@ -856,7 +856,9 @@ final class DoctorPortalController extends RestBase {
 						$fu_by_visit[ $vid ][] = [
 							'is_needed'             => 1 === (int) $fu['is_needed'],
 							'suggested_date'        => $suggested,
-							'suggested_date_jalali' => null !== $suggested ? Jalali::formatYmd( $suggested ) : null,
+							'suggested_date_jalali' => null !== $suggested
+								? Jalali::format_display_ymd( $suggested )
+								: null,
 							'interval_days'         => null !== $fu['interval_days'] ? (int) $fu['interval_days'] : null,
 							'reason'                => isset( $fu['reason'] ) ? (string) $fu['reason'] : '',
 							'status'                => (string) $fu['status'],
@@ -871,7 +873,9 @@ final class DoctorPortalController extends RestBase {
 					$prior_visits[] = [
 						'visit_id'       => $vid,
 						'visit_date'     => $vdate,
-						'jalali_date'    => preg_match( '/^\d{4}-\d{2}-\d{2}$/', $vdate ) ? Jalali::formatYmd( $vdate ) : $vdate,
+						'jalali_date'    => 1 === preg_match( '/^\d{4}-\d{2}-\d{2}$/', $vdate )
+							? Jalali::format_display_ymd( $vdate )
+							: $vdate,
 						'status'         => (string) $pv['status'],
 						'clinician_name' => (string) ( $pv['clinician_name'] ?? '' ),
 						'notes'          => $notes_by_visit[ $vid ] ?? [],
