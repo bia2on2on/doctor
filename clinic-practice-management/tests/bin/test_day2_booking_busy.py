@@ -252,5 +252,165 @@ class BusySuffixForTest(unittest.TestCase):
         self.assertIn("busy_diag=fetch-failed", out)
 
 
+class JourneyStartBoundTest(unittest.TestCase):
+    """NEW: the busy row must come from THIS journey, not an earlier run."""
+
+    SINCE = "2026-11-04 10:00:00"
+    TABLE = "cpmswp_cpms_operational_logs"
+    ENTRIES = BusySuffixForTest.BUSY_ENTRIES
+
+    def test_since_adds_inclusive_created_at_bound(self):
+        sql = busy.latest_busy_sql(self.TABLE, self.SINCE)
+        self.assertIn("AND created_at >= '2026-11-04 10:00:00'", sql)
+        self.assertIn("message='booking.lock_read_failed'", sql)
+        self.assertIn("ORDER BY id DESC LIMIT 1", sql)
+
+    def test_no_since_keeps_exact_legacy_unbounded_sql(self):
+        self.assertEqual(
+            "SELECT context_json FROM cpmswp_cpms_operational_logs "
+            "WHERE message='booking.lock_read_failed' ORDER BY id DESC LIMIT 1",
+            busy.latest_busy_sql(self.TABLE),
+        )
+
+    def test_invalid_or_injected_since_raises_valueerror(self):
+        for bad in ("", "2026-11-04T10:00:00", "2026-11-04 10:00",
+                    "x'; DROP TABLE t--", 5, [], "2026-11-04 10:00:00 "):
+            with self.assertRaises(ValueError):
+                busy.latest_busy_sql(self.TABLE, bad)
+
+    def test_unsafe_table_still_raises_with_a_valid_since(self):
+        with self.assertRaises(ValueError):
+            busy.latest_busy_sql("bad table", self.SINCE)
+
+    def test_busy_suffix_forwards_since_into_the_query(self):
+        seen = []
+
+        def fake_query(sql):
+            seen.append(sql)
+            return []
+
+        out = busy.busy_suffix_for(
+            self.ENTRIES, fake_query, self.TABLE, since=self.SINCE
+        )
+        self.assertEqual(1, len(seen))
+        self.assertIn("created_at >= '2026-11-04 10:00:00'", seen[0])
+        self.assertIn("busy_diag=not-found", out)
+
+    def test_invalid_since_degrades_to_fetch_failed_never_raises(self):
+        out = busy.busy_suffix_for(
+            self.ENTRIES, lambda sql: [], self.TABLE, since="not-a-timestamp"
+        )
+        self.assertIn("busy_diag=fetch-failed", out)
+
+    def test_query_failure_with_since_still_fetch_failed(self):
+        def boom(sql):
+            raise RuntimeError("db query failed: synthetic")
+
+        out = busy.busy_suffix_for(
+            self.ENTRIES, boom, self.TABLE, since=self.SINCE
+        )
+        self.assertIn("busy_diag=fetch-failed", out)
+
+
+class StaleOrMismatchTest(unittest.TestCase):
+    """NEW: a row whose ids disagree with the attempt is never its cause."""
+
+    SINCE = "2026-11-04 10:00:00"
+    TABLE = "cpmswp_cpms_operational_logs"
+
+    def attempt(self, slot_id=42):
+        return {"route": "/clinic/v1/booking/hold", "status": 503,
+                "code": "CLINIC_BOOKING_BUSY", "slot_id": slot_id,
+                "clinic_id": 1}
+
+    @staticmethod
+    def row(slot_id):
+        return ('{"read": "slot", "sql_errno": 1213, '
+                '"sql_error": "Deadlock found", "slot_id": %d, '
+                '"clinic_id": 1}' % slot_id,)
+
+    def test_matching_ids_still_surface_the_cause(self):
+        out = busy.busy_suffix_for(
+            [self.attempt()], lambda sql: [self.row(42)], self.TABLE,
+            since=self.SINCE
+        )
+        self.assertIn("busy_diag=booking.lock_read_failed", out)
+        self.assertIn("read=slot", out)
+        self.assertIn("slot_id=42", out)
+        self.assertNotIn("stale-or-mismatch", out)
+
+    def test_conflicting_slot_id_is_stale_or_mismatch(self):
+        out = busy.busy_suffix_for(
+            [self.attempt()], lambda sql: [self.row(999)], self.TABLE,
+            since=self.SINCE
+        )
+        self.assertIn("busy_diag=stale-or-mismatch", out)
+        self.assertNotIn("read=slot", out)
+        self.assertNotIn("sql_errno=1213", out)
+        self.assertIn("route=booking/hold", out)
+
+    def test_conflicting_clinic_id_is_stale_or_mismatch(self):
+        row = ('{"read": "organization", "sql_errno": 1205, "clinic_id": 9}',)
+        out = busy.busy_suffix_for(
+            [self.attempt()], lambda sql: [row], self.TABLE, since=self.SINCE
+        )
+        self.assertIn("busy_diag=stale-or-mismatch", out)
+
+    def test_no_shared_id_keeps_the_row_rather_than_guessing(self):
+        row = ('{"read": "location", "sql_errno": 1205, "location_id": 3}',)
+        attempt = {"route": "/clinic/v1/booking/hold", "status": 503,
+                   "code": "CLINIC_BOOKING_BUSY"}
+        out = busy.busy_suffix_for(
+            [attempt], lambda sql: [row], self.TABLE, since=self.SINCE
+        )
+        self.assertIn("busy_diag=booking.lock_read_failed", out)
+        self.assertNotIn("stale-or-mismatch", out)
+
+    def test_formatter_accepts_stale_state(self):
+        self.assertEqual(
+            "busy_diag=stale-or-mismatch",
+            busy.format_busy_suffix(None, missing="stale-or-mismatch"),
+        )
+
+
+class EmailRedactionTest(unittest.TestCase):
+    """NEW: e-mail-like tokens in untrusted driver text are redacted."""
+
+    def test_plain_email_is_redacted(self):
+        out = busy.sanitize_sql_error("lock failed for ali.reza@clinic.example.com retry")
+        self.assertNotIn("ali.reza@clinic.example.com", out)
+        self.assertIn("[email]", out)
+
+    def test_phone_like_local_part_is_fully_redacted(self):
+        out = busy.sanitize_sql_error("contact 09128887701@clinic.example.com now")
+        self.assertNotIn("09128887701", out)
+        self.assertNotIn("clinic.example.com", out)
+        self.assertIn("[email]", out)
+
+    def test_quoted_email_redacted_identifier_quote_kept(self):
+        out = busy.sanitize_sql_error("Table 'cpms_main.wp_slots' failed for 'a@b.co'")
+        self.assertIn("'cpms_main.wp_slots'", out)
+        self.assertNotIn("a@b.co", out)
+        self.assertIn("[email]", out)
+
+    def test_no_email_leaves_digit_and_truncation_rules_intact(self):
+        out = busy.sanitize_sql_error("error 1205 for mobile 09128887701 retry")
+        self.assertIn("1205", out)
+        self.assertIn("[digits]", out)
+
+    def test_email_in_sql_error_never_reaches_failure_line(self):
+        stored = ('{"read": "slot", "sql_errno": 1205, '
+                  '"sql_error": "deadlock for a@b.example.com", "slot_id": 7}',)
+        out = busy.busy_suffix_for(
+            [{"route": "/clinic/v1/booking/hold", "status": 503,
+              "code": "CLINIC_BOOKING_BUSY", "slot_id": 7}],
+            lambda sql: [stored], "cpmswp_cpms_operational_logs",
+            since="2026-11-04 10:00:00"
+        )
+        self.assertNotIn("a@b.example.com", out)
+        self.assertIn("[email]", out)
+        self.assertIn("busy_diag=booking.lock_read_failed", out)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

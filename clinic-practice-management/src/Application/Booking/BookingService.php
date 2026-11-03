@@ -920,6 +920,10 @@ final class BookingService
                         'SELECT * FROM ' . $this->db->table( 'cpms_slot_holds' ) . ' WHERE id = %d AND token = %s LIMIT 1',
                         [ $hold_id, (string) $hold['token'] ]
                     );
+                    $this->assert_read_succeeded(
+                        'confirm_hold',
+                        [ 'hold_id' => $hold_id, 'slot_id' => $slot_id ]
+                    );
                     if (
                         $locked_hold === null
                         || (int) ( $locked_hold['holder_wp_user_id'] ?? 0 ) !== $wp_user_id
@@ -932,6 +936,10 @@ final class BookingService
                     }
 
                     $slot = $this->slots->findForUpdate( $slot_id );
+                    $this->assert_read_succeeded(
+                        'confirm_slot',
+                        [ 'slot_id' => $slot_id, 'clinic_id' => $hold_clinic_id ]
+                    );
                     if (
                         $slot === null
                         || (int) ( $slot['is_open'] ?? 0 ) !== 1
@@ -1482,6 +1490,10 @@ final class BookingService
                     // genuine deadlock, so the tenant prefix is acquired only after the
                     // source Appointment is locked and authorized.
                     $appt = $this->appointments->findForUpdate( $appointment_id );
+                    $this->assert_read_succeeded(
+                        'reschedule_appointment',
+                        [ 'appointment_id' => $appointment_id, 'clinic_id' => $idem_clinic_id ]
+                    );
                     if (
                         $appt === null
                         || (int) ( $appt['clinic_id'] ?? 0 ) !== $idem_clinic_id
@@ -1563,7 +1575,15 @@ final class BookingService
                     // rows; the Location lock follows the Slot locks (established order).
                     [ $first, $second ] = $old_slot_id < $new_slot_id ? [ $old_slot_id, $new_slot_id ] : [ $new_slot_id, $old_slot_id ];
                     $first_slot         = $this->slots->findForUpdate( $first );
+                    $this->assert_read_succeeded(
+                        'reschedule_first_slot',
+                        [ 'slot_id' => $first, 'clinic_id' => $idem_clinic_id ]
+                    );
                     $second_slot        = $second === $first ? $first_slot : $this->slots->findForUpdate( $second );
+                    $this->assert_read_succeeded(
+                        'reschedule_second_slot',
+                        [ 'slot_id' => $second, 'clinic_id' => $idem_clinic_id ]
+                    );
                     if ( $first_slot === null || $second_slot === null ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مبدأ یا مقصد دیگر در دسترس نیست', 409 );
                     }
@@ -1777,6 +1797,13 @@ final class BookingService
                     $this->lock_booking_tenant_prefix( $trusted_clinic_id );
 
                     $slot = $this->slots->findForUpdate( (int) $resolved_slot['id'] );
+                    $this->assert_read_succeeded(
+                        'staff_create_slot',
+                        [
+                            'slot_id'   => (int) $resolved_slot['id'],
+                            'clinic_id' => $trusted_clinic_id,
+                        ]
+                    );
                     if (
                         $slot === null
                         || (int) ( $slot['clinic_id'] ?? 0 ) !== $trusted_clinic_id
@@ -1913,6 +1940,10 @@ final class BookingService
         // open parenthesis to be the last content on a multi-line call line).
         $no_show = function () use ( $appointmentId, $trimmed, $actorUserId ): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy closure imports retained for pre-existing body.
             $appt = $this->appointments->findForUpdate($appointmentId);
+            $this->assert_read_succeeded(
+                'no_show_appointment',
+                [ 'appointment_id' => (int) ( $appt['id'] ?? 0 ) ]
+            );
             if ($appt === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
             }
@@ -1992,6 +2023,10 @@ final class BookingService
 
         [$appt, $toState, $slotId] = $this->db->transactional(function () use ($wpUserId, $appointmentId, $reason, $actor): array {
             $appt = $this->appointments->findForUpdate($appointmentId);
+            $this->assert_read_succeeded(
+                'cancel_appointment',
+                [ 'appointment_id' => (int) ( $appt['id'] ?? 0 ) ]
+            );
             if ($appt === null) {
                 throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
             }
