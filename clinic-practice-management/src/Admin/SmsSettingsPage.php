@@ -536,6 +536,10 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
         document.querySelectorAll('[data-event]').forEach(function (input) {
             body['template_' + input.getAttribute('data-event')] = input.value;
         });
+        // Busy-lock (double-submit window): the save button stays disabled until
+        // the whole save chain settles, then re-enables. No body/message change.
+        var saveBtn = el('cpms-sms-save');
+        saveBtn.disabled = true;
         result('cpms-sms-save-result', 'در حال ذخیره…');
         var chain = api('POST', 'settings', body);
         document.querySelectorAll('[data-event]').forEach(function (input) {
@@ -548,10 +552,12 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
                 }
             });
         });
-        chain.then(function () {
+        var chainDone = chain.then(function () {
             result('cpms-sms-save-result', '✓ ذخیره شد.', true);
             return loadStatus().then(loadTemplates);
         }).catch(function (err) { result('cpms-sms-save-result', 'خطا: ' + err.message, false); loadStatus(); });
+        var releaseSave = function () { saveBtn.disabled = false; };
+        chainDone.then(releaseSave, releaseSave);
     };
 
     function collectCreds() {

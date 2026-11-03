@@ -442,12 +442,17 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
 
     // ---------- اکشن‌ها ----------
 
-    function doPost(path, body, okMsg) {
+    function doPost(path, body, okMsg, btn) {
+        // Busy-lock (double-submit window): when the caller passes its trigger,
+        // the button stays disabled until this POST settles, then re-enables.
+        // Request body and messages are unchanged.
+        var release = function () { if (btn) { btn.disabled = false; } };
+        if (btn) { btn.disabled = true; }
         api('POST', path, body).then(function (r) {
             if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
             notice(okMsg, 'success');
             loadToday().catch(function () {});
-        }).catch(function () { notice('خطای شبکه', 'error'); });
+        }).catch(function () { notice('خطای شبکه', 'error'); }).then(release, release);
     }
 
     document.getElementById('cpms-q-tbody').addEventListener('click', function (e) {
@@ -491,7 +496,7 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
             return;
         }
         if (act === 'checkout') {
-            doPost('visits/' + id + '/checkout', {}, 'خروج ثبت شد');
+            doPost('visits/' + id + '/checkout', {}, 'خروج ثبت شد', btn);
         }
     });
 
