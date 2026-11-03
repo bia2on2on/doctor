@@ -430,14 +430,26 @@ if ( function_exists( 'wp_print_scripts' ) && wp_script_is( $cpms_money_handle, 
         var visitId = state.visitId;
         var description;
         var amount;
-        return window.CpmsDialog.prompt('شرح خدمت', { value: charge.description }).then(function (value) {
+        return window.CpmsDialog.prompt('شرح خدمت', {
+            value: charge.description,
+            required: true,
+            requiredMessage: 'شرح خدمت الزامی است.'
+        }).then(function (value) {
             if (value === null || state.visitId !== visitId) return null;
             description = value;
-            return window.CpmsDialog.prompt('مبلغ واحد (ریال)', { value: String(charge.unit_amount) });
+            return window.CpmsDialog.prompt('مبلغ واحد (ریال)', {
+                value: String(charge.unit_amount),
+                required: true,
+                requiredMessage: 'مبلغ واحد الزامی است.'
+            });
         }).then(function (value) {
             if (value === null || state.visitId !== visitId) return null;
             amount = value;
-            return window.CpmsDialog.prompt('تعداد', { value: String(charge.quantity) });
+            return window.CpmsDialog.prompt('تعداد', {
+                value: String(charge.quantity),
+                required: true,
+                requiredMessage: 'تعداد الزامی است.'
+            });
         }).then(function (quantity) {
             if (quantity === null || state.visitId !== visitId) return;
             mutate('/staff/portal/pricing/visits/' + visitId + '/charges/' + charge.id, 'PUT', {

@@ -492,6 +492,11 @@ def visible_or_diagnose(page, selector, stage, probe=None, since=0, hold_attempt
 
 
 def run_journey_a_public_booking(browser, cfg):
+    # UTC wall clock captured before the journey's first REST call. OpLogger
+    # writes cpms_operational_logs.created_at in UTC on this same CI host, so
+    # the bound keeps a diagnostic row from an earlier journey out of this
+    # failure line; a 1-second granularity is enough (the bound is inclusive).
+    journey_start = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
     ctx_pub = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
     page_pub = ctx_pub.new_page()
     page_pub.set_default_timeout(25000)
@@ -710,7 +715,8 @@ def run_journey_a_public_booking(browser, cfg):
             viewport = ""
         try:
             suffix = busy_suffix_for(
-                probe.entries, dbrows, T("cpms_operational_logs"), viewport
+                probe.entries, dbrows, T("cpms_operational_logs"), viewport,
+                since=journey_start
             )
         except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
             suffix = ""
