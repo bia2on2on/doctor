@@ -47,6 +47,9 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.sync_api import sync_playwright
 
+from cpms_page_error_watch import attach as attach_error_watch
+from cpms_page_error_watch import report as report_error_watch
+
 BASE = os.environ.get("BASE", "http://localhost:8080").rstrip("/")
 URL = os.environ["FINANCE_BOARD_URL"]
 LOGIN = os.environ["FINANCE_BOARD_LOGIN"]
@@ -198,6 +201,14 @@ def accountant_finance_journey(browser):
         ignore_https_errors=True,
     )
     page = account_context.new_page()
+    # Owner defect 12: this is the one production context that navigates to
+    # wp-admin/profile.php (as a shared-role Accountant) and, until now, carried
+    # NO error listener at all. The watch is unfiltered and brand-new: it never
+    # suppresses a message, never filters on "serialize", and fails the step only
+    # for an error whose source frame is served by the plugin itself. Core and
+    # third-party errors are printed as INFO lines.
+    watched_errors = []
+    attach_error_watch(page, watched_errors)
     observed_nonces = {"summary": [], "reception": []}
     stage = "login"
 
@@ -405,6 +416,11 @@ def accountant_finance_journey(browser):
     finally:
         observed_nonces["summary"].clear()
         observed_nonces["reception"].clear()
+        # Unfiltered verdict: plugin-owned source ⇒ printed FAIL line + failure;
+        # core/third-party source ⇒ INFO only (never fails this step).
+        for watched_failure in report_error_watch(watched_errors, "accountant-journey"):
+            print(watched_failure, flush=True)
+            require(False, watched_failure)
         account_context.close()
 
 
