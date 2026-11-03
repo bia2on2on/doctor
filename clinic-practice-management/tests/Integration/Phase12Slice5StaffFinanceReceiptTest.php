@@ -1038,8 +1038,8 @@ final class Phase12Slice5StaffFinanceReceiptTest extends WP_UnitTestCase
         self::assertIsArray($legacy, 'D17 keeps its `receipt` envelope');
         self::assertSame('INV-SLICE5-CONTROL', (string) $legacy['invoice_number']);
         self::assertSame((string) $patientRow['mrn'], (string) ($legacy['patient']['mrn'] ?? ''), 'D17 keeps printing the MRN (unchanged behaviour)');
-        self::assertSame(Jalali::formatYmd(substr(self::INVOICE_CREATED_AT, 0, 10)), (string) $legacy['jalali_date'], 'D17 keeps its existing UTC-derived date presentation (unchanged)');
-        self::assertSame(Jalali::formatYmd(substr(self::PAYMENT_ONE_AT, 0, 10)), (string) $legacy['payments'][0]['jalali_paid_at'], 'D17 keeps its existing UTC-derived payment date (unchanged)');
+        self::assertSame(Jalali::format_display_ymd(substr(self::INVOICE_CREATED_AT, 0, 10)), (string) $legacy['jalali_date'], 'D17 keeps its existing UTC-derived date presentation (display digits only)');
+        self::assertSame(Jalali::format_display_ymd(substr(self::PAYMENT_ONE_AT, 0, 10)), (string) $legacy['payments'][0]['jalali_paid_at'], 'D17 keeps its existing UTC-derived payment date (display digits only)');
         self::assertNotSame((string) $legacy['payments'][0]['jalali_paid_at'], Jalali::formatYmd('2026-06-16'), 'D17 is NOT silently corrected by this slice');
 
         // Slice 1 board projection unchanged.

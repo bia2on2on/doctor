@@ -518,7 +518,7 @@ final class VisitService
             // Persian/Jalali presentation of the SAME Location-local operational
             // day. Storage, comparisons and cutoff rules stay Gregorian; this is
             // presentation only (Owner B — Persian/Jalali date UX).
-            'jalali'        => Jalali::formatYmd( $operational_date ),
+            'jalali'        => Jalali::format_display_ymd( $operational_date ),
             'stats'         => $stats,
             'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
             'last_event_id' => $this->visits->lastEventId( $clinic_id, $operational_date, $scope_clinician_id, $location_id ),
@@ -552,7 +552,7 @@ final class VisitService
             $date = $this->nowUtc()->format( 'Y-m-d' );
             return [
                 'date'          => $date,
-                'jalali'        => Jalali::formatYmd( $date ),
+                'jalali'        => Jalali::format_display_ymd( $date ),
                 'stats'         => $this->emptyStats(),
                 'queue'         => [],
                 'last_event_id' => 0,
@@ -598,7 +598,7 @@ final class VisitService
             'date'          => $operational_date,
             // Persian/Jalali presentation of the SAME Location-local operational
             // day (presentation only; Gregorian storage/comparisons untouched).
-            'jalali'        => Jalali::formatYmd( $operational_date ),
+            'jalali'        => Jalali::format_display_ymd( $operational_date ),
             'stats'         => $stats,
             'queue'         => array_map( [ $this, 'presentVisit' ], $queue ),
             'appointments'  => $doctor_appointments,

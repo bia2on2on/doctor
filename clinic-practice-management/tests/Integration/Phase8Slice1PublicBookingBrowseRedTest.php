@@ -631,7 +631,7 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
 
         // FR-3.6 / contract item 3 — Jalali day label for the UI.
         self::assertSame(
-            Jalali::formatYmd($this->freeSlot['date']),
+            Jalali::format_display_ymd($this->freeSlot['date']),
             (string) ($day['jalali'] ?? ''),
             'A1 must carry the Jalali day label the surface displays (existing `days[].jalali`).'
         );

@@ -32,6 +32,9 @@ final class StaffMessagingService {
 
     public const RETENTION_POLICY = 'append_only';
 
+    /** برچسب فارسیِ «وقت جهانی» برای زمان‌های ذخیره‌شده به UTC (فقط نمایش). */
+    private const UTC_LABEL_FA = 'به وقت جهانی';
+
     private const DOCTOR_CAP       = RolesAndCapabilities::CONSULT_COMPLETE;
     private const RECEPTIONIST_CAP = RolesAndCapabilities::QUEUE_CHECKIN;
 
@@ -611,7 +614,9 @@ final class StaffMessagingService {
 		}
 
 		$time_fa = PersianDigits::digits( $time );
-		return Jalali::format_display_ymd( $date ) . ' — ' . $time_fa . ' UTC';
+		// $utc_sql از DB (nowUtcSql) می‌آید و هیچ تبدیل منطقه‌زمانی‌ای رخ نمی‌دهد؛
+		// پس برچسبِ فارسیِ همان UTC نمایش داده می‌شود، بدون پسوندِ لاتین.
+		return Jalali::format_display_ymd( $date ) . ' — ' . $time_fa . ' ' . self::UTC_LABEL_FA;
     }
 
     /**

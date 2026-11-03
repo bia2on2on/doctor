@@ -568,7 +568,7 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
             self::assertSame(self::DAY_KEYS, $keys, 'A6: a day option carries only date/jalali');
         }
         self::assertSame($today, (string) ($days[0]['date'] ?? ''), 'A6: day options start at the Location-local operational day');
-        self::assertMatchesRegularExpression('/^\d{4}\/\d{2}\/\d{2}$/', (string) ($days[0]['jalali'] ?? ''), 'A6: existing Jalali presentation utility');
+        self::assertMatchesRegularExpression('/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2}$/u', (string) ($days[0]['jalali'] ?? ''), 'A6: Jalali presentation uses Persian digits');
         $json = (string) wp_json_encode($data);
         foreach (['booked_count', 'held_count', 'generated_from', 'is_open', '"capacity"', 'wp_user_id', 'national_id', 'mobile'] as $needle) {
             self::assertStringNotContainsString($needle, $json, 'A6: the payload must not expose ' . $needle);
@@ -710,7 +710,7 @@ final class Phase11ReceptionAppointmentCreateRedTest extends WP_UnitTestCase
         self::assertSame('confirmed', (string) ($view['status'] ?? ''), 'A9: confirmed status');
         self::assertSame($tomorrow, (string) ($view['date'] ?? ''), 'A9: established date key');
         self::assertSame('09:30', (string) ($view['time'] ?? ''), 'A9: established HH:MM time key');
-        self::assertMatchesRegularExpression('/^\d{4}\/\d{2}\/\d{2}$/', (string) ($view['jalali'] ?? ''), 'A9: established Jalali presentation');
+        self::assertMatchesRegularExpression('/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2}$/u', (string) ($view['jalali'] ?? ''), 'A9: Jalali presentation uses Persian digits');
         self::assertSame(30, (int) ($view['duration_min'] ?? 0), 'A9: duration snapshot from the slot');
         self::assertSame('دلیل مراجعه', (string) ($view['reason'] ?? ''), 'A9: the bounded optional reason is supported by the existing contract');
 

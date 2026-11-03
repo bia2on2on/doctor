@@ -23,6 +23,7 @@ use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Slots\DurationResolver;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
@@ -216,7 +217,7 @@ final class BookingService
         foreach ($grouped as $date => $slots) {
             $days[] = [
                 'date' => $date,
-                'jalali' => Jalali::formatYmd($date),
+                'jalali' => Jalali::format_display_ymd( $date ),
                 'slots' => $slots,
             ];
         }
@@ -1355,7 +1356,7 @@ final class BookingService
                         foreach ( $grouped as $date => $slots ) {
                             $filtered_days[] = [
                                 'date'   => $date,
-                                'jalali' => Jalali::formatYmd( $date ),
+                                'jalali' => Jalali::format_display_ymd( $date ),
                                 'slots'  => $slots,
                             ];
                         }
@@ -1372,7 +1373,7 @@ final class BookingService
             return [
                 'appointment_id' => $appointment_id,
                 'reference_code' => (string) $appt['reference_code'],
-                'current_jalali' => Jalali::formatYmd( (string) $appt['slot_date'] ),
+                'current_jalali' => Jalali::format_display_ymd( (string) $appt['slot_date'] ),
                 'current_time'   => substr( (string) $appt['slot_time'], 0, 5 ),
                 'clinician_name' => $clinician_name,
                 'days'           => $filtered_days,
@@ -3138,8 +3139,10 @@ final class BookingService
             $vars = [
                 'patient_name' => $patientName,
                 'doctor_name'      => $doctor_name,
-                'appointment_date' => Jalali::formatYmd((string) $appt['slot_date']),
-                'appointment_time' => substr((string) $appt['slot_time'], 0, 5),
+                'appointment_date' => Jalali::format_display_ymd( (string) $appt['slot_date'] ),
+                'appointment_time' => PersianDigits::digits(
+                    substr( (string) $appt['slot_time'], 0, 5 )
+                ),
                 'clinic_name' => $clinic !== '' ? $clinic : 'مطب',
             ];
 
@@ -3202,7 +3205,7 @@ final class BookingService
             'reference_code' => (string) $row['reference_code'],
             'date' => $date,
             'time' => substr((string) $row['slot_time'], 0, 5),
-            'jalali' => Jalali::formatYmd($date),
+            'jalali'            => Jalali::format_display_ymd( $date ),
             'jalali_time' => substr((string) $row['slot_time'], 0, 5),
             'status' => (string) $row['status'],
             'duration_min' => (int) ($row['duration_min'] ?? 0),
@@ -3253,7 +3256,7 @@ final class BookingService
             'clinician_name' => (string) ($doctor['full_name'] ?? ''),
             'date' => $date,
             'time' => substr((string) $slot['slot_time'], 0, 5),
-            'jalali' => Jalali::formatYmd($date),
+            'jalali'         => Jalali::format_display_ymd( $date ),
             'jalali_time' => substr((string) $slot['slot_time'], 0, 5),
             'duration_min' => (int) $slot['duration_min'],
             'capacity_left' => max(0, (int) $slot['capacity'] - (int) $slot['booked_count'] - (int) $slot['held_count']),
