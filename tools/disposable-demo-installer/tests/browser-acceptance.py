@@ -89,8 +89,8 @@ def stage(name: str) -> None:
     print(f"STAGE {name}", flush=True)
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
-    safe_detail = str(detail)[:300]
+def check(name: str, ok: bool, detail: str = "", *, detail_cap: int = 300) -> None:
+    safe_detail = str(detail)[:detail_cap]
     RESULTS.append({"check": name, "ok": bool(ok), "detail": safe_detail})
     prefix = "PASS " if ok else "FAIL "
     suffix = f" — {safe_detail}" if safe_detail else ""
@@ -681,8 +681,9 @@ def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fix
         "the projection shows the check-in snapshot fee and states the no-reprice policy",
         "تعرفه ثبتشده هنگام پذیرش" in stats_text
         and "سیاست تعرفه" in stats_text
-        and "تغییر تعرفه پیشفرض" in stats_text,
-        stats_text[:200],
+        and "تعرفهٔ هر ویزیت هنگام پذیرش (و برای ویزیت\u200cهای قدیمی، در نخستین خواندنِ پیش\u200cنویس) ثبت می\u200cشود؛ تغییر پیش\u200cفرض پزشک پس از آن، تعرفهٔ ویزیت\u200cهای ثبت\u200cشده را تغییر نمی\u200cدهد. اگر ثبت تعرفه هنگام پذیرش ناموفق بماند، هرگز با پیش\u200cفرضِ بعدی جایگزین نمی\u200cشود و پزشک باید پیش از صدور فاکتور آن را صریحاً تعیین کند. فاکتورهای نهایی تغییرناپذیرند." in stats_text,
+        stats_text[:600],
+        detail_cap=600,
     )
 
     charge_rows = doctor_page.locator('[data-role="pricing-charges"] tr')
