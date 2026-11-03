@@ -228,8 +228,8 @@ final class ExportService
         $maxRows = (int) $settings->get('reports.export_max_rows', 10000);
         $result = $deps->reports->run($actorUserId, $type, $from, $to, $maxRows);
 
-        $retentionDays = (int) $settings->get('reports.export_retention_days', 7);
-        $expiresAt = gmdate('Y-m-d H:i:s', time() + ($retentionDays * 86400));
+        $retention_days = (int) $settings->get('reports.export_retention_days', 7);
+        $expires_at = gmdate('Y-m-d H:i:s', time() + ($retention_days * 86400));
 
         $csv = self::buildCsv($result, $actorUserId);
         $storagePath = $deps->storage->store($csv, $clinicId, 'csv');
@@ -241,7 +241,7 @@ final class ExportService
             NotificationEvents::REPORT_EXPORT_READY,
             [
                 'report_label' => (string) $result['label'],
-                'expires_at' => Jalali::formatYmd(substr($expiresAt, 0, 10)),
+                'expires_at' => Jalali::format_display_ymd(substr($expires_at, 0, 10)),
             ],
             null
         );
@@ -264,7 +264,7 @@ final class ExportService
             'scope' => $result['scope'],
             'file_path' => $storagePath,
             'file_name' => 'cpms-report-' . $type . '-' . $result['from'] . '_' . $result['to'] . '.csv',
-            'expires_at' => $expiresAt,
+            'expires_at' => $expires_at,
             'row_count' => is_array($result['rows'] ?? null) ? count($result['rows']) : 0,
         ];
         $this->notificationRows->updateById($notifId, [
