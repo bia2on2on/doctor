@@ -3366,7 +3366,7 @@ Applied the five approved corrections on top:
 
 ## 2026-11-03 — Booking error and display contract documentation
 
-- Starting basis: verified GitHub main `9dac14f7e4a70e3dd065d1234e36897f54b2d341` (fast-forwarded from `d606e9ab9ec5841b1063f74394b2c06322878de8`; reviewed booking/time source unchanged); documentation-only companion follow-up.
+- Starting basis: main advanced from `d606e9ab9ec5841b1063f74394b2c06322878de8` to `9dac14f7e4a70e3dd065d1234e36897f54b2d341` by merging #313; reviewed booking/time source was unchanged. Documentation-only companion follow-up.
 - Registered `CLINIC_BOOKING_BUSY` and documented its proven booking routes, guarded-read failure, confirm retry/hold behavior, and display-versus-machine formatting boundaries using the cited booking and time helpers. Existing money contract text is unchanged.
 - Validation: repository guidance and source at the verified main SHA reviewed; local scope, append-only and companion-isolation checks planned. PHP/WordPress runtime tests NOT RUN locally (environment unavailable); final-head CI must be checked separately.
-- Delivery/open items: draft PR only; no production, tests, tooling, or workflow changes. Display helpers do not prove universal conversion of every UI surface.
+- Delivery/open items: draft PR only; no production, tests, tooling, or workflow changes. Display helpers do not prove universal conversion of every UI surface. Review correction: traced guarded reads at main `41ec6247267821ed2000d84af571ecb30fde34e9`, added patient cancellation and clarified the public 503 versus 200/404 boundaries; staff cancellation does not run the patient deadline check.
