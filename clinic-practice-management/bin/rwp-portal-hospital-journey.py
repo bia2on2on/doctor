@@ -66,6 +66,43 @@ def redact(value) -> str:
     return SENSITIVE_RE.sub(r"\g<1>[redacted]", str(value))
 
 
+# --- Facility-plan counters: Latin, Persian (۰-۹) or Arabic-Indic (٠-٩) digits.
+# The management shell prints these counters with PersianDigits (Persian digits,
+# U+066C thousands separators at 1000+); older builds printed raw Latin digits.
+# The class is spelled out because Python \d also matches other Unicode digits.
+FA_DIGITS = "۰۱۲۳۴۵۶۷۸۹"
+AR_DIGITS = "٠١٢٣٤٥٦٧٨٩"
+ANY_DIGIT = "[0-9۰-۹٠-٩]"
+
+
+def digit_agnostic_number(number) -> str:
+    """Regex fragment for one exact integer in any of the three digit sets.
+
+    A thousands separator (٬ or ,) is optional, but only where PersianDigits
+    can emit one: after the leading 1-3 digits, then every 3 digits (so a
+    number below 1000 takes no separator anywhere).
+    """
+    digits = str(int(number))
+    if not digits.isdigit():
+        raise ValueError("number must be a non-negative integer")
+    classes = [f"[{d}{FA_DIGITS[int(d)]}{AR_DIGITS[int(d)]}]" for d in digits]
+    head = len(digits) % 3
+    bounds = {pos for pos in range(head, len(digits), 3) if pos > 0}
+    parts = []
+    for i, cls in enumerate(classes):
+        if i in bounds:
+            parts.append("[٬,]?")
+        parts.append(cls)
+    return "".join(parts)
+
+
+def has_numbered_text(text, prefix: str, number) -> bool:
+    """True when `<prefix><number>` occurs and is not part of a larger number."""
+    fragment = digit_agnostic_number(number)
+    pattern = rf"{re.escape(prefix)}{fragment}(?!(?:[٬,])?{ANY_DIGIT})"
+    return bool(re.search(pattern, text or ""))
+
+
 def check(name: str, ok: bool, detail: str = "") -> bool:
     results.append({"check": name, "ok": bool(ok), "detail": redact(detail)[:400]})
     print(("PASS " if ok else "FAIL ") + name + ((" — " + redact(detail)[:300]) if detail else ""))
@@ -328,7 +365,7 @@ def main() -> int:
             submit_on_surface(org, "org_facility_clinic", f"org.clinic.{name}", sshot, org_surface, fill_clinic)
 
         body = org.content()
-        check("org.two_clinics_listed", body.count("درمانگاه") >= 1 and "درمانگاه‌ها: 2" in body,
+        check("org.two_clinics_listed", body.count("درمانگاه") >= 1 and has_numbered_text(body, "درمانگاه‌ها: ", 2),
               f"plan shows 2 Clinics; {inventory(org)}")
         check("org.clinic_steps_delegated", 'data-cpms-clinic-steps-delegated="1"' in body,
               "Clinic-level forms are NOT offered to the Organization Manager")
