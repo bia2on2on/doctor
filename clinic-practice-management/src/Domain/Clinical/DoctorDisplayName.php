@@ -68,6 +68,13 @@ final class DoctorDisplayName {
 		return self::TITLE . ' ' . $clean;
 	}
 
+	/** Return a titled name, or an honest generic label when no name is available. */
+	public static function with_title_or_fallback( ?string $name ): string {
+		$display_name = self::with_title( $name );
+
+		return '' === $display_name ? 'پزشک' : $display_name;
+	}
+
 	/**
 	 * آیا نام از پیش با عنوانِ کاملِ «دکتر»/«Dr» شروع می‌شود؟
 	 *

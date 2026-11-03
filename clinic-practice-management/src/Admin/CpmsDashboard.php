@@ -86,7 +86,18 @@ final class CpmsDashboard
                                 <a class="button" href="<?php echo esc_url( CpmsAdminMenu::setup_url() ); ?>">ادامه راه‌اندازی</a>
                             <?php endif; ?>
                         </p>
-                        <p class="description">نسخه دیتابیس: <code><?php echo esc_html( (string) ( $schema_version ?? '—' ) ); ?></code>؛ نسخه افزونه: <code><?php echo esc_html( defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev' ); ?></code></p>
+                        <?php
+                        $schema_raw = (string) ( $schema_version ?? '—' );
+                        $schema_fa  = PersianDigits::digits( $schema_raw );
+                        $plugin_raw = defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev';
+                        $plugin_fa  = PersianDigits::digits( $plugin_raw );
+                        ?>
+                        <p class="description">
+                            نسخه پایگاه‌داده:
+                            <code><?php echo esc_html( $schema_fa ); ?></code>؛
+                            نسخه افزونه:
+                            <code><?php echo esc_html( $plugin_fa ); ?></code>
+                        </p>
                     </div>
                 <?php endif; ?>
 

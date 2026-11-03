@@ -7,6 +7,7 @@ namespace ClinicCore\Admin;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Application\System\QueueDiagnosis;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Time\PersianDigits;
 
 /**
@@ -84,9 +85,14 @@ final class SettingsAdmin
                 </div>
             <?php endif; ?>
             <?php if ($failedRows !== []) : ?>
-                <h2>Jobهای شکست‌خورده اخیر</h2>
-                <table class="widefat striped" dir="ltr">
-                    <thead><tr><th>ID</th><th>Type</th><th>Error</th><th>Created</th><th></th></tr></thead>
+                <h2>کارهای ناموفق اخیر</h2>
+                <table class="widefat striped">
+                    <thead>
+                        <tr>
+                            <th>شناسه</th><th>نوع</th><th>خطا</th>
+                            <th>زمان ایجاد</th><th></th>
+                        </tr>
+                    </thead>
                     <tbody>
                     <?php foreach ($failedRows as $job) : ?>
                         <tr>
@@ -103,11 +109,37 @@ final class SettingsAdmin
             <h2>اطلاعات و تنظیمات سطح نصب</h2>
             <p class="description">این مقادیر به هیچ درمانگاهی وابسته نیستند و در نصبِ چند‌درمانگاهی هم بدونِ انتخابِ درمانگاه خوانده می‌شوند.</p>
             <table class="form-table" role="presentation">
-                <tr><th>آخرین tick Queue</th><td><?php echo esc_html($queue['last_tick_at'] ? gmdate('Y-m-d H:i:s', (int) $queue['last_tick_at']) . ' UTC' : 'هرگز'); ?></td></tr>
+                <?php
+                $last_tick_label = 'هرگز';
+                if ( $queue['last_tick_at'] ) {
+                    $last_tick = (int) $queue['last_tick_at'];
+                    try {
+                        $tick_date       = gmdate( 'Y-m-d', $last_tick );
+                        $tick_time       = PersianDigits::digits( gmdate( 'H:i:s', $last_tick ) );
+                        $last_tick_label = Jalali::format_display_ymd( $tick_date )
+                            . ' ' . $tick_time . ' به وقت جهانی';
+                    } catch ( \DomainException ) {
+                        $last_tick_label = '—';
+                    }
+                }
+                $plugin_version    = defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev';
+                $plugin_version_fa = PersianDigits::digits( $plugin_version );
+                $schema_version_fa = PersianDigits::digits( (string) $version );
+                ?>
+                <tr>
+                    <th>آخرین اجرای صف</th>
+                    <td><?php echo esc_html( $last_tick_label ); ?></td>
+                </tr>
 				<?php $failed_fa = PersianDigits::format_int( (int) $queue['failed'] ); ?>
-				<tr><th>Jobهای failed</th><td><?php echo esc_html( $failed_fa ); ?></td></tr>
-                <tr><th>نسخه افزونه</th><td><?php echo esc_html(defined('CPMS_VERSION') ? CPMS_VERSION : 'dev'); ?></td></tr>
-                <tr><th>نسخه Schema</th><td><?php echo esc_html((string) $version); ?></td></tr>
+				<tr><th>کارهای ناموفق</th><td><?php echo esc_html( $failed_fa ); ?></td></tr>
+                <tr>
+                    <th>نسخه افزونه</th>
+                    <td><?php echo esc_html( $plugin_version_fa ); ?></td>
+                </tr>
+                <tr>
+                    <th>نسخه ساختار</th>
+                    <td><?php echo esc_html( $schema_version_fa ); ?></td>
+                </tr>
 				<?php
 				$tables_fa       = PersianDigits::digits( (int) $tables );
 				$archive_days    = App::installationSettings()->getNotifArchiveDays();
@@ -133,15 +165,36 @@ final class SettingsAdmin
                 <?php endif; ?>
             <?php else : ?>
             <table class="form-table" role="presentation" data-cpms-clinic-settings="<?php echo (int) $selected_clinic_id; ?>">
-                <tr><th>OTP TTL (ثانیه)</th><td><?php echo esc_html((string) $settings->get('otp.ttl_sec')); ?></td></tr>
-                <tr><th>Hold نوبت (ثانیه)</th><td><?php echo esc_html((string) $settings->get('booking.hold_ttl_sec')); ?></td></tr>
-                <tr><th>Grace No-Show (دقیقه)</th><td><?php echo esc_html((string) $settings->get('queue.no_show_grace_minutes')); ?></td></tr>
-                <tr><th>بازه رزرو (روز)</th><td><?php echo esc_html((string) $settings->get('booking.max_future_days')); ?></td></tr>
-                <tr><th>Retention Audit (سال)</th><td><?php echo esc_html((string) $settings->get('retention.audit_years')); ?></td></tr>
-                <tr><th>Retention پرونده (سال)</th><td><?php echo esc_html((string) $settings->get('retention.record_years')); ?></td></tr>
+                <?php
+                $display_settings = [
+                    'OTP TTL (ثانیه)'        => 'otp.ttl_sec',
+                    'Hold نوبت (ثانیه)'      => 'booking.hold_ttl_sec',
+                    'Grace No-Show (دقیقه)'  => 'queue.no_show_grace_minutes',
+                    'بازه رزرو (روز)'        => 'booking.max_future_days',
+                    'Retention Audit (سال)'  => 'retention.audit_years',
+                    'Retention پرونده (سال)' => 'retention.record_years',
+                ];
+                foreach ( $display_settings as $label => $key ) :
+                    $value_fa = PersianDigits::digits( (string) $settings->get( $key ) );
+                    ?>
+                    <tr>
+                        <th><?php echo esc_html( $label ); ?></th>
+                        <td><?php echo esc_html( $value_fa ); ?></td>
+                    </tr>
+                <?php endforeach; ?>
                 <tr><th>SMS Provider</th><td><?php echo esc_html((string) $settings->get('sms.provider')); ?></td></tr>
-                <tr><th>SMS Quiet Hours</th><td><?php echo esc_html((string) $settings->get('notif.quiet_hours_start') . ' – ' . (string) $settings->get('notif.quiet_hours_end')); ?></td></tr>
-                <tr><th>سقف بازه گزارش (روز)</th><td><?php echo esc_html((string) $settings->get('reports.max_range_days')); ?></td></tr>
+                <?php
+                $quiet_start = (string) $settings->get( 'notif.quiet_hours_start' );
+                $quiet_end   = (string) $settings->get( 'notif.quiet_hours_end' );
+                $quiet_fa    = PersianDigits::digits( $quiet_start . ' – ' . $quiet_end );
+                $report_raw  = (string) $settings->get( 'reports.max_range_days' );
+                $report_fa   = PersianDigits::digits( $report_raw );
+                ?>
+                <tr><th>SMS Quiet Hours</th><td><?php echo esc_html( $quiet_fa ); ?></td></tr>
+                <tr>
+                    <th>سقف بازه گزارش (روز)</th>
+                    <td><?php echo esc_html( $report_fa ); ?></td>
+                </tr>
             </table>
             <?php endif; ?>
             <p class="description">

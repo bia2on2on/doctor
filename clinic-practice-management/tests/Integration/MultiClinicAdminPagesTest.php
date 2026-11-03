@@ -187,13 +187,17 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
     {
         $html = $this->renderAs($this->multiManagerId, [SettingsAdmin::class, 'render'], ['clinic_id' => (string) $this->clinicA]);
         self::assertStringContainsString('data-cpms-clinic-settings="' . $this->clinicA . '"', $html);
-        self::assertStringContainsString('>171<', $html, 'Clinic A value is shown for Clinic A');
+        self::assertStringContainsString('>۱۷۱<', $html, 'Clinic A value is shown for Clinic A');
+        self::assertStringNotContainsString('>171<', $html);
         self::assertStringNotContainsString('>282<', $html, 'Clinic B value never leaks into Clinic A view');
+        self::assertStringNotContainsString('>۲۸۲<', $html);
 
         $html = $this->renderAs($this->multiManagerId, [SettingsAdmin::class, 'render'], ['clinic_id' => (string) $this->clinicB]);
         self::assertStringContainsString('data-cpms-clinic-settings="' . $this->clinicB . '"', $html);
-        self::assertStringContainsString('>282<', $html);
+        self::assertStringContainsString('>۲۸۲<', $html);
+        self::assertStringNotContainsString('>282<', $html);
         self::assertStringNotContainsString('>171<', $html);
+        self::assertStringNotContainsString('>۱۷۱<', $html);
     }
 
     public function testSettingsPageRejectsForeignForgedAndMalformedSelectorsWithoutDisclosure(): void
@@ -203,6 +207,7 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
             self::assertStringContainsString('data-cpms-clinic-scope="denied"', $html, 'selector ' . $selector . ' must be rejected');
             self::assertStringNotContainsString('data-cpms-clinic-settings', $html);
             self::assertStringNotContainsString('>282<', $html, 'no Clinic B data for selector ' . $selector);
+            self::assertStringNotContainsString('>۲۸۲<', $html);
             self::assertStringContainsString('تعداد جداول cpms_', $html, 'installation info still renders');
             self::assertSelectorOffersExactly($html, 'cpms_settings_clinic', [$this->clinicA]);
         }
@@ -218,6 +223,7 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         $html = $this->renderAs($this->wpAdminId, [SettingsAdmin::class, 'render'], ['clinic_id' => (string) $this->clinicA]);
         self::assertStringContainsString('data-cpms-clinic-scope="denied"', $html);
         self::assertStringNotContainsString('>171<', $html);
+        self::assertStringNotContainsString('>۱۷۱<', $html);
     }
 
     // ------------------------------------------------------------------

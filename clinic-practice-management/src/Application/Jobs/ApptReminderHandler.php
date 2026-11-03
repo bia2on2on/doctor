@@ -664,12 +664,14 @@ final class ApptReminderHandler
             'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
             [(int) $row['clinic_id']]
         );
-        $patientName = trim((string) $row['first_name'] . ' ' . (string) $row['last_name']);
+        $patient_name = trim( (string) $row['first_name'] . ' ' . (string) $row['last_name'] );
+        $patient_name = 1 === preg_match( '/[^\s\x{00A0}]/u', $patient_name )
+            ? $patient_name : 'بیمار گرامی';
 
         return [
-            'patient_name' => $patientName !== '' ? $patientName : 'بیمار گرامی',
+            'patient_name'     => $patient_name,
             // عنوان «دکتر» فقط یک‌بار (پیش از این، متنِ الگو خودش «دکتر» می‌گذاشت).
-            'doctor_name'      => $doctor !== '' ? DoctorDisplayName::with_title( $doctor ) : 'پزشک',
+            'doctor_name'      => DoctorDisplayName::with_title_or_fallback( $doctor ),
             'appointment_date' => Jalali::format_display_ymd( (string) $row['slot_date'] ),
             'appointment_time' => PersianDigits::digits(
                 substr( (string) $row['slot_time'], 0, 5 )
