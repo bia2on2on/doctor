@@ -169,6 +169,32 @@ class CounterDigitsTest(unittest.TestCase):
                     self.assertFalse(mod.has_numbered_text(text, "— ساختمان‌ها: ", 1))
                     self.assertFalse(mod.has_numbered_text(text, "درمانگاه‌ها: ", 2))
 
+    def test_separator_only_at_thousands_group_boundaries(self) -> None:
+        passing = (
+            ("— ساختمان‌ها: 1,234", "— ساختمان‌ها: ", 1234),
+            ("— ساختمان‌ها: ۱٬۲۳۴", "— ساختمان‌ها: ", 1234),
+            ("— ساختمان‌ها: 1234", "— ساختمان‌ها: ", 1234),
+            ("— ساختمان‌ها: 123,456", "— ساختمان‌ها: ", 123456),
+            ("— ساختمان‌ها: 123456", "— ساختمان‌ها: ", 123456),
+        )
+        failing = (
+            ("— ساختمان‌ها: 1,2", "— ساختمان‌ها: ", 12),
+            ("— ساختمان‌ها: ۱٬۲", "— ساختمان‌ها: ", 12),
+            ("— ساختمان‌ها: 12,34", "— ساختمان‌ها: ", 1234),
+            ("— ساختمان‌ها: 1,23,4", "— ساختمان‌ها: ", 1234),
+            ("— ساختمان‌ها: 12", "— ساختمان‌ها: ", 1),
+            ("— ساختمان‌ها: ۱۲", "— ساختمان‌ها: ", 1),
+            ("— ساختمان‌ها: 1,234", "— ساختمان‌ها: ", 1),
+            ("— درمانگاه‌ها: 20", "درمانگاه‌ها: ", 2),
+        )
+        for name, mod in self.modules.items():
+            for text, prefix, number in passing:
+                with self.subTest(harness=name, text=text, number=number):
+                    self.assertTrue(mod.has_numbered_text(text, prefix, number))
+            for text, prefix, number in failing:
+                with self.subTest(harness=name, text=text, number=number):
+                    self.assertFalse(mod.has_numbered_text(text, prefix, number))
+
     def test_helper_parity_and_rejected_inputs(self) -> None:
         fragments = {name: mod.digit_agnostic_number(1204) for name, mod in self.modules.items()}
         self.assertEqual(len(set(fragments.values())), 1, fragments)

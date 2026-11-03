@@ -76,12 +76,24 @@ ANY_DIGIT = "[0-9۰-۹٠-٩]"
 
 
 def digit_agnostic_number(number) -> str:
-    """Regex fragment for one exact integer in any of the three digit sets."""
+    """Regex fragment for one exact integer in any of the three digit sets.
+
+    A thousands separator (٬ or ,) is optional, but only where PersianDigits
+    can emit one: after the leading 1-3 digits, then every 3 digits (so a
+    number below 1000 takes no separator anywhere).
+    """
     digits = str(int(number))
     if not digits.isdigit():
         raise ValueError("number must be a non-negative integer")
-    parts = [f"[{d}{FA_DIGITS[int(d)]}{AR_DIGITS[int(d)]}]" for d in digits]
-    return "[٬,]?".join(parts)
+    classes = [f"[{d}{FA_DIGITS[int(d)]}{AR_DIGITS[int(d)]}]" for d in digits]
+    head = len(digits) % 3
+    bounds = {pos for pos in range(head, len(digits), 3) if pos > 0}
+    parts = []
+    for i, cls in enumerate(classes):
+        if i in bounds:
+            parts.append("[٬,]?")
+        parts.append(cls)
+    return "".join(parts)
 
 
 def has_numbered_text(text, prefix: str, number) -> bool:

@@ -94,9 +94,16 @@ final class ManagementShellPersianDigitsTest extends WP_UnitTestCase
 
         $html = $this->render_portal($this->org_actor, ['cpms-org' => $org]);
 
-        // Facility-plan counters: Persian digits, Latin form absent.
-        self::assertStringContainsString('— ساختمان‌ها: ۱', $html);
-        self::assertStringContainsString('— درمانگاه‌ها: ۱', $html);
+        // Facility-plan counters: Persian digits, bounded so «۱» never
+        // matches the head of «۱۰» (next char is no digit in any set).
+        self::assertMatchesRegularExpression(
+            '/— ساختمان‌ها: ۱(?![0-9۰-۹٠-٩])/u',
+            $html
+        );
+        self::assertMatchesRegularExpression(
+            '/— درمانگاه‌ها: ۱(?![0-9۰-۹٠-٩])/u',
+            $html
+        );
         self::assertStringNotContainsString('— ساختمان‌ها: 1', $html);
         self::assertStringNotContainsString('— درمانگاه‌ها: 1', $html);
         // Plan meta attributes stay machine-valued.
@@ -215,7 +222,9 @@ final class ManagementShellPersianDigitsTest extends WP_UnitTestCase
             $sql = 'DELETE t FROM ' . $p . $table . ' t WHERE t.clinic_id IN (' . $clinics . ')';
             $wpdb->query($sql); // phpcs:ignore
         }
-        $wpdb->query('DELETE FROM ' . $p . 'cpms_clinics WHERE organization_id = ' . $org); // phpcs:ignore
+        $wpdb->query( // phpcs:ignore
+            'DELETE FROM ' . $p . 'cpms_clinics WHERE organization_id = ' . $org
+        );
         $wpdb->query( // phpcs:ignore
             'DELETE c FROM ' . $p . 'cpms_organization_membership_capabilities c JOIN ' . $p
             . 'cpms_organization_memberships m ON m.id = c.membership_id '
