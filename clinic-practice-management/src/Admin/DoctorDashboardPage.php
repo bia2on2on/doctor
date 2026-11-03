@@ -211,15 +211,39 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         return CFG.rest_url + path;
     }
 
+    // Busy-lock (double-submit window): the action button stays disabled until
+    // the write it started settles, then re-enables. No request body, URL or
+    // message is changed, and an action that sends nothing releases at once.
+    var busyTrigger = null;
+    var busySent = false;
+
+    function lockTrigger(btn) {
+        busyTrigger = btn;
+        busySent = false;
+        btn.disabled = true;
+    }
+
+    function releaseTrigger() {
+        if (busyTrigger) {
+            busyTrigger.disabled = false;
+            busyTrigger = null;
+        }
+    }
+
     function api(method, path, body, isForm) {
         var opts = { method: method, headers: { 'X-WP-Nonce': CFG.nonce } };
         if (!isForm) { opts.headers['Content-Type'] = 'application/json'; }
         if (body) { opts.body = isForm ? body : JSON.stringify(body); }
-        return fetch(apiUrl(path), opts).then(function (r) {
+        var request = fetch(apiUrl(path), opts).then(function (r) {
             return r.json().then(function (j) { return { status: r.status, body: j }; }, function () {
                 return { status: r.status, body: {} };
             });
         });
+        if (busyTrigger && method !== 'GET' && !busySent) {
+            busySent = true;
+            request.then(releaseTrigger, releaseTrigger);
+        }
+        return request;
     }
 
     function notice(msg, kind) {
@@ -643,11 +667,15 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         var id = btn.getAttribute('data-id') || CFG.visit_id;
         if (btn.tagName === 'A') { return; }
         ev.preventDefault();
+        lockTrigger(btn);
         if (CFG.visit_id > 0) {
             visitAction(act, id);
         } else if (['call', 'recall', 'start'].indexOf(act) >= 0) {
             queueAction(act, id);
         }
+        // An action that sent nothing (validation stop, dialog-only, stream)
+        // must not leave its button stuck disabled.
+        if (!busySent) { releaseTrigger(); }
     });
 
     function poll() {
