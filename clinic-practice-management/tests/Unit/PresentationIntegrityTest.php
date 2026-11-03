@@ -30,12 +30,12 @@ final class PresentationIntegrityTest extends TestCase {
 			'دکتر رضایی',
 			DoctorDisplayName::with_title_or_fallback( 'دکتر دکتر رضایی' )
 		);
-		$previous = set_error_handler( static fn (): bool => true );
+		set_error_handler( static fn (): bool => true );
 		try {
 			self::assertSame( 'پزشک', DoctorDisplayName::with_title_or_fallback( "\xFF" ) );
 			self::assertSame( '', DoctorDisplayName::with_title( "\xFF" ) );
 		} finally {
-			set_error_handler( $previous );
+			restore_error_handler();
 		}
 	}
 
@@ -71,13 +71,13 @@ final class PresentationIntegrityTest extends TestCase {
 
 		$row['doctor']     = "\xFF";
 		$row['first_name'] = "\xFF";
-		$previous          = set_error_handler( static fn (): bool => true );
+		set_error_handler( static fn (): bool => true );
 		try {
 			$malformed = $present->invoke( null, $row );
 			self::assertSame( 'نام پزشک ثبت نشده', $malformed['doctor'] );
 			self::assertSame( 'نام بیمار ثبت نشده', $malformed['patient'] );
 		} finally {
-			set_error_handler( $previous );
+			restore_error_handler();
 		}
 	}
 
