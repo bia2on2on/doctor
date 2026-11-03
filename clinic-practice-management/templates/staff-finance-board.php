@@ -759,7 +759,7 @@ if ( function_exists( 'wp_print_scripts' ) && wp_script_is( $cpms_money_handle, 
             + (currency ? ' ' + String(currency) : '');
     }
     function rial(value) {
-        if (money) return money.rial(value);
+        if (money && typeof money.rial === 'function') return money.rial(value);
         return String(value === null || value === undefined ? '—' : value) + ' ریال';
     }
     // Amount whose cell label ALREADY carries the unit («مبلغ واحد (ریال)»):
@@ -934,7 +934,7 @@ if ( function_exists( 'wp_print_scripts' ) && wp_script_is( $cpms_money_handle, 
                 var data = payload(result);
                 var replay = data && data.idempotent_replay === true;
                 closePayForm();
-                setStatus(replay ? 'این پرداخت پیش‌تر ثبت شده بود؛ همان رکورد بازخوانی شد.' : 'پرداخت ' + String(amount) + ' ریال ثبت شد.', '');
+                setStatus(replay ? 'این پرداخت پیش‌تر ثبت شده بود؛ همان رکورد بازخوانی شد.' : 'پرداخت ' + rial(amount) + ' ثبت شد.', '');
                 refreshAll();
             }).catch(function () {
                 state.mutating = false;
