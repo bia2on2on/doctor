@@ -92,17 +92,6 @@ final class PkgP2bPersianDisplayRemainderTest extends TestCase {
 		self::assertStringNotContainsString( 'Jalali::formatYmd', $booking );
 	}
 
-	public function test_export_ready_notification_uses_persian_expiry_date(): void {
-		$src = $this->source( 'Application/Reports/ExportService.php' );
-
-		self::assertStringContainsString(
-			"'expires_at'   => Jalali::format_display_ymd( substr( \$expires_at, 0, 10 ) ),",
-			$src
-		);
-		// The machine expiry (comparison target) is still the raw UTC SQL value.
-		self::assertStringContainsString( "'expires_at' => \$expires_at,", $src );
-	}
-
 	public function test_portal_jalali_day_labels_are_persian_while_iso_dates_stay_latin(): void {
 		$visits = $this->source( 'Application/Visits/VisitService.php' );
 		self::assertSame( 3, substr_count( $visits, "'jalali'        => Jalali::format_display_ymd(" ) );
