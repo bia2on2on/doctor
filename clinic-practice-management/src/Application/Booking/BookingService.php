@@ -57,6 +57,22 @@ final class BookingService
     private const EP_CONFIRM = 'booking/confirm';
     private const EP_RESCHEDULE = 'booking/reschedule';
 
+    /** A failed SELECT ... FOR UPDATE is transient, never a missing Location. */
+    private const LOCK_BUSY_CODE = 'CLINIC_BOOKING_BUSY';
+    private const LOCK_BUSY_HTTP = 503;
+    private const LOCK_BUSY_TEXT = 'سامانه موقتاً مشغول است؛ لطفاً دوباره تلاش کنید.';
+
+    /**
+     * Non-PII context of a failed read, emitted after rollback if a
+     * transaction was open when the failure was detected.
+     *
+     * @var array<string, mixed>|null
+     */
+    private ?array $lock_failure_context = null;
+
+    /** Depth of booking_transaction() frames; >0 means defer diagnostics. */
+    private int $booking_tx_depth = 0;
+
     private readonly MembershipRepository $memberships;
 
     /** فعال‌سازِ هویتِ سازمانی برای مسیرِ N-1 ( ساختِ بیمارِ جدیدِ OTP-verified ). */
@@ -560,7 +576,7 @@ final class BookingService
 
         $has_patient_col = $this->holdsHasPatientIdColumn();
         $wp_user_id      = (int) func_get_arg( 0 );
-        $this->db->transactional(
+        $this->booking_transaction(
             function () use (
                 $slot,
                 $wp_user_id,
@@ -581,6 +597,14 @@ final class BookingService
                 // booking path follows the same order so no ABBA cycle exists.
                 $this->lock_booking_tenant_prefix( (int) $slot['clinic_id'] );
                 $locked_slot = $this->slots->findForUpdate( (int) $slot['id'] );
+                $this->assert_read_succeeded(
+                    'slot',
+                    [
+                        'slot_id'     => (int) $slot['id'],
+                        'clinic_id'   => (int) $slot['clinic_id'],
+                        'location_id' => (int) $slot['location_id'],
+                    ]
+                );
                 if (
                     $locked_slot === null
                     || (int) ( $locked_slot['clinic_id'] ?? 0 ) !== (int) $slot['clinic_id']
@@ -869,7 +893,7 @@ final class BookingService
         $confirmation_input = compact( 'newPatientNames' );
 
         try {
-            $confirmation = $this->db->transactional(
+            $confirmation = $this->booking_transaction(
                 function () use (
                     $hold,
                     $reason,
@@ -1027,21 +1051,19 @@ final class BookingService
                     ];
                 }
             );
-        } catch (Throwable $e) {
-            // آزادسازی ظرفیت Hold + کلید Idempotency (خارج از Transaction رول‌بک‌شده)
+        } catch ( Throwable $e ) {
+            // Free the Idempotency key on every failure: check() claimed it as
+            // pending, so without release() the retry with the same key would be
+            // answered by a stale 409 in-flight replay. A retryable read failure
+            // (CLINIC_BOOKING_BUSY) is not a defect of the Hold, exactly like the
+            // existing CLINIC_SUSPENDED policy denial: the transaction already
+            // rolled back, so the active Hold and its capacity must survive
+            // untouched for that retry. Only these two codes skip the historical
+            // destructive compensation outside the rolled-back transaction.
             $denial = $this->toBookingException( $e );
-            // CLINIC_SUSPENDED is a policy denial of NEW demand, not a defect of the
-            // existing Hold. Product invariant: a suspension denial is side-effect-free,
-            // so the pre-suspension Hold row and the capacity it legitimately claimed
-            // survive unchanged (continuity) and the patient can retry after the Clinic
-            // is reactivated. Only the Idempotency key is freed, which is required for
-            // that retry. Every other failure keeps the historical compensation
-            // (release Hold capacity + key) outside the rolled-back Transaction.
-            // Narrow naming ignores for the pre-existing camelCase locals of this method,
-            // re-indented by the lifecycle branch above. Only
-            // WordPress.NamingConventions sniffs are suppressed - no security sniff is.
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
-            if ( $denial->errorCode !== 'CLINIC_SUSPENDED' ) {
+            $denial_code = $denial->errorCode;
+            if ( 'CLINIC_SUSPENDED' !== $denial_code && self::LOCK_BUSY_CODE !== $denial_code ) {
                 $released_hold = $this->db->execute(
                     'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
                     [ $hold_id ]
@@ -1441,7 +1463,7 @@ final class BookingService
         }
 
         try {
-            [ $old_appt, $new_appt_id, $new_slot ] = $this->db->transactional(
+            [ $old_appt, $new_appt_id, $new_slot ] = $this->booking_transaction(
                 function () use (
                     $actor_user_id,
                     $appointment_id,
@@ -1734,7 +1756,7 @@ final class BookingService
         $this->assertWindowWithTimezone( $slot_date, $slot_time, $location_tz, 0, $settings );
 
         try {
-            $staff_appointment = $this->db->transactional(
+            $staff_appointment = $this->booking_transaction(
                 function () use (
                     $patient_id,
                     $clinician_id,
@@ -2154,9 +2176,90 @@ final class BookingService
             . ' WHERE id = %d AND clinic_id = %d AND is_active = 1 LIMIT 1',
             [ $location_id, $clinic_id ]
         );
+        $this->assert_read_succeeded(
+            'location_active',
+            [ 'location_id' => $location_id, 'clinic_id' => $clinic_id ]
+        );
         if ( $location === null || (int) ( $location['id'] ?? 0 ) !== $location_id ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'محل نوبت یافت نشد', 404 );
         }
+    }
+
+    /**
+     * Tell a driver-level read failure apart from a genuinely absent or
+     * inactive row. CpmsDb soft mode returns null/false on SQL error while
+     * wpdb keeps the driver text. OpLogger writes are NOT transactional, so a
+     * diagnostic written inside the SQL transaction would be discarded by its
+     * rollback: defer it to booking_transaction() until after the rollback,
+     * and write it immediately when no booking transaction is open.
+     *
+     * @param string $read Read label for the diagnostic.
+     * @param array<string, int> $ids Non-PII identifiers for the diagnostic.
+     * @return void
+     */
+    private function assert_read_succeeded( string $read, array $ids ): void {
+        $error = (string) $this->db->wpdb()->last_error;
+        if ( $error === '' ) {
+            return;
+        }
+        $context = array_merge(
+            [
+                'read'      => $read,
+                'sql_errno' => $this->sql_errno(),
+                'sql_error' => mb_substr( $error, 0, 200 ),
+            ],
+            $ids
+        );
+        if ( $this->booking_tx_depth > 0 ) {
+            $this->lock_failure_context = $context;
+        } else {
+            $this->op->error( 'booking.lock_read_failed', $context );
+        }
+
+        throw BookingException::of(
+            self::LOCK_BUSY_CODE,
+            self::LOCK_BUSY_TEXT,
+            self::LOCK_BUSY_HTTP
+        );
+    }
+
+    /** Best-effort driver errno; no query is issued and no PHI is read. */
+    private function sql_errno(): int {
+        $dbh = $this->db->wpdb()->dbh ?? null;
+
+        return $dbh instanceof \mysqli ? (int) $dbh->errno : 0;
+    }
+
+    /**
+     * Run a booking transaction. OpLogger writes are NOT transactional: a row
+     * inserted inside the SQL transaction would be discarded by its rollback.
+     * The deferred diagnostic is therefore emitted only after CpmsDb has
+     * rolled the failure back.
+     *
+     * @template T
+     * @param callable(): T $callback Transaction body.
+     * @return T
+     */
+    private function booking_transaction( callable $callback ): mixed {
+        $this->lock_failure_context = null;
+        ++$this->booking_tx_depth;
+        try {
+            return $this->db->transactional( $callback );
+        } catch ( BookingException $e ) {
+            $this->flush_lock_failure_diagnostic();
+            throw $e;
+        } finally {
+            --$this->booking_tx_depth;
+        }
+    }
+
+    /** Emit a deferred read-failure diagnostic after the rollback finished. */
+    private function flush_lock_failure_diagnostic(): void {
+        if ( $this->lock_failure_context === null ) {
+            return;
+        }
+        $this->op->error( 'booking.lock_read_failed', $this->lock_failure_context );
+        $this->lock_failure_context = null;
     }
 
     /**
@@ -2176,6 +2279,10 @@ final class BookingService
         $row = $this->db->fetchRow(
             'SELECT id, clinic_id, timezone FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
             [ $location_id ]
+        );
+        $this->assert_read_succeeded(
+            'location_timezone',
+            [ 'location_id' => $location_id, 'clinic_id' => $clinic_id ]
         );
         if ( $row === null ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'Location یافت نشد', 404 );
@@ -2208,6 +2315,10 @@ final class BookingService
         $row = $this->db->fetchRowForUpdate(
             'SELECT id, clinic_id, timezone, is_active FROM ' . $this->db->table( 'cpms_locations' ) . ' WHERE id = %d LIMIT 1',
             [ $location_id ]
+        );
+        $this->assert_read_succeeded(
+            'location',
+            [ 'location_id' => $location_id, 'clinic_id' => $clinic_id ]
         );
         if ( $row === null ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'Location یافت نشد', 404 );
@@ -2427,6 +2538,7 @@ final class BookingService
             'SELECT o.status FROM ' . $this->db->table( 'cpms_clinics' ) . ' c JOIN ' . $this->db->table( 'cpms_organizations' ) . ' o ON o.id = c.organization_id WHERE c.id = %d LIMIT 1',
             [ $clinic_id ]
         );
+        $this->assert_read_succeeded( 'organization_active', [ 'clinic_id' => $clinic_id ] );
 
         return $status !== null && (string) $status === 'active';
     }
@@ -2456,6 +2568,10 @@ final class BookingService
             'SELECT id, status FROM ' . $this->db->table( 'cpms_organizations' ) . ' WHERE id = %d LIMIT 1',
             [ $organization_id ]
         );
+        $this->assert_read_succeeded(
+            'organization',
+            [ 'organization_id' => $organization_id, 'clinic_id' => $clinic_id ]
+        );
         if (
             $organization === null
             || (int) ( $organization['id'] ?? 0 ) !== $organization_id
@@ -2467,6 +2583,10 @@ final class BookingService
         $clinic = $this->db->fetchRowForUpdate(
             'SELECT id, organization_id, status FROM ' . $this->db->table( 'cpms_clinics' ) . ' WHERE id = %d LIMIT 1',
             [ $clinic_id ]
+        );
+        $this->assert_read_succeeded(
+            'clinic',
+            [ 'organization_id' => $organization_id, 'clinic_id' => $clinic_id ]
         );
         if ( $clinic === null || (int) ( $clinic['organization_id'] ?? 0 ) !== $organization_id ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'کلینیک یافت نشد', 404 );
@@ -2530,6 +2650,10 @@ final class BookingService
         $slot = $this->db->fetchRow(
             'SELECT id, clinic_id, clinician_id FROM ' . $this->db->table( 'cpms_schedule_slots' ) . ' WHERE id = %d LIMIT 1',
             [ $slot_id ]
+        );
+        $this->assert_read_succeeded(
+            'persisted_slot',
+            [ 'slot_id' => $slot_id, 'clinician_id' => $clinician_id ]
         );
         if ( $slot === null ) {
             throw BookingException::of( 'CLINIC_NOT_FOUND', 'اسلات با شناسه داده‌شده یافت نشد', 404 );
