@@ -318,11 +318,12 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
         ];
         var html = cards.map(function (c) {
             return '<div class="cpms-q-stat" style="border-inline-start-color:' + c[2] + '">' +
-                '<b>' + (s[c[0]] || 0) + '</b><span>' + c[1] + '</span></div>';
+                '<b>' + esc(displayDigits(s[c[0]] || 0)) + '</b><span>' + c[1] + '</span></div>';
         }).join('');
         document.getElementById('cpms-q-stats').innerHTML = html;
+        var jalali = state.today.jalali;
         document.getElementById('cpms-q-clock').textContent =
-            new Date(state.today.date + 'T00:00:00Z').toLocaleDateString('fa-IR');
+            displayDigits(typeof jalali === 'string' && jalali.trim() ? jalali : '—');
     }
 
     function fmtTime(dt) {
@@ -336,7 +337,7 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
         var d = new Date(String(v).replace(' ', 'T') + 'Z');
         if (isNaN(d)) { return '—'; }
         var m = Math.max(0, Math.round((Date.now() - d.getTime()) / 60000));
-        return m + ' دقیقه';
+        return displayDigits(m) + ' دقیقه';
     }
 
     function actionsFor(v) {
@@ -373,7 +374,7 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
             var badge = v.source === 'walk_in' ? ' <span class="cpms-q-badge walkin">حضوری</span>' : '';
             if (v.express) { badge += ' <span class="cpms-q-badge express">' + EXPRESS + '</span>'; }
             return '<tr data-id="' + v.id + '">' +
-                '<td>' + (i + 1) + '</td>' +
+                '<td>' + displayDigits(i + 1) + '</td>' +
                 '<td><strong>' + esc(v.patient_name) + '</strong></td>' +
                 '<td>' + esc(v.clinician_name || '—') + '</td>' +
                 '<td>' + kind + badge + '</td>' +
@@ -388,6 +389,16 @@ window.CPMS_Q = <?php echo wp_json_encode($config); ?>;
     function esc(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function displayDigits(value) {
+        if (window.CpmsText && typeof window.CpmsText.faDigits === 'function') {
+            return window.CpmsText.faDigits(value);
+        }
+        var digits = '۰۱۲۳۴۵۶۷۸۹';
+        return String(value == null ? '' : value).replace(/[0-9]/g, function (digit) {
+            return digits.charAt(Number(digit));
         });
     }
 

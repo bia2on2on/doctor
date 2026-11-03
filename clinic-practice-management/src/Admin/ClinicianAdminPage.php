@@ -250,7 +250,9 @@ final class ClinicianAdminPage
             <tr>
                 <td data-label="نام"><?php echo esc_html( (string) $row['full_name'] ); ?></td>
                 <td data-label="تخصص"><?php echo esc_html( (string) ( $row['specialty'] ?? '' ) ); ?></td>
-                <td data-label="روزهای برنامه"><?php echo (int) $row['schedule_days']; ?> روز</td>
+				<td data-label="روزهای برنامه">
+					<?php echo esc_html( PersianDigits::format_int( (int) $row['schedule_days'] ) ); ?> روز
+				</td>
                 <td class="cpms-actions-cell" data-label="عملیات"><a class="button button-small" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians&clinician_id=' . (int) $row['id'] . '&clinic_id=' . self::$active_clinic_id ) ); ?>">مدیریت برنامه در این Clinic</a></td>
             </tr>
         <?php endforeach; ?>
@@ -293,7 +295,9 @@ final class ClinicianAdminPage
                 <td data-label="تخصص"><?php echo esc_html((string) ($r['specialty'] ?? '')); ?></td>
                 <td data-label="اتاق"><?php echo esc_html((string) ($r['room'] ?? '')); ?></td>
                 <td data-label="کاربر متصل"><span class="ltr"><?php echo esc_html((string) ($r['wp_user_login'] ?? '—')); ?></span></td>
-                <td data-label="روزهای برنامه"><?php echo (int) $r['schedule_days']; ?> روز</td>
+				<td data-label="روزهای برنامه">
+					<?php echo esc_html( PersianDigits::format_int( (int) $r['schedule_days'] ) ); ?> روز
+				</td>
                 <td data-label="وضعیت"><?php echo (int) $r['is_active'] === 1 ? '<span class="cpms-badge cpms-ok">فعال</span>' : '<span class="cpms-badge cpms-danger">غیرفعال</span>'; ?></td>
                 <td class="cpms-actions-cell" data-label="عملیات"><a class="button button-small" href="<?php echo esc_url( admin_url( 'admin.php?page=cpms-clinicians&clinician_id=' . (int) $r['id'] . '&clinic_id=' . self::$active_clinic_id ) ); ?>">مدیریت برنامه</a></td>
             </tr>
@@ -501,13 +505,16 @@ final class ClinicianAdminPage
                 <tr>
 					<td>
 						<?php echo esc_html( Jalali::format_display_ymd( (string) $e['date'] ) ); ?>
-						<span class="description">(
-							<?php echo esc_html( (string) $e['date'] ); ?>
-						)</span>
 					</td>
                     <td><?php echo $excLocationId > 0 ? esc_html($excLocationName) : esc_html__('همهٔ محل‌ها', 'cpms'); ?></td>
                     <td><?php echo esc_html(self::exceptionTypeLabel((string) $e['type'])); ?></td>
-                    <td dir="ltr"><?php echo esc_html(($e['start_time'] ?? '—') . ' تا ' . ($e['end_time'] ?? '—')); ?></td>
+					<td dir="ltr">
+						<?php
+						$start_fa = PersianDigits::digits( (string) ( $e['start_time'] ?? '—' ) );
+						$end_fa   = PersianDigits::digits( (string) ( $e['end_time'] ?? '—' ) );
+						echo esc_html( $start_fa . ' تا ' . $end_fa );
+						?>
+					</td>
                     <td><?php echo esc_html((string) ($e['reason'] ?? '')); ?></td>
                     <td>
                         <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" data-cpms-confirm="حذف این استثنا؟">
