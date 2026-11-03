@@ -79,7 +79,7 @@ final class ManagementShellPersianDigitsTest extends TestCase
 
         // User-visible notification placeholder: Jalali date, Persian digits.
         self::assertStringContainsString(
-            "'expires_at' => Jalali::format_display_ymd(substr(\$expires_at, 0, 10))",
+            'Jalali::format_display_ymd( substr( $expires_at, 0, 10 ) )',
             $export
         );
         self::assertStringNotContainsString('Jalali::formatYmd(substr(', $export);

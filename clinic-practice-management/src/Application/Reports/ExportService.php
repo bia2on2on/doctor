@@ -228,8 +228,8 @@ final class ExportService
         $maxRows = (int) $settings->get('reports.export_max_rows', 10000);
         $result = $deps->reports->run($actorUserId, $type, $from, $to, $maxRows);
 
-        $retention_days = (int) $settings->get('reports.export_retention_days', 7);
-        $expires_at = gmdate('Y-m-d H:i:s', time() + ($retention_days * 86400));
+        $retention_days = (int) $settings->get( 'reports.export_retention_days', 7 );
+        $expires_at     = gmdate( 'Y-m-d H:i:s', time() + ( $retention_days * 86400 ) );
 
         $csv = self::buildCsv($result, $actorUserId);
         $storagePath = $deps->storage->store($csv, $clinicId, 'csv');
@@ -241,7 +241,7 @@ final class ExportService
             NotificationEvents::REPORT_EXPORT_READY,
             [
                 'report_label' => (string) $result['label'],
-                'expires_at' => Jalali::format_display_ymd(substr($expires_at, 0, 10)),
+                'expires_at'   => Jalali::format_display_ymd( substr( $expires_at, 0, 10 ) ),
             ],
             null
         );
