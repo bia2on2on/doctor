@@ -373,8 +373,7 @@ if ( function_exists( 'wp_print_scripts' ) && wp_script_is( $cpms_money_handle, 
                 var remove = node('button', 'cpms-pricing__btn', 'حذف');
                 remove.type = 'button';
                 remove.addEventListener('click', function () {
-                    if (!window.confirm('این خدمت حذف شود؟')) return;
-                    mutate('/staff/portal/pricing/visits/' + state.visitId + '/charges/' + charge.id, 'DELETE');
+                    removeCharge(charge);
                 });
                 actionCell.appendChild(edit); actionCell.appendChild(remove);
             } else {
@@ -412,15 +411,38 @@ if ( function_exists( 'wp_print_scripts' ) && wp_script_is( $cpms_money_handle, 
         if (!editable) setStatus('این ویزیت تسویه یا فاکتور شده است؛ اقلام فقط خواندنی هستند.', '');
         else setStatus('', '');
     }
+    function removeCharge(charge) {
+        if (!window.CpmsDialog || typeof window.CpmsDialog.confirm !== 'function') {
+            setStatus('پنجره تأیید در دسترس نیست؛ دوباره تلاش کنید.', 'error');
+            return;
+        }
+        var visitId = state.visitId;
+        return window.CpmsDialog.confirm('این خدمت حذف شود؟', { confirmLabel: 'حذف خدمت' }).then(function (confirmed) {
+            if (confirmed !== true || state.visitId !== visitId) return;
+            mutate('/staff/portal/pricing/visits/' + visitId + '/charges/' + charge.id, 'DELETE');
+        });
+    }
     function editCharge(charge) {
-        var description = window.prompt('شرح خدمت', charge.description);
-        if (description === null) return;
-        var amount = window.prompt('مبلغ واحد (ریال)', String(charge.unit_amount));
-        if (amount === null) return;
-        var quantity = window.prompt('تعداد', String(charge.quantity));
-        if (quantity === null) return;
-        mutate('/staff/portal/pricing/visits/' + state.visitId + '/charges/' + charge.id, 'PUT', {
-            description: description, amount: Number(amount), quantity: Number(quantity), note: charge.note || ''
+        if (!window.CpmsDialog || typeof window.CpmsDialog.prompt !== 'function') {
+            setStatus('پنجره ویرایش در دسترس نیست؛ دوباره تلاش کنید.', 'error');
+            return;
+        }
+        var visitId = state.visitId;
+        var description;
+        var amount;
+        return window.CpmsDialog.prompt('شرح خدمت', { value: charge.description }).then(function (value) {
+            if (value === null || state.visitId !== visitId) return null;
+            description = value;
+            return window.CpmsDialog.prompt('مبلغ واحد (ریال)', { value: String(charge.unit_amount) });
+        }).then(function (value) {
+            if (value === null || state.visitId !== visitId) return null;
+            amount = value;
+            return window.CpmsDialog.prompt('تعداد', { value: String(charge.quantity) });
+        }).then(function (quantity) {
+            if (quantity === null || state.visitId !== visitId) return;
+            mutate('/staff/portal/pricing/visits/' + visitId + '/charges/' + charge.id, 'PUT', {
+                description: description, amount: Number(amount), quantity: Number(quantity), note: charge.note || ''
+            });
         });
     }
     function loadBilling() {
