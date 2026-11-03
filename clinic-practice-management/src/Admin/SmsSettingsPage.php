@@ -250,6 +250,15 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
     }
 
     function el(id) { return document.getElementById(id); }
+
+    // Shared deterministic digit table (assets/js/cpms-money.js). Provider
+    // balance is digits-only by design: it keeps the provider's own currency
+    // code and never forces the «ریال» label onto a non-Rial balance.
+    var MONEY = window.CpmsMoney || null;
+    function balanceDigits(value) {
+        if (MONEY) { return MONEY.number(value); }
+        return String(value == null ? '—' : value);
+    }
     function esc(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -471,7 +480,9 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
 
     function loadBalance() {
         api('GET', 'balance').then(function (b) {
-            el('cpms-sms-balance').textContent = b ? ('اعتبار پنل: ' + b.balance + ' ' + b.currency) : '— (پشتیبانی نمی‌شود)';
+            el('cpms-sms-balance').textContent = b
+                ? ('اعتبار پنل: ' + balanceDigits(b.balance) + ' ' + esc(String(b.currency || '')))
+                : '— (پشتیبانی نمی‌شود)';
         }).catch(function () { });
     }
 

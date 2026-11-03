@@ -432,9 +432,9 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     function renderInvoice(invoice) {
         if (!invoice) return '<span class="cpms-finance-board__muted">فاکتور ثبت نشده</span>';
         return '<span class="cpms-finance-board__invoice"><strong>' + esc(invoiceStatusLabel(invoice.status)) + '</strong>' +
-            '<span>کل: ' + esc(invoice.total) + ' ' + esc(invoice.currency) + '</span>' +
-            '<span>پرداخت‌شده: ' + esc(invoice.paid) + ' ' + esc(invoice.currency) + '</span>' +
-            '<span>باقی‌مانده: ' + esc(invoice.remaining) + ' ' + esc(invoice.currency) + '</span></span>';
+            '<span>کل: ' + esc(moneyText(invoice.total, invoice.currency)) + '</span>' +
+            '<span>پرداخت‌شده: ' + esc(moneyText(invoice.paid, invoice.currency)) + '</span>' +
+            '<span>باقی‌مانده: ' + esc(moneyText(invoice.remaining, invoice.currency)) + '</span></span>';
     }
     function operationalStamp(visit) {
         return esc(visit.operational_date) + (visit.jalali_date ? ' · ' + esc(visit.jalali_date) : '') + ' · ' + esc(visit.operational_time);
@@ -474,7 +474,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (!state.canCapture || !invoiceId) return;
         state.selectedInvoice = Number(invoiceId);
         state.paymentKey = paymentKey();
-        payTargetNode.textContent = 'فاکتور ' + patientName + ' — باقی‌ماندهٔ سرور: ' + String(remaining) + ' ' + String(currency);
+        payTargetNode.textContent = 'فاکتور ' + patientName + ' — باقی‌ماندهٔ سرور: ' + moneyText(remaining, currency);
         payAmountInput.value = '';
         payMethodSelect.value = 'cash';
         payRefInput.value = '';
@@ -595,7 +595,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
     function openCheckoutForm(visitId, patientName, remaining, currency) {
         if (!state.canCheckOut || !visitId) return;
         state.selectedCheckoutVisit = Number(visitId);
-        var summary = remaining ? ' — فاکتور: باقی‌ماندهٔ سرور ' + String(remaining) + ' ' + String(currency) : ' — بدون فاکتور فعال';
+        var summary = remaining ? ' — فاکتور: باقی‌ماندهٔ سرور ' + moneyText(remaining, currency) : ' — بدون فاکتور فعال';
         checkoutTargetNode.textContent = 'خروج بیمار ' + patientName + summary;
         checkoutSubmitNode.disabled = false;
         checkoutPanel.hidden = false;
@@ -629,11 +629,14 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         var items = Array.isArray(receipt.items) ? receipt.items : [];
         var payments = Array.isArray(receipt.payments) ? receipt.payments : [];
         var itemRows = items.map(function (item) {
-            return '<tr><td>' + esc(item.description) + '</td><td>' + esc(item.quantity) + '</td><td>' + esc(item.unit_price) + '</td><td>' + esc(item.amount) + '</td></tr>';
+            return '<tr><td>' + esc(item.description) + '</td><td>' + esc(item.quantity) + '</td><td>' +
+                esc(moneyText(item.unit_price, currency)) + '</td><td>' + esc(moneyText(item.amount, currency)) +
+                '</td></tr>';
         }).join('');
         var paymentRows = payments.map(function (payment) {
             return receiptRow(
-                String(payment.payment_number || '') + ' · ' + methodLabel(String(payment.method || '')) + ' · ' + String(payment.amount || '') + ' ' + currency,
+                String(payment.payment_number || '') + ' · ' + methodLabel(String(payment.method || '')) + ' · ' +
+                    moneyText(payment.amount, currency),
                 String(payment.paid_at || '') + (payment.jalali_paid_at ? ' · ' + String(payment.jalali_paid_at) : '')
             );
         }).join('');
@@ -645,12 +648,12 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             receiptRow('شمارهٔ فاکتور', receipt.invoice_number || '') +
             receiptRow('تاریخ فاکتور', String(receipt.invoice_date || '') + (receipt.jalali_invoice_date ? ' · ' + String(receipt.jalali_invoice_date) : '')) +
             '<table class="cpms-finance-board__receipt-table"><thead><tr><th>شرح</th><th>تعداد</th><th>مبلغ واحد</th><th>مبلغ</th></tr></thead><tbody>' + itemRows + '</tbody></table>' +
-            receiptRow('جمع جزء', String(totals.subtotal || '') + ' ' + currency) +
-            receiptRow('تخفیف', String(totals.discount || '') + ' ' + currency) +
-            receiptRow('مالیات', String(totals.tax || '') + ' ' + currency) +
-            '<p class="cpms-finance-board__receipt-row cpms-finance-board__receipt-total"><span>مبلغ کل</span><span>' + esc(String(totals.total || '') + ' ' + currency) + '</span></p>' +
-            receiptRow('پرداخت‌شده', String(totals.paid_amount || '') + ' ' + currency) +
-            receiptRow('باقی‌مانده', String(totals.balance || '') + ' ' + currency) +
+            receiptRow('جمع جزء', moneyText(totals.subtotal, currency)) +
+            receiptRow('تخفیف', moneyText(totals.discount, currency)) +
+            receiptRow('مالیات', moneyText(totals.tax, currency)) +
+            '<p class="cpms-finance-board__receipt-row cpms-finance-board__receipt-total"><span>مبلغ کل</span><span>' + esc(moneyText(totals.total, currency)) + '</span></p>' +
+            receiptRow('پرداخت‌شده', moneyText(totals.paid_amount, currency)) +
+            receiptRow('باقی‌مانده', moneyText(totals.balance, currency)) +
             paymentRows;
     }
     function openReceipt(visitId) {
@@ -735,7 +738,17 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             });
         });
     }
+    // Shared deterministic money formatter (assets/js/cpms-money.js): Persian
+    // digits, ٬ thousands and the «ریال» label. Absent only if the asset did not load; the
+    // pre-existing Latin form is then kept so the screen still works.
+    var money = window.CpmsMoney || null;
+    function moneyText(value, currency) {
+        if (money) return money.format(value, currency);
+        return String(value === null || value === undefined || value === '' ? '—' : value)
+            + (currency ? ' ' + String(currency) : '');
+    }
     function rial(value) {
+        if (money) return money.rial(value);
         return String(value === null || value === undefined ? '—' : value) + ' ریال';
     }
     function billingStat(label, value) {
@@ -758,7 +771,7 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             billingStat('تعرفه اختصاصی ویزیت', data.override_fee === null ? 'بدون تغییر' : rial(data.override_fee)),
             billingStat('تعرفه ویزیت اعمالشده', rial(data.effective_fee === null ? 0 : data.effective_fee)),
             billingStat('منبع تعرفه', feeSourceLabel(data.fee_source)),
-            billingStat('سیاست تعرفه', 'تغییر تعرفه پیشفرض، ویزیتهای ثبتشده را تغییر نمیدهد'),
+            billingStat('سیاست تعرفه', data.fee_policy || 'تغییر تعرفه پیش‌فرض، ویزیت‌های ثبت‌شده را تغییر نمی‌دهد'),
             billingStat('جمع خدمات اضافی', rial(data.charges_total)),
             billingStat('جمع کل اقلام', rial(data.expected_total)),
             billingStat('مبلغ پرداختشده', rial(data.paid_amount)),
@@ -769,9 +782,9 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         billingChargesNode.innerHTML = charges.length ? charges.map(function (charge) {
             return '<tr>' +
                 '<td data-label="شرح">' + esc(charge.description) + '</td>' +
-                '<td data-label="مبلغ واحد (ریال)">' + esc(charge.unit_amount) + '</td>' +
+                '<td data-label="مبلغ واحد (ریال)">' + esc(rial(charge.unit_amount)) + '</td>' +
                 '<td data-label="تعداد">' + esc(charge.quantity) + '</td>' +
-                '<td data-label="جمع (ریال)">' + esc(charge.line_total) + '</td>' +
+                '<td data-label="جمع (ریال)">' + esc(rial(charge.line_total)) + '</td>' +
                 '<td data-label="توضیح">' + esc(charge.note || '—') + '</td>' +
                 '</tr>';
         }).join('') : '<tr><td class="cpms-finance-board__empty" colspan="5">خدمت اضافی ثبت نشده است.</td></tr>';
@@ -780,8 +793,8 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             return '<tr>' +
                 '<td data-label="شرح">' + esc(item.description) + '</td>' +
                 '<td data-label="تعداد">' + esc(item.quantity) + '</td>' +
-                '<td data-label="مبلغ واحد (ریال)">' + esc(item.unit_price) + '</td>' +
-                '<td data-label="مبلغ (ریال)">' + esc(item.amount) + '</td>' +
+                '<td data-label="مبلغ واحد (ریال)">' + esc(rial(item.unit_price)) + '</td>' +
+                '<td data-label="مبلغ (ریال)">' + esc(rial(item.amount)) + '</td>' +
                 '</tr>';
         }).join('') : '<tr><td class="cpms-finance-board__empty" colspan="4">فاکتوری صادر نشده است.</td></tr>';
         billingAutoNode.hidden = !(state.canIssue && !data.invoice && data.effective_fee !== null);
@@ -1001,12 +1014,12 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             }
             if (reconSummaryNode) {
                 reconSummaryNode.innerHTML =
-                    '<div class="cpms-finance-board__recon-card"><span>جمع دریافتی ثبت‌شده (' + Number(totals.captured_count || 0) + ' مورد)</span><strong>' + esc(totals.captured_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
-                    '<div class="cpms-finance-board__recon-card"><span>نقد</span><strong>' + esc(totals.cash_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
-                    '<div class="cpms-finance-board__recon-card"><span>کارت‌خوان — ثبت دستی</span><strong>' + esc(totals.card_pos_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
-                    '<div class="cpms-finance-board__recon-card"><span>سایر روش‌ها</span><strong>' + esc(totals.other_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
-                    '<div class="cpms-finance-board__recon-card"><span>فاکتورهای صادرشده (' + Number(totals.issued_count || 0) + ' مورد)</span><strong>' + esc(totals.invoiced_total || '0.00') + ' ' + esc(cur) + '</strong></div>' +
-                    '<div class="cpms-finance-board__recon-card"><span>ماندهٔ باز (' + Number(totals.open_count || 0) + ' فاکتور باز)</span><strong>' + esc(totals.outstanding_balance || '0.00') + ' ' + esc(cur) + '</strong></div>';
+                    '<div class="cpms-finance-board__recon-card"><span>جمع دریافتی ثبت‌شده (' + Number(totals.captured_count || 0) + ' مورد)</span><strong>' + esc(moneyText(totals.captured_total, cur)) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>نقد</span><strong>' + esc(moneyText(totals.cash_total, cur)) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>کارت‌خوان — ثبت دستی</span><strong>' + esc(moneyText(totals.card_pos_total, cur)) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>سایر روش‌ها</span><strong>' + esc(moneyText(totals.other_total, cur)) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>فاکتورهای صادرشده (' + Number(totals.issued_count || 0) + ' مورد)</span><strong>' + esc(moneyText(totals.invoiced_total, cur)) + '</strong></div>' +
+                    '<div class="cpms-finance-board__recon-card"><span>ماندهٔ باز (' + Number(totals.open_count || 0) + ' فاکتور باز)</span><strong>' + esc(moneyText(totals.outstanding_balance, cur)) + '</strong></div>';
                 reconSummaryNode.hidden = false;
             }
             var payments = Array.isArray(data.payments) ? data.payments : [];
@@ -1020,7 +1033,8 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
                             '<td data-label="' + esc(reconLabels[0]) + '">' + esc(row.payment_number) + '</td>' +
                             '<td data-label="' + esc(reconLabels[1]) + '">' + esc(row.invoice_number) + '</td>' +
                             '<td data-label="' + esc(reconLabels[2]) + '">' + esc(paymentMethodLabel(row.method)) + '</td>' +
-                            '<td data-label="' + esc(reconLabels[3]) + '">' + esc(row.amount) + ' ' + esc(row.currency || cur) + '</td>' +
+                            '<td data-label="' + esc(reconLabels[3]) + '">' +
+                            esc(moneyText(row.amount, row.currency || cur)) + '</td>' +
                             '<td data-label="' + esc(reconLabels[4]) + '">' + stamp + '</td>' +
                             '</tr>';
                     }).join('');
