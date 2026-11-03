@@ -891,7 +891,9 @@ final class FinanceService
             'receipt' => [
                 'invoice_number' => (string) $invoice['invoice_number'],
                 'invoice_status' => (string) $invoice['status'],
-                'jalali_date' => Jalali::formatYmd(substr((string) $invoice['created_at'], 0, 10)),
+                'jalali_date' => Jalali::format_display_ymd(
+                    substr((string) $invoice['created_at'], 0, 10)
+                ),
                 'clinic' => [
                     'name' => (string) ($clinic['name'] ?? ''),
                     'address' => $clinic['address'] ?? null,
@@ -920,7 +922,9 @@ final class FinanceService
                     'payment_number' => (string) $p['payment_number'],
                     'method' => (string) $p['method'],
                     'amount' => (float) $p['amount'],
-                    'jalali_paid_at' => Jalali::formatYmd(substr((string) $p['paid_at'], 0, 10)),
+                    'jalali_paid_at' => Jalali::format_display_ymd(
+                        substr((string) $p['paid_at'], 0, 10)
+                    ),
                 ], $payments),
             ],
         ];

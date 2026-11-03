@@ -528,7 +528,7 @@ final class FinanceFlowTest extends WP_UnitTestCase
 
         $rc = $r1['receipt'];
         $this->assertSame($invoice['invoice_number'], $rc['invoice_number']);
-        $this->assertMatchesRegularExpression('#^14\d{2}/\d{2}/\d{2}$#', $rc['jalali_date']);
+        $this->assertMatchesRegularExpression('#^[۰-۹]{4}/[۰-۹]{2}/[۰-۹]{2}$#u', $rc['jalali_date']);
         $this->assertNotSame('', $rc['clinic']['name'], 'clinic name resolved');
         $this->assertStringStartsWith('Finance ', $rc['patient']['name']);
         $this->assertMatchesRegularExpression('/^MR-FF-\d+$/', $rc['patient']['mrn']);

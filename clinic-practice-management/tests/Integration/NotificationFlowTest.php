@@ -246,7 +246,7 @@ final class NotificationFlowTest extends WP_UnitTestCase
         $this->assertCount(1, $data['notifications']);
         $this->assertSame('نوبت تأیید شد', $data['notifications'][0]['title']);
         // N-6: تاریخ Jalali در لایه Template
-        $this->assertStringContainsString(Jalali::formatYmd($slot['date']), $data['notifications'][0]['body']);
+        $this->assertStringContainsString(Jalali::format_display_ymd($slot['date']), $data['notifications'][0]['body']);
     }
 
     // ================= §5 — لغو نوبت → Cancel queued =================

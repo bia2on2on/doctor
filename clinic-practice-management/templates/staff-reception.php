@@ -617,7 +617,7 @@ $cpms_reception_cfg = [
         Object.keys(map).forEach(function (key) {
             var node = el(map[key]);
             if (node && node.firstElementChild) {
-                node.firstElementChild.textContent = String((stats && stats[key]) || 0);
+                node.firstElementChild.textContent = faDigits((stats && stats[key]) || 0);
             }
         });
     }

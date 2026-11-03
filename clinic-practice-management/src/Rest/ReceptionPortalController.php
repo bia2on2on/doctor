@@ -746,7 +746,7 @@ final class ReceptionPortalController extends RestBase {
                 // Persian/Jalali presentation of the SAME Location-local
                 // operational day (presentation only; Gregorian storage and
                 // cutoff comparisons untouched). Owner B.
-                'jalali'        => Jalali::formatYmd( $date ),
+                'jalali'        => Jalali::format_display_ymd( $date ),
                 'clinic_id'     => $clinic_id,
                 'location_id'   => $location_id,
 				'location_name' => $resolved['location_name'],
@@ -1263,7 +1263,7 @@ final class ReceptionPortalController extends RestBase {
 				'clinician_id'     => $clinician_id,
 				'clinician_name'   => (string) ( $clinicians[0]['name'] ?? '' ),
 				'date'             => $date,
-				'jalali'           => Jalali::formatYmd( $date ),
+				'jalali'           => Jalali::format_display_ymd( $date ),
 				'operational_date' => $operational_date,
 				'horizon_end'      => $horizon_end,
 				'days'             => $this->selectable_days( $operational_date, $horizon_days ),
@@ -1787,7 +1787,9 @@ final class ReceptionPortalController extends RestBase {
 					'status'                  => (string) ( $view['status'] ?? '' ),
 					'date'                    => $new_date,
 					'time'                    => (string) ( $view['time'] ?? substr( $slot_time, 0, 5 ) ),
-					'jalali'                  => (string) ( $view['jalali'] ?? Jalali::formatYmd( $new_date ) ),
+					'jalali'                  => (string) (
+						$view['jalali'] ?? Jalali::format_display_ymd( $new_date )
+					),
 					'reference_code'          => (string) ( $view['reference_code'] ?? '' ),
 				],
 				'reception'   => [
@@ -1910,7 +1912,7 @@ final class ReceptionPortalController extends RestBase {
 			$date   = $cursor->modify( '+' . $offset . ' day' )->format( 'Y-m-d' );
 			$days[] = [
 				'date'   => $date,
-				'jalali' => Jalali::formatYmd( $date ),
+				'jalali' => Jalali::format_display_ymd( $date ),
 			];
 		}
 

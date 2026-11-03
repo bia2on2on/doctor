@@ -241,7 +241,7 @@ final class ExportService
             NotificationEvents::REPORT_EXPORT_READY,
             [
                 'report_label' => (string) $result['label'],
-                'expires_at' => Jalali::formatYmd(substr($expiresAt, 0, 10)),
+                'expires_at' => Jalali::format_display_ymd( substr( $expiresAt, 0, 10 ) ),
             ],
             null
         );

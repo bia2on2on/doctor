@@ -29,6 +29,7 @@ use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Admin\AddressSelectorField;
 use ClinicCore\Admin\SpecialtySelectorField;
 use ClinicCore\Domain\Geography\IranProvinceCityCatalog;
+use ClinicCore\Domain\Time\PersianDigits;
 
 if ( ! function_exists( 'wp_get_current_user' ) ) {
 	return;
@@ -462,13 +463,15 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 									<?php echo 'active' === $cpms_mp_row['status'] ? 'فعال' : 'غیرفعال'; ?>
 								</span>
 							</td>
-							<td><?php echo esc_html( (string) $cpms_mp_row['location_count'] ); ?></td>
+							<td><?php echo esc_html( PersianDigits::digits( (string) $cpms_mp_row['location_count'] ) ); ?></td>
 							<td>
 								<?php
 								$cpms_mp_names = array();
 								foreach ( $cpms_mp_row['manager_user_ids'] as $cpms_mp_mid ) {
 									$cpms_mp_muser   = get_userdata( (int) $cpms_mp_mid );
-									$cpms_mp_names[] = $cpms_mp_muser === false ? '#' . (int) $cpms_mp_mid : (string) $cpms_mp_muser->display_name;
+									$cpms_mp_names[] = $cpms_mp_muser === false
+										? '#' . PersianDigits::digits( (int) $cpms_mp_mid )
+										: (string) $cpms_mp_muser->display_name;
 								}
 								echo esc_html( array() === $cpms_mp_names ? '—' : implode( '، ', $cpms_mp_names ) );
 								?>
@@ -534,8 +537,8 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<p class="cpms-mgmt-meta" data-cpms-flow="<?php echo esc_attr( (string) $cpms_mp_facility['flow'] ); ?>" data-cpms-structure="<?php echo esc_attr( (string) ( $cpms_mp_facility['structure'] ?? '' ) ); ?>">
 							نوع: <strong><?php echo esc_html( (string) ( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::find( (string) $cpms_mp_facility['facility_type'] )['label'] ?? (string) $cpms_mp_facility['facility_type'] ) ); ?></strong>
 							— جریان: <strong><?php echo esc_html( \ClinicCore\Application\Onboarding\FacilityTypeCatalog::wizard_heading( (string) $cpms_mp_facility['facility_type'] ) ); ?></strong>
-							— ساختمان‌ها: <?php echo esc_html( (string) count( (array) $cpms_mp_facility['sites'] ) ); ?>
-							— درمانگاه‌ها: <?php echo esc_html( (string) count( (array) $cpms_mp_facility['clinics'] ) ); ?>
+							— ساختمان‌ها: <?php echo esc_html( PersianDigits::digits( (string) count( (array) $cpms_mp_facility['sites'] ) ) ); ?>
+							— درمانگاه‌ها: <?php echo esc_html( PersianDigits::digits( (string) count( (array) $cpms_mp_facility['clinics'] ) ) ); ?>
 							<?php echo '' !== (string) $cpms_mp_facility['activated_at'] ? ' — <strong>فعال‌شده</strong>' : ''; ?>
 						</p>
 						<ul class="cpms-mgmt-meta" data-cpms-plan-steps="1">
@@ -811,7 +814,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					<ul>
 						<?php foreach ( $cpms_mp_service->organization_managers( $cpms_mp_actor, $cpms_mp_org_view['organization']['id'] ) as $cpms_mp_manager ) : ?>
 							<li>
-								<?php echo esc_html( '' !== $cpms_mp_manager['display_name'] ? $cpms_mp_manager['display_name'] : '#' . (string) $cpms_mp_manager['wp_user_id'] ); ?>
+								<?php echo esc_html( '' !== $cpms_mp_manager['display_name'] ? $cpms_mp_manager['display_name'] : '#' . PersianDigits::digits( (string) $cpms_mp_manager['wp_user_id'] ) ); ?>
 								<span class="cpms-mgmt-badge <?php echo 'active' === $cpms_mp_manager['status'] ? '' : 'is-off'; ?>"><?php echo 'active' === $cpms_mp_manager['status'] ? 'فعال' : 'معلق'; ?></span>
 								<?php if ( 'active' === $cpms_mp_manager['status'] && $cpms_mp_manager['wp_user_id'] !== $cpms_mp_actor ) : ?>
 									<?php $cpms_mp_form_open( 'org_set_manager', array( 'organization_id' => $cpms_mp_org_view['organization']['id'], 'target_user_id' => $cpms_mp_manager['wp_user_id'], 'active' => 0 ) ); ?>
@@ -936,7 +939,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 					<tbody>
 					<?php foreach ( $cpms_mp_clinic_view['staff'] as $cpms_mp_member ) : ?>
 						<tr>
-							<td><?php echo esc_html( '' !== $cpms_mp_member['display_name'] ? $cpms_mp_member['display_name'] : '#' . (string) $cpms_mp_member['wp_user_id'] ); ?></td>
+							<td><?php echo esc_html( '' !== $cpms_mp_member['display_name'] ? $cpms_mp_member['display_name'] : '#' . PersianDigits::digits( (string) $cpms_mp_member['wp_user_id'] ) ); ?></td>
 							<td><?php echo esc_html( $cpms_mp_member['role_key'] ); ?></td>
 							<td><?php echo 'active' === $cpms_mp_member['status'] ? 'فعال' : 'معلق'; ?></td>
 							<td>
@@ -1033,7 +1036,7 @@ body { margin: 0; font-family: Tahoma, "Segoe UI", sans-serif; background: var(-
 						<tr>
 							<td><?php echo esc_html( $cpms_mp_clinician['full_name'] ); ?></td>
 							<td><?php echo '' !== (string) ( $cpms_mp_clinician['specialty'] ?? '' ) ? esc_html( (string) $cpms_mp_clinician['specialty'] ) : '<span class="cpms-mgmt-empty">—</span>'; ?></td>
-							<td><?php echo esc_html( (string) $cpms_mp_clinician['id'] ); ?></td>
+							<td><?php echo esc_html( PersianDigits::digits( (string) $cpms_mp_clinician['id'] ) ); ?></td>
 							<td><?php echo $cpms_mp_clinician['is_active'] ? 'فعال' : 'غیرفعال'; ?></td>
 						</tr>
 					<?php endforeach; ?>
