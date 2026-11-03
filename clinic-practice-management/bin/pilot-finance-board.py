@@ -72,9 +72,56 @@ VIEWPORTS = [
 ISSUE_DESCRIPTION = "ویزیت و مشاورهٔ سرپایی"
 ISSUE_UNIT_PRICE = 500000
 # Phase 12 Slice 3 — the fixture's open capture invoice (500000.00 Rial).
-PAYMENT_TOTAL = "500000.00"
+# Money is DISPLAYED in Persian digits with the «٬» thousands separator and the
+# «ریال» unit, so these constants hold the digit-normalized on-screen form;
+# has_money_text() still enforces the exact numeric bound AND the unit.
+PAYMENT_TOTAL = "500000 ریال"
 PAYMENT_PARTIAL = 200000
-PAYMENT_REMAINDER = "300000.00"
+PAYMENT_REMAINDER = "300000 ریال"
+
+# --- Money display digits (digit-agnostic checks) ---------------------------
+# The staff pricing/finance surfaces print money in Persian digits with «٬»
+# thousands and «٫» decimals. These helpers (same rules as the merged companion
+# dual-mode money helpers) normalize Persian (۰-۹) and
+# Arabic-Indic (٠-٩) digits to ASCII, drop thousands separators between digits
+# and map «٫» to '.', so a wrong amount, a missing «ریال» unit or a longer number
+# ("1500000") still fails.
+MONEY_DIGIT_MAP = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫",
+                                "01234567890123456789.")
+MONEY_THOUSANDS_RE = re.compile(r"(?<=\d)[\u066c,](?=\d)")
+MONEY_NORMALIZE_JS = (
+    "(value => String(value == null ? '' : value)"
+    ".replace(/[\\u06F0-\\u06F9]/g, d => String(d.charCodeAt(0) - 0x06F0))"
+    ".replace(/[\\u0660-\\u0669]/g, d => String(d.charCodeAt(0) - 0x0660))"
+    ".replace(/(\\d)[\\u066C,](?=\\d)/g, '$1')"
+    ".replace(/\\u066B/g, '.'))"
+)
+
+
+def normalize_money_digits(text) -> str:
+    """Normalize Persian/Arabic-Indic digits and number separators to ASCII."""
+    if text is None:
+        return ""
+    return MONEY_THOUSANDS_RE.sub("", str(text).translate(MONEY_DIGIT_MAP))
+
+
+def _money_pattern(expected: str):
+    target = normalize_money_digits(expected)
+    if not target:
+        raise ValueError("expected money substring must be non-empty")
+    prefix = r"(?<![0-9.])" if target[0].isdigit() else ""
+    suffix = r"(?![0-9.])" if target[-1].isdigit() else ""
+    return re.compile(f"{prefix}{re.escape(target)}{suffix}")
+
+
+def has_money_text(text, expected: str) -> bool:
+    """True when `expected` appears in normalized `text` with exact number bounds."""
+    return bool(_money_pattern(expected).search(normalize_money_digits(text)))
+
+
+def money_occurrences(text, expected: str) -> int:
+    """How many times `expected` appears in normalized `text` (bounds kept)."""
+    return len(_money_pattern(expected).findall(normalize_money_digits(text)))
 PAYMENT_SETTLEMENT = 300000
 OUT = Path("pilot-screenshots")
 OUT.mkdir(exist_ok=True)
@@ -428,13 +475,14 @@ with sync_playwright() as playwright:
         capture_row = rows.filter(has_text=PAYMENT_PATIENT)
         require(rows.count() == 3, f"{label}: exactly the three current awaiting-payment visits render")
         require(capture_row.count() == 1, f"{label}: the open capture invoice row is present exactly once")
-        require(PAYMENT_TOTAL in capture_row.inner_text(), f"{label}: the capture invoice exposes its server total")
+        require(has_money_text(capture_row.inner_text(), PAYMENT_TOTAL), f"{label}: the capture invoice exposes its server total")
         require("باز" in capture_row.inner_text(), f"{label}: the capture invoice is open before any capture")
         require(invoice_row.count() == 1, f"{label}: invoice patient row is present exactly once")
         require(no_invoice_row.count() == 1, f"{label}: no-invoice patient row is present exactly once")
-        require(invoice_row.get_by_text("1234.00", exact=False).count() == 1, f"{label}: invoice total is visible once")
-        require(invoice_row.get_by_text("300.00", exact=False).count() == 1, f"{label}: paid amount is visible once")
-        require(invoice_row.get_by_text("934.00", exact=False).count() == 1, f"{label}: remaining balance is visible once")
+        invoice_row_text = invoice_row.inner_text()
+        require(money_occurrences(invoice_row_text, "1234 ریال") == 1, f"{label}: invoice total is visible once")
+        require(money_occurrences(invoice_row_text, "300 ریال") == 1, f"{label}: paid amount is visible once")
+        require(money_occurrences(invoice_row_text, "934 ریال") == 1, f"{label}: remaining balance is visible once")
         require("فاکتور ثبت نشده" in no_invoice_row.inner_text(), f"{label}: missing invoice is explicit and has no fabricated amount")
         require("پرداخت بخشی" in invoice_row.inner_text(), f"{label}: partial invoice state is localized")
         require("SYN-FIN-" not in board.inner_text(), f"{label}: invoice number is not exposed")
@@ -517,7 +565,10 @@ with sync_playwright() as playwright:
         require(payment_panel.is_hidden(), f"{label}: cancelling the capture form performs no mutation")
         require(
             page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 1
-            and PAYMENT_TOTAL in page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).inner_text(),
+            and has_money_text(
+                page.locator('[data-role="finance-rows"] tr').filter(has_text=PAYMENT_PATIENT).inner_text(),
+                PAYMENT_TOTAL,
+            ),
             f"{label}: the untouched capture invoice still shows its open total",
         )
 
@@ -534,7 +585,7 @@ with sync_playwright() as playwright:
         )
         require(paid_row.count() == 1, f"{label}: the fixture paid visit is present exactly once")
         require("پرداخت کامل" in paid_row.inner_text(), f"{label}: the paid row states the fully-paid state")
-        require("0.00" in paid_row.inner_text(), f"{label}: the settled invoice summary shows zero remaining")
+        require(has_money_text(paid_row.inner_text(), "0 ریال"), f"{label}: the settled invoice summary shows zero remaining")
         checkout_controls = paid_panel.locator('[data-role="finance-checkout-open"]')
         require(checkout_controls.count() == 1, f"{label}: exactly one checkout control per paid row")
         checkout_selectors = checkout_controls.evaluate_all("els => els.map(e => Number(e.getAttribute('data-visit-id')))")
@@ -560,7 +611,7 @@ with sync_playwright() as playwright:
         require(checkout_panel.is_hidden(), f"{label}: cancelling the checkout confirmation performs no mutation")
         require(
             page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).count() == 1
-            and "0.00" in page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).inner_text(),
+            and has_money_text(page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).inner_text(), "0 ریال"),
             f"{label}: the untouched paid visit still shows its settled summary",
         )
 
@@ -580,7 +631,7 @@ with sync_playwright() as playwright:
         require(receipt_panel.is_visible(), f"{label}: the receipt panel opens from server truth")
         receipt_text = receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text()
         require(CHECKOUT_PATIENT in receipt_text, f"{label}: the receipt names the settled patient from server truth")
-        require(receipt_text.count("250000.00") >= 2, f"{label}: the receipt shows the stored total and the paid amount")
+        require(money_occurrences(receipt_text, "250000 ریال") >= 2, f"{label}: the receipt shows the stored total and the paid amount")
         require("نقد" in receipt_text, f"{label}: the receipt shows the recorded manual payment line")
         require(
             re.search(r"\d{4}/\d{2}/\d{2}", receipt_text) is not None,
@@ -650,7 +701,7 @@ with sync_playwright() as playwright:
     require(re.search(r"INV-\d{6}-\d{3,}", status_text) is not None, "journey: the delegated invoice number is reported")
     issued_row = page.locator('[data-role="finance-rows"] tr').filter(has_text=ELIGIBLE_PATIENT)
     require(issued_row.count() == 1, "journey: the issued visit appears once on the existing awaiting-payment board")
-    require("500000.00" in issued_row.inner_text(), "journey: the board shows the server-authoritative total")
+    require(has_money_text(issued_row.inner_text(), PAYMENT_TOTAL), "journey: the board shows the server-authoritative total")
     require("باز" in issued_row.inner_text(), "journey: the newly issued invoice is open")
     require(
         page.locator('[data-role="finance-eligible-rows"] tr').filter(has_text=ELIGIBLE_PATIENT).count() == 0,
@@ -701,13 +752,13 @@ with sync_playwright() as playwright:
     page.wait_for_function(
         "(function(){var r=document.querySelectorAll('[data-role=finance-rows] tr');"
         "for (var i=0;i<r.length;i++){if(r[i].innerText.indexOf(" + json.dumps(PAYMENT_PATIENT) + ")!==-1){"
-        "return r[i].innerText.indexOf(" + json.dumps(PAYMENT_REMAINDER) + ")!==-1;}}return false;})()",
+        "return (" + MONEY_NORMALIZE_JS + ")(r[i].innerText).indexOf(" + json.dumps(normalize_money_digits(PAYMENT_REMAINDER)) + ")!==-1;}}return false;})()",
         timeout=30000,
     )
     partial_row = capture_row()
     require(partial_row.count() == 1, "capture: the partially paid visit stays on the board")
     require("پرداخت بخشی" in partial_row.inner_text(), "capture: the row reports the server-derived partial state")
-    require(PAYMENT_REMAINDER in partial_row.inner_text(), "capture: the row shows the reduced server-derived remaining")
+    require(has_money_text(partial_row.inner_text(), PAYMENT_REMAINDER), "capture: the row shows the reduced server-derived remaining")
     require("در انتظار پرداخت" in partial_row.inner_text(), "capture: a partial capture never settles the visit")
     require(
         page.locator('[data-role="finance-status"]').inner_text() != "",
@@ -719,7 +770,7 @@ with sync_playwright() as playwright:
     page.wait_for_function(
         "(function(){var r=document.querySelectorAll('[data-role=finance-rows] tr');"
         "for (var i=0;i<r.length;i++){if(r[i].innerText.indexOf(" + json.dumps(PAYMENT_PATIENT) + ")!==-1){"
-        "return r[i].innerText.indexOf(" + json.dumps(PAYMENT_REMAINDER) + ")!==-1;}}return false;})()",
+        "return (" + MONEY_NORMALIZE_JS + ")(r[i].innerText).indexOf(" + json.dumps(normalize_money_digits(PAYMENT_REMAINDER)) + ")!==-1;}}return false;})()",
         timeout=20000,
     )
     require(
@@ -769,7 +820,7 @@ with sync_playwright() as playwright:
     settled_paid_row = paid_panel.locator("tbody tr").filter(has_text=PAYMENT_PATIENT)
     require(settled_paid_row.count() == 1, "slice4: the exactly settled visit surfaced on the paid board after the real settlement (server truth)")
     require("پرداخت کامل" in settled_paid_row.inner_text(), "slice4: the settled visit is fully paid, not checked out")
-    require("0.00" in settled_paid_row.inner_text(), "slice4: the settled invoice reports zero remaining")
+    require(has_money_text(settled_paid_row.inner_text(), "0 ریال"), "slice4: the settled invoice reports zero remaining")
     require(
         page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).count() == 1,
         "slice4: the unrelated fixture paid row is untouched",
@@ -801,9 +852,12 @@ with sync_playwright() as playwright:
     require(receipt_panel.is_visible(), "slice5: the receipt panel opens from server truth")
     receipt_text = receipt_panel.locator('[data-role="finance-receipt-body"]').inner_text()
     require(CAPTURE_INVOICE in receipt_text, "slice5: the receipt shows the durable server-issued invoice number")
-    require(PAYMENT_TOTAL in receipt_text, "slice5: the receipt shows the issued total 500000.00")
+    require(has_money_text(receipt_text, PAYMENT_TOTAL), "slice5: the receipt shows the issued total 500000.00")
     require("نقد" in receipt_text and "ثبت دستی" in receipt_text, "slice5: every recorded manual method of this settlement is shown")
-    require("0.00" in receipt_text, "slice5: the receipt shows the settled zero balance")
+    # The settled zero balance renders «۰ ریال» (Persian digits, unit kept); the
+    # digit-agnostic matcher keeps the exact numeric bound, so a residual
+    # «...00 ریال» amount can never satisfy it.
+    require(has_money_text(receipt_text, "0 ریال"), "slice5: the receipt shows the settled zero balance")
     require(
         re.search(r"\d{4}/\d{2}/\d{2}", receipt_text) is not None,
         "slice5: the receipt carries a Location-local Jalali date",
@@ -833,7 +887,7 @@ with sync_playwright() as playwright:
     )
     require(
         page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).count() == 1
-        and "0.00" in page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).inner_text(),
+        and has_money_text(page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=PAYMENT_PATIENT).inner_text(), "0 ریال"),
         "slice5: reading and printing the receipt leaves the settled row untouched",
     )
 
@@ -884,7 +938,7 @@ with sync_playwright() as playwright:
     )
     require(
         page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).count() == 1
-        and "0.00" in page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).inner_text(),
+        and has_money_text(page.locator('[data-role="finance-paid-rows"] tr').filter(has_text=CHECKOUT_PATIENT).inner_text(), "0 ریال"),
         "slice4 refresh: the unrelated paid row is untouched and still settled",
     )
 

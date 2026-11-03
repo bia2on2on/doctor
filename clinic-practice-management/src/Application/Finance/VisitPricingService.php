@@ -53,7 +53,11 @@ final class VisitPricingService {
      * still a draft. Once an invoice is finalized, none of these values mutate
      * its persisted lines, totals, or payments.
      */
-    public const FEE_SNAPSHOT_POLICY = 'Captured at check-in / a Visit-locked legacy draft read; later doctor defaults never reprice the Visit. A failed check-in snapshot is never replaced with a later default; a doctor must explicitly override before invoice issue. Finalized invoices are immutable.';
+    public const FEE_SNAPSHOT_POLICY = 'تعرفهٔ هر ویزیت هنگام پذیرش (و برای ویزیت‌های قدیمی، در '
+        . 'نخستین خواندنِ پیش‌نویس) ثبت می‌شود؛ تغییر پیش‌فرض پزشک پس از آن، تعرفهٔ ویزیت‌های '
+        . 'ثبت‌شده را تغییر نمی‌دهد. اگر ثبت تعرفه هنگام پذیرش ناموفق بماند، هرگز با پیش‌فرضِ بعدی '
+        . 'جایگزین نمی‌شود و پزشک باید پیش از صدور فاکتور آن را صریحاً تعیین کند. فاکتورهای نهایی '
+        . 'تغییرناپذیرند.';
 
     private const DOCTOR_CAP = RolesAndCapabilities::CONSULT_COMPLETE;
     private const READ_CAP   = RolesAndCapabilities::INVOICE_READ;
@@ -90,6 +94,7 @@ final class VisitPricingService {
             'clinician_name' => (string) $clinician['full_name'],
             'location_id'    => $target,
             'default_fee'    => $fee !== null ? (int) $fee['fee'] : null,
+            'locations'      => $this->pricing_locations( (int) $ctx['clinic_id'], $actor_user_id ),
             'fee_policy'     => self::FEE_SNAPSHOT_POLICY,
             'currency'       => self::CURRENCY,
             'currency_label' => self::CURRENCY_LABEL,
@@ -949,6 +954,39 @@ final class VisitPricingService {
         }
 
         return array_values( array_map( 'intval', $this->memberships->location_ids_for( (int) $membership['id'] ) ) );
+    }
+
+    /**
+     * Active Locations of the trusted Clinic that this actor may target with a
+     * doctor default fee — the display source for the pricing Location picker.
+     *
+     * Location 0 (clinic-wide) is a policy target, not a Location row, so it is
+     * never part of this list: the caller renders it as an explicit option.
+     * Nothing here authorizes a write; `assert_default_fee_target()` re-checks
+     * the submitted target on every save.
+     *
+     * @return list<array{id: int, name: string}>
+     */
+    private function pricing_locations( int $clinic_id, int $actor_user_id ): array {
+        $allowed = $this->allowed_locations( $clinic_id, $actor_user_id );
+        $rows    = $this->db->fetchAll(
+            'SELECT id, name FROM ' . $this->db->table( 'cpms_locations' )
+            . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY name ASC, id ASC',
+            [$clinic_id]
+        );
+        $out     = [];
+        foreach ( $rows as $row ) {
+            $id = (int) ( $row['id'] ?? 0 );
+            if ( $id <= 0 ) {
+                continue;
+            }
+            if ( $allowed !== null && ! in_array( $id, $allowed, true ) ) {
+                continue;
+            }
+            $out[] = ['id' => $id, 'name' => (string) ( $row['name'] ?? '' )];
+        }
+
+        return $out;
     }
 
     /**

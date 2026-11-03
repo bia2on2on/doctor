@@ -89,6 +89,17 @@ final class CpmsAssets
         // `window.CpmsText` / `window.CpmsDialog` while they initialise, so the
         // helpers must already exist — footer assets would be too late.
         wp_enqueue_script( 'cpms-ui-text', $base . '/assets/js/cpms-ui-text.js', [], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev', false );
+        // Money display: one deterministic Persian-digit money formatter
+        // (`window.CpmsMoney`) shared by the pricing and finance surfaces. HEAD,
+        // like cpms-ui-text, because the per-page inline modules (printed in the
+        // body) format money while they render.
+        wp_enqueue_script(
+            'cpms-money',
+            $base . '/assets/js/cpms-money.js',
+            [],
+            \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev',
+            false
+        );
         wp_enqueue_script( 'cpms-dialog', $base . '/assets/js/cpms-dialog.js', [ 'cpms-ui-text' ], \defined( 'CPMS_VERSION' ) ? CPMS_VERSION : 'dev', false );
 
         wp_enqueue_style('cpms-admin', $base . '/assets/css/cpms-admin.css', [], \defined('CPMS_VERSION') ? CPMS_VERSION : 'dev');

@@ -374,6 +374,9 @@ final class StaffPortalShell {
 	/** Shared in-page confirm/prompt dialog (`window.CpmsDialog`). */
 	public const DIALOG_HANDLE = 'cpms-dialog';
 
+	/** Shared deterministic money formatter (`window.CpmsMoney`). */
+	public const MONEY_HANDLE = 'cpms-money';
+
 	/**
 	 * Register the shared Persian UI helpers. Both are pure local assets
 	 * (no network, no build step) and are loaded in the HEAD so inline
@@ -392,6 +395,15 @@ final class StaffPortalShell {
 		}
 		if ( ! wp_script_is( self::DIALOG_HANDLE, 'registered' ) ) {
 			wp_register_script( self::DIALOG_HANDLE, $base . '/assets/js/cpms-dialog.js', [ self::UI_TEXT_HANDLE ], $version, false );
+		}
+		if ( ! wp_script_is( self::MONEY_HANDLE, 'registered' ) ) {
+			wp_register_script(
+				self::MONEY_HANDLE,
+				$base . '/assets/js/cpms-money.js',
+				[],
+				$version,
+				false
+			);
 		}
 	}
 
@@ -455,6 +467,9 @@ final class StaffPortalShell {
 		self::register_ui_handles();
 		wp_enqueue_script( self::UI_TEXT_HANDLE );
 		wp_enqueue_script( self::DIALOG_HANDLE );
+		// Deterministic Persian money display for every money-bearing module
+		// (pricing + finance). HEAD: the module templates format while parsing.
+		wp_enqueue_script( self::MONEY_HANDLE );
 		if ( self::MODULE_DOCTOR !== $active_module ) {
 			return;
 		}

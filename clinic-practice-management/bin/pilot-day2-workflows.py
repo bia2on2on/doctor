@@ -1291,10 +1291,19 @@ def run_journey_d_accountant(browser, cfg):
         recon_panel_txt = page_acc.locator('[data-role="finance-reconciliation"]').inner_text()
         recon_panel_html = page_acc.locator('[data-role="finance-reconciliation"]').inner_html()
 
-        assert "450000.00" in recon_panel_txt, "Loc A1 captured total 450000.00 missing"
-        assert "250000.00" in recon_panel_txt, "Loc A1 cash total 250000.00 missing"
-        assert "200000.00" in recon_panel_txt, "Loc A1 card_pos total 200000.00 missing"
-        assert "150000.00" in recon_panel_txt, "Loc A1 open balance 150000.00 missing"
+        # Money is displayed in Persian digits with the «٬» thousands separator and the
+        # «ریال» unit (display only). Normalize the digits and keep the exact numeric
+        # bound AND the unit, so a longer amount ("1450000 ریال") still fails.
+        def money_text(value):
+            return re.sub(r"(?<=\d)[\u066c,](?=\d)", "", str(value).translate(
+                str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩٫",
+                              "01234567890123456789.")
+            ))
+
+        assert re.search(r"(?<![\d.])450000 ریال", money_text(recon_panel_txt)), "Loc A1 captured total 450000.00 missing"
+        assert re.search(r"(?<![\d.])250000 ریال", money_text(recon_panel_txt)), "Loc A1 cash total 250000.00 missing"
+        assert re.search(r"(?<![\d.])200000 ریال", money_text(recon_panel_txt)), "Loc A1 card_pos total 200000.00 missing"
+        assert re.search(r"(?<![\d.])150000 ریال", money_text(recon_panel_txt)), "Loc A1 open balance 150000.00 missing"
         assert cfg["pay_a1_cash"] in recon_panel_txt and cfg["pay_a1_pos"] in recon_panel_txt
         assert cfg["pay_a1_void"] not in recon_panel_txt, "voided payment must not appear in captured ledger"
         assert cfg["pay_a2_pos"] not in recon_panel_txt, "Loc A2 payment leaked into Loc A1 reconciliation"
@@ -1322,7 +1331,7 @@ def run_journey_d_accountant(browser, cfg):
         assert rec_a2_info.value.status == 200
         page_acc.locator('[data-role="finance-recon-summary"]').wait_for(state="visible", timeout=15000)
         txt_a2 = page_acc.locator('[data-role="finance-reconciliation"]').inner_text()
-        assert "800000.00" in txt_a2 and cfg["pay_a2_pos"] in txt_a2
+        assert re.search(r"(?<![\d.])800000 ریال", money_text(txt_a2)) and cfg["pay_a2_pos"] in txt_a2
         assert cfg["pay_a1_cash"] not in txt_a2, "Loc A1 payment leaked after switching to Loc A2"
 
         # Cross-Clinic denial check against Clinic B (matches CustomRoleStaffPortalFinanceModuleTest: 400/403 with zero foreign data)

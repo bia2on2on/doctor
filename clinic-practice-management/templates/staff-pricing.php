@@ -103,8 +103,10 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
             <label class="cpms-pricing__field">تعرفه پیشفرض (ریال)
                 <input class="cpms-pricing__input" type="number" min="0" step="1" inputmode="numeric" data-role="pricing-default-amount" aria-label="تعرفه پیشفرض به ریال">
             </label>
-            <label class="cpms-pricing__field">شناسه موقعیت (۰ = همه)
-                <input class="cpms-pricing__input" type="number" min="0" step="1" value="0" data-role="pricing-default-location" aria-label="شناسه موقعیت">
+            <label class="cpms-pricing__field">موقعیت عملیاتی
+                <select class="cpms-pricing__select" data-role="pricing-default-location" aria-label="موقعیت عملیاتی تعرفه">
+                    <option value="0">همهٔ موقعیت‌ها (سراسری مطب)</option>
+                </select>
             </label>
             <div class="cpms-pricing__field"><button type="button" class="cpms-pricing__btn cpms-pricing__btn--primary" data-role="pricing-save-default">ذخیره تعرفه</button></div>
         </div>
@@ -164,6 +166,17 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
     </div>
 </main>
 <script type="application/json" id="cpms-pricing-config"><?php echo $cpms_pricing_config_json; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON encoded with HEX flags by wp_json_encode. ?></script>
+<?php
+// Deterministic Persian money display (whole Rial, Persian digits, «٬»).
+// Printed EXPLICITLY: the staff shell's <head> prints styles only, so an
+// enqueued HEAD script never reaches the page and `window.CpmsMoney` would stay
+// undefined, leaving this module on its Latin fallback. Printed before the
+// inline module script so the helper is defined while it initialises.
+$cpms_money_handle = \ClinicCore\Frontend\StaffPortalShell::MONEY_HANDLE;
+if ( function_exists( 'wp_print_scripts' ) && wp_script_is( $cpms_money_handle, 'registered' ) ) {
+    wp_print_scripts( array( $cpms_money_handle ) );
+}
+?>
 <script>
 (function () {
     'use strict';
@@ -180,6 +193,11 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
     var statsNode = document.querySelector('[data-role="pricing-stats"]');
     var billingNode = document.querySelector('[data-role="pricing-billing"]');
     var contextLabel = document.querySelector('[data-role="pricing-context-label"]');
+    var locationSelect = document.querySelector('[data-role="pricing-default-location"]');
+    // Shared deterministic money formatter (assets/js/cpms-money.js). Absent
+    // only if the asset did not load; then the pre-existing Latin form is kept
+    // so the screen still works instead of throwing.
+    var money = window.CpmsMoney || null;
 
     function setStatus(message, kind) {
         statusNode.textContent = message || '';
@@ -191,8 +209,27 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         if (text !== undefined && text !== null) el.textContent = String(text);
         return el;
     }
+    // Every amount keeps the «ریال» unit here: the <thead> declares the unit but
+    // the per-cell `data-label` (the small-screen label) does not, so dropping it
+    // from the cell text would render amounts without a unit on mobile.
     function rial(value) {
+        if (money) return money.rial(value);
         return String(value === null || value === undefined ? '—' : value) + ' ریال';
+    }
+    // Location picker: option 0 is the clinic-wide fee target (a policy target,
+    // not a Location); the rest come from the permitted Locations the service
+    // resolved for this actor. The submitted field is unchanged (location_id).
+    function renderLocations(locations) {
+        var list = Array.isArray(locations) ? locations : [];
+        var keep = String(locationSelect.value || '0');
+        while (locationSelect.options.length > 1) locationSelect.remove(1);
+        list.forEach(function (location) {
+            var option = node('option', '', location.name || ('موقعیت ' + location.id));
+            option.value = String(location.id);
+            locationSelect.appendChild(option);
+        });
+        locationSelect.value = keep;
+        if (String(locationSelect.value) !== keep) locationSelect.value = '0';
     }
     function headers() {
         var value = { 'X-WP-Nonce': String(config.nonce || ''), 'Accept': 'application/json' };
@@ -256,6 +293,7 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
                 + (data.default_fee === null ? 'تنظیم نشده' : rial(data.default_fee))
                 + ' — سیاست: ' + (data.fee_policy || 'تعرفه هر ویزیت هنگام پذیرش ثبت میشود');
             document.querySelector('[data-role="pricing-default-amount"]').value = data.default_fee === null ? '' : String(data.default_fee);
+            renderLocations(data.locations);
             if (!data.can_edit) setStatus('دسترسی ویرایش تعرفه برای این حساب فعال نیست.', 'error');
         });
     }
@@ -308,7 +346,7 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         stat('مانده بدهی', rial(data.remaining_balance));
         stat('وضعیت پرداخت', data.payment_status_label);
         stat('منبع تعرفه', feeSourceLabel(data.fee_source));
-        stat('سیاست تعرفه', 'تغییر تعرفه پیشفرض، ویزیتهای ثبتشده را تغییر نمیدهد');
+        stat('سیاست تعرفه', data.fee_policy || 'تغییر تعرفه پیشفرض، ویزیتهای ثبتشده را تغییر نمیدهد');
 
         chargesNode.textContent = '';
         var charges = Array.isArray(data.charges) ? data.charges : [];
