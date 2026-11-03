@@ -116,7 +116,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 DIALOG_OVERLAY = ".cpms-modal-overlay"
 DIALOG_ROOT = ".cpms-modal[role='dialog']"
 DIALOG_CONFIRM = ".cpms-modal-confirm"
-DIALOG_CANCEL = ".cpms-modal-cancel"
+DIALOG_CANCEL = ".cpms-modal-cancel, .cpms-dialog__btn:not(.cpms-dialog__btn--primary):not(.cpms-modal-confirm)"
 DIALOG_INPUT = ".cpms-dialog__input"
 DIALOG_POLL_MS = 100
 
@@ -168,7 +168,16 @@ def answer_shared_dialogs(page, steps, *, shared_expected, timeout_ms, native_se
         root = overlay.locator(DIALOG_ROOT).first
         action = step.get("action", "accept")
         if action == "cancel":
-            root.locator(DIALOG_CANCEL).first.click()
+            # DIALOG_CANCEL names both cancel markups: the legacy companion
+            # class and the shared in-page dialog's unqualified button. Both are
+            # probed inside the open dialog root; neither present is a real failure.
+            for cancel_selector in DIALOG_CANCEL.split(","):
+                cancel_button = root.locator(cancel_selector.strip()).first
+                if cancel_button.count() > 0:
+                    cancel_button.click()
+                    break
+            else:
+                raise RuntimeError("neither cancel button form appeared in the open dialog")
         elif action == "prompt":
             root.locator(DIALOG_INPUT).first.fill(str(step.get("value", "")))
             root.locator(DIALOG_CONFIRM).first.click()
