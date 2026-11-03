@@ -515,7 +515,7 @@ final class Phase9Slice7MyFilesRedTest extends WP_UnitTestCase
             ?: \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $this->now, new \DateTimeZone('UTC'));
         self::assertNotFalse($utc);
         $local = $utc->setTimezone(new \DateTimeZone('Asia/Tehran'));
-        $expectedJalali = Jalali::formatYmd($local->format('Y-m-d'));
+        $expectedJalali = Jalali::format_display_ymd($local->format('Y-m-d'));
 
         $response = $this->get('/patients/' . $this->other['patient'] . '/files', [], $this->foreign);
         self::assertSame(200, $response->get_status());
@@ -570,7 +570,7 @@ final class Phase9Slice7MyFilesRedTest extends WP_UnitTestCase
         $utc = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s.u', $this->now, new \DateTimeZone('UTC'))
             ?: \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $this->now, new \DateTimeZone('UTC'));
         self::assertNotFalse($utc);
-        $expectedJalali = Jalali::formatYmd($utc->setTimezone(new \DateTimeZone('Asia/Tehran'))->format('Y-m-d'));
+        $expectedJalali = Jalali::format_display_ymd($utc->setTimezone(new \DateTimeZone('Asia/Tehran'))->format('Y-m-d'));
 
         $html = $this->render($count === 0 ? $this->empty : ($count === 1 ? $this->foreign : $this->user));
         $dom = new \DOMDocument();

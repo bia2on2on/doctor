@@ -582,7 +582,7 @@ final class FollowUpReminderHandler
         return [
             'patient_name' => $patientName !== '' ? $patientName : 'بیمار گرامی',
             'doctor_name' => $doctor !== '' ? $doctor : 'پزشک',
-            'appointment_date' => Jalali::formatYmd((string) $row['suggested_date']),
+            'appointment_date' => Jalali::format_display_ymd( (string) $row['suggested_date'] ),
             'appointment_time' => '—',
             'clinic_name' => $clinic !== '' ? $clinic : 'مطب',
         ];

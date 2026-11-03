@@ -854,7 +854,9 @@ final class MedicalFileService
                 continue;
             }
             try {
-                $map[ (int) $row['id'] ] = Jalali::formatYmd( $utc->setTimezone( new \DateTimeZone( $timezone ) )->format( 'Y-m-d' ) );
+                $map[ (int) $row['id'] ] = Jalali::format_display_ymd(
+                    $utc->setTimezone( new \DateTimeZone( $timezone ) )->format( 'Y-m-d' )
+                );
             } catch ( \DomainException ) {
                 continue; // تاریخ نامعتبر ⇒ حذف نمایشی (fail-closed).
             }
