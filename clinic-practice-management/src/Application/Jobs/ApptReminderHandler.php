@@ -11,6 +11,7 @@ use ClinicCore\Domain\Clinical\DoctorDisplayName;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Time\Jalali;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
 use ClinicCore\Infrastructure\Queue\JobQueue;
@@ -669,8 +670,10 @@ final class ApptReminderHandler
             'patient_name' => $patientName !== '' ? $patientName : 'بیمار گرامی',
             // عنوان «دکتر» فقط یک‌بار (پیش از این، متنِ الگو خودش «دکتر» می‌گذاشت).
             'doctor_name'      => $doctor !== '' ? DoctorDisplayName::with_title( $doctor ) : 'پزشک',
-            'appointment_date' => Jalali::formatYmd((string) $row['slot_date']),
-            'appointment_time' => substr((string) $row['slot_time'], 0, 5),
+            'appointment_date' => Jalali::format_display_ymd( (string) $row['slot_date'] ),
+            'appointment_time' => PersianDigits::digits(
+                substr( (string) $row['slot_time'], 0, 5 )
+            ),
             'clinic_name' => $clinic !== '' ? $clinic : 'مطب',
         ];
     }

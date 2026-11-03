@@ -103,7 +103,8 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 		);
 		$patient_id = (int) $wpdb->insert_id;
 
-		// 1) StaffMessagingService::present_time converts digits and keeps " UTC" suffix.
+		// 1) StaffMessagingService::present_time uses Persian digits and the Persian
+		//    local-label for the stored UTC instant (no Latin " UTC" suffix).
 		$msg_service = App::staff_messaging_service();
 		$thread      = $msg_service->create_thread(
 			$doctor_id,
@@ -111,9 +112,10 @@ final class PkgP2aPersianDigitsDisplayTest extends WP_UnitTestCase {
 		);
 		$sent        = $msg_service->send( $doctor_id, (int) $thread['id'], 'پیام آزمایشی P2A' );
 		self::assertMatchesRegularExpression(
-			'/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2} — [۰-۹]{2}:[۰-۹]{2} UTC$/u',
+			'/^[۰-۹]{4}\/[۰-۹]{2}\/[۰-۹]{2} — [۰-۹]{2}:[۰-۹]{2} به وقت جهانی$/u',
 			(string) $sent['jalali_time']
 		);
+		self::assertStringNotContainsString( 'UTC', (string) $sent['jalali_time'] );
 		self::assertMatchesRegularExpression(
 			'/^\d{4}-\d{2}-\d{2}/',
 			(string) $sent['created_at']

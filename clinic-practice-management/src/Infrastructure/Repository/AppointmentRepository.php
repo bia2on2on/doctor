@@ -398,7 +398,9 @@ final class AppointmentRepository
                 'clinician_id'   => (int) $row['clinician_id'],
                 'clinician_name' => (string) ( $row['clinician_name'] ?? '' ),
                 'date'           => (string) $row['slot_date'],
-                'jalali'         => \ClinicCore\Domain\Time\Jalali::formatYmd( (string) $row['slot_date'] ),
+                'jalali'         => \ClinicCore\Domain\Time\Jalali::format_display_ymd(
+                    (string) $row['slot_date']
+                ),
                 'time'           => substr( (string) $row['slot_time'], 0, 5 ),
                 'status'         => (string) $row['status'],
             ];
