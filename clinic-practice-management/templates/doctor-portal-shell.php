@@ -816,7 +816,8 @@ function renderToday(){
         ['walk_in_today','حضوری امروز']
     ];
     statsEl.innerHTML = fields.map(function(f){
-        return '<div class="cpms-doc-stat" data-role="stat-' + f[0] + '"><b>' + esc(s[f[0]]!=null?s[f[0]]:'—') + '</b><span>' + f[1] + '</span></div>';
+        var value = s[f[0]] != null ? cpmsFaDigits(s[f[0]]) : '—';
+        return '<div class="cpms-doc-stat" data-role="stat-' + f[0] + '"><b>' + esc(value) + '</b><span>' + f[1] + '</span></div>';
     }).join('');
 }
 
@@ -2117,9 +2118,15 @@ function fileCategoryLabel(category){
 function fileSizeLabel(bytes){
     var n = parseInt(bytes, 10);
     if ( isNaN(n) || n < 0 ) return '';
-    if ( n < 1024 ) return n + ' بایت';
-    if ( n < 1048576 ) return Math.round(n / 1024) + ' کیلوبایت';
-    return (Math.round(n / 10485.76) / 100) + ' مگابایت';
+    // رقم‌های نمایشی فارسی؛ عددِ محاسبه‌شده و مقدارِ ذخیره‌شده دست‌نخورده می‌مانند.
+    // همان الگوی دفاعیِ cpmsFaDigits: بدون CpmsText، متنِ اصلی برگردانده می‌شود.
+    var fa = function (value) {
+        var text = typeof cpmsFaDigits === 'function' ? cpmsFaDigits(value) : String(value);
+        return text.replace('.', '٫');
+    };
+    if ( n < 1024 ) return fa(n) + ' بایت';
+    if ( n < 1048576 ) return fa(Math.round(n / 1024)) + ' کیلوبایت';
+    return fa(Math.round(n / 10485.76) / 100) + ' مگابایت';
 }
 
 function renderWorkspaceFiles(){

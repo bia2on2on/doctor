@@ -894,7 +894,7 @@ final class Phase11ReceptionAppointmentRescheduleRedTest extends WP_UnitTestCase
         self::assertSame([$records['tomorrow'], $records['later']], array_column($rows, 'id'));
         self::assertSame(['clinician_id', 'clinician_name', 'date', 'id', 'jalali', 'patient_id', 'patient_name', 'status', 'time'], $this->sortedKeys($rows[0]));
         self::assertSame('Dr One upcoming', $rows[0]['clinician_name']);
-        self::assertSame(\ClinicCore\Domain\Time\Jalali::formatYmd($tomorrow), $rows[0]['jalali']);
+        self::assertSame(\ClinicCore\Domain\Time\Jalali::format_display_ymd($tomorrow), $rows[0]['jalali']);
         self::assertNotEmpty($rows[0]['patient_name']);
         self::assertSame(400, $this->dispatch('GET', '/clinic/v1/staff/portal/reception/upcoming', [], $this->scopeHeaders($fx['clinic']))->get_status(), 'N locations require explicit selection');
         wp_set_current_user($fx['doc1']);
