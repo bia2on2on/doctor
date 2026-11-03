@@ -166,6 +166,17 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
     </div>
 </main>
 <script type="application/json" id="cpms-pricing-config"><?php echo $cpms_pricing_config_json; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON encoded with HEX flags by wp_json_encode. ?></script>
+<?php
+// Deterministic Persian money display (whole Rial, Persian digits, «٬»).
+// Printed EXPLICITLY: the staff shell's <head> prints styles only, so an
+// enqueued HEAD script never reaches the page and `window.CpmsMoney` would stay
+// undefined, leaving this module on its Latin fallback. Printed before the
+// inline module script so the helper is defined while it initialises.
+$cpms_money_handle = \ClinicCore\Frontend\StaffPortalShell::MONEY_HANDLE;
+if ( function_exists( 'wp_print_scripts' ) && wp_script_is( $cpms_money_handle, 'registered' ) ) {
+    wp_print_scripts( array( $cpms_money_handle ) );
+}
+?>
 <script>
 (function () {
     'use strict';
@@ -198,6 +209,9 @@ if ( ! is_string( $cpms_pricing_config_json ) ) {
         if (text !== undefined && text !== null) el.textContent = String(text);
         return el;
     }
+    // Every amount keeps the «ریال» unit here: the <thead> declares the unit but
+    // the per-cell `data-label` (the small-screen label) does not, so dropping it
+    // from the cell text would render amounts without a unit on mobile.
     function rial(value) {
         if (money) return money.rial(value);
         return String(value === null || value === undefined ? '—' : value) + ' ریال';

@@ -854,7 +854,10 @@ with sync_playwright() as playwright:
     require(CAPTURE_INVOICE in receipt_text, "slice5: the receipt shows the durable server-issued invoice number")
     require(has_money_text(receipt_text, PAYMENT_TOTAL), "slice5: the receipt shows the issued total 500000.00")
     require("نقد" in receipt_text and "ثبت دستی" in receipt_text, "slice5: every recorded manual method of this settlement is shown")
-    require("0.00" in receipt_text, "slice5: the receipt shows the settled zero balance")
+    # The settled zero balance renders «۰ ریال» (Persian digits, unit kept); the
+    # digit-agnostic matcher keeps the exact numeric bound, so a residual
+    # «...00 ریال» amount can never satisfy it.
+    require(has_money_text(receipt_text, "0 ریال"), "slice5: the receipt shows the settled zero balance")
     require(
         re.search(r"\d{4}/\d{2}/\d{2}", receipt_text) is not None,
         "slice5: the receipt carries a Location-local Jalali date",

@@ -286,6 +286,17 @@ $cpms_finance_board_config = array(
 echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- JSON config is encoded by wp_json_encode.
 ?>
 </script>
+<?php
+// Deterministic Persian money display (whole Rial, Persian digits, «٬»).
+// Printed EXPLICITLY: the staff shell's <head> prints styles only, so an
+// enqueued HEAD script never reaches the page and `window.CpmsMoney` would stay
+// undefined, leaving this module on its Latin fallback. Printed before the
+// inline module script so the helper is defined while it initialises.
+$cpms_money_handle = \ClinicCore\Frontend\StaffPortalShell::MONEY_HANDLE;
+if ( function_exists( 'wp_print_scripts' ) && wp_script_is( $cpms_money_handle, 'registered' ) ) {
+    wp_print_scripts( array( $cpms_money_handle ) );
+}
+?>
 <script>
 (function () {
     'use strict';
@@ -751,6 +762,13 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         if (money) return money.rial(value);
         return String(value === null || value === undefined ? '—' : value) + ' ریال';
     }
+    // Amount whose cell label ALREADY carries the unit («مبلغ واحد (ریال)»):
+    // digits only, never the unit twice. The degraded (no helper) path keeps
+    // the unit so no amount is ever rendered without it.
+    function num(value) {
+        if (money) return money.number(value);
+        return String(value === null || value === undefined || value === '' ? '—' : value) + ' ریال';
+    }
     function billingStat(label, value) {
         return '<div class="cpms-finance-board__billing-stat"><span>' + esc(label) + '</span><strong>' + esc(value) + '</strong></div>';
     }
@@ -782,9 +800,9 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
         billingChargesNode.innerHTML = charges.length ? charges.map(function (charge) {
             return '<tr>' +
                 '<td data-label="شرح">' + esc(charge.description) + '</td>' +
-                '<td data-label="مبلغ واحد (ریال)">' + esc(rial(charge.unit_amount)) + '</td>' +
+                '<td data-label="مبلغ واحد (ریال)">' + esc(num(charge.unit_amount)) + '</td>' +
                 '<td data-label="تعداد">' + esc(charge.quantity) + '</td>' +
-                '<td data-label="جمع (ریال)">' + esc(rial(charge.line_total)) + '</td>' +
+                '<td data-label="جمع (ریال)">' + esc(num(charge.line_total)) + '</td>' +
                 '<td data-label="توضیح">' + esc(charge.note || '—') + '</td>' +
                 '</tr>';
         }).join('') : '<tr><td class="cpms-finance-board__empty" colspan="5">خدمت اضافی ثبت نشده است.</td></tr>';
@@ -793,8 +811,8 @@ echo wp_json_encode( $cpms_finance_board_config ); // phpcs:ignore WordPress.Sec
             return '<tr>' +
                 '<td data-label="شرح">' + esc(item.description) + '</td>' +
                 '<td data-label="تعداد">' + esc(item.quantity) + '</td>' +
-                '<td data-label="مبلغ واحد (ریال)">' + esc(rial(item.unit_price)) + '</td>' +
-                '<td data-label="مبلغ (ریال)">' + esc(rial(item.amount)) + '</td>' +
+                '<td data-label="مبلغ واحد (ریال)">' + esc(num(item.unit_price)) + '</td>' +
+                '<td data-label="مبلغ (ریال)">' + esc(num(item.amount)) + '</td>' +
                 '</tr>';
         }).join('') : '<tr><td class="cpms-finance-board__empty" colspan="4">فاکتوری صادر نشده است.</td></tr>';
         billingAutoNode.hidden = !(state.canIssue && !data.invoice && data.effective_fee !== null);
