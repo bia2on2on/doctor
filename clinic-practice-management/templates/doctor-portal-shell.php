@@ -1289,18 +1289,6 @@ function cpmsFaDigits(value){
         : String(value == null ? '' : value);
 }
 
-function cpmsConfirm(message, options){
-    return (window.CpmsDialog && typeof window.CpmsDialog.confirm === 'function')
-        ? window.CpmsDialog.confirm(message, options)
-        : Promise.resolve(false);
-}
-
-function cpmsPrompt(message, options){
-    return (window.CpmsDialog && typeof window.CpmsDialog.prompt === 'function')
-        ? window.CpmsDialog.prompt(message, options)
-        : Promise.resolve(null);
-}
-
 function genderLabel(value){
     // مقدار خام (male/female) هرگز به کاربر نشان داده نمی‌شود.
     return { male: 'مرد', female: 'زن', unknown: 'نامشخص' }[value] || 'نامشخص';

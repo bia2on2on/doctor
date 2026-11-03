@@ -593,13 +593,19 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
             discount: parseInt(document.getElementById('cpms-fin-inv-discount').value || '0', 10),
             tax: parseInt(document.getElementById('cpms-fin-inv-tax').value || '0', 10)
         };
-        api('POST', 'invoices', body).then(function (r) {
+        // Busy-lock (double-submit window): the issue button stays disabled until
+        // the POST settles, then re-enables. Body and messages are unchanged.
+        var submitBtn = document.getElementById('cpms-fin-issue-submit');
+        var releaseIssue = function () { if (submitBtn) { submitBtn.disabled = false; } };
+        if (submitBtn) { submitBtn.disabled = true; }
+        var issueRequest = api('POST', 'invoices', body).then(function (r) {
             if (r.__status !== 201) { notice(errMessage(r), 'error'); return; }
             notice('فاکتور ' + r.body.data.invoice_number + ' صادر شد', 'success');
             closeDrawers();
             refreshAll();
             openInvoice(r.body.data.id);
         }).catch(function () { notice('خطای شبکه', 'error'); });
+        issueRequest.then(releaseIssue, releaseIssue);
     }
 
     // ---------- فاکتور: تسویه/ابطال/بازپرداخت/اصلاح/رسید ----------
