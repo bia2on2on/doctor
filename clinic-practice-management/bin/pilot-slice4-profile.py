@@ -117,6 +117,11 @@ failures = []
 _FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
 
 
+# ASCII-only digit class: `\d` is Unicode-aware in Python 3 and would also
+# match the Persian digits this assertion is meant to accept.
+LATIN_YMD = re.compile(r"[0-9]{4}/[0-9]{2}/[0-9]{2}")
+
+
 def fa_digits(value):
     """Digit-agnostic expectation: the screen may render Persian display digits.
 
@@ -1171,7 +1176,7 @@ def run_files_one(browser, run):
         visit_text = visit_row.inner_text()
         assert FILES_ONE["jalali"] in visit_text or fa_digits(FILES_ONE["jalali"]) in visit_text, \
             "visit-linked row must show the trusted Jalali date"
-        assert not re.search(r"\d{4}/\d{2}/\d{2}", visit_text), \
+        assert not LATIN_YMD.search(visit_text), \
             "visit-linked row must not show a Latin-digit Jalali date"
         up_text = up_row.inner_text()
         assert FILES_ONE["greg"] not in up_text, "visit-less upload row leaked a raw Gregorian date"
