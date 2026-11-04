@@ -536,12 +536,20 @@ $cpms_reception_cfg = [
     }
 
     function statusLabel(status) {
+        // نگاشتِ یکسان با نقشه‌های تثبیت‌شدهٔ پزشک/منشی (SecretaryQueue و
+        // DoctorDashboard): وضعیتِ ناشناخته دیگر خام (مثل awaiting_payment)
+        // داخلِ پیامِ فارسی نمایش داده نمی‌شود.
         var labels = {
             waiting: 'در انتظار',
             called: 'فراخوانی‌شده',
             in_consultation: 'در ویزیت',
             checked_in: 'حضوریافته',
+            consultation_completed: 'پایان ویزیت',
+            awaiting_payment: 'در انتظار پرداخت',
+            paid: 'پرداخت‌شده',
+            checked_out: 'پایان‌یافته',
             skipped: 'لغو امروز',
+            cancelled: 'لغوشده',
             completed: 'پایان‌یافته'
         };
         return labels[status] || status || '—';

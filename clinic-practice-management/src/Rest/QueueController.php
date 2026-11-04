@@ -118,9 +118,11 @@ final class QueueController extends RestBase {
 							$to_status = (string) $r['to_status'];
 							$event     = self::SECRETARY_STATUS_EVENTS[ $to_status ] ?? null;
 							if ( null === $event ) {
+								// مقادیرِ مجاز با برچسبِ فارسیِ تثبیت‌شدهٔ نقشهٔ
+								// وضعیت — نه enum خامی مثل awaiting_payment.
 								throw VisitException::of(
 									'CLINIC_VALIDATION_FAILED',
-									'وضعیت هدف برای منشی مجاز نیست (waiting, cancelled, awaiting_payment, checked_out)',
+									'وضعیت هدف برای منشی مجاز نیست (در انتظار، لغوشده، در انتظار پرداخت یا پایان‌یافته)',
 									422,
 									[ 'to_status' => $to_status ]
 								);
