@@ -203,4 +203,36 @@ final class PrivateStorageInitializer {
             'error'      => $message,
         ];
     }
+
+    /**
+     * Contextِ تختِ OpLog برای نتیجهٔ راه‌اندازی — فقط مقدارِ اسکالر.
+     *
+     * چرا: «OpLogger::sanitize» هر مقدارِ غیراسکالر را با gettype جایگزین
+     * می‌کند، پس context قدیمی «[ 'roots' => … ]» در جدول به شکل
+     * {"roots":"array"} ثبت می‌شد و کد خطای واقعی گم می‌شد.
+     *
+     * نام کلیدها عمداً فاقدِ زیررشته‌های maskِ sanitize (code/text/…) است تا
+     * کد خطا واقعاً در ردیف بنشیند: «{root}_failure» = کد خطای ماشین
+     * (مثل CLINIC_STORAGE_NOT_WRITABLE) و «{root}_reason» = متنِ کوتاه‌شده.
+     * مسیرِ سرور فقط در لاگِ سمت سرور می‌نشیند و به پاسخ REST نمی‌رسد.
+     *
+     * @param array<string, array<string, mixed>> $roots خروجی initialize()
+     * @return array<string, bool|string>
+     */
+    public static function op_log_context( array $roots ): array {
+        $context = [];
+        foreach ( $roots as $name => $row ) {
+            $clean  = preg_replace( '/[^a-z0-9_]+/', '', strtolower( (string) $name ) );
+            $prefix = is_string( $clean ) && '' !== $clean ? $clean : 'root';
+            $row    = is_array( $row ) ? $row : [];
+            $reason = mb_substr( (string) ( $row['error'] ?? '' ), 0, 160 );
+
+            $context[ $prefix . '_ok' ]      = (bool) ( $row['ok'] ?? false );
+            $context[ $prefix . '_failure' ] = (string) ( $row['error_code'] ?? '' );
+            $context[ $prefix . '_reason' ]  = $reason;
+            $context[ $prefix . '_path' ]    = (string) ( $row['path'] ?? '' );
+        }
+
+        return $context;
+    }
 }
