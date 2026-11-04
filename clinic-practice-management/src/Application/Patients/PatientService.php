@@ -10,6 +10,7 @@ use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Patients\PatientIdentityException;
 use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Domain\Validators\NationalIdValidator;
+use ClinicCore\Domain\Validators\VisibleText;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
@@ -633,6 +634,14 @@ final class PatientService
         $v = trim(preg_replace('/[\x00-\x1F]/u', '', $v) ?? '');
         if ($v === '' || mb_strlen($v) > 120) {
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'نام نامعتبر است');
+        }
+        // نامِ فقط-نامرئی (نیم‌فاصلهٔ تنها، نویسههای صفر-عرض/جهت، BOM، فاصله)
+        // محتوای خوانا ندارد؛ نیم‌فاصلهٔ داخلِ واژهٔ فارسی معتبر می‌ماند.
+        if ( ! VisibleText::has_visible_content( $v ) ) {
+            throw new BookingException(
+                'CLINIC_VALIDATION_FAILED',
+                'نام نمی‌تواند فقط از نویسه‌های نامرئی یا فاصله تشکیل شده باشد'
+            );
         }
 
         return mb_substr($v, 0, 120);
