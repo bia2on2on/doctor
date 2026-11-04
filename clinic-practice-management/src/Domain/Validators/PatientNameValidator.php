@@ -20,6 +20,9 @@ final class PatientNameValidator
     /** نویسه‌های فاصله (ASCII + NBSP). */
     private const SPACES = "\x20\t\n\r\f\v\u{00A0}";
 
+    /** نویسه‌های کنترل ASCII که نمایشی نیستند (U+0000 تا U+001F). */
+    private const CONTROL = '\x00-\x1F';
+
     /** نویسه‌های نادیده‌گرفته/Zero-Width که در نام نمایشی شمارش نمی‌شوند. */
     private const INVISIBLE = "\u{200B}\u{200C}\u{200D}\u{200E}\u{200F}\u{2060}\u{FEFF}";
 
@@ -31,7 +34,7 @@ final class PatientNameValidator
      */
     public static function hasVisibleContent( string $value ): bool
     {
-        $pattern = '/[' . self::SPACES . self::INVISIBLE . ']/u';
+        $pattern = '/[' . self::CONTROL . self::SPACES . self::INVISIBLE . ']/u';
 
         $stripped = (string) preg_replace( $pattern, '', $value );
 
