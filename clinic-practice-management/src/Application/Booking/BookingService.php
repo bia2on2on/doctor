@@ -3052,14 +3052,14 @@ final class BookingService
     private function cleanBookingName(?string $value): string
     {
         $clean = trim((string) preg_replace('/[\\x00-\\x1F]/u', '', (string) $value));
-        if (!PatientNameValidator::hasVisibleContent($clean)) {
+        if ( ! PatientNameValidator::hasVisibleContent( $clean ) ) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
                 'برای ثبت بیمار جدید، نام و نام خانوادگی الزامی است',
                 400
             );
         }
-        if (mb_strlen($clean) > 120) {
+        if ( mb_strlen( $clean ) > 120 ) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
                 'نام و نام خانوادگی بسیار بلند است',

@@ -120,7 +120,9 @@ final class QueueController extends RestBase {
 							if ( null === $event ) {
 								$allowed = [];
 								foreach ( self::SECRETARY_STATUS_EVENTS as $status => $_event ) {
-									$allowed[] = \ClinicCore\Application\Visits\VisitService::appointmentStatusLabel( $status );
+									$allowed[] = \ClinicCore\Application\Visits\VisitService::appointmentStatusLabel(
+									$status
+								);
 								}
 								throw VisitException::of(
 									'CLINIC_VALIDATION_FAILED',

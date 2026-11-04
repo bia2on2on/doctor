@@ -633,10 +633,10 @@ final class PatientService
     private function cleanName(string $v): string
     {
         $v = trim(preg_replace('/[\\x00-\\x1F]/u', '', $v) ?? '');
-        if (!PatientNameValidator::hasVisibleContent($v)) {
+        if ( ! PatientNameValidator::hasVisibleContent( $v ) ) {
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'نام نامعتبر است', 400);
         }
-        if (mb_strlen($v) > 120) {
+        if ( mb_strlen( $v ) > 120 ) {
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'نام بسیار بلند است', 400);
         }
 

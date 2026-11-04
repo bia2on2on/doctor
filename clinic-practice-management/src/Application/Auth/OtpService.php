@@ -937,7 +937,7 @@ final class OtpService
      */
     private function validatedIpHourlyMax(int $value): int
     {
-        if ($value < 1) {
+        if ( $value < 1 ) {
             return 1;
         }
 
