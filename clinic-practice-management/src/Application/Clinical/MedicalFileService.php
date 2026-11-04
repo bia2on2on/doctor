@@ -260,7 +260,17 @@ final class MedicalFileService
         }
 
         // Clinicِ فایل (ردیفِ پایدار) — که در بالا در برابر Clinicِ معتبر سنجیده شد.
+        // شکستِ زیرساختِ ذخیره‌سازی (مثل CLINIC_STORAGE_NOT_WRITABLE): یک ردیفِ
+        // Operational Log با Contextِ اسکالر + پاسخِ فارسیِ قابلِ اقدام (500)؛
+        // مسیرِ فایل‌سیستم فقط در لاگ می‌ماند و Fail-Closed دست‌نخورده است.
+        // خطِ فراخوانی legacy عمداً با همان متن/تو‌رفتگی قبلی حفظ شده است.
+        try {
         $content = $this->storageFor((int) $row['clinic_id'])->read((string) $row['storage_path']);
+        } catch ( \Throwable $e ) {
+            $context = FileStorageFailure::op_context( 'files', $e );
+            App::op()->error( FileStorageFailure::OP_EVENT, $context );
+            throw FileStorageFailure::client_exception( 'باز کردن فایل انجام نشد' );
+        }
         if ($content === null) {
             // Metadata هست ولی فایل فیزیکی گم شده — نباید URL خطا را فاش کند
             error_log('[CPMS][MedicalFileService] physical file missing for attachment ' . $fileId);
@@ -514,7 +524,17 @@ final class MedicalFileService
             );
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        // شکستِ زیرساختِ ذخیره‌سازی به دامنهٔ بالینی تبدیل نمی‌شود: یک ردیفِ
+        // OpLog با Contextِ اسکالر (کد/ریشه/دلیلِ کوتاه‌شده) ثبت می‌شود و
+        // کلاینت پیامِ فارسیِ قابلِ اقدامِ 500 می‌گیرد — بدونِ افشای مسیر.
+        // خطِ فراخوانی legacy عمداً با همان متن/تو‌رفتگی قبلی حفظ شده است.
+        try {
         $storagePath = $this->storageFor( $patientClinicId )->store( $content, $patientClinicId, $extension ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
+        } catch ( \Throwable $e ) {
+            $context = FileStorageFailure::op_context( 'files', $e );
+            App::op()->error( FileStorageFailure::OP_EVENT, $context );
+            throw FileStorageFailure::client_exception( 'ثبت فایل انجام نشد' );
+        }
 
         // D6 audit atomicity: the attachment metadata row and its mandatory
         // audit commit/roll back together. The physical object was already
