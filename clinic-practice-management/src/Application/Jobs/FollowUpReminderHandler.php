@@ -6,6 +6,7 @@ namespace ClinicCore\Application\Jobs;
 
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
+use ClinicCore\Domain\Clinical\DoctorDisplayName;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Domain\Sms\SmsEvents;
 use ClinicCore\Domain\Time\Jalali;
@@ -577,11 +578,13 @@ final class FollowUpReminderHandler
             'SELECT name FROM ' . $this->db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1',
             [(int) $row['clinic_id']]
         );
-        $patientName = trim((string) $row['first_name'] . ' ' . (string) $row['last_name']);
+        $patient_name = trim( (string) $row['first_name'] . ' ' . (string) $row['last_name'] );
+        $patient_name = 1 === preg_match( '/[^\s\x{00A0}]/u', $patient_name )
+            ? $patient_name : 'بیمار گرامی';
 
         return [
-            'patient_name' => $patientName !== '' ? $patientName : 'بیمار گرامی',
-            'doctor_name' => $doctor !== '' ? $doctor : 'پزشک',
+            'patient_name'     => $patient_name,
+            'doctor_name'      => DoctorDisplayName::with_title_or_fallback( $doctor ),
             'appointment_date' => Jalali::format_display_ymd( (string) $row['suggested_date'] ),
             'appointment_time' => '—',
             'clinic_name' => $clinic !== '' ? $clinic : 'مطب',

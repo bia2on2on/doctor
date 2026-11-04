@@ -6,6 +6,7 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\PersianDigits;
 
 /**
  * صفحه «CPMS (دسترسی‌ها)» — مدیریت Capabilities نقش‌های CPMS (ADR-0030 / Part 1).
@@ -254,7 +255,12 @@ final class RoleCapabilitiesPage
             <details class="cpms-details cpms-preset-overview">
                 <summary>
                     <span>نمای سریع دسترسی‌ها</span>
-                    <span class="cpms-group-count">(<?php echo count($enabled); ?> فعال / <?php echo count($disabled); ?> غیرفعال)</span>
+                    <span class="cpms-group-count">
+                        (<?php echo esc_html( PersianDigits::digits( count( $enabled ) ) ); ?>
+                        فعال /
+                        <?php echo esc_html( PersianDigits::digits( count( $disabled ) ) ); ?>
+                        غیرفعال)
+                    </span>
                     <?php if ($sensitiveEnabled !== []) : ?>
                         <span class="cpms-sensitive">⚠️ حساس</span>
                     <?php endif; ?>
@@ -307,21 +313,30 @@ final class RoleCapabilitiesPage
                             placeholder="مثلاً: نسخه، پرداخت، نوبت…" aria-label="جستجوی Capability">
                 </p>
                 <div class="cpms-cap-search-status" data-scope="<?php echo esc_attr($role); ?>" aria-live="polite"></div>
-                <?php foreach (self::GROUPS as $groupTitle => $capsInGroup) : ?>
+                <?php foreach ( self::GROUPS as $group_title => $caps_in_group ) : ?>
                     <?php
-                        $enabledInGroup = array_values(array_intersect($capsInGroup, $enabled));
-                        $groupSensitive = array_values(array_intersect($capsInGroup, self::SENSITIVE));
+                        $enabled_in_group = array_values(
+                            array_intersect( $caps_in_group, $enabled )
+                        );
+                        $group_sensitive  = array_values(
+                            array_intersect( $caps_in_group, self::SENSITIVE )
+                        );
+                        $enabled_count_fa = PersianDigits::digits( count( $enabled_in_group ) );
+                        $total_count_fa   = PersianDigits::digits( count( $caps_in_group ) );
                     ?>
                     <details class="cpms-details cpms-cap-group" data-cap-group data-scope="<?php echo esc_attr($role); ?>">
                         <summary>
-                            <span><?php echo esc_html($groupTitle); ?></span>
-                            <span class="cpms-group-count">(<?php echo count($enabledInGroup); ?>/<?php echo count($capsInGroup); ?>)</span>
-                            <?php if ($groupSensitive !== []) : ?>
+                            <span><?php echo esc_html( $group_title ); ?></span>
+                            <span class="cpms-group-count">
+                                (<?php echo esc_html( $enabled_count_fa ); ?> /
+                                <?php echo esc_html( $total_count_fa ); ?>)
+                            </span>
+                            <?php if ( $group_sensitive !== [] ) : ?>
                                 <span class="cpms-sensitive">⚠️ حساس</span>
                             <?php endif; ?>
                         </summary>
                         <div class="cpms-cap-list">
-                            <?php foreach ($capsInGroup as $cap) : ?>
+                            <?php foreach ( $caps_in_group as $cap ) : ?>
                                 <?php $sensitive = in_array($cap, self::SENSITIVE, true); ?>
                                 <label data-cap data-scope="<?php echo esc_attr($role); ?>">
                                     <input type="checkbox" name="role_caps[<?php echo esc_attr($role); ?>][]"

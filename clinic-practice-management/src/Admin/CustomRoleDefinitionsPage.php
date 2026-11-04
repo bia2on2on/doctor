@@ -9,6 +9,7 @@ use ClinicCore\Application\Roles\CustomRoleManagementException;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\CustomRolePolicy;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Infrastructure\Repository\CustomRoleRepository;
 
 /**
@@ -233,9 +234,9 @@ final class CustomRoleDefinitionsPage {
 				'success',
 				sprintf(
 					/* translators: 1: immutable technical role key, 2: durable revision number. */
-					__( 'مجوزهای نقش %1$s ذخیره شد (نسخه %2$d).', 'cpms' ),
+					__( 'مجوزهای نقش %1$s ذخیره شد (نسخه %2$s).', 'cpms' ),
 					$updated['role_key'],
-					$updated['version']
+					PersianDigits::digits( (int) $updated['version'] )
 				)
 			);
 		} catch ( CustomRoleManagementException $e ) {
@@ -316,9 +317,9 @@ final class CustomRoleDefinitionsPage {
 				self::set_notice(
 					'success',
 					$message . ' ' . sprintf(
-						/* translators: %d: new custom-role definition version. */
-						__( 'نسخه: %d.', 'cpms' ),
-						$result['version']
+						/* translators: %s: new custom-role definition version. */
+						__( 'نسخه: %s.', 'cpms' ),
+						PersianDigits::digits( (int) $result['version'] )
 					)
 				);
 			} else {
@@ -393,7 +394,8 @@ final class CustomRoleDefinitionsPage {
 				default                               => __( 'وضعیت ناشناخته — فقط خواندنی', 'cpms' ),
 			};
 			echo '<td>' . esc_html( $status_label ) . '</td>';
-			echo '<td>' . esc_html( (string) $definition['version'] ) . '</td>';
+			$version_fa = PersianDigits::digits( (string) $definition['version'] );
+			echo '<td>' . esc_html( $version_fa ) . '</td>';
 			echo '<td>';
 			echo ( [] === $definition['capabilities'] )
 				? esc_html__( 'بدون مجوز', 'cpms' )

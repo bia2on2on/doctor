@@ -12,6 +12,7 @@ use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Licensing\LicenseStatus;
+use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Infrastructure\Licensing\LicenseGatewayException;
 
 /**
@@ -182,7 +183,7 @@ final class SystemPage
 
                 <?php self::render_healthy_table( $health_groups['healthy'] ); ?>
 
-                <h2>Queue و WP-Cron</h2>
+                <h2>صف و زمان‌بندی وردپرس</h2>
                 <?php self::render_queue_section( $queue_diagnosis, $queue_notice_class ); ?>
                 <?php self::render_reception_check( $selected_clinic_id ); ?>
             <?php endif; ?>
@@ -198,18 +199,46 @@ final class SystemPage
                 <tr><th>نصب</th><td dir="ltr"><?php echo esc_html((string) $lic['install_id_masked']); ?></td></tr>
                 <tr><th>شناسه مجوز</th><td dir="ltr"><?php echo esc_html((string) $lic['license_id']); ?></td></tr>
                 <?php if (($lic['activation_window_type'] ?? null) !== null && ($lic['configured'] ?? true) === false) : ?>
-                    <tr><th>پنجرهٔ فعال‌سازی</th><td dir="ltr"><?php echo esc_html($lic['activation_window_type'] === 'migration' ? 'migration (۳۰ روز)' : 'fresh (۷ روز)'); ?></td></tr>
+                    <?php
+                    $window_label = 'migration' === $lic['activation_window_type']
+                        ? 'مهاجرت (۳۰ روز)' : 'نصب تازه (۷ روز)';
+                    ?>
+                    <tr>
+                        <th>پنجرهٔ فعال‌سازی</th>
+                        <td><?php echo esc_html( $window_label ); ?></td>
+                    </tr>
                 <?php endif; ?>
                 <?php if ($lic['expires_at'] !== null) : ?>
-                    <tr><th>انقضا/مهلت (UTC)</th><td><?php echo esc_html(gmdate('Y-m-d H:i', (int) $lic['expires_at'])); ?></td></tr>
+                    <?php
+                    $expiry_utc = gmdate( 'Y-m-d H:i:s', (int) $lic['expires_at'] );
+                    $expiry_fa  = CpmsUi::jalali_date_time( $expiry_utc, 'UTC' );
+                    ?>
+                    <tr>
+                        <th>انقضا/مهلت (به وقت جهانی)</th>
+                        <td>
+                            <?php echo esc_html( $expiry_fa ); ?>
+                        </td>
+                    </tr>
                 <?php endif; ?>
-                <tr><th>Refresh</th><td><?php echo esc_html((string) ($lic['last_refresh_error'] !== null && $lic['last_refresh_error'] !== '' ? 'خطا: ' . $lic['last_refresh_error'] : ($lic['verified_at'] !== null ? 'آخرین تأیید: ' . $lic['verified_at'] : '—'))); ?></td></tr>
+                <?php
+                $refresh_label = '—';
+                if ( null !== $lic['last_refresh_error'] && '' !== $lic['last_refresh_error'] ) {
+                    $refresh_label = 'خطا: ' . $lic['last_refresh_error'];
+                } elseif ( null !== $lic['verified_at'] ) {
+                    $refresh_label = 'آخرین تأیید: '
+                        . CpmsUi::jalali_date_time( (string) $lic['verified_at'], 'UTC' );
+                }
+                ?>
+                <tr>
+                    <th>بازبینی مجوز</th>
+                    <td><?php echo esc_html( $refresh_label ); ?></td>
+                </tr>
             </table>
             <?php if (in_array($lic['status'], [LicenseStatus::NOT_CONFIGURED, LicenseStatus::ACTIVATION_PENDING, LicenseStatus::ACTIVATION_GRACE, LicenseStatus::UNREACHABLE, LicenseStatus::INVALID, LicenseStatus::RESTRICTED], true)) : ?>
                 <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
                     <?php wp_nonce_field('cpms_license_activate'); ?>
                     <input type="hidden" name="action" value="cpms_license_activate">
-                    <label>License Key:
+                    <label>کلید مجوز:
                         <input type="text" name="license_key" required autocomplete="off" style="direction:ltr"></label>
                     <button class="button button-primary">فعال‌سازی (سرور)</button>
                 </form>
@@ -218,12 +247,19 @@ final class SystemPage
                         <?php wp_nonce_field('cpms_license_offline'); ?>
                         <input type="hidden" name="action" value="cpms_license_offline">
                         <p><textarea name="payload_json" rows="6" cols="80" placeholder='{"product":"cpms", …}' required style="direction:ltr"></textarea></p>
-                        <p><input type="text" name="signature_b64" size="100" placeholder="signature (base64)" required style="direction:ltr"></p>
+                        <p>
+                            <input type="text" name="signature_b64" size="100"
+                                placeholder="امضا (base64)" required style="direction:ltr">
+                        </p>
                         <button class="button">فعال‌سازی با سند</button>
                     </form>
                 </details>
             <?php else : ?>
-                <p class="description">سند مجوز معتبر است. Refresh دوره‌ای خودکار است؛ عدم دسترسی شبکه ≠ نامعتبر.</p>
+                <p class="description">
+                    سند مجوز معتبر است.
+                    بازبینی دوره‌ای خودکار است؛
+                    عدم دسترسی شبکه به‌معنای نامعتبر بودن نیست.
+                </p>
             <?php endif; ?>
             <?php endif; ?>
 
@@ -256,9 +292,26 @@ final class SystemPage
                 <?php foreach ($backups as $b) : ?>
                     <tr>
                         <td dir="ltr"><?php echo esc_html((string) $b['backup_id']); ?></td>
-                        <td><?php echo esc_html( CpmsUi::jalali_date_time( (string) $b['created_at'] ) ); ?></td>
-                        <td><?php echo esc_html((string) $b['tables'] . '/' . (string) $b['rows']); ?></td>
-                        <td><?php echo esc_html((string) $b['storage_files']); ?></td>
+                        <td>
+                            <?php
+                            $backup_raw  = (string) $b['created_at'];
+                            $backup_time = CpmsUi::jalali_date_time( $backup_raw, 'UTC' );
+                            echo esc_html( $backup_time );
+                            ?>
+                        </td>
+                        <td>
+                            <?php
+                            $backup_counts = PersianDigits::digits( (string) $b['tables'] ) . '/'
+                                . PersianDigits::digits( (string) $b['rows'] );
+                            echo esc_html( $backup_counts );
+                            ?>
+                        </td>
+                        <td>
+                            <?php
+                            $files_fa = PersianDigits::digits( (string) $b['storage_files'] );
+                            echo esc_html( $files_fa );
+                            ?>
+                        </td>
                         <td><?php echo esc_html((string) $b['integrity']); ?></td>
                         <td>
                             <form method="post" action="<?php echo esc_url( admin_url( 'admin-post.php' ) ); ?>" style="display:inline">
@@ -602,7 +655,8 @@ final class SystemPage
                 continue;
             }
 
-            echo '<h3>' . esc_html( $section['title'] ) . ' (' . (int) count( $checks ) . ')</h3>';
+            $count_fa = PersianDigits::digits( count( $checks ) );
+            echo '<h3>' . esc_html( $section['title'] ) . ' (' . esc_html( $count_fa ) . ')</h3>';
             echo '<p class="description">' . esc_html( $section['explain'] ) . '</p>';
 
             foreach ( $checks as $check ) {
@@ -636,7 +690,8 @@ final class SystemPage
      * @param list<array{key:string,label:string,status:string,detail:string}> $checks
      */
     private static function render_healthy_table( array $checks ): void {
-        echo '<h3>✅ بررسی‌های سالم (' . (int) count( $checks ) . ')</h3>';
+        $count_fa = PersianDigits::digits( count( $checks ) );
+        echo '<h3>✅ بررسی‌های سالم (' . esc_html( $count_fa ) . ')</h3>';
         echo '<table class="widefat striped cpms-health-table">';
         echo '<thead><tr><th>بررسی</th><th>وضعیت</th><th>جزئیات</th></tr></thead>';
         echo '<tbody>';

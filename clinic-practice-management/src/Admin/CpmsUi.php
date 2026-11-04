@@ -39,8 +39,10 @@ final class CpmsUi
     /**
      * Format a stored UTC datetime as a Persian/Jalali date + time string.
      *
-     * Presentation only — the stored UTC instant is never rewritten and no
-     * Gregorian comparison is involved. When no explicit timezone is supplied
+     * Accepts SQL timestamps (including fractional seconds) and ISO 8601
+     * timestamps, including the UTC offsets used in backup manifests.
+     * Presentation only — the stored instant is never rewritten. When no
+     * explicit timezone is supplied,
      * the WordPress site timezone is used (system/backup/job logs are
      * site-wide, not clinic-scoped). Falls back to the raw string when the
      * input is not a parseable UTC datetime.
@@ -58,8 +60,17 @@ final class CpmsUi
             } else {
                 $tz = new \DateTimeZone( 'UTC' );
             }
-            $utc = \DateTimeImmutable::createFromFormat( 'Y-m-d H:i:s', $raw, new \DateTimeZone( 'UTC' ) );
-            if ( false === $utc ) {
+            $pattern = '/^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}'
+                . '(?:\.\d{1,6})?(?:Z|[+-]\d{2}:\d{2})?$/D';
+            if ( 1 !== preg_match( $pattern, $raw ) ) {
+                return $raw;
+            }
+            $utc    = new \DateTimeImmutable( $raw, new \DateTimeZone( 'UTC' ) );
+            $errors = \DateTimeImmutable::getLastErrors();
+            if (
+                is_array( $errors )
+                && ( $errors['warning_count'] > 0 || $errors['error_count'] > 0 )
+            ) {
                 return $raw;
             }
             $local = $utc->setTimezone( $tz );

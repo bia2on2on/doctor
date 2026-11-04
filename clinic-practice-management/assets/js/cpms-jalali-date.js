@@ -95,7 +95,7 @@
     var leapJ = -14;
     var jp = BREAKS[0];
     if (jy < BREAKS[0] || jy >= BREAKS[count - 1]) {
-      throw new Error('Jalali year out of range');
+      throw new Error('سال شمسی خارج از محدودهٔ پشتیبانی‌شده است.');
     }
     var jump = 0;
     var i;
@@ -558,7 +558,7 @@
     status.setAttribute('dir', 'rtl');
     status.setAttribute('aria-live', 'polite');
 
-    var MSG_PENDING = 'تاریخ واردشده هنوز ثبت نشده است؛ Enter را بزنید یا از این فیلد خارج شوید.';
+    var MSG_PENDING = 'تاریخ واردشده هنوز ثبت نشده است؛ کلید اینتر را بزنید یا از این فیلد خارج شوید.';
     var MSG_MALFORMED = 'تاریخ شمسی نامعتبر است (مثال: ۱۴۰۴/۰۱/۰۱).';
     var MSG_YEAR = 'سال شمسی باید بین ۱۳۰۰ و ۱۴۹۹ باشد.';
     var MSG_MONTH = 'ماه شمسی باید بین ۱ و ۱۲ باشد.';
@@ -673,7 +673,7 @@
       // not yet confirmed. Keep submission blocked (no silent stale/partial
       // commit) until the admin explicitly confirms via blur/Enter/popup.
       entry.removeAttribute('aria-invalid');
-      status.textContent = 'برای ثبت این تاریخ، Enter را بزنید یا از فیلد خارج شوید.';
+      status.textContent = 'برای ثبت این تاریخ، کلید اینتر را بزنید یا از فیلد خارج شوید.';
       input.setCustomValidity(MSG_PENDING);
     }
 

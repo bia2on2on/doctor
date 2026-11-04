@@ -6,6 +6,7 @@ namespace ClinicCore\Admin;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Clinical\DoctorDisplayName;
 
 /**
  * داشبورد پزشک (F5) — صف خودِ پزشک + صفحه ویزیت (One-Page).
@@ -81,7 +82,7 @@ final class DoctorDashboardPage
             'nonce' => wp_create_nonce('wp_rest'),
             'poll_ms' => 5000, // پزشک 5s (ADR-0007)
             'clinician_id' => $clinician['id'],
-            'clinician_name' => $clinician['name'],
+            'clinician_name'  => DoctorDisplayName::with_title_or_fallback( $clinician['name'] ),
             'visit_id' => $visitId,
             'base_url' => admin_url('admin.php?page=cpms-doctor'),
             'can_call' => current_user_can(RolesAndCapabilities::QUEUE_CALL),
@@ -267,10 +268,24 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         });
     }
 
+    function displayDigits(value) {
+        if (window.CpmsText && typeof window.CpmsText.faDigits === 'function') {
+            return window.CpmsText.faDigits(value);
+        }
+        var digits = '۰۱۲۳۴۵۶۷۸۹';
+        return String(value == null ? '' : value).replace(/[0-9]/g, function (digit) {
+            return digits.charAt(Number(digit));
+        });
+    }
+
     function waitingMinutes(v) {
         if (!v) { return '—'; }
-        var mins = Math.max(0, Math.round((Date.now() - new Date(String(v).replace(' ', 'T') + 'Z').getTime()) / 60000));
-        return mins >= 60 ? Math.floor(mins / 60) + 'س ' + (mins % 60) + 'م' : mins + ' دقیقه';
+        var timestamp = new Date(String(v).replace(' ', 'T') + 'Z').getTime();
+        if (isNaN(timestamp)) { return '—'; }
+        var mins = Math.max(0, Math.round((Date.now() - timestamp) / 60000));
+        return mins >= 60
+            ? displayDigits(Math.floor(mins / 60)) + 'س ' + displayDigits(mins % 60) + 'م'
+            : displayDigits(mins) + ' دقیقه';
     }
 
     // ================= View A — صف پزشک =================
@@ -286,16 +301,19 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
     function renderQueue() {
         var d = state.queue;
         if (!d) { return; }
+        var jalali = typeof d.jalali === 'string' && d.jalali.trim() ? d.jalali : '—';
         document.getElementById('cpms-doc-header').textContent =
-            'دکتر ' + CFG.clinician_name + ' — ' + d.date;
+            (CFG.clinician_name || 'پزشک') + ' — ' + displayDigits(jalali);
 
         var s = d.stats || {};
         var cards = [
-            ['today', 'مراجعه امروز'], ['waiting', 'در انتظار'], ['called', 'فراخوانده‌شده'],
+            ['total', 'مراجعه امروز'], ['waiting', 'در انتظار'],
+            ['called', 'فراخوانده‌شده'],
             ['in_consultation', 'در ویزیت'], ['checked_out', 'پایان‌یافته']
         ];
         document.getElementById('cpms-doc-stats').innerHTML = cards.map(function (c) {
-            return '<div class="cpms-doc-stat"><b>' + esc(s[c[0]] != null ? s[c[0]] : '—') +
+            return '<div class="cpms-doc-stat"><b>' +
+                esc(displayDigits(s[c[0]] != null ? s[c[0]] : '—')) +
                 '</b><span>' + c[1] + '</span></div>';
         }).join('');
 
@@ -326,7 +344,8 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
             if (v.status === 'consultation_completed' || v.status === 'awaiting_payment' || v.status === 'paid') {
                 actions += '<a class="button cpms-doc-btn" href="' + CFG.base_url + '&visit_id=' + v.id + '">📖 پرونده</a> ';
             }
-            return '<tr><td>' + (i + 1) + '</td><td><strong>' + esc(v.patient_name) + '</strong>' + badge +
+            return '<tr><td>' + displayDigits(i + 1) + '</td><td><strong>' +
+                esc(v.patient_name) + '</strong>' + badge +
                 '</td><td>' + (v.source === 'walk_in' ? 'حضوری' : 'نوبت') + '</td>' +
                 '<td><span class="cpms-doc-badge status-' + esc(v.status) + '">' + (STATUS_LABELS[v.status] || esc(v.status)) + '</span></td>' +
                 '<td>' + waitingMinutes(v.waiting_since) + '</td><td>' + actions + '</td></tr>';
@@ -397,7 +416,9 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
             return '<div class="cpms-doc-note ' + (n.visibility === 'doctor_private' ? 'private' : 'visible') + '">' +
                 '<div><b>' + esc(NOTE_CATS[n.category] || n.category) + '</b>' +
                 (n.visibility === 'doctor_private' ? ' <span class="cpms-doc-badge express">🔒 خصوصی</span>' : '') +
-                ' <span class="meta">نسخه ' + n.version + (n.versions > 1 ? ' (' + n.versions + ' نسخه)' : '') + ' — ' + esc(n.created_at_jalali || n.created_at) + '</span></div>' +
+                ' <span class="meta">نسخه ' + esc(displayDigits(n.version)) +
+                (n.versions > 1 ? ' (' + esc(displayDigits(n.versions)) + ' نسخه)' : '') +
+                ' — ' + esc(n.created_at_jalali || n.created_at) + '</span></div>' +
                 '<div class="content">' + esc(n.content_text) + '</div>' +
                 '<div class="cpms-doc-row"><button class="button button-small" data-act="edit-note" data-id="' + n.id + '">✎ اصلاح (نسخه جدید)</button></div>' +
                 '<div class="edit-form" style="display:none"></div></div>';
@@ -407,7 +428,9 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
             var items = (rx.items || []).map(function (i) {
                 return '<li>' + esc(i.generic_name) + (i.strength ? ' ' + esc(i.strength) : '') +
                     ' | ' + esc(i.dose) + ' | ' + esc(i.frequency) +
-                    (i.duration_days ? ' | ' + i.duration_days + ' روز' : '') + '</li>';
+                    (i.duration_days
+                        ? ' | ' + esc(displayDigits(i.duration_days)) + ' روز'
+                        : '') + '</li>';
             }).join('');
             var fin = rx.status === 'draft'
                 ? '<button class="button button-small" data-act="finalize-rx" data-id="' + rx.id + '">✅ نهایی‌سازی نسخه</button>'
@@ -415,7 +438,8 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
             var printBtn = (CFG.can_rx && CFG.visit_id > 0)
                 ? ' <a class="button button-small" href="' + CFG.print_url + '&visit_id=' + CFG.visit_id + '&rx=' + rx.id + '" target="_blank">🖨️ چاپ</a>'
                 : '';
-            return '<div class="cpms-doc-note"><div><b>نسخه ' + esc(rx.prescription_number) + '</b> ' + fin + printBtn +
+            return '<div class="cpms-doc-note"><div><b>نسخه ' +
+                esc(displayDigits(rx.prescription_number)) + '</b> ' + fin + printBtn +
                 ' <span class="meta">' + esc(rx.created_at_jalali || rx.created_at) + '</span></div><ul class="cpms-doc-itemlist">' + items + '</ul></div>';
         }).join('') || '<p class="cpms-doc-muted">نسخه‌ای ثبت نشده است.</p>';
 
@@ -425,13 +449,17 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         }).join('') || '<p class="cpms-doc-muted">توصیه‌ای ثبت نشده است.</p>';
 
         var fuHtml = (d.follow_ups || []).map(function (f) {
-            return '<li>' + (f.suggested_date ? 'تاریخ: ' + esc((followUpDates[String(f.id)] || {}).suggested_date_jalali || f.suggested_date) : 'بازه: ' + esc(f.interval_days) + ' روز') +
+            var followUpDate = (followUpDates[String(f.id)] || {}).suggested_date_jalali;
+            return '<li>' + (f.suggested_date
+                ? 'تاریخ: ' + esc(followUpDate || f.suggested_date)
+                : 'بازه: ' + esc(displayDigits(f.interval_days)) + ' روز') +
                 ' — ' + esc(f.reason || '') + ' <span class="cpms-doc-badge status-' + esc(f.status) + '">' + esc(f.status) + '</span></li>';
         }).join('') || '<p class="cpms-doc-muted">پیگیری ثبت نشده است.</p>';
 
         var filesHtml = (d.files || []).map(function (f) {
             return '<li>' + esc(f.original_filename) + ' (' + esc(FILE_CATS[f.category] || f.category) +
-                (f.visibility === 'doctor_private' ? '، 🔒 خصوصی' : '') + '، ' + Math.round((f.file_size || 0) / 1024) + 'KB)' +
+                (f.visibility === 'doctor_private' ? '، 🔒 خصوصی' : '') + '، ' +
+                displayDigits(Math.round((f.file_size || 0) / 1024)) + 'KB)' +
                 ' <button class="button button-small" data-act="stream" data-id="' + f.id + '">👁 مشاهده</button></li>';
         }).join('') || '<p class="cpms-doc-muted">فایلی پیوست نشده است.</p>';
 
@@ -443,7 +471,9 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         view.innerHTML =
         '<div class="cpms-doc-patient-head">' +
             '<h2>' + esc(p.full_name) + '</h2>' +
-            '<span class="cpms-doc-muted">' + esc(p.mrn) + (p.age != null ? ' · ' + p.age + ' سال' : '') +
+            '<span class="cpms-doc-muted">' +
+            (p.mrn != null ? esc(displayDigits(p.mrn)) : '') +
+            (p.age != null ? ' · ' + esc(displayDigits(p.age)) + ' سال' : '') +
             ' · ' + (p.gender === 'male' ? '♂' : p.gender === 'female' ? '♀' : esc(p.gender)) +
             (p.blood_group ? ' · ' + esc(p.blood_group) : '') + '</span>' + statusBadge + headActions +
         '</div>' + alerts + completeBar +
@@ -517,7 +547,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         }
     }
 
-    function visitAction(act, id, extra) {
+    function visitAction(act, id, trigger) {
         var record = state.record;
         switch (act) {
             case 'call':
@@ -535,13 +565,25 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
                 });
                 break;
             case 'reopen':
-                askPrompt('دلیل بازگشایی ویزیت (الزامی — در Audit ثبت می‌شود):', {
-                    required: true,
-                    requiredMessage: 'دلیل بازگشایی ویزیت الزامی است.'
-                }).then(function (reason) {
-                    if (reason === null) { return; }
-                    api('POST', 'visits/' + id + '/reopen', { reason: reason }).then(reloadOrError);
-                });
+                trigger.disabled = true;
+                var reopenFlow;
+                try {
+                    reopenFlow = askPrompt(
+                        'دلیل بازگشایی ویزیت (الزامی — ' +
+                        'در Audit ثبت می‌شود):', {
+                        required: true,
+                        requiredMessage: 'دلیل بازگشایی ویزیت الزامی است.'
+                    }).then(function (reason) {
+                        if (reason === null) { return; }
+                        return api('POST', 'visits/' + id + '/reopen', { reason: reason })
+                            .then(reloadOrError);
+                    });
+                } catch (error) {
+                    trigger.disabled = false;
+                    throw error;
+                }
+                var releaseReopen = function () { trigger.disabled = false; };
+                reopenFlow.then(releaseReopen, releaseReopen);
                 break;
             case 'add-note':
                 api('POST', 'visits/' + CFG.visit_id + '/notes', {
@@ -667,6 +709,11 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         var id = btn.getAttribute('data-id') || CFG.visit_id;
         if (btn.tagName === 'A') { return; }
         ev.preventDefault();
+        // The prompt resolves later, outside the legacy synchronous write lock.
+        if (CFG.visit_id > 0 && act === 'reopen') {
+            if (!btn.disabled) { visitAction(act, id, btn); }
+            return;
+        }
         lockTrigger(btn);
         if (CFG.visit_id > 0) {
             visitAction(act, id);

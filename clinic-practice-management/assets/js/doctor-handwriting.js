@@ -203,7 +203,7 @@
                 if (local && local.client_revision > page.client_revision && local.strokes) {
                     state.strokes = local.strokes;
                     state.dirty = true;
-                    setSync('offline', '📡 نسخه ذخیره‌شده محلی بازیابی شد — در انتظار Sync');
+                    setSync('offline', '📡 نسخه ذخیره‌شده محلی بازیابی شد — در انتظار همگام‌سازی');
                     scheduleRetry(0);
                 } else {
                     state.strokes = page.strokes || [];
@@ -308,7 +308,7 @@
             if (paper.doctor) { ctx.fillText('پزشک: ' + paper.doctor, w - 70, 145, w - 140); }
             if (paper.location) { ctx.fillText('مرکز: ' + paper.location, w - 70, 195, w - 140); }
             if (paper.patient) { ctx.fillText('بیمار: ' + paper.patient, w - 70, 260, w - 140); }
-            if (paper.date) { ctx.fillText('تاریخ ویزیت: ' + paper.date, w - 70, 310, w - 140); }
+            if (paper.date) { ctx.fillText('تاریخ ویزیت: ' + (paper.jalali_date || '—'), w - 70, 310, w - 140); }
             ctx.strokeStyle = '#aab8ca';
             ctx.beginPath(); ctx.moveTo(60, 345); ctx.lineTo(w - 60, 345); ctx.stroke();
             ctx.fillText('امضا و مهر پزشک', w - 70, h - 115);
@@ -674,7 +674,7 @@
             } else if (errCode(r) === 'CLINIC_DUPLICATE_IN_FLIGHT') {
                 scheduleRetry(0); // Save موازی در پرواز — کلید همان می‌ماند
             } else {
-                setSync('failed', '⚠️ Sync ناموفق — تلاش دوباره');
+                setSync('failed', '⚠️ همگام‌سازی ناموفق — تلاش دوباره');
                 scheduleRetry();
             }
         }).catch(function () {
