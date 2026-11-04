@@ -458,6 +458,16 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
         }).catch(function () { /* لغوِ کاربر — nothing to do */ });
     }
 
+    function displayDigits(value) {
+        if (window.CpmsText && typeof window.CpmsText.faDigits === 'function') {
+            return window.CpmsText.faDigits(value);
+        }
+        var digits = '۰۱۲۳۴۵۶۷۸۹';
+        return String(value == null ? '' : value).replace(/[0-9]/g, function (digit) {
+            return digits.charAt(Number(digit));
+        });
+    }
+
     // Persian/Jalali presentation of a stored UTC SMS timestamp (Owner B).
     function smsTime(dt) {
         if (!dt) { return ''; }
@@ -471,10 +481,11 @@ window.CPMS_SMS = <?php echo wp_json_encode($config); ?>;
             tbody.innerHTML = r.items.map(function (m) {
                 return '<tr><td>' + m.id + '</td><td>' + esc(m.event) + '</td><td>' + esc(m.recipient) +
                     '</td><td>' + esc(m.message) + '</td><td>' + esc(m.provider) + '</td><td>' + esc(m.status) +
-                    '</td><td>' + m.attempts + '</td><td>' + esc(m.provider_msg_id || '') + '</td><td>' +
+                    '</td><td>' + esc(displayDigits(m.attempts)) + '</td><td>' +
+                    esc(m.provider_msg_id || '') + '</td><td>' +
                     esc(m.failure_code || '') + '</td><td>' + esc(smsTime(m.created_at)) + '</td></tr>';
             }).join('') || '<tr><td colspan="10">موردی نیست.</td></tr>';
-            el('cpms-sms-logs-count').textContent = 'مجموع: ' + r.total;
+            el('cpms-sms-logs-count').textContent = 'مجموع: ' + displayDigits(r.total);
         }).catch(function () { });
     }
 

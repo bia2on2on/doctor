@@ -443,15 +443,21 @@ final class VisitService
         }
 
         try {
-            $patientName = trim((string) $this->db->fetchValue( 'SELECT CONCAT(p.first_name, \' \', p.last_name) FROM ' . $this->db->table('cpms_patients') . ' p WHERE p.id = %d LIMIT 1', // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis -- legacy PSR-style, established contract
-                [(int) $visit['patient_id']] )); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.WhiteSpace.CastStructureSpacing.NoSpaceBeforeOpenParenthesis -- WPCS
+            $patient_name = trim(
+                (string) $this->db->fetchValue(
+                    'SELECT CONCAT(p.first_name, \' \', p.last_name) FROM '
+                        . $this->db->table( 'cpms_patients' )
+                        . ' p WHERE p.id = %d AND p.clinic_id = %d LIMIT 1',
+                    [ (int) $visit['patient_id'], (int) $visit['clinic_id'] ]
+                )
+            );
             $room = trim((string) ($meta['room'] ?? ''));
 
             if ( $event === 'call' ) {
                 $notifications->publishToStaff( $clinicId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     NotificationEvents::QUEUE_CALLED,
                     [
-                        'patient_name' => $patientName !== '' ? $patientName : 'بیمار',
+                        'patient_name' => $patient_name !== '' ? $patient_name : 'بیمار',
                         'room' => $room !== '' ? $room : '—',
                     ],
                     'queue:called:v' . (int) $visit['id'] . ':r' . (int) ($visit['recall_count'] ?? 0),
@@ -460,7 +466,7 @@ final class VisitService
             } elseif ( $event === 'invoice_ready' ) {
                 $notifications->publishToStaff( $clinicId, // phpcs:ignore PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
                     NotificationEvents::QUEUE_READY_PAYMENT,
-                    ['patient_name' => $patientName !== '' ? $patientName : 'بیمار'],
+                    [ 'patient_name' => $patient_name !== '' ? $patient_name : 'بیمار' ],
                     'queue:pay:v' . (int) $visit['id'],
                     RolesAndCapabilities::QUEUE_READ,
                     $actorUserId ); // phpcs:ignore PEAR.Functions.FunctionCallSignature.CloseBracketLine,PEAR.Functions.FunctionCallSignature.Indent,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy PSR-style, established contract
