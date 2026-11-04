@@ -594,6 +594,16 @@ final class ClinicianAdminPage
             self::backWithError( $id, 'خطا: ' . $e->getMessage() );
         }
 
+        // نام پزشک: محتوای دیدشدنی الزامی است (فقط نویسهٔ پنهان/فاصله رد شود) و سقف
+        // ستون full_name (VARCHAR(190)) رعایت شود — نه Truncate بی‌صدا.
+        $fullName = (string) ( $fields['full_name'] ?? '' );
+        if ( ! \ClinicCore\Domain\Validators\PatientNameValidator::hasVisibleContent( $fullName ) ) {
+            self::backWithError( $id, 'خطا: نام پزشک معتبر نیست.' );
+        }
+        if ( mb_strlen( $fullName ) > 190 ) {
+            self::backWithError( $id, 'خطا: نام پزشک بسیار بلند است.' );
+        }
+
         try {
             if ( $id > 0 ) {
                 $current = $repo->findForClinic( $id, $clinic_id );

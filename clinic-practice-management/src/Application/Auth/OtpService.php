@@ -74,6 +74,7 @@ final class OtpService
      */
     private const DAY_WINDOW_SEC = 86400;
     private const HOUR_WINDOW_SEC = 3600;
+    private const IP_HOURLY_MAX_SANE_MAX = 10000;
 
     private const PEPPER_OPTION = 'cpms_otp_pepper';
     // The lock duration is configurable; clients receive the exact remaining
@@ -153,6 +154,7 @@ final class OtpService
 
         $daily_max = (int) $settings->get('otp.daily_max');
         $hourly_max = (int) $settings->get('otp.hourly_max');
+        $ipHourlyMax = self::validatedIpHourlyMax((int) $settings->get('otp.ip_hourly_max'));
 
         // C11 — per-phone day/hour are *issuance* quotas, not attempt quotas:
         // they are charged only when a challenge is actually created, so a
@@ -164,9 +166,10 @@ final class OtpService
         // The per-IP counter stays exactly where it was and keeps its meaning:
         // it limits *attempts* from one address per hour, including attempts
         // that end up rejected by cooldown/lockout. That behaviour is
-        // deliberately unchanged.
+        // deliberately unchanged. The ceiling now comes from the
+        // otp.ip_hourly_max setting (default 10 ⇒ unchanged by default).
         if ($ip !== null && $ip !== '') {
-            $byIp = $this->rate->hit('otp-ip:' . $ip, 10, 3600);
+            $byIp = $this->rate->hit('otp-ip:' . $ip, $ipHourlyMax, 3600);
             if (!$byIp['allowed']) {
                 throw new OtpException('CLINIC_RATE_LIMITED', 'درخواست‌های شما موقتاً محدود شده است', $byIp);
             }
@@ -923,6 +926,23 @@ final class OtpService
         );
     }
     // phpcs:enable
+
+    /**
+     * سقفِ ساعتیِ IP را اعتبارسنجی می‌کند: حداقل ۱ و سقف منطقی (۱۰,۰۰۰).
+     * مقدار نامعتبر / خارج از محدوده به سقف منطقی بازمی‌گردد (بدون تغییرِ
+     * رفتارِ پیش‌فرض = ۱۰).
+     *
+     * @param int $value مقدارِ خوانده‌شده از Setting
+     * @return int سقفِ معتبرِ ساعتی در بازه [1, IP_HOURLY_MAX_SANE_MAX]
+     */
+    private function validatedIpHourlyMax(int $value): int
+    {
+        if ($value < 1) {
+            return 1;
+        }
+
+        return min($value, self::IP_HOURLY_MAX_SANE_MAX);
+    }
 
     private function now(): \DateTimeImmutable
     {

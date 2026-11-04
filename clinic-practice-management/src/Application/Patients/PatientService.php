@@ -10,6 +10,7 @@ use ClinicCore\Domain\Licensing\LicenseGate;
 use ClinicCore\Domain\Patients\PatientIdentityException;
 use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Domain\Validators\NationalIdValidator;
+use ClinicCore\Domain\Validators\PatientNameValidator;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
@@ -412,10 +413,11 @@ final class PatientService
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'بیماری با همین موبایل قبلاً ثبت شده است');
         }
 
+        // first_name/last_name come only from validateForUpdate() (cleanName):
+        // visible-content + column ceiling are enforced there and a too-long
+        // name is rejected — never silently truncated.
         $data = $this->validateForUpdate($fields, self::CREATE_FIELDS, 0, true) + [
             'clinic_id' => $clinicId,
-            'first_name' => mb_substr($firstName, 0, 120),
-            'last_name' => mb_substr($lastName, 0, 120),
             'mobile' => $mobile,
             'mrn' => $this->generateMrn($clinicId),
             'status' => 'active',
@@ -630,12 +632,15 @@ final class PatientService
 
     private function cleanName(string $v): string
     {
-        $v = trim(preg_replace('/[\x00-\x1F]/u', '', $v) ?? '');
-        if ($v === '' || mb_strlen($v) > 120) {
-            throw new BookingException('CLINIC_VALIDATION_FAILED', 'نام نامعتبر است');
+        $v = trim(preg_replace('/[\\x00-\\x1F]/u', '', $v) ?? '');
+        if (!PatientNameValidator::hasVisibleContent($v)) {
+            throw new BookingException('CLINIC_VALIDATION_FAILED', 'نام نامعتبر است', 400);
+        }
+        if (mb_strlen($v) > 120) {
+            throw new BookingException('CLINIC_VALIDATION_FAILED', 'نام بسیار بلند است', 400);
         }
 
-        return mb_substr($v, 0, 120);
+        return $v;
     }
 
     private function cleanNationalId(string $v): string

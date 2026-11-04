@@ -660,11 +660,26 @@ final class App
             : PrivateStorageInitializer::ensure_initialized( $files_root, $backup_root );
 
         if ( ! $result['ok'] && $force ) {
-            $context = [ 'roots' => $result['roots'] ];
+            // OpLogger::sanitize() replaces every non-scalar with gettype(), so a
+            // nested 'roots' array would log as {"roots":"array"} and hide the
+            // real error codes. Flatten into scalar keys per root instead.
+            $context = [];
+            foreach ( $result['roots'] as $root => $report ) {
+                $context[ $root . '_ok' ]         = (bool) ( $report['ok'] ?? false );
+                $context[ $root . '_error_code' ] = (string) ( $report['error_code'] ?? '' );
+                $context[ $root . '_error' ]      = self::truncatedError( (string) ( $report['error'] ?? '' ) );
+                $context[ $root . '_path' ]       = (string) ( $report['path'] ?? '' );
+            }
             self::op()->warning( 'CPMS_PRIVATE_STORAGE_INIT_FAILED', $context );
         }
 
         return $result;
+    }
+
+    /** متن خطای راه‌اندازی را به طولِ امن برش می‌دهد (هیچ راز/مسیری برای لاگ). */
+    private static function truncatedError( string $message ): string
+    {
+        return mb_substr( $message, 0, 255 );
     }
 
     /** مقایسهٔ نرمال‌شدهٔ دو مسیر (بدون اثر اسلش انتهایی/ویندوزی). */

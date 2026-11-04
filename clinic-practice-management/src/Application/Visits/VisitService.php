@@ -2083,14 +2083,35 @@ final class VisitService
         return $visit;
     }
 
-    private function appointmentStatusLabel(string $status): string
+    /**
+     * برچسپ فارسیِ وضعیتِ نوبت/ویزیت — یک منبعِ واحد (ناحیه سرور).
+     *
+     * هرگز وضعیت خام را در پیامِ فارسی بازگشت نمی‌دهد؛ حالتی ناشناخته هم
+     * '—' برمی‌گرداند.
+     *
+     * @param string $status وضعیتِ خام (نوبت یا ویزیت)
+     * @return برچسپ فارسی
+     */
+    public static function appointmentStatusLabel( string $status ): string
     {
-        return match ($status) {
+        return match ( $status ) {
+            // وضعیت‌های نوبت (Appointment)
             'cancelled_by_patient' => 'توسط بیمار لغو',
-            'cancelled_by_staff' => 'توسط کلینیک لغو',
-            'rescheduled' => 'جابه‌جا شده',
-            'completed' => 'تکمیل شده',
-            default => $status,
+            'cancelled_by_staff'   => 'توسط کلینیک لغو',
+            'rescheduled'          => 'جابه‌جا شده',
+            'completed'            => 'تکمیل شده',
+            // وضعیت‌های ویزیت (Visit)
+            'checked_in'           => 'ثبت‌شده',
+            'waiting'              => 'در صف',
+            'called'               => 'فراخوانده‌شده',
+            'in_consultation'      => 'در ویزیت',
+            'consultation_completed' => 'پایان ویزیت',
+            'awaiting_payment'     => 'در انتظار پرداخت',
+            'paid'                 => 'پرداخت‌شده',
+            'checked_out'          => 'خارج‌شده',
+            'cancelled'            => 'لغوشده',
+            'skipped'              => 'ردشده',
+            default                => '—',
         };
     }
 

@@ -222,7 +222,7 @@ final class LocalFileStorage
             if ( ! @mkdir( $base, 0750, true ) && ! is_dir( $base ) ) { // phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged,WordPress.WP.AlternativeFunctions.file_system_operations_mkdir -- failure is turned into a typed configuration error below.
                 throw new StorageConfigurationException(
                     'CLINIC_STORAGE_NOT_WRITABLE',
-                    'ساخت پوشهٔ ذخیره‌سازی بالینی ممکن نشد (والدِ پوشه برای وب‌سرور قابل‌نوشتن نیست): ' . $base,
+                    'ساخت پوشهٔ ذخیره‌سازی بالینی ممکن نشد (والدِ پوشه برای وب‌سرور قابل‌نوشتن نیست) — مسیر ذخیره‌سازی را در تنظیمات بررسی کنید.',
                     $base
                 );
             }

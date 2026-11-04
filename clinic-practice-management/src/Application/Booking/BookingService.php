@@ -25,6 +25,7 @@ use ClinicCore\Domain\Slots\DurationResolver;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Domain\Validators\MobileValidator;
+use ClinicCore\Domain\Validators\PatientNameValidator;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
@@ -3050,16 +3051,23 @@ final class BookingService
      */
     private function cleanBookingName(?string $value): string
     {
-        $clean = trim((string) preg_replace('/[\x00-\x1F]/u', '', (string) $value));
-        if ($clean === '' || mb_strlen($clean) > 120) {
+        $clean = trim((string) preg_replace('/[\\x00-\\x1F]/u', '', (string) $value));
+        if (!PatientNameValidator::hasVisibleContent($clean)) {
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
                 'برای ثبت بیمار جدید، نام و نام خانوادگی الزامی است',
                 400
             );
         }
+        if (mb_strlen($clean) > 120) {
+            throw BookingException::of(
+                'CLINIC_VALIDATION_FAILED',
+                'نام و نام خانوادگی بسیار بلند است',
+                400
+            );
+        }
 
-        return mb_substr($clean, 0, 120);
+        return $clean;
     }
 
     private function user_has_active_patient_in_clinic( int $wp_user_id, int $patient_id, int $clinic_id ): bool {

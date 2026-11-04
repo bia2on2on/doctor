@@ -35,6 +35,7 @@ final class Settings
         'otp.daily_max' => 3,
         'otp.lockout_sec' => 900,
         'otp.hourly_max' => 10,
+        'otp.ip_hourly_max' => 10,
         // رزرو (تصمیم F1-D3 + D4: مدت قابل تنظیم، Snapshot در Booking)
         'booking.duration_default_min' => 20, // پیش‌فرض کلینیک (لایه 1 ADR-0017)
         'booking.slot_capacity_default' => 1,

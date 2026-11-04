@@ -118,9 +118,13 @@ final class QueueController extends RestBase {
 							$to_status = (string) $r['to_status'];
 							$event     = self::SECRETARY_STATUS_EVENTS[ $to_status ] ?? null;
 							if ( null === $event ) {
+								$allowed = [];
+								foreach ( self::SECRETARY_STATUS_EVENTS as $status => $_event ) {
+									$allowed[] = \ClinicCore\Application\Visits\VisitService::appointmentStatusLabel( $status );
+								}
 								throw VisitException::of(
 									'CLINIC_VALIDATION_FAILED',
-									'وضعیت هدف برای منشی مجاز نیست (waiting, cancelled, awaiting_payment, checked_out)',
+									'وضعیت هدف برای منشی مجاز نیست (' . implode( ', ', $allowed ) . ')',
 									422,
 									[ 'to_status' => $to_status ]
 								);

@@ -7,6 +7,8 @@ namespace ClinicCore\Rest;
 use ClinicCore\Application\Clinical\ClinicalException;
 use ClinicCore\Application\Clinical\MedicalFileService;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
+use ClinicCore\Infrastructure\Storage\StorageConfigurationException;
 use WP_Error;
 use WP_REST_Request;
 use WP_REST_Response;
@@ -114,6 +116,8 @@ final class FilesController extends RestBase
 
         try {
             $file = $this->files->stream($this->userId($r), (int) $r['id']);
+        } catch (StorageConfigurationException $e) {
+            return $this->storageFailureResponse($e);
         } catch (ClinicalException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
         } catch (\Throwable $e) {
@@ -236,6 +240,8 @@ final class FilesController extends RestBase
     {
         try {
             return $this->success($fn(), $status);
+        } catch (StorageConfigurationException $e) {
+            return $this->storageFailureResponse($e);
         } catch (ClinicalException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
         } catch (\Throwable $e) {
@@ -276,5 +282,30 @@ final class FilesController extends RestBase
         }
 
         return $files['file'];
+    }
+
+    /**
+     * شکستِ پیکربندیِ ذخیره‌سازی (نوشتنِ ناممکن / مسیر ناامن): یک ردیفِ
+     * لاگ عملیاتی با Context completamente scalar می‌نویسد و به مشتری
+     * پیامِ قابل‌اقدام برمی‌گرداند — بدون افشای مسیر فایل‌ سیستم.
+     *
+     * @return WP_Error
+     */
+    private function storageFailureResponse(StorageConfigurationException $e): WP_Error
+    {
+        App::op()->error(
+            'CPMS_STORAGE_FAILURE',
+            [
+                'code'  => $e->errorCode,
+                'root'  => 'files',
+                'reason' => mb_substr($e->getMessage(), 0, 200),
+            ]
+        );
+
+        return $this->error(
+            'CLINIC_INTERNAL_ERROR',
+            500,
+            'ذخیره‌سازی فایل در دسترس نیست — لطفاً با مدیر کلینیک تماس بگیرید و صفحهٔ سلامت سیستم را بررسی کنید.'
+        );
     }
 }
