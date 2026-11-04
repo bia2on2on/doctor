@@ -41,7 +41,7 @@
 ## قواعد برای کدهای جدید (از F3)
 
 - هر Code جدید با `CLINIC_` شروع می‌شود و در **`docs/api/error-codes.md`** (فهرست مرکزی) ثبت می‌شود — Endpoint جدید بدون Code ثبت‌شده ممنوع.
-- HTTP Status: 400 validation / 401 unauthenticated / 403 forbidden / 404 not-found-as-forbidden / 409 conflict / 422 business-rule / 429 rate / 502 provider-downstream / 500 internal.
+- HTTP Status: 400 validation / 401 unauthenticated / 403 forbidden / 404 not-found-as-forbidden / 409 conflict / 422 business-rule / 429 rate / 502 provider-downstream / 503 service-unavailable / 500 internal.
 - 502: خطای Providerهای Downstream (SMS/OCR) که با Retry Resolve نشده‌اند.
 - Logها: `code` + `technical details`؛ API: `code` + `message` فارسی.
 

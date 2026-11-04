@@ -89,8 +89,8 @@ def stage(name: str) -> None:
     print(f"STAGE {name}", flush=True)
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
-    safe_detail = str(detail)[:300]
+def check(name: str, ok: bool, detail: str = "", *, detail_cap: int = 300) -> None:
+    safe_detail = str(detail)[:detail_cap]
     RESULTS.append({"check": name, "ok": bool(ok), "detail": safe_detail})
     prefix = "PASS " if ok else "FAIL "
     suffix = f" — {safe_detail}" if safe_detail else ""
@@ -116,7 +116,7 @@ def check(name: str, ok: bool, detail: str = "") -> None:
 DIALOG_OVERLAY = ".cpms-modal-overlay"
 DIALOG_ROOT = ".cpms-modal[role='dialog']"
 DIALOG_CONFIRM = ".cpms-modal-confirm"
-DIALOG_CANCEL = ".cpms-modal-cancel"
+DIALOG_CANCEL = ".cpms-modal-cancel, .cpms-dialog__btn:not(.cpms-dialog__btn--primary):not(.cpms-modal-confirm)"
 DIALOG_INPUT = ".cpms-dialog__input"
 DIALOG_POLL_MS = 100
 
@@ -168,7 +168,16 @@ def answer_shared_dialogs(page, steps, *, shared_expected, timeout_ms, native_se
         root = overlay.locator(DIALOG_ROOT).first
         action = step.get("action", "accept")
         if action == "cancel":
-            root.locator(DIALOG_CANCEL).first.click()
+            # DIALOG_CANCEL names both cancel markups: the legacy companion
+            # class and the shared in-page dialog's unqualified button. Both are
+            # probed inside the open dialog root; neither present is a real failure.
+            for cancel_selector in DIALOG_CANCEL.split(","):
+                cancel_button = root.locator(cancel_selector.strip()).first
+                if cancel_button.count() > 0:
+                    cancel_button.click()
+                    break
+            else:
+                raise RuntimeError("neither cancel button form appeared in the open dialog")
         elif action == "prompt":
             root.locator(DIALOG_INPUT).first.fill(str(step.get("value", "")))
             root.locator(DIALOG_CONFIRM).first.click()
@@ -672,8 +681,9 @@ def journey_visit_pricing_invoice(browser, rotated_creds: dict, links: dict, fix
         "the projection shows the check-in snapshot fee and states the no-reprice policy",
         "تعرفه ثبتشده هنگام پذیرش" in stats_text
         and "سیاست تعرفه" in stats_text
-        and "تغییر تعرفه پیشفرض" in stats_text,
-        stats_text[:200],
+        and "تعرفهٔ هر ویزیت هنگام پذیرش (و برای ویزیت\u200cهای قدیمی، در نخستین خواندنِ پیش\u200cنویس) ثبت می\u200cشود؛ تغییر پیش\u200cفرض پزشک پس از آن، تعرفهٔ ویزیت\u200cهای ثبت\u200cشده را تغییر نمی\u200cدهد. اگر ثبت تعرفه هنگام پذیرش ناموفق بماند، هرگز با پیش\u200cفرضِ بعدی جایگزین نمی\u200cشود و پزشک باید پیش از صدور فاکتور آن را صریحاً تعیین کند. فاکتورهای نهایی تغییرناپذیرند." in stats_text,
+        stats_text[:600],
+        detail_cap=600,
     )
 
     charge_rows = doctor_page.locator('[data-role="pricing-charges"] tr')
