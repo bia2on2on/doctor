@@ -18,7 +18,7 @@ namespace ClinicCore\Domain\Validators;
 final class PatientNameValidator
 {
     /** نویسه‌های فاصله (ASCII + NBSP). */
-    private const SPACES = "\x20\t\n\r\f\v\xA0";
+    private const SPACES = "\x20\t\n\r\f\v\u{00A0}";
 
     /** نویسه‌های نادیده‌گرفته/Zero-Width که در نام نمایشی شمارش نمی‌شوند. */
     private const INVISIBLE = "\u{200B}\u{200C}\u{200D}\u{200E}\u{200F}\u{2060}\u{FEFF}";
@@ -27,7 +27,7 @@ final class PatientNameValidator
      * آیا رشته محتوای دیدشدنی دارد؟
      *
      * @param string $value نام خام.
-     * @return true اگر پس از حذف فاصله‌ها و نویسه‌های پنهان چیزی بماند.
+     * @return bool اگر پس از حذف فاصله‌ها و نویسه‌های پنهان چیزی بماند.
      */
     public static function hasVisibleContent( string $value ): bool
     {
