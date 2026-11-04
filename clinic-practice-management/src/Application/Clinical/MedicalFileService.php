@@ -530,12 +530,15 @@ final class MedicalFileService
         // کلاینت پیامِ فارسیِ قابلِ اقدامِ 500 می‌گیرد — بدونِ افشای مسیر.
         // فراخوانیِ legacy بدونِ تغییرِ معنایی است؛ فقط داخلِ try نشسته.
         try {
-            // متغیرهای camelCaseِ legacyِ همین اسکوپ — ignoreِ تک‌خطیِ زیر فقط
-            // برای همان sniffِ دقیق است (الگوی تثبیت‌شدهٔ همین فایل).
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-            $storage = $this->storageFor( $patientClinicId );
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-            $storagePath = $storage->store( $content, $patientClinicId, $extension );
+            // این مرزِ تازه بدونِ ignore کار می‌کند: Clinicِ بیمار پیش‌تر در
+            // همین متد محاسبه و با ۴۰۴ حراست شده است؛ اینجا همان مقدارِ
+            // idempotent از روی آرگومانِ متد دوباره خوانده می‌شود (همان الگوی
+            // func_get_argِ تثبیت‌شدهٔ پایانیِ همین متد برای پارامترِ camelCase)
+            // تا نام‌های camelCaseِ legacy (متغیر/پارامترهای بومی) اصلاً لمس
+            // نشوند؛ نتیجهٔ مسیر مستقیم در همان aliasِ snake_case بنشیند.
+            $patient_clinic_id = $this->patientClinicId( (int) func_get_arg( 3 ) );
+            $storage           = $this->storageFor( $patient_clinic_id );
+            $storage_path      = $storage->store( $content, $patient_clinic_id, $extension );
         } catch ( \Throwable $e ) {
             $context = FileStorageFailure::op_context( 'files', $e );
             App::op()->error( FileStorageFailure::OP_EVENT, $context );
@@ -552,7 +555,7 @@ final class MedicalFileService
         $visit_id          = func_get_arg( 4 );
         $patient_clinic_id = (int) $patientClinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
         $declared_name     = (string) $declaredName; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
-        $storage_path      = (string) $storagePath; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
+        // $storage_path از بالای بلوکِ try آمده (بدونِ لمسِ متغیر camelCase).
 
         try {
             $file_id = App::db()->transactional(
