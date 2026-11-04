@@ -316,36 +316,14 @@ def login(page, username, password):
     return "wp-login.php" not in page.url
 
 
-def describe_login_block(page, username):
-    """Secret-free evidence for a failed wp-login: distinguishes a rendered error
-    banner (wrong credentials, throttle, lockout) from a bare timeout/redirect
-    hang. Passwords and usernames are 0600-file secrets and are never echoed."""
-
-    try:
-        banner = page.locator("#login_error")
-        if banner.count() > 0:
-            text = banner.first.inner_text().strip().replace(username, "<user>")
-            if text:
-                return f"wp-login error banner: {text[:200]!r}"
-    except Exception:
-        pass
-    try:
-        path = urlparse(page.url).path
-        title = page.title().strip()[:80]
-        return f"no #login_error banner; at {path!r} title={title!r}"
-    except Exception:
-        return "page unreadable after failed login"
-
-
 def open_account(browser, credentials, key):
     context = browser.new_context(viewport={"width": 1280, "height": 900}, locale="fa-IR")
     check(f"fresh cookie jar: {key}", len(context.cookies()) == 0)
     page = context.new_page()
     page.set_default_timeout(20000)
     if not login(page, credentials[key]["username"], credentials[key]["password"]):
-        evidence = describe_login_block(page, credentials[key]["username"])
         context.close()
-        raise RuntimeError(f"Generated {key} login failed ({evidence})")
+        raise RuntimeError(f"Generated {key} login failed")
     return context, page
 
 
