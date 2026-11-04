@@ -18,10 +18,10 @@ namespace ClinicCore\Domain\Validators;
 final class PatientNameValidator
 {
     /** نویسه‌های فاصله (ASCII + NBSP). */
-    private const SPACES = "\x{0020}\t\n\r\f\v\x{00A0}";
+    private const SPACES = "\x20\t\n\r\f\v\xA0";
 
     /** نویسه‌های نادیده‌گرفته/Zero-Width که در نام نمایشی شمارش نمی‌شوند. */
-    private const INVISIBLE = "\x{200B}\x{200C}\x{200D}\x{200E}\x{200F}\x{2060}\x{FEFF}";
+    private const INVISIBLE = "\u{200B}\u{200C}\u{200D}\u{200E}\u{200F}\u{2060}\u{FEFF}";
 
     /**
      * آیا رشته محتوای دیدشدنی دارد؟

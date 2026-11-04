@@ -2090,7 +2090,7 @@ final class VisitService
      * '—' برمی‌گرداند.
      *
      * @param string $status وضعیتِ خام (نوبت یا ویزیت)
-     * @return برچسپ فارسی
+     * @return string برچسپ فارسیِ وضعیت
      */
     public static function appointmentStatusLabel( string $status ): string
     {
