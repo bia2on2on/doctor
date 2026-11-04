@@ -530,9 +530,12 @@ final class MedicalFileService
         // کلاینت پیامِ فارسیِ قابلِ اقدامِ 500 می‌گیرد — بدونِ افشای مسیر.
         // فراخوانیِ legacy بدونِ تغییرِ معنایی است؛ فقط داخلِ try نشسته.
         try {
+            // متغیرهای camelCaseِ legacyِ همین اسکوپ — ignoreِ تک‌خطیِ زیر فقط
+            // برای همان sniffِ دقیق است (الگوی تثبیت‌شدهٔ همین فایل).
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-            $storagePath = $this->storageFor( $patientClinicId )
-                ->store( $content, $patientClinicId, $extension );
+            $storage = $this->storageFor( $patientClinicId );
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+            $storagePath = $storage->store( $content, $patientClinicId, $extension );
         } catch ( \Throwable $e ) {
             $context = FileStorageFailure::op_context( 'files', $e );
             App::op()->error( FileStorageFailure::OP_EVENT, $context );
