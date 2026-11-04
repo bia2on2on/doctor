@@ -128,9 +128,8 @@ final class OtpService
      * clamp در بازهٔ [1, 1000]: مقدارِ ناموجود/نامعتبر هرگز سدِ per-IP را صفر
      * یا بی‌کران نمی‌کند؛ پیش‌فرضِ Settings (=۱۰) رفتارِ قبلی را حفظ می‌کند.
      */
-    public static function clamp_ip_hourly_max(mixed $raw): int
-    {
-        return max(1, min(1000, (int) $raw));
+    public static function clamp_ip_hourly_max( mixed $raw ): int {
+        return max( 1, min( 1000, (int) $raw ) );
     }
 
     /**

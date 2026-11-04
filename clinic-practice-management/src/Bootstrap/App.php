@@ -607,8 +607,8 @@ final class App
                     'failed' => $report['failed'],
                     // OpLogger آرایه را با gettype جایگزین می‌کند («array»)؛
                     // متن خطاها به یک رشتهٔ محدود تخت می‌شود تا جزئیات بماند.
-                    'errors' => mb_substr(
-                        implode(' | ', array_slice($report['errors'], 0, 10)),
+                    'errors'   => mb_substr(
+                        implode( ' | ', array_slice( $report['errors'], 0, 10 ) ),
                         0,
                         500
                     ),

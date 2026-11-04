@@ -38,9 +38,11 @@ final class FileStorageFailure {
 	public static function op_context( string $root, \Throwable $e ): array {
 		// «کدِ تایپ‌شدهٔ» خطای پیکربندیِ ذخیره‌سازی (مثل CLINIC_STORAGE_NOT_WRITABLE)
 		// وگرنه کلاسِ استثنا — هر دو اسکالر و بدونِ مسیر محرمانه نیستند.
+		// phpcs:disable WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
 		$failure = $e instanceof StorageConfigurationException
 			? $e->errorCode
 			: get_class( $e );
+		// phpcs:enable WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
 
 		return [
 			'root'    => $root,

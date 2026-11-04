@@ -37,7 +37,7 @@ final class Settings
         'otp.hourly_max' => 10,
         // سقف درخواستِ OTP از یک IP در هر ساعت (شمارندهٔ 'otp-ip:') — پیش‌فرض
         // همان رفتارِ قبلی (۱۰)؛ خواننده: OtpService::clamp_ip_hourly_max.
-        'otp.ip_hourly_max' => 10,
+        'otp.ip_hourly_max'                 => 10,
         // رزرو (تصمیم F1-D3 + D4: مدت قابل تنظیم، Snapshot در Booking)
         'booking.duration_default_min' => 20, // پیش‌فرض کلینیک (لایه 1 ADR-0017)
         'booking.slot_capacity_default' => 1,

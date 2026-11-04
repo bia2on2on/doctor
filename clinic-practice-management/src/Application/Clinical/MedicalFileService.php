@@ -263,9 +263,10 @@ final class MedicalFileService
         // شکستِ زیرساختِ ذخیره‌سازی (مثل CLINIC_STORAGE_NOT_WRITABLE): یک ردیفِ
         // Operational Log با Contextِ اسکالر + پاسخِ فارسیِ قابلِ اقدام (500)؛
         // مسیرِ فایل‌سیستم فقط در لاگ می‌ماند و Fail-Closed دست‌نخورده است.
-        // خطِ فراخوانی legacy عمداً با همان متن/تو‌رفتگی قبلی حفظ شده است.
+        // فراخوانیِ legacy بدونِ تغییرِ معنایی است؛ فقط داخلِ try نشسته.
         try {
-        $content = $this->storageFor((int) $row['clinic_id'])->read((string) $row['storage_path']);
+            $content = $this->storageFor( (int) $row['clinic_id'] )
+                ->read( (string) $row['storage_path'] );
         } catch ( \Throwable $e ) {
             $context = FileStorageFailure::op_context( 'files', $e );
             App::op()->error( FileStorageFailure::OP_EVENT, $context );
@@ -527,9 +528,11 @@ final class MedicalFileService
         // شکستِ زیرساختِ ذخیره‌سازی به دامنهٔ بالینی تبدیل نمی‌شود: یک ردیفِ
         // OpLog با Contextِ اسکالر (کد/ریشه/دلیلِ کوتاه‌شده) ثبت می‌شود و
         // کلاینت پیامِ فارسیِ قابلِ اقدامِ 500 می‌گیرد — بدونِ افشای مسیر.
-        // خطِ فراخوانی legacy عمداً با همان متن/تو‌رفتگی قبلی حفظ شده است.
+        // فراخوانیِ legacy بدونِ تغییرِ معنایی است؛ فقط داخلِ try نشسته.
         try {
-        $storagePath = $this->storageFor( $patientClinicId )->store( $content, $patientClinicId, $extension ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+            $storagePath = $this->storageFor( $patientClinicId )
+                ->store( $content, $patientClinicId, $extension );
         } catch ( \Throwable $e ) {
             $context = FileStorageFailure::op_context( 'files', $e );
             App::op()->error( FileStorageFailure::OP_EVENT, $context );
