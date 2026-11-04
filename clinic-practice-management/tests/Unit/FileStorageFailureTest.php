@@ -63,7 +63,7 @@ final class FileStorageFailureTest extends TestCase
         // Actionable for a staff/patient user: contact the clinic admin and
         // consult the system health page.
         self::assertStringContainsString('مدیر کلینیک', $upload->getMessage());
-        self::assertStringContainsString('سلامت سامانه', $upload->getMessage());
+        self::assertStringContainsString('سلامت سیستم', $upload->getMessage());
         self::assertStringStartsWith('ثبت فایل انجام نشد', $upload->getMessage());
         self::assertStringStartsWith('باز کردن فایل انجام نشد', $read->getMessage());
 
