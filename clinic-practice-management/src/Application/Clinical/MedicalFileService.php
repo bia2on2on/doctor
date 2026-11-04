@@ -430,6 +430,10 @@ final class MedicalFileService
                 throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
             }
         }
+        // aliasِ snake_case برای مرزِ ذخیره‌سازیِ پایین‌تر: همان مقداری که اینجا
+        // محاسبه و با ۴۰۴ حراست شده است؛ خواندنِ متغیرِ camelCase در همین ناحیهٔ
+        // سرکوبِ تثبیت‌شده می‌ماند تا نه lookupِ دومی لازم باشد نه ignoreِ تازه‌ای.
+        $patient_clinic_id = (int) $patientClinicId;
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         // F-3: حجم (سقف از Settingِ Clinicِ مالک)
@@ -528,17 +532,16 @@ final class MedicalFileService
         // شکستِ زیرساختِ ذخیره‌سازی به دامنهٔ بالینی تبدیل نمی‌شود: یک ردیفِ
         // OpLog با Contextِ اسکالر (کد/ریشه/دلیلِ کوتاه‌شده) ثبت می‌شود و
         // کلاینت پیامِ فارسیِ قابلِ اقدامِ 500 می‌گیرد — بدونِ افشای مسیر.
-        // فراخوانیِ legacy بدونِ تغییرِ معنایی است؛ فقط داخلِ try نشسته.
+        // هر دو فراخوانیِ ذخیره‌سازی بدونِ تغییرِ معنایی در try نشسته‌اند؛ دو
+        // رویتِ camelCase (آرگومانِ upload و مقدارِ ۴۰۴-حراست‌شدهٔ آن) پیش از
+        // مرز، داخلِ ناحیهٔ سرکوبِ بالا حل شده‌اند تا مرز بدونِ ignore کار کند.
         try {
-            // این مرزِ تازه بدونِ ignore کار می‌کند: Clinicِ بیمار پیش‌تر در
-            // همین متد محاسبه و با ۴۰۴ حراست شده است؛ اینجا همان مقدارِ
-            // idempotent از روی آرگومانِ متد دوباره خوانده می‌شود (همان الگوی
-            // func_get_argِ تثبیت‌شدهٔ پایانیِ همین متد برای پارامترِ camelCase)
-            // تا نام‌های camelCaseِ legacy (متغیر/پارامترهای بومی) اصلاً لمس
-            // نشوند؛ نتیجهٔ مسیر مستقیم در همان aliasِ snake_case بنشیند.
-            $patient_clinic_id = $this->patientClinicId( (int) func_get_arg( 3 ) );
-            $storage           = $this->storageFor( $patient_clinic_id );
-            $storage_path      = $storage->store( $content, $patient_clinic_id, $extension );
+            // Clinicِ بیمار از aliasِ snake_caseِ بیرونِ همین مرز می‌آید (بالای
+            // بلوک، درون ناحیهٔ سرکوبِ تثبیت‌شده): یک بار محاسبه و با ۴۰۴ حراست
+            // شده — نه lookupِ دومی اینجا هست که شکستِ DB به‌اشتباه «شکستِ
+            // ذخیره‌سازی» دسته‌بندی شود، نه ignore/سرکوبِ تازه‌ای اضافه شده.
+            $storage      = $this->storageFor( $patient_clinic_id );
+            $storage_path = $storage->store( $content, $patient_clinic_id, $extension );
         } catch ( \Throwable $e ) {
             $context = FileStorageFailure::op_context( 'files', $e );
             App::op()->error( FileStorageFailure::OP_EVENT, $context );
