@@ -168,6 +168,8 @@ final class SettingsAdmin
                 <?php
                 $display_settings = [
                     'OTP TTL (ثانیه)'        => 'otp.ttl_sec',
+                    // نمایشِ فقط‌خواندنی؛ save() این صفحه مکانیزمِ ویرایش ندارد.
+                    'سقف OTP هر IP (ساعت)'   => 'otp.ip_hourly_max',
                     'Hold نوبت (ثانیه)'      => 'booking.hold_ttl_sec',
                     'Grace No-Show (دقیقه)'  => 'queue.no_show_grace_minutes',
                     'بازه رزرو (روز)'        => 'booking.max_future_days',

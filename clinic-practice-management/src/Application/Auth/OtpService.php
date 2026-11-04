@@ -123,6 +123,17 @@ final class OtpService
     }
 
     /**
+     * نرمال‌سازیِ سقفِ درخواستِ OTP از یک IP در هر ساعت (کلیدِ otp.ip_hourly_max).
+     *
+     * clamp در بازهٔ [1, 1000]: مقدارِ ناموجود/نامعتبر هرگز سدِ per-IP را صفر
+     * یا بی‌کران نمی‌کند؛ پیش‌فرضِ Settings (=۱۰) رفتارِ قبلی را حفظ می‌کند.
+     */
+    public static function clamp_ip_hourly_max(mixed $raw): int
+    {
+        return max(1, min(1000, (int) $raw));
+    }
+
+    /**
      * درخواست کد جدید (A2).
      *
      * Phase 8 Slice 2 — تصمیم مالک (Hold-Timing): پارامتر اختیاری `$clinicId`
@@ -166,7 +177,10 @@ final class OtpService
         // that end up rejected by cooldown/lockout. That behaviour is
         // deliberately unchanged.
         if ($ip !== null && $ip !== '') {
-            $byIp = $this->rate->hit('otp-ip:' . $ip, 10, 3600);
+            // سقفِ per-IP از Settingsِ همان Clinic خوانده می‌شود (پیش‌فرض ۱۰ =
+            // رفتارِ قبلیِ literal)؛ نامِ سطل و پنجرهٔ یک‌ساعته دست‌نخورده‌اند.
+            $ip_hourly_max = self::clamp_ip_hourly_max( $settings->get( 'otp.ip_hourly_max' ) );
+            $byIp = $this->rate->hit('otp-ip:' . $ip, $ip_hourly_max, 3600);
             if (!$byIp['allowed']) {
                 throw new OtpException('CLINIC_RATE_LIMITED', 'درخواست‌های شما موقتاً محدود شده است', $byIp);
             }
