@@ -125,10 +125,17 @@ final class OtpService
     /**
      * نرمال‌سازیِ سقفِ درخواستِ OTP از یک IP در هر ساعت (کلیدِ otp.ip_hourly_max).
      *
-     * clamp در بازهٔ [1, 1000]: مقدارِ ناموجود/نامعتبر هرگز سدِ per-IP را صفر
-     * یا بی‌کران نمی‌کند؛ پیش‌فرضِ Settings (=۱۰) رفتارِ قبلی را حفظ می‌کند.
+     * مرور ۲۰۲۶-۱۱-۰۵ — نگاشتِ fail-closed به سمتِ پیش‌فرضِ امن: مقدارِ خامِ
+     * غیرقابل‌استفاده (null، رشتهٔ خالی، بولی، رشتهٔ غیرعددی مثل 'abc') به
+     * پیش‌فرضِ ۱۰ نگاشته می‌شود — همان رفتارِ literal تاریخی؛ پیش‌تر (int)۰→۱
+     * یک پیکربندیِ معیوب را بی‌صدا به سدِ ۱درخواست‌در‌ساعت تبدیل می‌کرد
+     * (lockoutِ پنهانِ دسترس‌پذیری). مقدارِ عددیِ خارج از [1, 1000] همچنان
+     * clamp می‌شود: هرگز ۰ (سدِ خاموش) یا بی‌کران نمی‌شود.
      */
     public static function clamp_ip_hourly_max( mixed $raw ): int {
+        if ( ! is_numeric( $raw ) ) {
+            return 10;
+        }
         return max( 1, min( 1000, (int) $raw ) );
     }
 
@@ -178,6 +185,14 @@ final class OtpService
         if ($ip !== null && $ip !== '') {
             // سقفِ per-IP از Settingsِ همان Clinic خوانده می‌شود (پیش‌فرض ۱۰ =
             // رفتارِ قبلیِ literal)؛ نامِ سطل و پنجرهٔ یک‌ساعته دست‌نخورده‌اند.
+            // ⚠️ سطل 'otp-ip:'.IP کلینیک‌آگاه نیست: شمارندهٔ Hits بین همهٔ
+            // Clinicها روی یک IP **مشترک** است و فقط آستانه از Clinicِ متناظر
+            // می‌آید؛ تداخلِ متقاطع روی NAT مشترک خطرِ نهفتهٔ ثبت‌شده است
+            // (docs/decisions/2026-11-05-otp-ip-bucket-shared-counter-record.md)
+            // و کلیدبندیِ سطل به تصمیمِ بازِ مالک Q6 موکول مانده — Scopeی‌کردنِ
+            // کلید پیش از آن تصمیم، سوگندِ Tenant را پیش‌داوری می‌کند.
+            // هیچ Writerِ محصولی برای otp.ip_hourly_max وجود ندارد؛ فقطِ Seed/
+            // تست می‌نویسند تا وقتی که Q6/سطحِ ادمین تصمیم گیرد.
             $ip_hourly_max = self::clamp_ip_hourly_max( $settings->get( 'otp.ip_hourly_max' ) );
             $byIp = $this->rate->hit('otp-ip:' . $ip, $ip_hourly_max, 3600);
             if (!$byIp['allowed']) {

@@ -30,14 +30,35 @@ final class OtpIpHourlyLimitTest extends TestCase
         self::assertSame(1, OtpService::clamp_ip_hourly_max(1));
         self::assertSame(1000, OtpService::clamp_ip_hourly_max(1000));
 
-        // min 1: zero/negative/nonsense can never disarm the per-IP guard.
+        // min 1: zero/negative numerics still clamp up, never open the guard.
         self::assertSame(1, OtpService::clamp_ip_hourly_max(0));
         self::assertSame(1, OtpService::clamp_ip_hourly_max(-25));
-        self::assertSame(1, OtpService::clamp_ip_hourly_max(null));
 
         // sane max: an absurdly large value cannot make the guard unbounded.
         self::assertSame(1000, OtpService::clamp_ip_hourly_max(1001));
         self::assertSame(1000, OtpService::clamp_ip_hourly_max(9_999_999));
+    }
+
+    /**
+     * Review 2026-11-05: unusable raw values fall back to the DEFAULT (10),
+     * not to 1 — a broken setting must reproduce documented default behaviour
+     * instead of silently hard-locking OTP issuance at one request per hour.
+     * (Replaces the former null→1 assertion; numeric 0/-25 stay clamped to 1.)
+     */
+    public function testUnusableRawValuesFallBackToTheDefault(): void
+    {
+        self::assertSame(10, OtpService::clamp_ip_hourly_max(null));
+        self::assertSame(10, OtpService::clamp_ip_hourly_max(''));
+        self::assertSame(10, OtpService::clamp_ip_hourly_max('   '));
+        self::assertSame(10, OtpService::clamp_ip_hourly_max(false));
+        self::assertSame(10, OtpService::clamp_ip_hourly_max(true));
+        self::assertSame(10, OtpService::clamp_ip_hourly_max('abc'));
+
+        // Numeric strings keep passing through the numeric path.
+        self::assertSame(25, OtpService::clamp_ip_hourly_max('25'));
+        self::assertSame(1, OtpService::clamp_ip_hourly_max('0'));
+        self::assertSame(1, OtpService::clamp_ip_hourly_max('-7'));
+        self::assertSame(1000, OtpService::clamp_ip_hourly_max('1500'));
     }
 
     public function testRequestUsesTheSettingInsteadOfALiteral(): void
