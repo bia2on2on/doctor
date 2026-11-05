@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Booking;
 
+use ClinicCore\Application\Auth\PatientSessionScope;
 use ClinicCore\Application\Notifications\NotificationService;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Patients\PatientIdentityActivator;
@@ -93,7 +94,8 @@ final class BookingService
         private readonly SmsService $sms,
         private readonly ?NotificationService $notifications = null,
         ?MembershipRepository $memberships = null,
-        ?PatientIdentityActivator $identities = null
+        ?PatientIdentityActivator $identities = null,
+        private readonly ?PatientSessionScope $session_scope = null
     ) {
         $this->memberships = $memberships ?? new MembershipRepository( $this->db );
         // Organization Patient Identity activation is not optional on the
@@ -509,11 +511,6 @@ final class BookingService
         $patient_id   = null === $hold_args['patientId'] ? null : (int) $hold_args['patientId'];
         $location_id  = null === $hold_args['locationId'] ? null : (int) $hold_args['locationId'];
 
-        $mobile = $this->mobileForUser($wpUserId);
-        if ($mobile === null) {
-            throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)');
-        }
-
         // Phase 8 Slice 4 — the PERSISTED slot is the Clinic authority. A raw
         // clinic_id claim in the request body is NOT read here at all (the
         // pinned Phase 8 Slice 2 contract: the slot->Clinic relationship governs
@@ -552,17 +549,27 @@ final class BookingService
         $location_tz = $this->resolveLocationTimezone( (int) $slot['location_id'], $clinic_id );
         $this->assertWindowWithTimezone( $slot_date, $slot_time, $location_tz, $min_lead, $settings );
 
+        // M5 — enforce session clinic == persisted slot clinic BEFORE deriving
+        // mobile, patient, or capacity locks (one identical error for 0-link
+        // no-marker, >1-clinic no-marker, and clinic-mismatch sessions).
+        $trusted_clinic_id = (int) $slot['clinic_id'];
+        $this->assert_patient_session_matches_clinic( $wp_user_id, $trusted_clinic_id );
+
+        $mobile = $this->mobile_for_user_in_clinic( $wp_user_id, $trusted_clinic_id );
+        if ( null === $mobile ) {
+            throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)' );
+        }
+
         // Phase 8 Slice 3 — linked-Patient booking-subject selection (LINKED-ONLY authority).
         // Trusted Clinic = slot's persisted clinic_id (never client payload).
         // Must be evaluated before any capacity claim.
-        $trusted_clinic_id     = (int) $slot['clinic_id'];
         $patient_id_to_persist = $this->resolveBookingPatientForHold( $wp_user_id, $trusted_clinic_id, $patient_id );
 
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
-            'SELECT * FROM ' . $this->db->table('cpms_slot_holds') .
-            ' WHERE holder_wp_user_id = %d AND slot_id = %d AND status = %s AND expires_at > %s LIMIT 1',
-            [$wpUserId, (int) $slot['id'], 'active', $this->db->nowUtcSql()]
+            'SELECT * FROM ' . $this->db->table( 'cpms_slot_holds' )
+            . ' WHERE holder_wp_user_id = %d AND clinic_id = %d AND slot_id = %d AND status = %s AND expires_at > %s LIMIT 1',
+            [ $wp_user_id, $trusted_clinic_id, (int) $slot['id'], 'active', $this->db->nowUtcSql() ]
         );
         if ($existing !== null) {
             return [
@@ -625,6 +632,7 @@ final class BookingService
                     $min_lead,
                     $settings
                 );
+                $this->assert_patient_session_matches_clinic( $wp_user_id, (int) $locked_slot['clinic_id'] );
 
                 if ( ! $this->slots->atomicHold( (int) $locked_slot['id'] ) ) {
                     // FR-4.6: پاکت/کد/پیام دست‌نخورده — فقط دادهٔ الحاقیِ nearby_slots
@@ -824,10 +832,15 @@ final class BookingService
             throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این جلسه رزرو دسترسی ندارید', 403);
         }
 
+        // M5 — enforce session clinic == hold.clinic_id AFTER holder ownership
+        // (preserving 403/404 parity) and BEFORE status/expiry release or
+        // idempotency consumption (never releasing an active hold on scope denial).
+        $this->assert_patient_session_matches_clinic( $wpUserId, $holdClinicId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method locals.
+
         if ((string) $hold['status'] !== 'active') {
             if ((string) $hold['status'] === 'converted') {
                 // با کلید متفاوت تکرار → پاسخ همان Appointment
-                $appt = $this->findActiveByUserSlot($wpUserId, (int) $hold['slot_id']);
+                $appt = $this->findActiveByUserSlot( $wpUserId, (int) $hold['slot_id'], $holdClinicId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method locals.
                 if ($appt !== null) {
                     return $this->appointmentView($appt);
                 }
@@ -935,6 +948,7 @@ final class BookingService
                     ) {
                         throw BookingException::of( 'CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی/بسته شده — دوباره Slot انتخاب کنید', 422 );
                     }
+                    $this->assert_patient_session_matches_clinic( $wp_user_id, $hold_clinic_id );
 
                     $slot = $this->slots->findForUpdate( $slot_id );
                     $this->assert_read_succeeded(
@@ -1073,7 +1087,7 @@ final class BookingService
             $denial = $this->toBookingException( $e );
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
             $denial_code = $denial->errorCode;
-            if ( 'CLINIC_SUSPENDED' !== $denial_code && self::LOCK_BUSY_CODE !== $denial_code ) {
+            if ( 'CLINIC_SUSPENDED' !== $denial_code && self::LOCK_BUSY_CODE !== $denial_code && 'CLINIC_SCOPE_REQUIRED' !== $denial_code ) {
                 $released_hold = $this->db->execute(
                     'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
                     [ $hold_id ]
@@ -1127,6 +1141,11 @@ final class BookingService
             throw BookingException::of('CLINIC_NOT_FOUND', 'جلسه رزرو یافت نشد', 404);
         }
 
+        // M5 — enforce session clinic == hold.clinic_id AFTER ownership check
+        // (preserving 404 foreign-hold parity) and BEFORE status/expiry release
+        // (never releasing an active hold on scope denial).
+        $this->assert_patient_session_matches_clinic( $wpUserId, (int) $hold['clinic_id'] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method parameter.
+
         if ((string) $hold['status'] === 'converted') {
             return ['hold_token' => $holdToken, 'status' => 'converted'];
         }
@@ -1155,11 +1174,18 @@ final class BookingService
     /**
      * @return list<array<string, mixed>>
      */
-    public function listMine(int $wpUserId, string $fromDate, string $toDate): array
+    public function listMine( int $wpUserId, string $fromDate, string $toDate, ?int $clinicId = null ): array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published public signature.
     {
-        $rows = $this->appointments->list_for_patient_portal( $wpUserId, $fromDate, $toDate ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing public method parameters are retained.
+        $resolved_clinic_id = null !== $clinicId // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published public parameter.
+            ? (int) $clinicId // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published public parameter.
+            : $this->session_scope()->resolve_clinic_id( $wpUserId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published public parameter.
+        if ( null === $resolved_clinic_id || $resolved_clinic_id <= 0 ) {
+            return [];
+        }
 
-        return $this->mapAppointmentViews($rows);
+        $rows = $this->appointments->list_for_patient_portal( $wpUserId, $fromDate, $toDate, $resolved_clinic_id ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published public parameters.
+
+        return $this->mapAppointmentViews( $rows );
     }
 
     // ================= B4 — Cancel (Patient) =================
@@ -1204,6 +1230,7 @@ final class BookingService
             if ( ! $this->user_has_active_patient_in_clinic( $actor_user_id, (int) $appt['patient_id'], (int) $appt['clinic_id'] ) ) {
                 throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
             }
+            $this->assert_patient_session_matches_clinic( $actor_user_id, (int) $appt['clinic_id'] );
 
             if ( 'confirmed' !== (string) $appt['status'] ) {
                 throw BookingException::of( 'CLINIC_INVALID_TRANSITION', 'فقط نوبت‌های تأییدشده قابل جابه‌جایی هستند', 409 );
@@ -1282,6 +1309,7 @@ final class BookingService
                 );
                 throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
             }
+            $this->assert_patient_session_matches_clinic( $actor_user_id, $clinic_id );
 
             if ( 'confirmed' !== (string) $appt['status'] ) {
                 throw BookingException::of( 'CLINIC_INVALID_TRANSITION', 'فقط نوبت‌های تأییدشده قابل جابه‌جایی هستند', 409 );
@@ -1451,8 +1479,11 @@ final class BookingService
                 throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
             }
             $this->assertAppointmentWithinExplicitScope( $scope_appt );
-        } elseif ( $actor === 'patient' && ! $this->user_has_active_patient_in_clinic( $actor_user_id, (int) $scope_appt['patient_id'], (int) $scope_appt['clinic_id'] ) ) {
-            throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
+        } elseif ( $actor === 'patient' ) {
+            if ( ! $this->user_has_active_patient_in_clinic( $actor_user_id, (int) $scope_appt['patient_id'], (int) $scope_appt['clinic_id'] ) ) {
+                throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
+            }
+            $this->assert_patient_session_matches_clinic( $actor_user_id, (int) $scope_appt['clinic_id'] );
         }
 
         // Non-locking lifecycle preflight avoids claiming idempotency state for
@@ -1504,22 +1535,25 @@ final class BookingService
                     if ( $actor === 'staff' ) {
                         $this->assertAppointmentWithinExplicitScope( $appt );
                     }
-                    if ( $actor === 'patient' && ! $this->user_has_active_patient_in_clinic( $actor_user_id, (int) $appt['patient_id'], (int) $appt['clinic_id'] ) ) {
-                        $this->audit(
-                            'FORBIDDEN_ACCESS_ATTEMPT',
-                            $actor_user_id,
-                            'patient',
-                            'appointment',
-                            $appointment_id,
-                            (int) $appt['patient_id'],
-                            null,
-                            null,
-                            [
-								'mobile' => MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) ),
-							],
-                            (int) $appt['clinic_id']
-                        );
-                        throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
+                    if ( $actor === 'patient' ) {
+                        if ( ! $this->user_has_active_patient_in_clinic( $actor_user_id, (int) $appt['patient_id'], (int) $appt['clinic_id'] ) ) {
+                            $this->audit(
+                                'FORBIDDEN_ACCESS_ATTEMPT',
+                                $actor_user_id,
+                                'patient',
+                                'appointment',
+                                $appointment_id,
+                                (int) $appt['patient_id'],
+                                null,
+                                null,
+                                [
+                                    'mobile' => MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) ),
+                                ],
+                                (int) $appt['clinic_id']
+                            );
+                            throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
+                        }
+                        $this->assert_patient_session_matches_clinic( $actor_user_id, (int) $appt['clinic_id'] );
                     }
 
                     $to_state = $this->machineCheck( (string) $appt['status'], 'reschedule', $actor );
@@ -2042,20 +2076,22 @@ final class BookingService
                 // شاخه بیمار (B4) مالکیت خودش را در ادامه اعمال می‌کند.
                 $this->assertAppointmentWithinExplicitScope($appt);
             }
-            if (
-                $actor === 'patient'
-                && ! $this->user_has_active_patient_in_clinic(
-                    $wpUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing public method parameter is retained.
-                    (int) $appt['patient_id'],
-                    (int) $appt['clinic_id']
-                )
-            ) {
-                // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
-                $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
-                    'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
-                ], (int) $appt['clinic_id'] );
-                // phpcs:enable
-                throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
+            if ( $actor === 'patient' ) {
+                if (
+                    ! $this->user_has_active_patient_in_clinic(
+                        $wpUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing public method parameter is retained.
+                        (int) $appt['patient_id'],
+                        (int) $appt['clinic_id']
+                    )
+                ) {
+                    // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
+                    $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
+                        'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
+                    ], (int) $appt['clinic_id'] );
+                    // phpcs:enable
+                    throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
+                }
+                $this->assert_patient_session_matches_clinic( $wpUserId, (int) $appt['clinic_id'] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing method parameter is retained.
             }
 
             $toState = $this->machineCheck((string) $appt['status'], 'cancel', $actor);
@@ -2849,30 +2885,43 @@ final class BookingService
     }
 
     /**
-     * Mobile بیمار برای Hold: (1) Patient Link primary → (2) Email پترن F2 → (3) null.
+     * Mobile بیمار برای Hold درونِ همان Clinicِ معتبر: (1) پیوند فعالِ همان Clinic
+     * با تطابق clinic_id دوطرفه → (2) ایمیل هویتِ قطعیِ OTP (F2) → (3) null.
      */
-    private function mobileForUser(int $wpUserId): ?string
-    {
+    private function mobile_for_user_in_clinic( int $wp_user_id, int $clinic_id ): ?string {
         $primary = $this->db->fetchRow(
-            'SELECT p.mobile FROM ' . $this->db->table('cpms_patient_user_links') . ' l
-             JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = l.patient_id
-             WHERE l.wp_user_id = %d AND p.status = %s
-             ORDER BY l.is_primary DESC, l.id ASC LIMIT 1',
-            [$wpUserId, 'active']
+            'SELECT p.mobile FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+            . ' WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s'
+            . ' ORDER BY l.is_primary DESC, l.id ASC LIMIT 1',
+            [ $wp_user_id, $clinic_id, 'active' ]
         );
-        if ($primary !== null) {
+        if ( null !== $primary ) {
             return (string) $primary['mobile'];
         }
 
         $email = $this->db->fetchValue(
             'SELECT user_email FROM ' . $this->db->dbPrefix() . 'users WHERE ID = %d LIMIT 1',
-            [$wpUserId]
+            [ $wp_user_id ]
         );
-        if (is_string($email) && str_ends_with($email, '@otp.cpms.local')) {
-            return substr($email, 0, -strlen('@otp.cpms.local'));
+        if ( is_string( $email ) && str_ends_with( $email, '@otp.cpms.local' ) ) {
+            return substr( $email, 0, -strlen( '@otp.cpms.local' ) );
         }
 
         return null;
+    }
+
+    private function session_scope(): PatientSessionScope {
+        return $this->session_scope ?? App::patient_session_scope();
+    }
+
+    private function assert_patient_session_matches_clinic( int $wp_user_id, int $expected_clinic_id ): void {
+        try {
+            $this->session_scope()->require_clinic_matching( $wp_user_id, $expected_clinic_id );
+        } catch ( ScopeRequiredException $e ) {
+            throw BookingException::of( $e->apiCode(), $e->getMessage(), $e->httpStatus(), $e->getData() );
+        }
     }
 
     /**
@@ -3088,11 +3137,13 @@ final class BookingService
         return null !== $v;
     }
 
-    private function findActiveByUserSlot(int $wpUserId, int $slotId): ?array
+    private function findActiveByUserSlot( int $wpUserId, int $slotId, int $clinicId ): ?array // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established private helper.
     {
         $wp_user_id = (int) $wpUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing private method parameter is retained.
 
         $slot_id = (int) $slotId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing private method parameter is retained.
+
+        $clinic_id = (int) $clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing private method parameter is retained.
 
         return $this->db->fetchRow(
             'SELECT a.* FROM ' . $this->db->table( 'cpms_appointments' ) . ' a'
@@ -3100,9 +3151,9 @@ final class BookingService
             . ' ON l.patient_id = a.patient_id AND l.clinic_id = a.clinic_id'
             . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
             . ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
-            . " WHERE a.slot_id = %d AND l.wp_user_id = %d AND p.status = 'active'"
+            . " WHERE a.clinic_id = %d AND l.clinic_id = %d AND a.slot_id = %d AND l.wp_user_id = %d AND p.status = 'active'"
             . " AND a.status IN ('pending','confirmed') ORDER BY a.id DESC LIMIT 1",
-            [ $slot_id, $wp_user_id ]
+            [ $clinic_id, $clinic_id, $slot_id, $wp_user_id ]
         );
     }
 
@@ -3330,6 +3381,9 @@ final class BookingService
     {
         if ($e instanceof BookingException) {
             return $e;
+        }
+        if ( $e instanceof ScopeRequiredException ) {
+            return BookingException::of( $e->apiCode(), $e->getMessage(), $e->httpStatus(), $e->getData() );
         }
         if ($e instanceof InvalidTransitionException) {
             return BookingException::of('CLINIC_INVALID_TRANSITION', 'این عمل برای وضعیت فعلی نوبت مجاز نیست', 409);

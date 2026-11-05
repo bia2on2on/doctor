@@ -381,6 +381,31 @@ if (!function_exists('cpms_test_seed_membership')) {
     }
 }
 
+if (!function_exists('cpms_test_seed_patient_session')) {
+    /**
+     * Explicit clinic-scoped patient session fixture for integration tests that
+     * construct a 0-link or multi-clinic patient user directly (without running
+     * OtpService::verify()) to exercise downstream clinic-scoped surfaces.
+     */
+    function cpms_test_seed_patient_session(int $userId, int $clinicId): string
+    {
+        if ($userId <= 0 || $clinicId <= 0) {
+            throw new \InvalidArgumentException('seed_patient_session: user and clinic must be positive.');
+        }
+        $manager = \WP_Session_Tokens::get_instance($userId);
+        $token   = $manager->create(time() + DAY_IN_SECONDS);
+        $session = $manager->get($token);
+        if (!is_array($session)) {
+            $session = ['expiration' => time() + DAY_IN_SECONDS];
+        }
+        $session[\ClinicCore\Application\Auth\PatientSessionScope::SESSION_CLINIC_KEY] = $clinicId;
+        $manager->update($token, $session);
+        App::patient_session_scope()->set_in_process_session_token($userId, $token);
+
+        return $token;
+    }
+}
+
 cpms_mariadb_startup_diagnostic_mark('BOOTSTRAP_COMPLETE');
 if (getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS') === '1') {
     $GLOBALS['__cpms_mariadb_bootstrap_complete'] = true;

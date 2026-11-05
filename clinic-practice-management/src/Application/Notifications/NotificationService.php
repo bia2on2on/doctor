@@ -4,6 +4,10 @@ declare(strict_types=1);
 
 namespace ClinicCore\Application\Notifications;
 
+use ClinicCore\Application\Auth\PatientSessionScope;
+use ClinicCore\Application\Scope\ScopeContext;
+use ClinicCore\Application\Scope\ScopeRequiredException;
+use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Notifications\NotificationEvents;
 use ClinicCore\Infrastructure\Db\CpmsDb;
@@ -47,8 +51,13 @@ final class NotificationService
         private readonly MembershipRepository $memberships,
         private readonly SettingsFactory $settingsFactory,
         private readonly Closure $currentClinicResolver,
-        private readonly OpLogger $op
+        private readonly OpLogger $op,
+        private readonly ?PatientSessionScope $session_scope = null
     ) {
+    }
+
+    private function session_scope(): PatientSessionScope {
+        return $this->session_scope ?? App::patient_session_scope();
     }
 
     /**
@@ -145,20 +154,32 @@ final class NotificationService
      */
     public function inbox(int $actorUserId, bool $unreadOnly, int $limit, int $sinceId = 0, ?string $template = null): array
     {
-        $link = $this->linkedPatient($actorUserId);
-        if ($link !== null) {
-            $clinicId = (int) $link['clinic_id'];
-            $rows = $this->notifications->forPatient($clinicId, (int) $link['patient_id'], $unreadOnly, $limit, $sinceId);
-            $unread = $this->notifications->unreadCountForPatient($clinicId, (int) $link['patient_id']);
+        if ( $this->is_patient_actor( $actorUserId ) ) {
+            $clinic_id = $this->session_scope()->require_clinic_for_read( $actorUserId );
+            if ( null === $clinic_id ) {
+                return [
+                    'notifications' => [],
+                    'unread_count'  => 0,
+                ];
+            }
+            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actorUserId, $clinic_id );
+            if ( [] === $patient_ids ) {
+                return [
+                    'notifications' => [],
+                    'unread_count'  => 0,
+                ];
+            }
+            $rows   = $this->patient_rows_in_clinic( $clinic_id, $patient_ids, $unreadOnly, $limit, $sinceId );
+            $unread = $this->patient_unread_count_in_clinic( $clinic_id, $patient_ids );
         } else {
             $clinicId = App::scope()->clinicId;
-            $rows = $this->notifications->forUser($clinicId, $actorUserId, $unreadOnly, $limit, $sinceId, $template);
-            $unread = $this->notifications->unreadCountForUser($clinicId, $actorUserId);
+            $rows     = $this->notifications->forUser($clinicId, $actorUserId, $unreadOnly, $limit, $sinceId, $template);
+            $unread   = $this->notifications->unreadCountForUser($clinicId, $actorUserId);
         }
 
         return [
             'notifications' => array_map([$this, 'present'], $rows),
-            'unread_count' => $unread,
+            'unread_count'  => $unread,
         ];
     }
 
@@ -169,27 +190,48 @@ final class NotificationService
      */
     public function since(int $actorUserId, int $sinceId): array
     {
-        $link = $this->linkedPatient($actorUserId);
-        if ($link !== null) {
-            $clinicId = (int) $link['clinic_id'];
-            $patientId = (int) $link['patient_id'];
-            $rows = $this->notifications->forPatient($clinicId, $patientId, false, 50, $sinceId);
-            $lastId = $this->notifications->lastIdForPatient($clinicId, $patientId);
-            $unread = $this->notifications->unreadCountForPatient($clinicId, $patientId);
-        } else {
-            $clinicId = App::scope()->clinicId;
-            $rows = $this->notifications->forUser($clinicId, $actorUserId, false, 50, $sinceId);
-            $lastId = $this->notifications->lastIdForUser($clinicId, $actorUserId);
-            $unread = $this->notifications->unreadCountForUser($clinicId, $actorUserId);
+        if ( $this->is_patient_actor( $actorUserId ) ) {
+            $clinic_id = $this->session_scope()->require_clinic_for_read( $actorUserId );
+            if ( null === $clinic_id ) {
+                return [
+                    'notifications' => [],
+                    'last_id'       => 0,
+                    'unread_count'  => 0,
+                ];
+            }
+            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actorUserId, $clinic_id );
+            if ( [] === $patient_ids ) {
+                return [
+                    'notifications' => [],
+                    'last_id'       => 0,
+                    'unread_count'  => 0,
+                ];
+            }
+            $rows    = $this->patient_rows_in_clinic( $clinic_id, $patient_ids, false, 50, $sinceId );
+            $last_id = $this->patient_last_id_in_clinic( $clinic_id, $patient_ids );
+            $unread  = $this->patient_unread_count_in_clinic( $clinic_id, $patient_ids );
+
+            $rows = array_reverse( $rows );
+
+            return [
+                'notifications' => array_map( [ $this, 'present' ], $rows ),
+                'last_id'       => $last_id,
+                'unread_count'  => $unread,
+            ];
         }
+
+        $clinicId = App::scope()->clinicId;
+        $rows     = $this->notifications->forUser($clinicId, $actorUserId, false, 50, $sinceId);
+        $lastId   = $this->notifications->lastIdForUser($clinicId, $actorUserId);
+        $unread   = $this->notifications->unreadCountForUser($clinicId, $actorUserId);
 
         // قدیمی→جدید تا کلاینت آخرین id را راحت نگه دارد
         $rows = array_reverse($rows);
 
         return [
             'notifications' => array_map([$this, 'present'], $rows),
-            'last_id' => $lastId,
-            'unread_count' => $unread,
+            'last_id'       => $lastId,
+            'unread_count'  => $unread,
         ];
     }
 
@@ -198,11 +240,20 @@ final class NotificationService
      */
     public function lastId(int $actorUserId): int
     {
-        $link = $this->linkedPatient($actorUserId);
+        if ( $this->is_patient_actor( $actorUserId ) ) {
+            $clinic_id = $this->session_scope()->require_clinic_for_read( $actorUserId );
+            if ( null === $clinic_id ) {
+                return 0;
+            }
+            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actorUserId, $clinic_id );
+            if ( [] === $patient_ids ) {
+                return 0;
+            }
 
-        return $link !== null
-            ? $this->notifications->lastIdForPatient((int) $link['clinic_id'], (int) $link['patient_id'])
-            : $this->notifications->lastIdForUser(App::scope()->clinicId, $actorUserId);
+            return $this->patient_last_id_in_clinic( $clinic_id, $patient_ids );
+        }
+
+        return $this->notifications->lastIdForUser(App::scope()->clinicId, $actorUserId);
     }
 
     /**
@@ -212,10 +263,18 @@ final class NotificationService
      */
     public function markRead(int $actorUserId, array $ids, bool $all): int
     {
-        $link = $this->linkedPatient($actorUserId);
-        $patientId = $link !== null ? (int) $link['patient_id'] : null;
+        if ( $this->is_patient_actor( $actorUserId ) ) {
+            $clinic_id   = $this->session_scope()->require_clinic_for_write( $actorUserId );
+            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actorUserId, $clinic_id );
+            if ( [] === $patient_ids ) {
+                return 0;
+            }
+
+            return $this->mark_patient_read_in_clinic( $clinic_id, $patient_ids, $ids, $all );
+        }
+
         if ($all) {
-            return $this->notifications->markAllRead($actorUserId, $patientId);
+            return $this->notifications->markAllRead($actorUserId, null);
         }
 
         $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn (int $i): bool => $i > 0)));
@@ -223,7 +282,7 @@ final class NotificationService
             return 0;
         }
 
-        return $this->notifications->markRead($actorUserId, $patientId, array_slice($ids, 0, 200));
+        return $this->notifications->markRead($actorUserId, null, array_slice($ids, 0, 200));
     }
 
     // =========================================================
@@ -358,23 +417,189 @@ final class NotificationService
     }
 
     /**
-     * بیمارِ متصل به حساب WP (الگوی PatientService::me) — null برای Staff.
-     * لینک primary + کلینیکِ آن رکورد — clinic Inbox بیمار از خودِ رابطهٔ
-     * domain مشتق می‌شود (C6).
-     *
-     * @return array{patient_id: int, clinic_id: int}|null
+     * Determine whether `$actor_user_id` is acting as a patient rather than staff.
      */
-    private function linkedPatient(int $wpUserId): ?array
-    {
-        $row = $this->db->fetchRow(
-            'SELECT l.patient_id, p.clinic_id FROM ' . $this->db->table('cpms_patient_user_links') . ' l
-             JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = l.patient_id
-             WHERE l.wp_user_id = %d AND p.status = %s
-             ORDER BY l.is_primary DESC, l.id ASC LIMIT 1',
-            [$wpUserId, 'active']
+    private function is_patient_actor( int $actor_user_id ): bool {
+        if ( $actor_user_id <= 0 || ! function_exists( 'get_userdata' ) ) {
+            return false;
+        }
+
+        $user = get_userdata( $actor_user_id );
+        if ( ! ( $user instanceof \WP_User ) || ! $user->exists() ) {
+            return false;
+        }
+
+        $roles       = (array) $user->roles;
+        $staff_roles = [
+            RolesAndCapabilities::ROLE_DOCTOR,
+            RolesAndCapabilities::ROLE_SECRETARY,
+            RolesAndCapabilities::ROLE_MANAGER,
+            RolesAndCapabilities::ROLE_ACCOUNTANT,
+            'administrator',
+        ];
+        if ( array_intersect( $staff_roles, $roles ) !== [] ) {
+            return false;
+        }
+
+        if ( in_array( RolesAndCapabilities::ROLE_PATIENT, $roles, true ) ) {
+            return true;
+        }
+
+        if ( null !== ScopeContext::tryGet() ) {
+            return false;
+        }
+
+        $has_link = $this->db->fetchValue(
+            'SELECT 1 FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' WHERE wp_user_id = %d LIMIT 1',
+            [ $actor_user_id ]
         );
 
-        return $row === null ? null : ['patient_id' => (int) $row['patient_id'], 'clinic_id' => (int) $row['clinic_id']];
+        return null !== $has_link;
+    }
+
+    /**
+     * Active linked patient IDs for `$wp_user_id` strictly inside `$clinic_id`.
+     *
+     * @return list<int>
+     */
+    private function active_linked_patient_ids_in_clinic( int $wp_user_id, int $clinic_id ): array {
+        if ( $wp_user_id <= 0 || $clinic_id <= 0 ) {
+            return [];
+        }
+
+        $rows = $this->db->fetchAll(
+            'SELECT p.id'
+            . ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+            . ' WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s'
+            . ' ORDER BY l.is_primary DESC, l.id ASC',
+            [ $wp_user_id, $clinic_id, 'active' ]
+        );
+
+        $ids = [];
+        foreach ( $rows as $row ) {
+            $pid = (int) ( $row['id'] ?? 0 );
+            if ( $pid > 0 ) {
+                $ids[] = $pid;
+            }
+        }
+
+        return $ids;
+    }
+
+    /**
+     * @param list<int> $patient_ids
+     * @return list<array<string, mixed>>
+     */
+    private function patient_rows_in_clinic(
+        int $clinic_id,
+        array $patient_ids,
+        bool $unread_only,
+        int $limit,
+        int $since_id
+    ): array {
+        if ( 1 === count( $patient_ids ) ) {
+            return $this->notifications->forPatient( $clinic_id, $patient_ids[0], $unread_only, $limit, $since_id );
+        }
+
+        $placeholders = implode( ',', array_fill( 0, count( $patient_ids ), '%d' ) );
+        $sql          = 'SELECT * FROM ' . $this->db->table( 'cpms_notifications' )
+            . ' WHERE clinic_id = %d AND recipient_patient_id IN (' . $placeholders . ') AND status != %s';
+        $params       = array_merge( [ $clinic_id ], $patient_ids, [ 'cancelled' ] );
+
+        if ( $since_id > 0 ) {
+            $sql     .= ' AND id > %d';
+            $params[] = $since_id;
+        }
+        if ( $unread_only ) {
+            $sql .= ' AND read_at IS NULL';
+        }
+
+        $sql     .= ' ORDER BY id DESC LIMIT %d';
+        $params[] = max( 1, min( 200, $limit ) );
+
+        return $this->db->fetchAll( $sql, $params );
+    }
+
+    /**
+     * @param list<int> $patient_ids
+     */
+    private function patient_unread_count_in_clinic( int $clinic_id, array $patient_ids ): int {
+        if ( 1 === count( $patient_ids ) ) {
+            return $this->notifications->unreadCountForPatient( $clinic_id, $patient_ids[0] );
+        }
+
+        $placeholders = implode( ',', array_fill( 0, count( $patient_ids ), '%d' ) );
+
+        return (int) $this->db->fetchValue(
+            'SELECT COUNT(*) FROM ' . $this->db->table( 'cpms_notifications' )
+            . ' WHERE clinic_id = %d AND recipient_patient_id IN (' . $placeholders . ')'
+            . ' AND status != %s AND read_at IS NULL',
+            array_merge( [ $clinic_id ], $patient_ids, [ 'cancelled' ] )
+        );
+    }
+
+    /**
+     * @param list<int> $patient_ids
+     */
+    private function patient_last_id_in_clinic( int $clinic_id, array $patient_ids ): int {
+        if ( 1 === count( $patient_ids ) ) {
+            return $this->notifications->lastIdForPatient( $clinic_id, $patient_ids[0] );
+        }
+
+        $placeholders = implode( ',', array_fill( 0, count( $patient_ids ), '%d' ) );
+
+        return (int) $this->db->fetchValue(
+            'SELECT COALESCE(MAX(id), 0) FROM ' . $this->db->table( 'cpms_notifications' )
+            . ' WHERE clinic_id = %d AND recipient_patient_id IN (' . $placeholders . ') AND status != %s',
+            array_merge( [ $clinic_id ], $patient_ids, [ 'cancelled' ] )
+        );
+    }
+
+    /**
+     * @param list<int> $patient_ids
+     * @param list<int> $ids
+     */
+    private function mark_patient_read_in_clinic( int $clinic_id, array $patient_ids, array $ids, bool $all ): int {
+        if ( [] === $patient_ids ) {
+            return 0;
+        }
+
+        $now                  = $this->db->nowUtcSql();
+        $patient_placeholders = implode( ',', array_fill( 0, count( $patient_ids ), '%d' ) );
+
+        if ( $all ) {
+            return $this->db->execute(
+                'UPDATE ' . $this->db->table( 'cpms_notifications' )
+                . ' SET read_at = %s'
+                . ' WHERE clinic_id = %d AND recipient_patient_id IN (' . $patient_placeholders . ') AND read_at IS NULL',
+                array_merge( [ $now, $clinic_id ], $patient_ids )
+            );
+        }
+
+        $clean_ids = array_values(
+            array_unique(
+                array_filter(
+                    array_map( 'intval', $ids ),
+                    static fn ( int $item_id ): bool => $item_id > 0
+                )
+            )
+        );
+        if ( [] === $clean_ids ) {
+            return 0;
+        }
+
+        $bounded_ids     = array_slice( $clean_ids, 0, 200 );
+        $id_placeholders = implode( ',', array_fill( 0, count( $bounded_ids ), '%d' ) );
+
+        return $this->db->execute(
+            'UPDATE ' . $this->db->table( 'cpms_notifications' )
+            . ' SET read_at = %s'
+            . ' WHERE clinic_id = %d AND recipient_patient_id IN (' . $patient_placeholders . ')'
+            . ' AND read_at IS NULL AND id IN (' . $id_placeholders . ')',
+            array_merge( [ $now, $clinic_id ], $patient_ids, $bounded_ids )
+        );
     }
 
     /**

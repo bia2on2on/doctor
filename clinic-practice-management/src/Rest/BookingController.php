@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace ClinicCore\Rest;
 
+use ClinicCore\Application\Auth\PatientSessionScope;
 use ClinicCore\Application\Booking\BookingService;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
@@ -25,8 +27,14 @@ use WP_REST_Server;
  */
 final class BookingController extends RestBase
 {
-    public function __construct(private readonly BookingService $booking)
-    {
+    public function __construct(
+        private readonly BookingService $booking,
+        private readonly ?PatientSessionScope $session_scope = null
+    ) {
+    }
+
+    private function session_scope(): PatientSessionScope {
+        return $this->session_scope ?? App::patient_session_scope();
     }
 
     public function register_routes(): void
@@ -298,11 +306,21 @@ final class BookingController extends RestBase
     {
         $user = wp_get_current_user();
 
-        return $this->wrap(fn () => $this->booking->listMine(
-            (int) $user->ID,
-            (string) $request->get_param('from'),
-            (string) $request->get_param('to')
-        ));
+        return $this->wrap(
+            function () use ( $request, $user ): array {
+                $clinic_id = $this->session_scope()->require_clinic_for_read( (int) $user->ID );
+                if ( null === $clinic_id ) {
+                    return [];
+                }
+
+                return $this->booking->listMine(
+                    (int) $user->ID,
+                    (string) $request->get_param( 'from' ),
+                    (string) $request->get_param( 'to' ),
+                    $clinic_id
+                );
+            }
+        );
     }
 
     /**
@@ -578,6 +596,8 @@ final class BookingController extends RestBase
             return $this->success($fn(), 200);
         } catch (BookingException $e) {
             return $this->error($e->errorCode, $e->httpStatus, $e->getMessage(), $e->data);
+        } catch ( ScopeRequiredException $e ) {
+            return $this->error( $e->apiCode(), $e->httpStatus(), $e->getMessage(), $e->getData() );
         } catch ( \Throwable $e ) {
             // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- operational boundary log without leaking raw exception details to client.
             error_log( '[CPMS][BookingController] unexpected: ' . get_class( $e ) . ': ' . $e->getMessage() );

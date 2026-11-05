@@ -227,6 +227,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         );
         $slot = $this->makeSlot(2, '13:20');
         $user = (int) wp_create_user('expiry_lock_public', 'pass-12345', '09127770888@otp.cpms.local');
+        cpms_test_seed_patient_session($user, 1);
         // First demonstrate a hold capacity lock returning after T0.
         $cross = function (string $sql) use (&$now): string {
             if (str_contains($sql, 'cpms_schedule_slots') && (str_contains($sql, 'FOR UPDATE') || str_contains($sql, 'UPDATE '))) {
@@ -295,6 +296,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         $slot = $this->makeSlot(2, '11:20');
         $user = (int) wp_create_user('expiry_public', 'pass-12345', '09127770999@otp.cpms.local');
         (new \WP_User($user))->set_role('cpms_patient');
+        cpms_test_seed_patient_session($user, 1);
         $hold = App::bookingService()->hold($user, $this->clinicianId, $slot['date'], '11:20');
         $this->assertNotEmpty($hold['hold_token']);
         $this->expiresAt = time() - 1; // Grace and skew must NOT postpone shutdown.

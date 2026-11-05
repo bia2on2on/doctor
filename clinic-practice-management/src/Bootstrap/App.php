@@ -28,6 +28,7 @@ use ClinicCore\Admin\SecretaryFinancePage;
 use ClinicCore\Admin\SecretaryQueuePage;
 use ClinicCore\Admin\SmsSettingsPage;
 use ClinicCore\Application\Auth\OtpService;
+use ClinicCore\Application\Auth\PatientSessionScope;
 use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Application\Booking\BookingService;
 use ClinicCore\Application\Booking\ScheduleService;
@@ -188,6 +189,7 @@ final class App
     private static ?SmsService $smsService = null;
     private static ?LicenseGate $licenseGate = null;
     private static ?VisitService $visitService = null;
+    private static ?PatientSessionScope $patient_session_scope = null;
     private static bool $booted = false;
 
     /**
@@ -257,6 +259,7 @@ final class App
         // Phase 1A — Item 3: محدودسازی نرخ ورود. پیش از این هیچ کنترل
         // Bruteforce ای روی wp-login و احراز هویت REST وجود نداشت.
         self::loginRateLimiter()->register();
+        self::patient_session_scope()->register_hooks();
 
         add_filter('rest_request_before_callbacks', [RestClinicContext::class, 'beforeCallbacks'], 10, 3);
         // Phase 11 Slice 6 — the reception cancel route owns its trusted Clinic +
@@ -317,7 +320,7 @@ final class App
 				( new HealthController() )->register_routes();
 				( new OtpController( self::otpService() ) )->register_routes();
 				( new SmsController( self::smsService() ) )->register_routes();
-				( new BookingController( self::bookingService() ) )->register_routes();
+				( new BookingController( self::bookingService(), self::patient_session_scope() ) )->register_routes();
 				( new PatientController( self::patientService() ) )->register_routes();
 				( new QueueController( self::visitService() ) )->register_routes();
 				( new ScheduleController( self::scheduleService() ) )->register_routes();
@@ -855,7 +858,8 @@ final class App
                 self::smsService(),
                 self::notificationService(),
                 new MembershipRepository( $db ),
-                self::patient_identity_activator()
+                self::patient_identity_activator(),
+                self::patient_session_scope()
             );
         }
 
@@ -1243,7 +1247,8 @@ final class App
                 // Scope-neutral construction (الگوی SmsService).
                 self::settingsFactory(),
                 static fn (): int => self::scope()->clinicId,
-                self::op()
+                self::op(),
+                self::patient_session_scope()
             );
         }
 
@@ -1424,11 +1429,21 @@ final class App
                 self::audit(),
                 self::op(),
                 self::smsService(),
-                self::jobs()
+                self::jobs(),
+                self::patient_session_scope()
             );
         }
 
         return $otp;
+    }
+
+    public static function patient_session_scope(): PatientSessionScope {
+        if ( null === self::$patient_session_scope ) {
+            self::$patient_session_scope = new PatientSessionScope( self::db() );
+        }
+        self::$patient_session_scope->register_hooks();
+
+        return self::$patient_session_scope;
     }
 
     /**
@@ -1774,6 +1789,9 @@ final class App
         // باطل شود. Phase 2: `settings()` دیگر نمونهٔ میخ‌شده ندارد و هر بار از
         // Scope مشتق می‌شود، پس فقط کشِ **داده** لازم است خالی شود.
         Settings::flushCache();
+        if ( null !== self::$patient_session_scope ) {
+            self::$patient_session_scope->reset_in_process_state();
+        }
     }
 
     /**

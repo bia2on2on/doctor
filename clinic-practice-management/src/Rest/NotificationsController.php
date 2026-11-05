@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Rest;
 
 use ClinicCore\Application\Notifications\NotificationService;
+use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
 use WP_Error;
 use WP_REST_Request;
@@ -98,21 +99,30 @@ final class NotificationsController extends RestBase
             return $rl;
         }
 
-        $userId = $this->userId($r);
-        $etag = '"' . $this->notifications->lastId($userId) . '"';
-        $ifNoneMatch = trim((string) $r->get_header('If-None-Match'));
-        if ($ifNoneMatch === $etag) {
-            $notModified = new WP_REST_Response(null, 304);
-            $notModified->header('ETag', $etag);
+        $user_id = $this->userId( $r );
+        try {
+            $etag          = '"' . $this->notifications->lastId( $user_id ) . '"';
+            $if_none_match = trim( (string) $r->get_header( 'If-None-Match' ) );
+            if ( $if_none_match === $etag ) {
+                $not_modified = new WP_REST_Response( null, 304 );
+                $not_modified->header( 'ETag', $etag );
 
-            return $notModified;
+                return $not_modified;
+            }
+
+            $payload  = $this->notifications->since( $user_id, (int) ( $r['since'] ?? 0 ) );
+            $response = $this->success( $payload );
+            $response->header( 'ETag', $etag );
+
+            return $response;
+        } catch ( ScopeRequiredException $e ) {
+            return $this->error( $e->apiCode(), $e->httpStatus(), $e->getMessage(), $e->getData() );
+        } catch ( \Throwable $e ) {
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- operational boundary log without leaking raw exception details to client.
+            error_log( '[CPMS][NotificationsController] unexpected: ' . get_class( $e ) . ': ' . $e->getMessage() );
+
+            return $this->error( 'CLINIC_INTERNAL_ERROR', 500, 'خطای داخلی سرور — لطفاً دوباره تلاش کنید' );
         }
-
-        $payload = $this->notifications->since($userId, (int) ($r['since'] ?? 0));
-        $response = $this->success($payload);
-        $response->header('ETag', $etag);
-
-        return $response;
     }
 
     // ================= Helpers =================
@@ -149,6 +159,8 @@ final class NotificationsController extends RestBase
 
         try {
             return $this->success($fn());
+        } catch ( ScopeRequiredException $e ) {
+            return $this->error( $e->apiCode(), $e->httpStatus(), $e->getMessage(), $e->getData() );
         } catch (\Throwable $e) {
             error_log('[CPMS][NotificationsController] unexpected: ' . get_class($e) . ': ' . $e->getMessage());
 

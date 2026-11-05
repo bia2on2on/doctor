@@ -121,7 +121,7 @@
 		if (!isNonEmptyString(parsed.availability_path) || !isNonEmptyString(parsed.quote_path)) {
 			return null;
 		}
-		if (toInt(parsed.clinic_id) <= 0) {
+		if (parsed.mode !== 'discovery' && toInt(parsed.clinic_id) <= 0) {
 			return null;
 		}
 
@@ -389,8 +389,24 @@
 		var availableDays = [];
 		var weekOffset = 0;
 		var calendarScaffold = Array.isArray(config.calendar) ? config.calendar : [];
+		var rootCount = document.querySelectorAll(ROOT_SELECTOR).length;
 		var activeClinicId = toInt(root.getAttribute('data-clinic-id'));
 		var clinicSelect = root.querySelector('[data-role="clinic-select"]');
+		if (clinicSelect && activeClinicId <= 0) {
+			var initialRestored = readStoredSelection();
+			var preferredClinicId = initialRestored ? toInt(initialRestored.clinic_id) : 0;
+			if (preferredClinicId > 0 && clinicSelect.options) {
+				for (var optIdx = 0; optIdx < clinicSelect.options.length; optIdx++) {
+					if (toInt(clinicSelect.options[optIdx].value) === preferredClinicId) {
+						clinicSelect.selectedIndex = optIdx;
+						clinicSelect.value = String(preferredClinicId);
+						break;
+					}
+				}
+			}
+			activeClinicId = toInt(clinicSelect.value);
+			root.setAttribute('data-clinic-id', String(activeClinicId));
+		}
 		var weekLabel = root.querySelector('[data-role="week-label"]');
 		var prevWeekBtn = root.querySelector('[data-role="prev-week"]');
 		var nextWeekBtn = root.querySelector('[data-role="next-week"]');
@@ -455,18 +471,26 @@
 			return out;
 		}
 
-		/* -------------- Phase 8 Slice 2 — وضعیت continuation -------------- */
+		/* -------------- Phase 8 Slice 2 + M5 — وضعیت continuation -------------- */
 		/* فقط از قراردادِ منتشرشدهٔ سرور خوانده می‌شود؛ هیچ حدسی در کار نیست:
-		 *  - anonymous: config حامل otp_request_path/otp_verify_path است؛
-		 *  - patient: config حامل nonce + hold_path/confirm_path است؛
+		 *  - anonymous: فقط otp_request_path/otp_verify_path منتشر شده‌اند؛
+		 *  - patient: nonce + hold_path/confirm_path منتشر شده‌اند (و در حالت
+		 *    discovery یا عدم تطابق session_clinic_id با clinic_id، مسیرهای OTP
+		 *    هم برای احراز مجدد منتشر می‌شوند)؛
 		 *  - none: هیچ continuation بیماری منتشر نشده. */
+		var hasPatientPaths = isNonEmptyString(config.nonce) && isNonEmptyString(config.hold_path) && isNonEmptyString(config.confirm_path);
+		var hasOtpPaths = isNonEmptyString(config.otp_request_path) && isNonEmptyString(config.otp_verify_path);
 		var authMode = 'none';
-		if (isNonEmptyString(config.otp_request_path) && isNonEmptyString(config.otp_verify_path)) {
-			authMode = 'anonymous';
-		} else if (isNonEmptyString(config.nonce) && isNonEmptyString(config.hold_path) && isNonEmptyString(config.confirm_path)) {
+		if (hasPatientPaths) {
 			authMode = 'patient';
+		} else if (hasOtpPaths) {
+			authMode = 'anonymous';
 		}
+		var sessionClinicId = Object.prototype.hasOwnProperty.call(config, 'session_clinic_id')
+			? toInt(config.session_clinic_id)
+			: (!hasOtpPaths ? toInt(config.clinic_id) : 0);
 
+		var otpStep = root.querySelector('[data-role="otp-step"]') || root.querySelector('.cpms-public-booking__auth');
 		var continueBox = root.querySelector('[data-role="booking-continue"]');
 		var nearbyWrap = root.querySelector('[data-role="nearby"]');
 		var nearbyList = root.querySelector('[data-role="nearby-list"]');
@@ -474,14 +498,67 @@
 		var holdToken = '';
 		var countdownTimer = 0;
 
+		function currentSessionMatchesClinic() {
+			var targetClinicId = currentClinicId() > 0 ? currentClinicId() : toInt(config.clinic_id);
+			return sessionMatchesClinic(sessionClinicId, targetClinicId);
+		}
+
+		function resetOtpStepUi(message) {
+			if (!otpStep) {
+				return;
+			}
+			var continueBtn = otpStep.querySelector('[data-role="continue-auth"]');
+			if (continueBtn) {
+				continueBtn.hidden = false;
+			}
+			var steps = otpStep.querySelectorAll('[data-auth-step]');
+			for (var s = 0; s < steps.length; s++) {
+				steps[s].hidden = true;
+			}
+			var authStatus = otpStep.querySelector('[data-role="auth-status"]');
+			if (authStatus) {
+				if (isNonEmptyString(message)) {
+					setText(authStatus, message);
+					authStatus.hidden = false;
+				} else {
+					setText(authStatus, '');
+					authStatus.hidden = true;
+				}
+			}
+		}
+
+		function promptClinicOtp(message) {
+			if (!otpStep || !hasOtpPaths) {
+				return;
+			}
+			otpStep.hidden = false;
+			resetOtpStepUi(message);
+		}
+
 		/* ---------- Phase 8 Slice 3 — patient chooser (N>1) ---------- */
 		var selectedPatientId = 0;
-		var patientChooser = root.querySelector('[data-role="patient-chooser"]');
+		var allPatientChoosers = root.querySelectorAll('[data-role="patient-chooser"]');
+		function activeChooserClinicId() {
+			return currentClinicId() > 0 ? currentClinicId() : toInt(config.clinic_id);
+		}
+		function findChooserForClinic(clinicId) {
+			var cid = toInt(clinicId);
+			for (var cIdx = 0; cIdx < allPatientChoosers.length; cIdx++) {
+				var chooserCid = toInt(allPatientChoosers[cIdx].getAttribute('data-clinic-id'));
+				if (chooserCid <= 0 || chooserCid === cid) {
+					return allPatientChoosers[cIdx];
+				}
+			}
+			return null;
+		}
+		var patientChooser = (authMode !== 'patient' || currentSessionMatchesClinic())
+			? findChooserForClinic(activeChooserClinicId())
+			: null;
 		var patientOptions = patientChooser ? patientChooser.querySelectorAll('[data-role="patient-option"]') : [];
 		var PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + patientKeySuffix(
 			config.surface_id,
-			config.clinic_id,
-			document.querySelectorAll(ROOT_SELECTOR).length
+			activeChooserClinicId(),
+			rootCount
 		);
 		function getStoredPatientId() {
 			try {
@@ -1217,12 +1294,16 @@
 				if (lastSelection) { lastSelection.location_id = quotedLocationId; }
 				panelState(STATE_BOOKABLE);
 				showDetail('detail-capacity', { capacity: toInt(payload.capacity_left) });
-				// Phase 8 Slice 2 — انتخابِ غیر-PHI برای عبور از مرز login.
+				// Phase 8 Slice 2 + M5 — انتخابِ غیر-PHI برای عبور از مرز login / clinic OTP.
 				if (lastSelection) {
 					storeSelection(lastSelection);
 					if (authMode === 'patient') {
-						// بیمارِ واردشده: ادامه با B1 موجود — Hold فقط اینجاست.
-						beginHold(lastSelection);
+						if (currentSessionMatchesClinic()) {
+							// بیمارِ واردشده در همان Clinicِ نشست: ادامه با B1 موجود — Hold فقط اینجاست.
+							beginHold(lastSelection);
+						} else {
+							promptClinicOtp('');
+						}
 					}
 				}
 				return;
@@ -1276,6 +1357,7 @@
 
 			// Phase 8 Slice 2 — انتخابِ جاری (غیر-PHI) برای ادامهٔ احراز/رزرو.
 			lastSelection = {
+				clinic_id: currentClinicId(),
 				clinician_id: selectedClinicianId,
 				slot_id: slotId > 0 ? slotId : 0,
 				location_id: selectedLocationId,
@@ -1551,6 +1633,10 @@
 			if (!continueBox || busy || !validSelection(selection) || toInt(selection.location_id) <= 0 || toInt(selection.location_id) !== selectedLocationId) {
 				return;
 			}
+			if (!currentSessionMatchesClinic()) {
+				promptClinicOtp('');
+				return;
+			}
 			continueBox.hidden = false;
 			hideNearby();
 			setBusy(true);
@@ -1611,6 +1697,23 @@
 
 		function handleBookingFailure(result) {
 			var code = result.body && isNonEmptyString(result.body.code) ? result.body.code : '';
+			if (code === 'CLINIC_SCOPE_REQUIRED' && hasOtpPaths) {
+				holdToken = '';
+				stopCountdown();
+				hideNearby();
+				var scopeNamesForm = root.querySelector('[data-role="names-form"]');
+				var scopeReasonWrap = root.querySelector('[data-role="reason-wrap"]');
+				var scopeConfirmBtn = root.querySelector('[data-role="confirm-btn"]');
+				if (scopeNamesForm) { scopeNamesForm.hidden = true; }
+				if (scopeReasonWrap) { scopeReasonWrap.hidden = true; }
+				if (scopeConfirmBtn) { scopeConfirmBtn.hidden = true; }
+				if (continueBox) { continueBox.hidden = true; }
+				sessionClinicId = 0;
+				syncClinicSessionState();
+				if (lastSelection) { storeSelection(lastSelection); }
+				promptClinicOtp(serverMessage(result));
+				return;
+			}
 			if (code === 'CLINIC_SLOT_TAKEN') {
 				var payload = result.body && result.body.data ? result.body.data : null;
 				renderNearby(payload && Array.isArray(payload.nearby_slots) ? payload.nearby_slots : null);
@@ -1833,13 +1936,58 @@
 			applyDoctorFilters();
 		}
 
+		function syncClinicSessionState() {
+			if (authMode !== 'patient') {
+				return;
+			}
+			var matches = currentSessionMatchesClinic();
+			var cid = activeChooserClinicId();
+			PATIENT_STORAGE_KEY = 'cpms-patient-selection:' + patientKeySuffix(
+				config.surface_id,
+				cid,
+				rootCount
+			);
+			for (var chIdx = 0; chIdx < allPatientChoosers.length; chIdx++) {
+				var ch = allPatientChoosers[chIdx];
+				var chCid = toInt(ch.getAttribute('data-clinic-id'));
+				ch.hidden = !(matches && (chCid <= 0 || chCid === cid));
+			}
+			patientChooser = matches ? findChooserForClinic(cid) : null;
+			patientOptions = patientChooser ? patientChooser.querySelectorAll('[data-role="patient-option"]') : [];
+			selectedPatientId = 0;
+			if (patientChooser && patientOptions.length > 0) {
+				var restoredPid = getValidatedStoredPatientId();
+				if (restoredPid > 0) {
+					setPatientSelection(restoredPid);
+				} else {
+					for (var rIdx = 0; rIdx < patientOptions.length; rIdx++) {
+						patientOptions[rIdx].setAttribute('aria-pressed', 'false');
+					}
+				}
+			}
+			if (otpStep) {
+				if (matches) {
+					otpStep.hidden = true;
+				} else if (hasOtpPaths) {
+					otpStep.hidden = false;
+					resetOtpStepUi('');
+				}
+			}
+		}
+
 		initLocationFirst();
+		syncClinicSessionState();
 
 		/* ---------- راه‌اندازیِ continuation در بارگذاری ---------- */
 
-		if (authMode === 'patient') {
+		if (authMode === 'patient' && currentSessionMatchesClinic()) {
 			var restored = readStoredSelection();
-			if (restored && toInt(restored.clinician_id) > 0) {
+			var restoredClinicId = restored ? toInt(restored.clinic_id) : 0;
+			if (
+				restored
+				&& toInt(restored.clinician_id) > 0
+				&& (restoredClinicId <= 0 || restoredClinicId === activeChooserClinicId())
+			) {
 				selectedClinicianId = toInt(restored.clinician_id);
 				for (var restoreIndex = 0; restoreIndex < clinicianButtons.length; restoreIndex++) {
 					if (toInt(clinicianButtons[restoreIndex].getAttribute('data-clinician-id')) === selectedClinicianId) {
@@ -1993,14 +2141,29 @@
 				var next = toInt(clinicSelect.value);
 				activeClinicId = next > 0 ? next : 0;
 				root.setAttribute('data-clinic-id', String(activeClinicId));
-				// انتخابِ Clinicِ دیگر، انتخابِ پزشک/نوبتِ قبلی را بی‌اعتبار می‌کند
-				// (هیچ نوبتی از Clinic دیگر حفظ نمی‌شود).
+				// انتخابِ Clinicِ دیگر، انتخابِ پزشک/نوبت/بیمار/نگه‌داشتِ قبلی را
+				// بی‌اعتبار می‌کند (هیچ وضعیتی از Clinic دیگر حفظ نمی‌شود).
 				selectedClinicianId = 0;
+				selectedPatientId = 0;
 				lastSelection = null;
+				holdToken = '';
+				stopCountdown();
+				hideNearby();
+				setContinueMessage('');
+				if (continueBox) { continueBox.hidden = true; }
+				var swConfirm = root.querySelector('[data-role="confirm-btn"]');
+				var swNames = root.querySelector('[data-role="names-form"]');
+				var swReason = root.querySelector('[data-role="reason-wrap"]');
+				var swReceipt = root.querySelector('[data-role="receipt"]');
+				if (swConfirm) { swConfirm.hidden = true; }
+				if (swNames) { swNames.hidden = true; }
+				if (swReason) { swReason.hidden = true; }
+				if (swReceipt) { swReceipt.hidden = true; }
 				weekOffset = 0;
 				availableDays = [];
 				clearStoredSelection();
 				setText(daysHost, '');
+				clearDetail();
 				setPressed(clinicianButtons, null);
 				panelState(STATE_IDLE);
 				// Clinicِ دیگر ⇒ Locationِ قبلی بی‌اعتبار است؛ فهرستِ Locationها از
@@ -2008,6 +2171,7 @@
 				// Clinicِ قبلی نمی‌ماند).
 				availableLocations = [];
 				initLocationFirst();
+				syncClinicSessionState();
 				updateTimezoneLabel();
 				applyDoctorFilters();
 			});
@@ -2094,6 +2258,13 @@
 		return -1;
 	}
 
+	/** آیا Clinicِ معتبرِ نشست با Clinicِ انتخاب‌شده تطابقِ دقیق دارد؟ */
+	function sessionMatchesClinic(sessionClinicId, targetClinicId) {
+		var sessionId = toInt(sessionClinicId);
+		var targetId = toInt(targetClinicId);
+		return sessionId > 0 && targetId > 0 && sessionId === targetId;
+	}
+
 	// Test seam (pure logic only — no DOM, no network, no bookability).
 	window.CpmsPublicBookingDiscovery = {
 		normalizeSearchText: normalizeSearchText,
@@ -2103,7 +2274,8 @@
 		patientKeySuffix: patientKeySuffix,
 		// صرفاً برای specِ مستقلِ Node (multi-widget isolation) صادر می‌شود:
 		// تنها یک تابعِ خالص است و هیچ state یا side effect ندارد.
-		selectionKeyFor: selectionKeyFor
+		selectionKeyFor: selectionKeyFor,
+		sessionMatchesClinic: sessionMatchesClinic
 	};
 
 	/* ====================== راه‌اندازی ====================== */

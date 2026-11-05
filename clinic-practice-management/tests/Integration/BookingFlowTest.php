@@ -86,6 +86,7 @@ final class BookingFlowTest extends WP_UnitTestCase
 
         // کاربر دوم (بدون Patient — برای تست Auto-Creation)
         $this->otherUserId = (int) wp_create_user('patient_2', 'pass-12345', '09120000002@otp.cpms.local', ['role' => 'cpms_patient']);
+        cpms_test_seed_patient_session($this->otherUserId, 1);
     }
 
     protected function tearDown(): void
