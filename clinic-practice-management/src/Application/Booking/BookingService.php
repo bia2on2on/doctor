@@ -555,15 +555,17 @@ final class BookingService
         $trusted_clinic_id = (int) $slot['clinic_id'];
         $this->assert_patient_session_matches_clinic( $wp_user_id, $trusted_clinic_id );
 
+        // Phase 8 Slice 3 — linked-Patient booking-subject selection (LINKED-ONLY authority).
+        // Trusted Clinic = slot's persisted clinic_id (never client payload).
+        // Must be evaluated before any capacity claim. It runs before the profile
+        // gate below, so a rejected patient_id always gets the generic selection
+        // answer instead of a profile error that depends on the caller's links.
+        $patient_id_to_persist = $this->resolveBookingPatientForHold( $wp_user_id, $trusted_clinic_id, $patient_id );
+
         $mobile = $this->mobile_for_user_in_clinic( $wp_user_id, $trusted_clinic_id );
         if ( null === $mobile ) {
             throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)' );
         }
-
-        // Phase 8 Slice 3 — linked-Patient booking-subject selection (LINKED-ONLY authority).
-        // Trusted Clinic = slot's persisted clinic_id (never client payload).
-        // Must be evaluated before any capacity claim.
-        $patient_id_to_persist = $this->resolveBookingPatientForHold( $wp_user_id, $trusted_clinic_id, $patient_id );
 
         // N-4: Hold Active موجود همان بیمار/اسلات → Idempotent (بازگردانی همان Token)
         $existing = $this->db->fetchRow(
@@ -2978,25 +2980,14 @@ final class BookingService
             return null;
         }
         $linked = $this->linkedActivePatientsForClinic($wpUserId, $trustedClinicId);
-        $linkedIds = array_map(static fn (array $r): int => (int) $r['id'], $linked);
         $cnt = count($linked);
         if ($requestedPatientId !== null) {
             $requestedPatientId = (int) $requestedPatientId;
-            if ($requestedPatientId <= 0) {
-                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'شناسهٔ بیمار نامعتبر است', 422);
-            }
-            $p = $this->patients->find($requestedPatientId);
-            if ($p === null) {
-                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بیمار یافت نشد', 422);
-            }
-            if ((int) ($p['clinic_id'] ?? 0) !== $trustedClinicId) {
-                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بیمار به کلینیک دیگری تعلق دارد', 422);
-            }
+
+            $p = $this->assert_requested_patient_owned_by_caller( $wpUserId, $trustedClinicId, $requestedPatientId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established method parameters.
+            // Only the linked owner reaches this status answer, so it reveals nothing new.
             if ((string) ($p['status'] ?? '') !== 'active') {
                 throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل بیمار غیرفعال است', 400);
-            }
-            if (!in_array($requestedPatientId, $linkedIds, true)) {
-                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'بیمارِ انتخابی به شما مرتبط نیست', 422);
             }
 
             return $requestedPatientId;
@@ -3008,6 +2999,37 @@ final class BookingService
             return (int) $linked[0]['id'];
         }
         throw BookingException::of('CLINIC_PATIENT_SELECTION_REQUIRED', 'انتخاب بیمار برای رزرو الزامی است', 422);
+    }
+
+    /**
+     * Requested patient must be the caller's own linked patient in the trusted
+     * Clinic. Missing, other-Clinic and not-linked selections all get the same
+     * generic answer, so a probe cannot tell them apart.
+     *
+     * @return array<string, mixed> The patient row, used by the status check after it.
+     */
+    private function assert_requested_patient_owned_by_caller( int $wp_user_id, int $clinic_id, int $patient_id ): array {
+        if ( $patient_id <= 0 ) {
+            throw $this->invalid_patient_selection();
+        }
+        $patient = $this->patients->find( $patient_id );
+        if ( null === $patient || (int) ( $patient['clinic_id'] ?? 0 ) !== $clinic_id ) {
+            throw $this->invalid_patient_selection();
+        }
+        $link = $this->db->fetchRow(
+            'SELECT 1 AS ok FROM ' . $this->db->table( 'cpms_patient_user_links' )
+            . ' WHERE wp_user_id = %d AND clinic_id = %d AND patient_id = %d LIMIT 1',
+            [ $wp_user_id, $clinic_id, $patient_id ]
+        );
+        if ( null === $link ) {
+            throw $this->invalid_patient_selection();
+        }
+
+        return $patient;
+    }
+
+    private function invalid_patient_selection(): BookingException {
+        return BookingException::of( 'CLINIC_VALIDATION_FAILED', 'بیمارِ انتخابی معتبر نیست', 422 );
     }
 
     /**

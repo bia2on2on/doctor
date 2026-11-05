@@ -1134,9 +1134,13 @@ final class PublicBookingShortcode
     private static function render_auth_continuation( string $surface_id, bool $hidden = false ): string
     {
         $b = self::ROOT_CLASS;
-        $mobile_input_id = $surface_id . '-otp-mobile';
-        $code_input_id   = $surface_id . '-otp-code';
-        $otp_step_id     = $surface_id . '-otp-step';
+        // Child ids use their own `cpms-auth-` namespace, not the root's
+        // `cpms-public-booking-` prefix, so an id selector on that prefix matches
+        // only the root surfaces. Classes and data-role hooks are unchanged.
+        $auth_ns         = 'cpms-auth-' . preg_replace( '/^cpms-public-booking-/', '', $surface_id );
+        $mobile_input_id = $auth_ns . '-otp-mobile';
+        $code_input_id   = $auth_ns . '-otp-code';
+        $otp_step_id     = $auth_ns . '-otp-step';
 
         $lines = [];
         $lines[] = sprintf(
