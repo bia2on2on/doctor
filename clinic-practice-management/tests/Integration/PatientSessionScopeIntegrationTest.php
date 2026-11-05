@@ -237,8 +237,16 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         self::assertSame([], $ok->get_data()['data'] ?? null, '0 links returns an empty list, not an error.');
 
         $multi = $this->makeUser('m5_rest_multi', RolesAndCapabilities::ROLE_PATIENT);
-        $this->linkPatient($this->clinicA, $this->insertPatient($this->clinicA, 'RA'), $multi);
-        $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'RB'), $multi);
+        $patientA = $this->insertPatient($this->clinicA, 'RA');
+        $patientB = $this->insertPatient($this->clinicB, 'RB');
+        $this->linkPatient($this->clinicA, $patientA, $multi);
+        $this->linkPatient($this->clinicB, $patientB, $multi);
+        // One appointment per Clinic for the same patient user. The date must sit
+        // inside the endpoint's default window (today .. today + 365 days).
+        $date = gmdate('Y-m-d', time() + 30 * 86400);
+        $clinicianA = $this->insertClinician($this->clinicA, 'RA');
+        $apptA = $this->insertAppointment($this->clinicA, $this->locationA, $patientA, $clinicianA, $date, '10:00');
+        $apptB = $this->insertAppointment($this->clinicB, $this->locationB, $patientB, $this->clinicianB, $date, '11:00');
         wp_set_current_user($multi);
         $blocked = rest_do_request($this->mineRequest());
         self::assertSame(400, $blocked->get_status());
@@ -247,6 +255,13 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         cpms_test_seed_patient_session($multi, $this->clinicA);
         $scoped = rest_do_request($this->mineRequest());
         self::assertSame(200, $scoped->get_status(), 'stamped session resolves the multi-link user.');
+        $ids = array_map(
+            static fn (array $row): int => (int) ($row['id'] ?? 0),
+            $scoped->get_data()['data'] ?? []
+        );
+        self::assertContains($apptA, $ids, 'clinic A session must list the clinic A appointment.');
+        self::assertNotContains($apptB, $ids, 'clinic A session must not list the clinic B appointment.');
+        self::assertSame([$apptA], $ids, 'clinic A session returns exactly the clinic A appointment.');
     }
 
     /**
@@ -496,6 +511,21 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
             'mobile_at_link' => '09121234567',
             'is_primary'     => 1,
             'linked_at'      => App::db()->nowUtcSql(),
+        ]);
+
+        return App::db()->wpdb_last_insert_id();
+    }
+
+    private function insertClinician(int $clinicId, string $tag): int
+    {
+        $now = App::db()->nowUtcSql();
+        App::db()->insert('cpms_clinicians', [
+            'clinic_id'  => $clinicId,
+            'full_name'  => 'Dr M5M11 ' . $tag . ' ' . bin2hex(random_bytes(2)),
+            'wp_user_id' => 0,
+            'is_active'  => 1,
+            'created_at' => $now,
+            'updated_at' => $now,
         ]);
 
         return App::db()->wpdb_last_insert_id();

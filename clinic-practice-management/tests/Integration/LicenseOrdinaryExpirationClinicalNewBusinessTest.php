@@ -25,6 +25,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
     public ?string $keypair = null;
     public ?int $expiresAt = null;
 
+    private int $clinicId = 0;
     private int $clinicianId;
     private int $patientId;
     private int $secretaryUserId;
@@ -33,6 +34,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
     {
         parent::setUp();
         App::migrations()->migrate();
+        $this->clinicId = $this->migratedDefaultClinicId();
         \ClinicCore\Settings\Settings::flushCache();
 
         if (!LicenseSignature::available()) {
@@ -54,7 +56,8 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
                      (clinic_id, full_name, is_active, created_at, updated_at)
-                 VALUES (1, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
                 'Dr Ordinary Expiry',
                 $now,
                 $now
@@ -66,7 +69,8 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
                      (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
-                 VALUES (1, %s, "Expiry", "Patient", %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, "Expiry", "Patient", %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
                 'MR-EXP-0001',
                 '09127770001',
                 $now,
@@ -95,6 +99,25 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
      * Gateway جعلی با یک رفتار: سندِ امضاشدهٔ منقضیِ خارج از grace
      * (expires_at = now - 10d؛ expiry_grace پیش‌فرض ۷ روز).
      */
+
+    /**
+     * Resolve the Clinic created by the initial migration (seed slug `default`)
+     * so every fixture references the suite's real Clinic ID.
+     */
+    private function migratedDefaultClinicId(): int
+    {
+        global $wpdb;
+        $id = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE slug = %s LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'default'
+            )
+        );
+        $this->assertGreaterThan(0, $id, 'The migrated default Clinic must exist.');
+
+        return $id;
+    }
+
     private function expiredGateway(): VendorGateway
     {
         return new class($this) implements VendorGateway {
@@ -199,7 +222,9 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
                      (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, %d, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, (SELECT id FROM ' . $wpdb->prefix . 'cpms_locations WHERE clinic_id = %d AND is_primary = 1 LIMIT 1), %d, %s, %s, 20, %d, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
+                $this->clinicId,
                 $this->clinicianId,
                 $date,
                 $time,
@@ -227,7 +252,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         );
         $slot = $this->makeSlot(2, '13:20');
         $user = (int) wp_create_user('expiry_lock_public', 'pass-12345', '09127770888@otp.cpms.local');
-        cpms_test_seed_patient_session($user, 1);
+        cpms_test_seed_patient_session($user, $this->clinicId);
         // First demonstrate a hold capacity lock returning after T0.
         $cross = function (string $sql) use (&$now): string {
             if (str_contains($sql, 'cpms_schedule_slots') && (str_contains($sql, 'FOR UPDATE') || str_contains($sql, 'UPDATE '))) {
@@ -278,7 +303,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         wp_set_current_user($this->secretaryUserId);
         $request = new \WP_REST_Request('POST', '/clinic/v1/appointments');
         $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
-        $request->set_header('X-CPMS-Clinic-Id', '1');
+        $request->set_header('X-CPMS-Clinic-Id', (string) $this->clinicId);
         $request->set_header('Content-Type', 'application/json');
         $request->set_body(wp_json_encode([
             'patient_id' => $this->patientId, 'clinician_id' => $this->clinicianId,
@@ -296,7 +321,7 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         $slot = $this->makeSlot(2, '11:20');
         $user = (int) wp_create_user('expiry_public', 'pass-12345', '09127770999@otp.cpms.local');
         (new \WP_User($user))->set_role('cpms_patient');
-        cpms_test_seed_patient_session($user, 1);
+        cpms_test_seed_patient_session($user, $this->clinicId);
         $hold = App::bookingService()->hold($user, $this->clinicianId, $slot['date'], '11:20');
         $this->assertNotEmpty($hold['hold_token']);
         $this->expiresAt = time() - 1; // Grace and skew must NOT postpone shutdown.
@@ -370,9 +395,9 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
             $this->assertSame('CLINIC_LICENSE_BLOCKED', $e->errorCode);
         }
         $db = App::db();
-        $org = (int) $db->fetchValue('SELECT organization_id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [1]);
+        $org = (int) $db->fetchValue('SELECT organization_id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d', [$this->clinicId]);
         $identity = App::patient_identity_service()->create_identity($org);
-        App::patient_identity_service()->link_clinical_record($org, $identity, 1, $this->patientId);
+        App::patient_identity_service()->link_clinical_record($org, $identity, $this->clinicId, $this->patientId);
         App::patient_identity_service()->link_user($org, $identity, $this->secretaryUserId, '09127770001');
         (new VisitRepository($db))->insert(1, [
             'patient_id' => $this->patientId, 'clinician_id' => $this->clinicianId,
