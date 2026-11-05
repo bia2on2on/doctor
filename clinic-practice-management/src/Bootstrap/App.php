@@ -460,7 +460,7 @@ final class App
 
         // N1 — اعلانِ مدیریتیِ «موتورِ دیتابیسِ پشتیبانی‌نشده» وقتی ensureMigrated()
         // مهاجرت را fail-closed رد کرده است (صفحهٔ سلامت سیستم دست‌نخورده می‌ماند).
-        add_action('admin_notices', [self::class, 'render_unsupported_engine_notice']);
+        add_action( 'admin_notices', [ self::class, 'render_unsupported_engine_notice' ] );
 
         // F10 — به‌روزرسانی امن (ADR-0029): فقط slug خودمان؛ کش‌شده؛ بدون شبکه در
         // صفحات عادی. صحت sha256 بسته پیش از نصب (upgrader_pre_download).
@@ -514,9 +514,9 @@ final class App
         // Option/Cron/Storage. روی موتورِ پشتیبانی‌نشده (مثلاً MariaDB 11.8.6)
         // فعال‌سازی با wp_die خوانا رد می‌شود و افزونه غیرفعال می‌ماند — بدونِ
         // هیچ ردی. مهاجرت 0027 همچنان گاردِ دفاع‌عمقیِ خودش را دارد (دست‌نخورده).
-        $compatibility = self::databaseCompatibility();
+        $compatibility = self::database_compatibility();
         if ( (bool) ( $compatibility['supported'] ?? false ) !== true ) {
-            self::refuseActivation( $compatibility );
+            self::refuse_activation( $compatibility );
 
             return;
         }
@@ -567,13 +567,13 @@ final class App
      *
      * @return array<string, mixed>
      */
-    private static function databaseCompatibility(): array {
+    private static function database_compatibility(): array {
         if ( self::$db_compatibility_probe !== null ) {
             return (array) ( self::$db_compatibility_probe )();
         }
 
         if ( self::$db_compatibility === null ) {
-            self::$db_compatibility = self::readDatabaseCompatibility();
+            self::$db_compatibility = self::read_database_compatibility();
         }
 
         return self::$db_compatibility;
@@ -586,7 +586,7 @@ final class App
      *
      * @return array{supported: bool, engine: string, version: string, reason: string}
      */
-    private static function readDatabaseCompatibility(): array {
+    private static function read_database_compatibility(): array {
         $server = self::db()->fetchRow( 'SELECT VERSION() AS SERVER_VERSION, @@version_comment AS VERSION_COMMENT' );
         if ( $server === null
             || ! isset( $server['SERVER_VERSION'], $server['VERSION_COMMENT'] )
@@ -606,9 +606,9 @@ final class App
      * (7.1.3 `activate_plugin()`)، پس wp_die اینجا یعنی افزونه غیرفعال می‌ماند.
      * escape/nl2br اینجا انجام می‌شود تا متنِ ساخت‌یافته در gate خالص بماند.
      *
-     * @param array<string, mixed> $result خروجیِ databaseCompatibility().
+     * @param array<string, mixed> $result خروجیِ database_compatibility().
      */
-    private static function refuseActivation( array $result ): void {
+    private static function refuse_activation( array $result ): void {
         wp_die(
             nl2br( esc_html( DatabaseCompatibilityGate::activation_refusal_message( $result ) ) ),
             'CPMS — activation refused',
@@ -621,7 +621,7 @@ final class App
      *
      * @param (\Closure():(array<string, mixed>))|null $probe
      */
-    public static function setDbCompatibilityProbeForTests( ?\Closure $probe ): void {
+    public static function set_db_compatibility_probe_for_tests( ?\Closure $probe ): void {
         self::$db_compatibility_probe = $probe;
     }
 
@@ -629,7 +629,7 @@ final class App
      * @internal فقط برای تست‌ها — بازنشانیِ کلِ وضعیتِ N1 (probe + memo + اعلان
      * + نشانگرِ throttleِ لاگ) تا تست‌ها به هم نشت نکنند.
      */
-    public static function resetDatabaseCompatibilityStateForTests(): void {
+    public static function reset_database_compatibility_state_for_tests(): void {
         self::$db_compatibility_probe = null;
         self::$db_compatibility       = null;
         self::$unsupported_engine     = null;
@@ -644,9 +644,9 @@ final class App
      *    نوشتنِ Option؛ دقیق و بدون کهنگی)؛
      *  - یک ردیفِ OpLog در هر پنجرهٔ throttle می‌نویسد (CPMS_DB_ENGINE_UNSUPPORTED).
      *
-     * @param array<string, mixed> $result خروجیِ databaseCompatibility().
+     * @param array<string, mixed> $result خروجیِ database_compatibility().
      */
-    private static function reportUnsupportedDatabaseEngine( array $result ): void {
+    private static function report_unsupported_database_engine( array $result ): void {
         self::$unsupported_engine = $result;
 
         if ( function_exists( 'get_transient' ) && false !== get_transient( self::DB_ENGINE_LOG_THROTTLE ) ) {
@@ -657,10 +657,13 @@ final class App
         }
 
         try {
-            self::op()->warning( 'CPMS_DB_ENGINE_UNSUPPORTED', [
-                'engine'  => is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN,
-                'version' => is_string( $result['version'] ?? null ) ? $result['version'] : '',
-            ] );
+            self::op()->warning(
+                'CPMS_DB_ENGINE_UNSUPPORTED',
+                [
+                    'engine'  => is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN,
+                    'version' => is_string( $result['version'] ?? null ) ? $result['version'] : '',
+                ]
+            );
         } catch ( \Throwable $e ) {
             // ثبتِ Log عملیاتی هرگز نباید درخواست را بشکند (همان قرارداد OpLogger).
             unset( $e );
@@ -681,8 +684,8 @@ final class App
             return;
         }
 
-        $version = is_string( $result['version'] ?? null ) ? $result['version'] : '';
-        $engine  = is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN;
+        $version  = is_string( $result['version'] ?? null ) ? $result['version'] : '';
+        $engine   = is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN;
         $detected = $version !== '' ? $version : $engine;
 
         printf(
@@ -743,9 +746,9 @@ final class App
             // یک اعلانِ مدیریتی ثبت می‌شود. بقیهٔ مسیر (ذخیره‌سازی خصوصی و
             // مسیرِ ارزانِ هر-درخواستی) عیناً مثلِ قبل اجرا می‌شود — هیچ مسیرِ
             // نوشتنِ دیگری عوض نشده است. schemaٔ از-قبل-اعمال‌شده کار می‌کند.
-            $compatibility = self::databaseCompatibility();
+            $compatibility = self::database_compatibility();
             if ( (bool) ( $compatibility['supported'] ?? false ) !== true ) {
-                self::reportUnsupportedDatabaseEngine( $compatibility );
+                self::report_unsupported_database_engine( $compatibility );
             } else {
                 self::migrations()->migrate();
             }

@@ -31,6 +31,8 @@ use WP_UnitTestCase;
  */
 final class AppActivationDatabaseGateTest extends WP_UnitTestCase
 {
+    use RealTableMigrations;
+
     /** @var array<string, mixed> */
     private array $globalsBackup = [];
 
@@ -38,8 +40,12 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
     {
         parent::setUp();
 
-        App::migrations()->migrate();
-        App::resetDatabaseCompatibilityStateForTests();
+        // Repo pattern (CustomRoleDisplayNameMigrationTest): a pending version
+        // left by an earlier test class is re-applied with REAL tables, so the
+        // migrations this class exercises never run through the harness's
+        // temporary-table rewrite (no shadow tables on the shared connection).
+        $this->withRealTables(static fn (): array => App::migrations()->migrate());
+        App::reset_database_compatibility_state_for_tests();
         delete_transient('cpms_migrate_lock');
 
         foreach (['pagenow'] as $key) {
@@ -49,18 +55,22 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        App::setDbCompatibilityProbeForTests(null);
-        App::resetDatabaseCompatibilityStateForTests();
-        delete_transient('cpms_migrate_lock');
-        foreach ($this->globalsBackup as $key => $value) {
-            if ($value === null) {
-                unset($GLOBALS[$key]);
-                continue;
+        try {
+            App::set_db_compatibility_probe_for_tests(null);
+            App::reset_database_compatibility_state_for_tests();
+            delete_transient('cpms_migrate_lock');
+            $this->withRealTables(static fn (): array => App::migrations()->migrate());
+        } finally {
+            foreach ($this->globalsBackup as $key => $value) {
+                if ($value === null) {
+                    unset($GLOBALS[$key]);
+                    continue;
+                }
+                $GLOBALS[$key] = $value;
             }
-            $GLOBALS[$key] = $value;
+            wp_set_current_user(0);
+            parent::tearDown();
         }
-        wp_set_current_user(0);
-        parent::tearDown();
     }
 
     // ============================ helpers ============================
@@ -151,14 +161,14 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
 
     private function unsupportedProbe(): void
     {
-        App::setDbCompatibilityProbeForTests(
+        App::set_db_compatibility_probe_for_tests(
             static fn (): array => DatabaseCompatibilityGate::check('11.8.6-MariaDB', 'mariadb.org binary distribution')
         );
     }
 
     private function supportedProbe(): void
     {
-        App::setDbCompatibilityProbeForTests(
+        App::set_db_compatibility_probe_for_tests(
             static fn (): array => DatabaseCompatibilityGate::check('8.0.36', 'MySQL Community Server - GPL')
         );
     }
@@ -170,11 +180,15 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         $method->invoke(null);
     }
 
-    private function unsupportedOpLogRows(): int
+    /**
+     * شمارشِ ردیف‌های OpLog بر اساس پیام — جدولِ واقعیِ OpLogger
+     * (`cpms_operational_logs`، ساخته‌شده در مهاجرت 0001)؛ نه نامِ سرویس.
+     */
+    private function opLogRowCount(string $message): int
     {
         return (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_op_log') . ' WHERE message = %s',
-            ['CPMS_DB_ENGINE_UNSUPPORTED']
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_operational_logs') . ' WHERE message = %s',
+            [$message]
         );
     }
 
@@ -182,11 +196,13 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
 
     public function testActivationIsRefusedOnAnUnsupportedEngineWithZeroResidue(): void
     {
-        $rolesBefore   = $this->roleNames();
-        $optionsBefore = $this->optionNames();
-        $ledgerBefore  = $this->ledgerVersions();
-        $cronBefore    = $this->cronEvents();
-        $tablesBefore  = $this->cpmsTables();
+        $rolesBefore       = $this->roleNames();
+        $optionsBefore     = $this->optionNames();
+        $ledgerBefore      = $this->ledgerVersions();
+        $cronBefore        = $this->cronEvents();
+        $tablesBefore      = $this->cpmsTables();
+        $activatedBefore   = $this->opLogRowCount('CPMS_ACTIVATED');
+        $unsupportedBefore = $this->opLogRowCount('CPMS_DB_ENGINE_UNSUPPORTED');
 
         $this->unsupportedProbe();
         $die = $this->captureWpDie(static function (): void {
@@ -206,7 +222,8 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         self::assertSame($ledgerBefore, $this->ledgerVersions(), 'a refused activation must not touch the migration ledger');
         self::assertSame($cronBefore, $this->cronEvents(), 'a refused activation must not schedule any cron event');
         self::assertSame($tablesBefore, $this->cpmsTables(), 'a refused activation must not create any table');
-        self::assertSame(0, $this->unsupportedOpLogRows(), 'the refused activation itself logs nothing (OpLog table may not even exist on a fresh site)');
+        self::assertSame($activatedBefore, $this->opLogRowCount('CPMS_ACTIVATED'), 'the refused activation must not log CPMS_ACTIVATED');
+        self::assertSame($unsupportedBefore, $this->opLogRowCount('CPMS_DB_ENGINE_UNSUPPORTED'), 'the refused activation itself logs nothing');
     }
 
     public function testActivationOnASupportedEngineBehavesAsToday(): void
@@ -215,7 +232,8 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         // On the CI integration lanes (MySQL 8 / MariaDB 11.4.13) this is supported.
         // Same discovery pattern as MigrationRunner::migrationFiles() — the runner
         // itself lives in the same directory and must not be counted.
-        $migrationFiles = glob(CPMS_PLUGIN_DIR . 'src/Migrations/????_??_??_????_*.php') ?: [];
+        $migrationFiles  = glob(CPMS_PLUGIN_DIR . 'src/Migrations/????_??_??_????_*.php') ?: [];
+        $activatedBefore = $this->opLogRowCount('CPMS_ACTIVATED');
 
         App::activate();
 
@@ -231,17 +249,15 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
 
         self::assertCount(count($migrationFiles), $this->ledgerVersions(), 'every shipped migration is applied');
         self::assertNotFalse(wp_next_scheduled('cpms_jobs_tick'), 'the recurring queue tick is scheduled');
-        self::assertSame(1, (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_op_log') . ' WHERE message = %s',
-            ['CPMS_ACTIVATED']
-        ), 'CPMS_ACTIVATED is logged exactly as before');
+        self::assertSame($activatedBefore + 1, $this->opLogRowCount('CPMS_ACTIVATED'), 'CPMS_ACTIVATED is logged exactly as before');
     }
 
     public function testReactivationAfterARefusedActivationBehavesExactlyAsToday(): void
     {
-        $optionsBefore = $this->optionNames();
-        $cronBefore    = $this->cronEvents();
-        $ledgerBefore  = $this->ledgerVersions();
+        $optionsBefore   = $this->optionNames();
+        $cronBefore      = $this->cronEvents();
+        $ledgerBefore    = $this->ledgerVersions();
+        $activatedBefore = $this->opLogRowCount('CPMS_ACTIVATED');
 
         // First attempt: refused on an unsupported engine — zero residue.
         $this->unsupportedProbe();
@@ -252,6 +268,7 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         self::assertSame($optionsBefore, $this->optionNames());
         self::assertSame($cronBefore, $this->cronEvents());
         self::assertSame($ledgerBefore, $this->ledgerVersions());
+        self::assertSame($activatedBefore, $this->opLogRowCount('CPMS_ACTIVATED'), 'refused attempt logs nothing');
 
         // The engine is fixed (supported evidence now) — activation must behave
         // exactly like a fresh, first-time activation on a supported engine.
@@ -267,10 +284,7 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
             self::assertNotNull(get_role($role), "re-activation registers {$role}");
         }
         self::assertNotFalse(wp_next_scheduled('cpms_jobs_tick'), 're-activation schedules the queue tick');
-        self::assertSame(1, (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_op_log') . ' WHERE message = %s',
-            ['CPMS_ACTIVATED']
-        ), 'CPMS_ACTIVATED is logged for the successful activation');
+        self::assertSame($activatedBefore + 1, $this->opLogRowCount('CPMS_ACTIVATED'), 'CPMS_ACTIVATED is logged for the successful activation');
     }
 
     // ============================ ensureMigrated ============================
@@ -282,6 +296,11 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         // ensureMigrated call migrate()?" is observable through the ledger.
         $latest = App::migrations()->currentVersion();
         self::assertNotNull($latest);
+        $opLogWatermark    = (int) App::db()->fetchValue(
+            'SELECT COALESCE(MAX(id), 0) FROM ' . App::db()->table('cpms_operational_logs')
+        );
+        $unsupportedBefore = $this->opLogRowCount('CPMS_DB_ENGINE_UNSUPPORTED');
+
         App::db()->query(
             'DELETE FROM ' . App::db()->table('cpms_schema_migrations') . ' WHERE version = %s',
             [$latest]
@@ -301,20 +320,31 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
             $this->ledgerVersions(),
             'the pending migration must NOT be applied on an unsupported engine'
         );
-        self::assertSame(1, $this->unsupportedOpLogRows(), 'exactly one throttled OpLog row on first sight');
+        self::assertSame($unsupportedBefore + 1, $this->opLogRowCount('CPMS_DB_ENGINE_UNSUPPORTED'), 'exactly one throttled OpLog row on first sight');
 
         // Throttle: a second run within the window logs nothing more.
         delete_transient('cpms_migrate_lock');
         $this->invokeEnsureMigrated();
-        self::assertSame(1, $this->unsupportedOpLogRows(), 'the OpLog write is throttled per window');
+        self::assertSame($unsupportedBefore + 1, $this->opLogRowCount('CPMS_DB_ENGINE_UNSUPPORTED'), 'the OpLog write is throttled per window');
         self::assertNotContains($latest, $this->ledgerVersions());
+
+        // Clean up this test's OpLog row before the positive control runs real
+        // DDL (which implicitly commits the outer test transaction in MySQL).
+        App::db()->query(
+            'DELETE FROM ' . App::db()->table('cpms_operational_logs') . ' WHERE id > %d',
+            [$opLogWatermark]
+        );
 
         // Positive control: with a supported engine the SAME pending migration is
         // applied through ensureMigrated() — only the gate skips migrate().
-        App::setDbCompatibilityProbeForTests(null);
-        App::resetDatabaseCompatibilityStateForTests();
+        // Run with real tables so WP's temporary-table rewrite never creates a
+        // shadow temp table for 0031's `CREATE TABLE IF NOT EXISTS`.
+        App::set_db_compatibility_probe_for_tests(null);
+        App::reset_database_compatibility_state_for_tests();
         delete_transient('cpms_migrate_lock');
-        $this->invokeEnsureMigrated();
+        $this->withRealTables(function (): void {
+            $this->invokeEnsureMigrated();
+        });
         self::assertContains($latest, $this->ledgerVersions(), 'supported engine still migrates the pending version');
     }
 
@@ -360,7 +390,7 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         self::assertSame('', $html, 'the notice is administrator-only');
 
         // And with no unsupported engine observed in the request, nothing renders.
-        App::resetDatabaseCompatibilityStateForTests();
+        App::reset_database_compatibility_state_for_tests();
         wp_set_current_user($admin);
         $none = '';
         ob_start();
@@ -400,9 +430,13 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         $activateBody  = substr($source, $activateStart, $activateEnd - $activateStart);
         self::assertStringContainsString('RolesAndCapabilities::register();', $activateBody);
         // …but only AFTER the engine pre-check refuses unsupported servers first.
+        $preCheckOffset        = strpos($activateBody, 'database_compatibility()');
+        $rolesInActivateOffset = strpos($activateBody, 'RolesAndCapabilities::register();');
+        self::assertNotFalse($preCheckOffset, 'activate() must call database_compatibility()');
+        self::assertNotFalse($rolesInActivateOffset, 'activate() must call RolesAndCapabilities::register()');
         self::assertLessThan(
-            strpos($activateBody, 'RolesAndCapabilities::register();'),
-            strpos($activateBody, 'databaseCompatibility()'),
+            $rolesInActivateOffset,
+            $preCheckOffset,
             'the engine pre-check must run before roles in activate()'
         );
     }
