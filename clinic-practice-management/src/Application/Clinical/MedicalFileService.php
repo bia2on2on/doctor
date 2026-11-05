@@ -260,7 +260,18 @@ final class MedicalFileService
         }
 
         // Clinicِ فایل (ردیفِ پایدار) — که در بالا در برابر Clinicِ معتبر سنجیده شد.
-        $content = $this->storageFor((int) $row['clinic_id'])->read((string) $row['storage_path']);
+        // شکستِ زیرساختِ ذخیره‌سازی (مثل CLINIC_STORAGE_NOT_WRITABLE): یک ردیفِ
+        // Operational Log با Contextِ اسکالر + پاسخِ فارسیِ قابلِ اقدام (500)؛
+        // مسیرِ فایل‌سیستم فقط در لاگ می‌ماند و Fail-Closed دست‌نخورده است.
+        // فراخوانیِ legacy بدونِ تغییرِ معنایی است؛ فقط داخلِ try نشسته.
+        try {
+            $content = $this->storageFor( (int) $row['clinic_id'] )
+                ->read( (string) $row['storage_path'] );
+        } catch ( \Throwable $e ) {
+            $context = FileStorageFailure::op_context( 'files', $e );
+            App::op()->error( FileStorageFailure::OP_EVENT, $context );
+            throw FileStorageFailure::client_exception( 'باز کردن فایل انجام نشد' );
+        }
         if ($content === null) {
             // Metadata هست ولی فایل فیزیکی گم شده — نباید URL خطا را فاش کند
             error_log('[CPMS][MedicalFileService] physical file missing for attachment ' . $fileId);
@@ -419,6 +430,10 @@ final class MedicalFileService
                 throw ClinicalException::of( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
             }
         }
+        // aliasِ snake_case برای مرزِ ذخیره‌سازیِ پایین‌تر: همان مقداری که اینجا
+        // محاسبه و با ۴۰۴ حراست شده است؛ خواندنِ متغیرِ camelCase در همین ناحیهٔ
+        // سرکوبِ تثبیت‌شده می‌ماند تا نه lookupِ دومی لازم باشد نه ignoreِ تازه‌ای.
+        $patient_clinic_id = (int) $patientClinicId;
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
 
         // F-3: حجم (سقف از Settingِ Clinicِ مالک)
@@ -514,7 +529,24 @@ final class MedicalFileService
             );
         }
         // phpcs:enable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $storagePath = $this->storageFor( $patientClinicId )->store( $content, $patientClinicId, $extension ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
+        // شکستِ زیرساختِ ذخیره‌سازی به دامنهٔ بالینی تبدیل نمی‌شود: یک ردیفِ
+        // OpLog با Contextِ اسکالر (کد/ریشه/دلیلِ کوتاه‌شده) ثبت می‌شود و
+        // کلاینت پیامِ فارسیِ قابلِ اقدامِ 500 می‌گیرد — بدونِ افشای مسیر.
+        // هر دو فراخوانیِ ذخیره‌سازی بدونِ تغییرِ معنایی در try نشسته‌اند؛ دو
+        // رویتِ camelCase (آرگومانِ upload و مقدارِ ۴۰۴-حراست‌شدهٔ آن) پیش از
+        // مرز، داخلِ ناحیهٔ سرکوبِ بالا حل شده‌اند تا مرز بدونِ ignore کار کند.
+        try {
+            // Clinicِ بیمار از aliasِ snake_caseِ بیرونِ همین مرز می‌آید (بالای
+            // بلوک، درون ناحیهٔ سرکوبِ تثبیت‌شده): یک بار محاسبه و با ۴۰۴ حراست
+            // شده — نه lookupِ دومی اینجا هست که شکستِ DB به‌اشتباه «شکستِ
+            // ذخیره‌سازی» دسته‌بندی شود، نه ignore/سرکوبِ تازه‌ای اضافه شده.
+            $storage      = $this->storageFor( $patient_clinic_id );
+            $storage_path = $storage->store( $content, $patient_clinic_id, $extension );
+        } catch ( \Throwable $e ) {
+            $context = FileStorageFailure::op_context( 'files', $e );
+            App::op()->error( FileStorageFailure::OP_EVENT, $context );
+            throw FileStorageFailure::client_exception( 'ثبت فایل انجام نشد' );
+        }
 
         // D6 audit atomicity: the attachment metadata row and its mandatory
         // audit commit/roll back together. The physical object was already
@@ -526,7 +558,7 @@ final class MedicalFileService
         $visit_id          = func_get_arg( 4 );
         $patient_clinic_id = (int) $patientClinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
         $declared_name     = (string) $declaredName; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
-        $storage_path      = (string) $storagePath; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- established camelCase host local.
+        // $storage_path از بالای بلوکِ try آمده (بدونِ لمسِ متغیر camelCase).
 
         try {
             $file_id = App::db()->transactional(

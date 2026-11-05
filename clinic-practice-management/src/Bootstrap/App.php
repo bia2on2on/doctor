@@ -605,7 +605,13 @@ final class App
                     'already' => $report['already'],
                     'conflict' => $report['conflict'],
                     'failed' => $report['failed'],
-                    'errors' => array_slice($report['errors'], 0, 10),
+                    // OpLogger آرایه را با gettype جایگزین می‌کند («array»)؛
+                    // متن خطاها به یک رشتهٔ محدود تخت می‌شود تا جزئیات بماند.
+                    'errors'   => mb_substr(
+                        implode( ' | ', array_slice( $report['errors'], 0, 10 ) ),
+                        0,
+                        500
+                    ),
                 ]);
             }
             if ($report['failed'] > 0 || $report['conflict'] > 0) {
@@ -660,8 +666,13 @@ final class App
             : PrivateStorageInitializer::ensure_initialized( $files_root, $backup_root );
 
         if ( ! $result['ok'] && $force ) {
-            $context = [ 'roots' => $result['roots'] ];
-            self::op()->warning( 'CPMS_PRIVATE_STORAGE_INIT_FAILED', $context );
+            // Context باید اسکالر باشد: OpLogger مقدارِ آرایه را با gettype
+            // جایگزین می‌کند و کد خطای واقعی (مثل CLINIC_STORAGE_NOT_WRITABLE)
+            // گم می‌شود؛ حالا به‌ازای هر ریشه کلیدهای تخت ثبت می‌شوند.
+            self::op()->warning(
+                'CPMS_PRIVATE_STORAGE_INIT_FAILED',
+                PrivateStorageInitializer::op_log_context( $result['roots'] )
+            );
         }
 
         return $result;

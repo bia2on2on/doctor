@@ -14,6 +14,7 @@ use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Time\PersianDigits;
+use ClinicCore\Domain\Validators\VisibleText;
 use ClinicCore\Infrastructure\UserCacheRollback;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
@@ -577,6 +578,15 @@ final class ClinicianAdminPage
         $fields = self::clinicianFields();
         $id = isset($_POST['clinician_id']) ? absint($_POST['clinician_id']) : 0;
         $generated = '';
+        // قاعدهٔ واحدِ نامِ خوانا (همانِ مسیرهای بیمار): دو مسیرِ create/update از
+        // همین‌جا رد می‌شوند — نامِ فقط-نامرئی یا بلندتر از سقفِ ستون (VARCHAR 190)
+        // بدونِ کوتاه‌سازیِ بی‌صدا برمی‌گردد؛ «خطای» همیشه بدونِ نوشتن است.
+        if ( ! VisibleText::has_visible_content( (string) ( $fields['full_name'] ?? '' ) ) ) {
+            self::backWithError( $id, 'خطا: نام پزشک نمی‌تواند فقط نویسهٔ نامرئی یا فاصله باشد.' );
+        }
+        if ( mb_strlen( (string) ( $fields['full_name'] ?? '' ) ) > 190 ) {
+            self::backWithError( $id, 'خطا: نام پزشک نمی‌تواند بیش از ۱۹۰ نویسه باشد.' );
+        }
         // Descriptor of any WordPress account provisioned inside the boundary;
         // read by the post-rollback catch for targeted cache invalidation.
         $provisioned = null;

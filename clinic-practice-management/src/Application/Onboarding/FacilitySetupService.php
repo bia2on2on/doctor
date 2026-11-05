@@ -16,6 +16,7 @@ use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Domain\Membership\MembershipException;
+use ClinicCore\Domain\Validators\VisibleText;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Repository\ClinicianRepository;
@@ -663,6 +664,16 @@ final class FacilitySetupService {
         $full_name    = trim( $full_name );
         if ( mb_strlen( $full_name ) > 190 ) {
             throw new FacilitySetupException( 'invalid_clinician', 'نام کامل پزشک حداکثر ۱۹۰ نویسه است؛ چیزی ثبت نشد.' );
+        }
+        // همان قاعدهٔ واحدِ نامِ خوانا (همانِ ClinicianAdminPage و نام‌های بیمار):
+        // نامِ فقط-نامرئی رد می‌شود؛ نامِ خالی همچنان فقط در مسیرِ ساختِ پروفایل
+        // (در ادامهٔ این متد) رد می‌شود تا رفتارِ اتصالِ پروفایلِ موجود ثابت بماند.
+        // چیزی ثبت نمی‌شود.
+        if ( '' !== $full_name && ! VisibleText::has_visible_content( $full_name ) ) {
+            throw new FacilitySetupException(
+                'invalid_clinician',
+                'نام کامل پزشک نمی‌تواند فقط نویسهٔ نامرئی یا فاصله باشد؛ چیزی ثبت نشد.'
+            );
         }
 
         return $this->db->transactional(

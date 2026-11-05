@@ -25,6 +25,7 @@ use ClinicCore\Domain\Slots\DurationResolver;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Domain\Validators\MobileValidator;
+use ClinicCore\Domain\Validators\VisibleText;
 use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use ClinicCore\Infrastructure\Logging\OpLogger;
@@ -3055,6 +3056,15 @@ final class BookingService
             throw BookingException::of(
                 'CLINIC_VALIDATION_FAILED',
                 'برای ثبت بیمار جدید، نام و نام خانوادگی الزامی است',
+                400
+            );
+        }
+        // همان قاعدهٔ واحدِ PatientService: نامِ فقط-نامرئی (نیم‌فاصلهٔ تنها
+        // و مانندِ آن) رد می‌شود؛ نیم‌فاصلهٔ داخلِ واژهٔ فارسی معتبر است.
+        if ( ! VisibleText::has_visible_content( $clean ) ) {
+            throw BookingException::of(
+                'CLINIC_VALIDATION_FAILED',
+                'نام نمی‌تواند فقط از نویسه‌های نامرئی یا فاصله تشکیل شده باشد',
                 400
             );
         }

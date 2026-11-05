@@ -15,7 +15,7 @@ Versions below correspond to the repository's committed Composer lock.
 | psr/http-client | 1.0.3 | MIT | vendor/psr/http-client/LICENSE |
 | psr/http-factory | 1.1.0 | MIT | vendor/psr/http-factory/LICENSE |
 | psr/http-message | 2.0 | MIT | vendor/psr/http-message/LICENSE |
-| symfony/filesystem | v6.4.45 | MIT | vendor/symfony/filesystem/LICENSE |
+| symfony/filesystem | v6.4.50 | MIT | vendor/symfony/filesystem/LICENSE |
 | symfony/polyfill-ctype | v1.37.0 | MIT | vendor/symfony/polyfill-ctype/LICENSE |
 | symfony/polyfill-mbstring | v1.43.0 | MIT | vendor/symfony/polyfill-mbstring/LICENSE |
 | symfony/polyfill-php80 | v1.43.0 | MIT | vendor/symfony/polyfill-php80/LICENSE |
