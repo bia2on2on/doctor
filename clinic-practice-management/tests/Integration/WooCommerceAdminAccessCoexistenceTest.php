@@ -39,6 +39,15 @@ use WP_UnitTestCase;
  *  - no capability or role is synthesized or mutated by the mechanism, and each CPMS page
  *    still enforces its own authorization independently of it.
  *
+ * WooCommerce's own gate does NOT redirect the whole of wp-admin either: it exempts
+ * admin-post.php and admin-ajax.php itself before its filter is consulted
+ * ($exempted_paths in plugins/woocommerce/includes/admin/class-wc-admin.php,
+ * WC_Admin::prevent_admin_access(), verified at WooCommerce 11.2.0). profile.php is
+ * NOT in that exemption set — the M12 own-profile relaxation for CPMS staff lives in
+ * the separate predicate covered by WooCommerceAdminAccessProfileTest
+ * (allow_own_profile_for_cpms_staff); the screen list below therefore no longer
+ * contains profile.php as an "always denied" screen.
+ *
  * Historical RED preserved (not re-manufactured here): run `37611352785`, head
  * `a1788f66c14f1d624668cbee10d683b030c887c5` — isolated CPMS + WooCommerce 10.3.8 probe saw
  * `woocommerce_prevent_admin_access` = true for doctor/secretary and a redirect to the
@@ -376,10 +385,17 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
             $this->assertTrue($this->verdict(), "WooCommerce/unrelated admin page {$page} must stay under the policy");
         }
 
-        foreach (['index.php', 'edit.php', 'tools.php', 'options-general.php', 'profile.php', 'async-upload.php'] as $screen) {
+        foreach (['index.php', 'edit.php', 'tools.php', 'options-general.php', 'async-upload.php'] as $screen) {
             $this->serve_admin_request($screen, 'cpms-doctor', true);
             $this->assertTrue($this->verdict(), "a CPMS slug on {$screen} must not become an admin-access grant");
         }
+
+        // M12: profile.php was removed from the list above on purpose — the
+        // own-profile screen is now relaxed for CPMS staff by the SEPARATE
+        // allow_own_profile_for_cpms_staff predicate (capability-based), so the
+        // page allowlist predicate still grants nothing there by itself while
+        // WooCommerceAdminAccessProfileTest covers the own-profile contract
+        // (relaxation, other-user denial, patient-only denial, guardWpAdmin).
     }
 
     public function testDoctorNeverGainsWooCommerceCapabilitiesThroughTheMechanism(): void

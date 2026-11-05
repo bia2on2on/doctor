@@ -90,6 +90,7 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use ClinicCore\Infrastructure\Db\DatabaseCompatibilityGate;
 use ClinicCore\Infrastructure\Licensing\HttpVendorGateway;
 use ClinicCore\Infrastructure\Licensing\VendorGateway;
 use ClinicCore\Infrastructure\Logging\CorrelationId;
@@ -172,6 +173,15 @@ final class App
 
     private const PRIVATE_STORAGE_DONE = '1';
 
+    /**
+     * N1 — throttleِ لاگِ عملیاتیِ «موتورِ پشتیبانی‌نشده» در ensureMigrated():
+     * فقط یک ردیفِ OpLog در هر پنجرهٔ ۶ ساعته (الگوی CronScheduleRepair)؛
+     * خودِ اعلانِ مدیریتی request-scoped است و به این throttle وابسته نیست.
+     */
+    private const DB_ENGINE_LOG_THROTTLE = 'cpms_db_engine_unsupported_throttle';
+
+    private const DB_ENGINE_LOG_WINDOW = 21600;
+
     private static ?CpmsDb $db = null;
     private static ?OpLogger $op = null;
     private static ?AuditLogger $audit = null;
@@ -189,6 +199,33 @@ final class App
     private static ?LicenseGate $licenseGate = null;
     private static ?VisitService $visitService = null;
     private static bool $booted = false;
+
+    /**
+     * N1 — نتیجهٔ پیش‌بررسیِ موتورِ دیتابیس (memoized در هر درخواست؛ موتور
+     * سرور وسطِ یک درخواست عوض نمی‌شود). probe تستی این memo را دور می‌زند.
+     *
+     * @var array{supported: bool, engine: string, version: string, reason: string}|null
+     */
+    private static ?array $db_compatibility = null;
+
+    /**
+     * N1 — seam تستی: جایگزینِ خواندنِ شواهدِ `VERSION()`/`@@version_comment`.
+     * فقط برای تست‌ها (@internal)؛ production همیشه null است.
+     *
+     * @var (\Closure():(array<string, mixed>))|null
+     */
+    private static ?\Closure $db_compatibility_probe = null;
+
+    /**
+     * N1 — نتیجهٔ «موتورِ پشتیبانی‌نشده» که در همین درخواست توسط
+     * ensureMigrated() دیده شده است؛ اعلانِ admin_notices فقط همین را
+     * نمایش می‌دهد (request-scoped: دقیق و بدونِ کهنگیِ Option ماندگار —
+     * اگر میزبان موتور را درست کند، اعلان در همان درخواستِ بعدی غیب می‌شود).
+     *
+     * @var array<string, mixed>|null
+     */
+    private static ?array $unsupported_engine = null;
+
 
     /**
      * CPMS Classic Admin UX (B) — کشِ **per-Clinic** برای سرویس‌هایی که
@@ -252,7 +289,20 @@ final class App
         }
         self::$booted = true;
 
-        RolesAndCapabilities::register();
+        // N1 — WordPress فایل افزونه را **پیش از** اجرای هوکِ فعال‌سازی، از طریقِ
+        // `plugin_sandbox_scrape()` در `activate_plugin()` لود می‌کند (هستهٔ 7.1.3،
+        // `wp-admin/includes/plugin.php`) و همان‌جا `WP_SANDBOX_SCRAPING` تعریف
+        // می‌شود؛ یعنی این boot() در همان درخواستِ فعال‌سازی، قبل از
+        // `App::activate()` اجرا می‌شود. اگر اینجا نقش‌ها ثبت شوند، فعال‌سازیِ
+        // ردشده (موتورِ دیتابیسِ پشتیبانی‌نشده) باقی‌ماندهٔ ۵ نقش روی سایت
+        // می‌گذارد — دقیقاً همان ردی که N1 باید صفر نگهش دارد. پس در همان
+        // includeِ sandbox ثبتِ نقش به `activate()` موکول می‌شود (که در مسیرِ
+        // مجاز خودش `RolesAndCapabilities::register()` را صدا می‌زند). هر
+        // درخواستِ عادی — از جمله retry حالت بازیابی برای افزونهٔ فعال که
+        // نقش‌ها از قبل در Optionها ماندگارند — رفتارِ امروز را نگه می‌دارد.
+        if ( ! ( defined( 'WP_SANDBOX_SCRAPING' ) && WP_SANDBOX_SCRAPING ) ) {
+            RolesAndCapabilities::register();
+        }
 
         // Phase 1A — Item 3: محدودسازی نرخ ورود. پیش از این هیچ کنترل
         // Bruteforce ای روی wp-login و احراز هویت REST وجود نداشت.
@@ -408,6 +458,10 @@ final class App
             self::ensureMigrated();
         });
 
+        // N1 — اعلانِ مدیریتیِ «موتورِ دیتابیسِ پشتیبانی‌نشده» وقتی ensureMigrated()
+        // مهاجرت را fail-closed رد کرده است (صفحهٔ سلامت سیستم دست‌نخورده می‌ماند).
+        add_action('admin_notices', [self::class, 'render_unsupported_engine_notice']);
+
         // F10 — به‌روزرسانی امن (ADR-0029): فقط slug خودمان؛ کش‌شده؛ بدون شبکه در
         // صفحات عادی. صحت sha256 بسته پیش از نصب (upgrader_pre_download).
         $updateBridge = self::wpUpdateBridge();
@@ -455,6 +509,18 @@ final class App
 
     public static function activate( bool $network_wide = false ): void
     {
+        // N1 — پیش‌بررسیِ موتورِ دیتابیس باید **اولین** کارِ فعال‌سازی باشد:
+        // قبل از ثبتِ نقش‌ها، قبل از مهاجرت‌ها، قبل از هر اثرِ جانبیِ
+        // Option/Cron/Storage. روی موتورِ پشتیبانی‌نشده (مثلاً MariaDB 11.8.6)
+        // فعال‌سازی با wp_die خوانا رد می‌شود و افزونه غیرفعال می‌ماند — بدونِ
+        // هیچ ردی. مهاجرت 0027 همچنان گاردِ دفاع‌عمقیِ خودش را دارد (دست‌نخورده).
+        $compatibility = self::databaseCompatibility();
+        if ( (bool) ( $compatibility['supported'] ?? false ) !== true ) {
+            self::refuseActivation( $compatibility );
+
+            return;
+        }
+
         RolesAndCapabilities::register();
         self::db(); // lazy init برای migrate
         self::migrations()->migrate();
@@ -485,6 +551,148 @@ final class App
     {
         wp_clear_scheduled_hook('cpms_jobs_tick');
     }
+
+    // ================= N1 — پیش‌بررسیِ موتورِ دیتابیس =================
+
+    /**
+     * پیش‌بررسیِ واحدِ موتورِ دیتابیس — هم برای activate() و هم برای
+     * ensureMigrated(). شواهد را یک‌بار در هر درخواست می‌خواند (memo) و تصمیم
+     * را از {@see DatabaseCompatibilityGate::check()} می‌گیرد؛ یعنی همان
+     * مجموعهٔ مجازِ مهاجرت 0027 — نه بازتر، نه بسته‌تر.
+     *
+     * seam تستی: اگر probe تنظیم شده باشد، به‌جای خواندنِ واقعیِ DB، خروجیِ
+     * probe برگردانده می‌شود (بدون memo) تا مسیرِ ردِ فعال‌سازی در تست‌ها
+     * قابلِ شبیه‌سازی باشد. مصرف‌کننده‌ها فقط `supported` را با cast بولی
+     * می‌خوانند (fail-closed روی هر شکلِ غیرمنتظره).
+     *
+     * @return array<string, mixed>
+     */
+    private static function databaseCompatibility(): array {
+        if ( self::$db_compatibility_probe !== null ) {
+            return (array) ( self::$db_compatibility_probe )();
+        }
+
+        if ( self::$db_compatibility === null ) {
+            self::$db_compatibility = self::readDatabaseCompatibility();
+        }
+
+        return self::$db_compatibility;
+    }
+
+    /**
+     * خواندنِ واقعیِ شواهد — همان کوئری و همان اعتبارسنجیِ مهاجرت 0027
+     * (`SELECT VERSION(), @@version_comment`؛ رشته‌نبودن/نبودِ فیلدها =
+     * fail-closed با نتیجهٔ «هویت در دسترس نیست»).
+     *
+     * @return array{supported: bool, engine: string, version: string, reason: string}
+     */
+    private static function readDatabaseCompatibility(): array {
+        $server = self::db()->fetchRow( 'SELECT VERSION() AS SERVER_VERSION, @@version_comment AS VERSION_COMMENT' );
+        if ( $server === null
+            || ! isset( $server['SERVER_VERSION'], $server['VERSION_COMMENT'] )
+            || ! is_string( $server['SERVER_VERSION'] )
+            || ! is_string( $server['VERSION_COMMENT'] ) ) {
+            return DatabaseCompatibilityGate::unavailable_evidence();
+        }
+
+        return DatabaseCompatibilityGate::check( $server['SERVER_VERSION'], $server['VERSION_COMMENT'] );
+    }
+
+    /**
+     * خاتمهٔ فعال‌سازیِ ردشده — پیامِ خوانا با موتور/نسخهٔ شناسایی‌شده و
+     * مجموعهٔ پذیرفته‌شده (واژگانِ عینِ مهاجرت 0027) + back link.
+     *
+     * هستهٔ وردپرس گزینهٔ active_plugins را **بعد از** هوکِ فعال‌سازی می‌نویسد
+     * (7.1.3 `activate_plugin()`)، پس wp_die اینجا یعنی افزونه غیرفعال می‌ماند.
+     * escape/nl2br اینجا انجام می‌شود تا متنِ ساخت‌یافته در gate خالص بماند.
+     *
+     * @param array<string, mixed> $result خروجیِ databaseCompatibility().
+     */
+    private static function refuseActivation( array $result ): void {
+        wp_die(
+            nl2br( esc_html( DatabaseCompatibilityGate::activation_refusal_message( $result ) ) ),
+            'CPMS — activation refused',
+            [ 'back_link' => true ]
+        );
+    }
+
+    /**
+     * @internal فقط برای تست‌ها — جایگزینِ شواهدِ موتورِ دیتابیس (null = مسیرِ واقعی).
+     *
+     * @param (\Closure():(array<string, mixed>))|null $probe
+     */
+    public static function setDbCompatibilityProbeForTests( ?\Closure $probe ): void {
+        self::$db_compatibility_probe = $probe;
+    }
+
+    /**
+     * @internal فقط برای تست‌ها — بازنشانیِ کلِ وضعیتِ N1 (probe + memo + اعلان
+     * + نشانگرِ throttleِ لاگ) تا تست‌ها به هم نشت نکنند.
+     */
+    public static function resetDatabaseCompatibilityStateForTests(): void {
+        self::$db_compatibility_probe = null;
+        self::$db_compatibility       = null;
+        self::$unsupported_engine     = null;
+        if ( function_exists( 'delete_transient' ) ) {
+            delete_transient( self::DB_ENGINE_LOG_THROTTLE );
+        }
+    }
+
+    /**
+     * گزارشِ «موتورِ پشتیبانی‌نشده» در مسیرِ ensureMigrated():
+     *  - نتیجه را برای اعلانِ admin_noticesِ همین درخواست نگه می‌دارد (بدونِ
+     *    نوشتنِ Option؛ دقیق و بدون کهنگی)؛
+     *  - یک ردیفِ OpLog در هر پنجرهٔ throttle می‌نویسد (CPMS_DB_ENGINE_UNSUPPORTED).
+     *
+     * @param array<string, mixed> $result خروجیِ databaseCompatibility().
+     */
+    private static function reportUnsupportedDatabaseEngine( array $result ): void {
+        self::$unsupported_engine = $result;
+
+        if ( function_exists( 'get_transient' ) && false !== get_transient( self::DB_ENGINE_LOG_THROTTLE ) ) {
+            return;
+        }
+        if ( function_exists( 'set_transient' ) ) {
+            set_transient( self::DB_ENGINE_LOG_THROTTLE, 1, self::DB_ENGINE_LOG_WINDOW );
+        }
+
+        try {
+            self::op()->warning( 'CPMS_DB_ENGINE_UNSUPPORTED', [
+                'engine'  => is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN,
+                'version' => is_string( $result['version'] ?? null ) ? $result['version'] : '',
+            ] );
+        } catch ( \Throwable $e ) {
+            // ثبتِ Log عملیاتی هرگز نباید درخواست را بشکند (همان قرارداد OpLogger).
+            unset( $e );
+        }
+    }
+
+    /**
+     * اعلانِ مدیریتیِ N1 — فقط برای مدیران، فقط وقتی در همین درخواستِ
+     * مدیریتی موتورِ پشتیبانی‌نشده دیده شده باشد. صفحهٔ سلامتِ موجود
+     * (admin.php?page=cpms-system) دست‌نخورده باقی می‌ماند و مرجعِ کامل است.
+     */
+    public static function render_unsupported_engine_notice(): void {
+        $result = self::$unsupported_engine;
+        if ( $result === null ) {
+            return;
+        }
+        if ( ! function_exists( 'current_user_can' ) || ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        $version = is_string( $result['version'] ?? null ) ? $result['version'] : '';
+        $engine  = is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN;
+        $detected = $version !== '' ? $version : $engine;
+
+        printf(
+            '<div class="notice notice-error"><p><strong>CPMS:</strong> سرور دیتابیس این سایت پشتیبانی نمی‌شود (شناسایی‌شده: %s). مهاجرت‌های جدید تا اصلاحِ سرور اجرا نمی‌شوند و پیامِ خطا از مسیرِ مدیریتی حذف شده است. مجموعهٔ پذیرفته‌شده: %s. جزئیات کامل در <a href="%s">صفحهٔ سلامت سیستم</a>.</p></div>',
+            esc_html( $detected ),
+            esc_html( DatabaseCompatibilityGate::ACCEPTED_SET_WORDING ),
+            esc_url( admin_url( 'admin.php?page=cpms-system' ) )
+        );
+    }
+
 
     /**
      * بازهٔ یک‌دقیقه‌ایِ CPMS در `cron_schedules`.
@@ -529,7 +737,18 @@ final class App
         }
         set_transient($lock, 1, 30);
         try {
-            self::migrations()->migrate();
+            // N1 — روی موتورِ پشتیبانی‌نشده، migrate() اصلاً صدا زده نمی‌شود:
+            // مهاجرتِ 0027 (و هر مهاجرتِ بعدیِ pending) دیگر درخواستِ مدیریتی/
+            // REST را با RuntimeException نمی‌کُشد؛ به‌جایش یک OpLogِ throttled و
+            // یک اعلانِ مدیریتی ثبت می‌شود. بقیهٔ مسیر (ذخیره‌سازی خصوصی و
+            // مسیرِ ارزانِ هر-درخواستی) عیناً مثلِ قبل اجرا می‌شود — هیچ مسیرِ
+            // نوشتنِ دیگری عوض نشده است. schemaٔ از-قبل-اعمال‌شده کار می‌کند.
+            $compatibility = self::databaseCompatibility();
+            if ( (bool) ( $compatibility['supported'] ?? false ) !== true ) {
+                self::reportUnsupportedDatabaseEngine( $compatibility );
+            } else {
+                self::migrations()->migrate();
+            }
             self::ensurePrivateStorage();
             // مسیرِ ارزانِ هر-درخواستی: یک خواندنِ Option؛ فقط وقتی امضا عوض
             // شود یا آخرین تلاش ناموفق بوده باشد کارِ واقعی انجام می‌شود.
