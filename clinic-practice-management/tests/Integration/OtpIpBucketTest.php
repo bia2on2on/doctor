@@ -30,6 +30,8 @@ use WP_UnitTestCase;
  */
 final class OtpIpBucketTest extends WP_UnitTestCase
 {
+    use Phase2MultiClinicSmsFixture;
+
     private const HOUR = 3600;
 
     // RFC 5737 TEST-NET-3 addresses, one per method: hit-counters persist as
@@ -47,8 +49,20 @@ final class OtpIpBucketTest extends WP_UnitTestCase
         App::migrations()->migrate();
         Settings::flushCache();
         App::settingsFactory()->reset();
+        // Real second/third Clinic rows are required: Settings::set() writes a
+        // SETTING_UPDATE audit row and the audit log references Clinics — a
+        // bare settings row for a nonexistent Clinic fails closed.
+        $this->buildMultiClinicSmsFixture();
         $this->resolverClinic = 1;
         $this->mobileSeq = 1000;
+    }
+
+    protected function tearDown(): void
+    {
+        // fxPurge() removes the fixture Clinics' settings rows itself.
+        $this->fxPurge();
+        Settings::flushCache();
+        parent::tearDown();
     }
 
     /**
@@ -83,7 +97,7 @@ final class OtpIpBucketTest extends WP_UnitTestCase
         global $wpdb;
         $table = $wpdb->prefix . 'cpms_rate_limits';
 
-        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- fixed table prefix
+        // phpcs:ignore WordPress.DB.PreparedSQL.InterpolatedNotPrepared -- fixed test table
         $sql = "SELECT hits FROM {$table} WHERE window_key = %s AND window_id = %d";
 
         return (int) $wpdb->get_var(
@@ -115,28 +129,16 @@ final class OtpIpBucketTest extends WP_UnitTestCase
     }
 
     /**
-     * Setting rows persist inside the cpms tables across tests in one run;
-     * restore the documented default so nothing written here can leak.
-     */
-    protected function tearDown(): void
-    {
-        App::settingsFactory()->forClinic(1)->set('otp.ip_hourly_max', 10);
-        App::settingsFactory()->forClinic(2)->set('otp.ip_hourly_max', 10);
-        Settings::flushCache();
-        parent::tearDown();
-    }
-
-    /**
-     * Shared-bucket contract: clinic 1 caps at 2, clinic 2 caps at 5, and the
-     * SAME 'otp-ip:' row feeds both decisions — the second clinic inherits the
-     * first clinic's spent counter.
+     * Shared-bucket contract: Clinic A caps at 2, Clinic B caps at 5, and the
+     * SAME 'otp-ip:' row feeds both decisions — Clinic B inherits the counter
+     * that Clinic A spent.
      */
     public function testTwoClinicsShareOneIpBucketWithDifferentThresholds(): void
     {
-        App::settingsFactory()->forClinic(1)->set('otp.ip_hourly_max', 2);
-        App::settingsFactory()->forClinic(2)->set('otp.ip_hourly_max', 5);
+        App::settingsFactory()->forClinic($this->fxClinicA)->set('otp.ip_hourly_max', 2);
+        App::settingsFactory()->forClinic($this->fxClinicB)->set('otp.ip_hourly_max', 5);
 
-        $this->resolverClinic = 1;
+        $this->resolverClinic = $this->fxClinicA;
         $this->issue(self::IP_SHARED);
         $this->issue(self::IP_SHARED);
         $this->expectRateLimited(fn () => $this->issue(self::IP_SHARED));
@@ -146,9 +148,9 @@ final class OtpIpBucketTest extends WP_UnitTestCase
             'denial still charges the shared counter'
         );
 
-        // Clinic 2 context reads its own threshold (5) against the SAME row:
-        // hits 4 and 5 pass, the 6th is denied by clinic 2's own cap.
-        $this->resolverClinic = 2;
+        // Clinic B context reads its own threshold (5) against the SAME row:
+        // hits 4 and 5 pass, the 6th is denied by Clinic B's own cap.
+        $this->resolverClinic = $this->fxClinicB;
         $this->issue(self::IP_SHARED);
         $this->issue(self::IP_SHARED);
         self::assertSame(5, $this->ipHits(self::IP_SHARED));
@@ -162,18 +164,18 @@ final class OtpIpBucketTest extends WP_UnitTestCase
      */
     public function testExplicitClinicIdSelectsThatClinicThresholdOverResolver(): void
     {
-        App::settingsFactory()->forClinic(1)->set('otp.ip_hourly_max', 2);
-        App::settingsFactory()->forClinic(2)->set('otp.ip_hourly_max', 5);
-        $this->resolverClinic = 1;
+        App::settingsFactory()->forClinic($this->fxClinicA)->set('otp.ip_hourly_max', 2);
+        App::settingsFactory()->forClinic($this->fxClinicB)->set('otp.ip_hourly_max', 5);
+        $this->resolverClinic = $this->fxClinicA;
 
         $this->issue(self::IP_BRANCH);
         $this->issue(self::IP_BRANCH);
         $this->expectRateLimited(fn () => $this->issue(self::IP_BRANCH));
         self::assertSame(3, $this->ipHits(self::IP_BRANCH));
 
-        // Explicit clinicId=2 switches the threshold source (cap 5) for the
+        // Explicit clinicId=B switches the threshold source (cap 5) for the
         // same shared bucket…
-        $this->issue(self::IP_BRANCH, 2);
+        $this->issue(self::IP_BRANCH, $this->fxClinicB);
         self::assertSame(4, $this->ipHits(self::IP_BRANCH));
 
         // …while clinicId=0 is ignored ($clinicId > 0 guard) and the resolver
@@ -186,6 +188,7 @@ final class OtpIpBucketTest extends WP_UnitTestCase
      * The review fix at the real gate: a non-numeric stored value ('abc')
      * behaves as the default 10. With the former (int)-cast clamp the 2nd of
      * these requests would already have died against a silent cap of 1.
+     * Clinic 1 is the bootstrap-active Clinic, whose row always exists.
      */
     public function testGarbageSettingValueFallsBackToDefaultAtTheRealGate(): void
     {
