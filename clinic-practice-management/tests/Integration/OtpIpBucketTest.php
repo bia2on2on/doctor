@@ -8,7 +8,11 @@ use ClinicCore\Application\Auth\OtpException;
 use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Settings\Settings;
+use ClinicCore\Tests\Integration\Fixtures\Phase2MultiClinicSmsFixture;
 use WP_UnitTestCase;
+
+require_once __DIR__ . '/Fixtures/RecordingSmsProvider.php';
+require_once __DIR__ . '/Fixtures/Phase2MultiClinicSmsFixture.php';
 
 /**
  * Behavioural coverage for the per-IP OTP hourly guard (otp.ip_hourly_max),
