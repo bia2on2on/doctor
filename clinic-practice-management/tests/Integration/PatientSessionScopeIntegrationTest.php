@@ -435,7 +435,7 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         App::db()->insert('cpms_clinicians', [
             'clinic_id'  => $this->clinicB,
             'full_name'  => 'Dr M5M11 B ' . $uid,
-            'wp_user_id' => 0,
+            'wp_user_id' => null,
             'is_active'  => 1,
             'created_at' => $now,
             'updated_at' => $now,
@@ -522,7 +522,9 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         App::db()->insert('cpms_clinicians', [
             'clinic_id'  => $clinicId,
             'full_name'  => 'Dr M5M11 ' . $tag . ' ' . bin2hex(random_bytes(2)),
-            'wp_user_id' => 0,
+            // NULL = clinician without a login account. u_clinician_user (0007)
+            // is UNIQUE on wp_user_id, so a literal 0 collides on the second row.
+            'wp_user_id' => null,
             'is_active'  => 1,
             'created_at' => $now,
             'updated_at' => $now,
