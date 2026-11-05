@@ -6,28 +6,28 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Bootstrap\RuntimeSchemaGate;
+use ClinicCore\Frontend\ManagementPortalShell;
+use ClinicCore\Frontend\PatientPortalShell;
+use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Infrastructure\Db\DatabaseCompatibilityGate;
 use WP_UnitTestCase;
 
 /**
- * N1 — پیش‌بررسیِ موتورِ دیتابیس در App::activate() و App::ensureMigrated().
+ * N1 / F1 / F2 — پیش‌بررسیِ موتورِ دیتابیس در فعال‌سازی و گیتِ زمانِ اجرا روی سایتِ فعال.
  *
  * قراردادِ اثبات‌شده در این فایل:
- *  - فعال‌سازی روی موتورِ پشتیبانی‌نشده (شبیه‌سازی با probe درون‌تستی، مثلاً
- *    همان MariaDB 11.8.6 زنده) پیش از هر اثرِ جانبی با wp_die خوانا رد می‌شود:
- *    هیچ نقش، ردیفِ ledger، رویدادِ cron یا Optionی نوشته نمی‌شود (ردِ صفر).
- *  - پیامِ wp_die موتور/نسخهٔ شناسایی‌شده و مجموعهٔ پذیرفته‌شده (واژگانِ عینِ
- *    مهاجرت 0027) را دارد و back link می‌خواهد.
- *  - فعال‌سازی روی موتورِ مجاز دقیقاً مثلِ قبل کار می‌کند (نقش‌ها، مهاجرت‌های
- *    کامل، cron، CPMS_ACTIVATED) و «فعال‌سازی مجدد پس از رد» هم همین‌طور است.
- *  - ensureMigrated() روی موتورِ پشتیبانی‌نشده نه exception می‌دهد و نه
- *    migrate() صدا می‌زند؛ یک OpLogِ throttled و یک اعلانِ مدیریتی می‌سازد.
- *
- * محدودیتِ اعلام‌شده: گاردِ WP_SANDBOX_SCRAPING در boot() (که نقش‌ها را در همان
- * include فعال‌سازی به activate() موکول می‌کند تا ردِ فعال‌سازی هیچ نقشی روی
- * سایت نگذارد) اینجا فقط به‌صورت source-level اثبات می‌شود — ثابتِ PHP در
- * طولِ یک process تست قابلِ تعریف/حذفِ انتخابی نیست؛ اثباتِ runtime آن روی
- * فعال‌سازیِ واقعی (installer) باقی می‌ماند.
+ *  - مسیرِ واقعیِ `activate_plugin()` وردپرس در پردازهٔ ایزوله (پیش از بارگذاریِ افزونه)
+ *    روی موتورِ پشتیبانی‌نشده هم `plugin_sandbox_scrape()` و هم `App::activate()` را
+ *    اجرا می‌کند و بدونِ هیچ ردی (`cpms_jobs_tick`، نقش، جدول، ledger، Option) رد می‌شود؛
+ *    و در همان پردازهٔ ایزوله روی موتورِ مجاز همهٔ ۵ نقش و `cpms_jobs_tick` را می‌سازد.
+ *  - روی سایتِ از-پیش-فعال، گیتِ متمرکزِ زمانِ اجرا فقط وقتی مسدود می‌کند که هم موتور
+ *    با شواهدِ خوانا پشتیبانی‌نشده باشد و هم مهاجرتِ اعمال‌نشده در انتظار باشد (REST با
+ *    503 پایدار و بدون داده، پورتال‌ها/شورت‌کد با پیامِ خنثی، توقفِ cron/tick، و دسترس‌پذیر
+ *    ماندنِ `plugins.php` و غیرفعال‌سازی).
+ *  - اگر schema از قبل به‌روز باشد، مسیرهای زمانِ اجرا باز می‌مانند و فقط اعلانِ مدیریتی
+ *    نمایش داده می‌شود؛ اگر شواهدِ نسخه ناخوانا/مخدوش باشد، زمانِ اجرا مسدود نمی‌شود
+ *    (لاگِ throttled عملیاتی) در حالی که فعال‌سازی همچنان fail-closed می‌ماند.
  */
 final class AppActivationDatabaseGateTest extends WP_UnitTestCase
 {
@@ -432,12 +432,364 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         // …but only AFTER the engine pre-check refuses unsupported servers first.
         $preCheckOffset        = strpos($activateBody, 'database_compatibility()');
         $rolesInActivateOffset = strpos($activateBody, 'RolesAndCapabilities::register();');
+        $cronInActivateOffset  = strpos($activateBody, 'CronScheduleRepair::ensure_scheduled();');
         self::assertNotFalse($preCheckOffset, 'activate() must call database_compatibility()');
         self::assertNotFalse($rolesInActivateOffset, 'activate() must call RolesAndCapabilities::register()');
+        self::assertNotFalse($cronInActivateOffset, 'activate() must schedule cpms_jobs_tick on supported engines');
         self::assertLessThan(
             $rolesInActivateOffset,
             $preCheckOffset,
             'the engine pre-check must run before roles in activate()'
         );
+        self::assertLessThan(
+            $cronInActivateOffset,
+            $preCheckOffset,
+            'the engine pre-check must run before cron scheduling in activate()'
+        );
+
+        // F1: CronScheduleRepair::ensure_scheduled() in boot() must also be
+        // guarded by WP_SANDBOX_SCRAPING so plugin_sandbox_scrape() never leaves
+        // cpms_jobs_tick scheduled on a refused activation.
+        $cronInBootOffset     = strpos($bootBody, 'CronScheduleRepair::ensure_scheduled();');
+        $lastSandboxGuardPos  = strrpos($bootBody, 'WP_SANDBOX_SCRAPING');
+        self::assertNotFalse($cronInBootOffset, 'boot() keeps ensuring cron schedule on normal requests');
+        self::assertNotFalse($lastSandboxGuardPos);
+        self::assertLessThan(
+            $cronInBootOffset,
+            $lastSandboxGuardPos,
+            'WP_SANDBOX_SCRAPING must guard CronScheduleRepair::ensure_scheduled() in boot()'
+        );
+    }
+
+    // ============================ F1: real activate_plugin() worker ============================
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function runActivationWorker(string $mode): array
+    {
+        $tests_dir = rtrim((string) getenv('WP_TESTS_DIR'), '/');
+        $env       = [
+            'PATH'                      => (string) getenv('PATH'),
+            'HOME'                      => (string) getenv('HOME'),
+            'WP_TESTS_DIR'              => $tests_dir,
+            'WP_TESTS_CONFIG_FILE_PATH' => (string) (getenv('WP_TESTS_CONFIG_FILE_PATH') ?: $tests_dir . '/wp-tests-config.php'),
+            'WP_CORE_DIR'               => rtrim(ABSPATH, '/'),
+            'CPMS_ACTIVATION_WORKER_MODE' => $mode,
+        ];
+
+        $cmd         = [PHP_BINARY, dirname(__DIR__, 2) . '/tests/bin/refused-activation-worker.php'];
+        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $process     = proc_open($cmd, $descriptors, $pipes, dirname(__DIR__, 2), $env);
+        self::assertIsResource($process, 'activation worker process must start');
+        fclose($pipes[0]);
+
+        $stdout = (string) stream_get_contents($pipes[1]);
+        $stderr = (string) stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exitCode = proc_close($process);
+
+        self::assertSame(
+            0,
+            $exitCode,
+            "activation worker ({$mode}) failed with exit={$exitCode}; stdout={$stdout}; stderr={$stderr}"
+        );
+
+        $decoded = json_decode(trim($stdout), true);
+        self::assertIsArray($decoded, "activation worker ({$mode}) must emit JSON: {$stdout}");
+        self::assertTrue((bool) ($decoded['ok'] ?? false), "activation worker ({$mode}) reported error: {$stdout}");
+
+        return $decoded;
+    }
+
+    public function testRealActivatePluginFlowLeavesZeroCronRoleOptionOrLedgerResidueAndPreservesSupportedControl(): void
+    {
+        // Release parent transaction row locks on wp_options before spawning child DB connection.
+        self::commit_transaction();
+
+        // 1. Refused activation through real WordPress activate_plugin() -> plugin_sandbox_scrape() -> App::boot() -> App::activate().
+        $refused = $this->runActivationWorker('unsupported');
+        self::assertTrue($refused['cpms_loaded'], 'plugin_sandbox_scrape() must actually include clinic-practice-management.php');
+        self::assertTrue($refused['sandbox_scraping_defined'], 'WP_SANDBOX_SCRAPING must be active during real activate_plugin()');
+        self::assertNull($refused['wp_error_code'], 'activate_plugin() must reach CPMS activation rather than failing early');
+        self::assertIsArray($refused['wp_die']);
+        self::assertStringContainsString('11.8.6-MariaDB', (string) ($refused['wp_die']['message'] ?? ''));
+        self::assertStringContainsString(DatabaseCompatibilityGate::ACCEPTED_SET_WORDING, (string) ($refused['wp_die']['message'] ?? ''));
+        self::assertFalse($refused['plugin_active'], 'plugin must remain inactive after refusal');
+        self::assertFalse($refused['jobs_tick_scheduled'], 'refused activate_plugin() must NOT leave cpms_jobs_tick scheduled');
+        self::assertSame([], $refused['present_cpms_roles'], 'refused activate_plugin() must leave zero CPMS roles');
+        self::assertTrue($refused['roles_unchanged'], 'roles must match pre-activation snapshot');
+        self::assertTrue($refused['options_unchanged'], 'wp_options must match pre-activation snapshot');
+        self::assertTrue($refused['ledger_unchanged'], 'migration ledger must match pre-activation snapshot');
+        self::assertTrue($refused['cron_unchanged'], 'cron array must match pre-activation snapshot');
+        self::assertSame(0, $refused['activated_log_delta']);
+        self::assertSame(0, $refused['unsupported_log_delta']);
+
+        // 2. Positive control through the exact same activate_plugin() worker on a supported engine.
+        $supported = $this->runActivationWorker('supported');
+        self::assertTrue($supported['cpms_loaded']);
+        self::assertTrue($supported['sandbox_scraping_defined']);
+        self::assertNull($supported['wp_error_code']);
+        self::assertNull($supported['wp_die']);
+        self::assertTrue($supported['plugin_active'], 'supported activate_plugin() activates CPMS');
+        self::assertTrue($supported['jobs_tick_scheduled'], 'supported activate_plugin() schedules cpms_jobs_tick');
+        self::assertCount(5, $supported['present_cpms_roles'], 'supported activate_plugin() registers all 5 CPMS roles');
+        self::assertSame(1, $supported['activated_log_delta']);
+    }
+
+    // ============================ F2: runtime gate ============================
+
+    public function testRuntimeGateKeepsServingWhenSchemaIsAlreadyCurrentOnUnsupportedEngineAndShowsAdminNotices(): void
+    {
+        self::assertFalse(App::migrations()->has_pending_migrations(), 'precondition: schema is current');
+
+        $this->unsupportedProbe();
+
+        self::assertFalse(
+            App::is_runtime_blocked_by_pending_schema(),
+            'already-current schema on an unsupported engine must NOT block runtime'
+        );
+
+        // REST keeps serving normally (200, not 503).
+        $restResponse = rest_get_server()->dispatch(new \WP_REST_Request('GET', '/clinic/v1/health'));
+        self::assertSame(200, $restResponse->get_status());
+        $payload = $restResponse->get_data();
+        self::assertTrue((bool) ($payload['data']['ok'] ?? false));
+
+        // Shortcode is not replaced with the runtime-unavailable banner.
+        $shortcodeHtml = do_shortcode('[cpms_public_booking clinic_id="999999"]');
+        self::assertStringNotContainsString('data-role="cpms-runtime-unavailable"', $shortcodeHtml);
+
+        // Both admin_notices and network_admin_notices render the warning for administrators.
+        $admin = self::factory()->user->create(['role' => 'administrator']);
+        wp_set_current_user($admin);
+
+        foreach (['admin_notices', 'network_admin_notices'] as $noticeHook) {
+            self::assertNotFalse(
+                has_action($noticeHook, [App::class, 'render_unsupported_engine_notice']),
+                "{$noticeHook} must be wired to render_unsupported_engine_notice"
+            );
+            ob_start();
+            App::render_unsupported_engine_notice();
+            $noticeHtml = (string) ob_get_clean();
+            self::assertStringContainsString('11.8.6-MariaDB', $noticeHtml);
+            self::assertStringContainsString(DatabaseCompatibilityGate::ACCEPTED_SET_WORDING, $noticeHtml);
+        }
+    }
+
+    public function testRuntimeGateBlocksRestPortalsShortcodeAndCronWhenUnsupportedAndMigrationsArePendingWhileKeepingAdminReachable(): void
+    {
+        $latest = App::migrations()->currentVersion();
+        self::assertNotNull($latest);
+        $latestRow = App::db()->fetchRow(
+            'SELECT version, description, applied_at FROM ' . App::db()->table('cpms_schema_migrations') . ' WHERE version = %s',
+            [$latest]
+        );
+        self::assertIsArray($latestRow);
+
+        // Create portal pages and a queued job BEFORE arming the block so we observe real interception.
+        $patientPageId    = PatientPortalShell::ensure_portal_page();
+        $staffPageId      = StaffPortalShell::ensure_portal_page();
+        $managementPageId = ManagementPortalShell::ensure_portal_page();
+        self::assertGreaterThan(0, $patientPageId);
+        self::assertGreaterThan(0, $staffPageId);
+        self::assertGreaterThan(0, $managementPageId);
+
+        $jobId = App::jobs()->enqueue('slots.generate', ['horizon_days' => 1, 'source' => 'f2-gate-test']);
+        self::assertGreaterThan(0, $jobId);
+
+        App::db()->query(
+            'DELETE FROM ' . App::db()->table('cpms_schema_migrations') . ' WHERE version = %s',
+            [$latest]
+        );
+
+        try {
+            self::assertTrue(App::migrations()->has_pending_migrations(), 'non-vacuous precondition: migration is pending');
+
+            $this->unsupportedProbe();
+            self::assertTrue(App::is_runtime_blocked_by_pending_schema());
+
+            // (1) Clinical REST routes return HTTP 503 with stable error code and NO clinical/patient data.
+            $server = rest_get_server();
+            foreach (
+                [
+                    ['GET', '/clinic/v1/health'],
+                    ['GET', '/clinic/v1/patients'],
+                    ['POST', '/clinic/v1/otp/request'],
+                ] as [$method, $route]
+            ) {
+                $response = $server->dispatch(new \WP_REST_Request($method, $route));
+                self::assertSame(503, $response->get_status(), "{$method} {$route} must return HTTP 503 when blocked");
+                $body = $response->get_data();
+                self::assertSame(RuntimeSchemaGate::ERROR_CODE, $body['code'] ?? null);
+                self::assertSame(RuntimeSchemaGate::NEUTRAL_MESSAGE, $body['message'] ?? null);
+                self::assertSame(['status' => 503], $body['data'] ?? null, '503 envelope must carry no clinical or patient data');
+            }
+
+            // Core WordPress REST routes outside /clinic/v1 remain untouched.
+            $coreResponse = $server->dispatch(new \WP_REST_Request('GET', '/wp/v2/types'));
+            self::assertNotSame(503, $coreResponse->get_status(), 'non-CPMS WordPress REST routes must remain reachable');
+
+            // (2) Frontend portals and [cpms_public_booking] shortcode render a short neutral message with no patient data.
+            foreach ([$patientPageId, $staffPageId, $managementPageId] as $portalPageId) {
+                $this->go_to((string) get_permalink($portalPageId));
+                $resolvedTemplate = (string) apply_filters('template_include', 'index.php');
+                self::assertSame(RuntimeSchemaGate::template_path(), $resolvedTemplate);
+
+                ob_start();
+                include $resolvedTemplate;
+                $portalHtml = (string) ob_get_clean();
+
+                self::assertStringContainsString('data-role="cpms-runtime-unavailable"', $portalHtml);
+                self::assertStringContainsString(RuntimeSchemaGate::NEUTRAL_MESSAGE, $portalHtml);
+                self::assertStringNotContainsString('داشبورد بیمار', $portalHtml);
+            }
+            $this->go_to('/');
+
+            $shortcodeHtml = do_shortcode('[cpms_public_booking clinic_id="1"]');
+            self::assertStringContainsString('data-role="cpms-runtime-unavailable"', $shortcodeHtml);
+            self::assertStringContainsString(RuntimeSchemaGate::NEUTRAL_MESSAGE, $shortcodeHtml);
+
+            // (3) Cron / job workers do NOT claim or run clinical jobs against old schema.
+            self::assertSame(0, App::runTick(20), 'runTick() must short-circuit with 0 processed jobs when blocked');
+            do_action('cpms_jobs_tick');
+            App::scheduleRecurringJobs();
+
+            $jobRow = App::db()->fetchRow(
+                'SELECT status, attempts FROM ' . App::db()->table('cpms_jobs') . ' WHERE id = %d',
+                [$jobId]
+            );
+            self::assertIsArray($jobRow);
+            self::assertSame('queued', (string) $jobRow['status'], 'queued clinical job must remain untouched');
+            self::assertSame(0, (int) $jobRow['attempts'], 'queued clinical job must have 0 execution attempts');
+
+            // (4) Administrator plugin management (plugins.php, admin notice, deactivation) stays reachable.
+            $admin = self::factory()->user->create(['role' => 'administrator']);
+            wp_set_current_user($admin);
+            $GLOBALS['pagenow'] = 'plugins.php';
+
+            delete_transient('cpms_migrate_lock');
+            $this->invokeEnsureMigrated();
+
+            ob_start();
+            App::render_unsupported_engine_notice();
+            $adminNotice = (string) ob_get_clean();
+            self::assertStringContainsString('notice-error', $adminNotice);
+            self::assertStringContainsString('11.8.6-MariaDB', $adminNotice);
+
+            if (wp_next_scheduled('cpms_jobs_tick') === false) {
+                wp_schedule_event(time() + 60, 'hourly', 'cpms_jobs_tick');
+            }
+            App::deactivate();
+            self::assertFalse(wp_next_scheduled('cpms_jobs_tick'), 'plugin deactivation stays functional while blocked');
+        } finally {
+            // Re-insert the ledger row directly so tearDown() runs zero DDL and
+            // preserves WP_UnitTestCase's outer transaction rollback.
+            $stillMissing = App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_schema_migrations') . ' WHERE version = %s',
+                [$latest]
+            );
+            if ((int) $stillMissing === 0) {
+                App::db()->insert('cpms_schema_migrations', [
+                    'version'     => (string) $latestRow['version'],
+                    'description' => (string) $latestRow['description'],
+                    'applied_at'  => (string) $latestRow['applied_at'],
+                ]);
+            }
+        }
+    }
+
+    public function testUnreadableDatabaseEvidenceDoesNotBlockRuntimeEvenWithPendingMigrationsAndLogsThrottledWhileActivationStaysFailClosed(): void
+    {
+        $latest = App::migrations()->currentVersion();
+        self::assertNotNull($latest);
+        $latestRow = App::db()->fetchRow(
+            'SELECT version, description, applied_at FROM ' . App::db()->table('cpms_schema_migrations') . ' WHERE version = %s',
+            [$latest]
+        );
+        self::assertIsArray($latestRow);
+
+        App::db()->query(
+            'DELETE FROM ' . App::db()->table('cpms_schema_migrations') . ' WHERE version = %s',
+            [$latest]
+        );
+
+        try {
+            self::assertTrue(App::migrations()->has_pending_migrations());
+
+            $unreadableBefore = $this->opLogRowCount('CPMS_DB_ENGINE_EVIDENCE_UNREADABLE');
+
+            // Unreadable query evidence -> runtime is NOT blocked, logs once per throttle window.
+            App::set_db_compatibility_probe_for_tests(
+                static fn (): array => DatabaseCompatibilityGate::unavailable_evidence()
+            );
+            self::assertFalse(App::is_runtime_blocked_by_pending_schema());
+            self::assertSame($unreadableBefore + 1, $this->opLogRowCount('CPMS_DB_ENGINE_EVIDENCE_UNREADABLE'));
+
+            // Repeat check within window is throttled.
+            self::assertFalse(App::is_runtime_blocked_by_pending_schema());
+            self::assertSame($unreadableBefore + 1, $this->opLogRowCount('CPMS_DB_ENGINE_EVIDENCE_UNREADABLE'));
+
+            // Garbled string evidence -> also NOT blocked at runtime, while activation remains fail-closed.
+            App::set_db_compatibility_probe_for_tests(
+                static fn (): array => DatabaseCompatibilityGate::check('garbage', 'MySQL')
+            );
+            self::assertFalse(App::is_runtime_blocked_by_pending_schema());
+
+            $restResponse = rest_get_server()->dispatch(new \WP_REST_Request('GET', '/clinic/v1/health'));
+            self::assertNotSame(503, $restResponse->get_status(), 'garbled DB version evidence must not trigger the 503 gate');
+
+            $die = $this->captureWpDie(static function (): void {
+                App::activate();
+            });
+            self::assertStringContainsString(DatabaseCompatibilityGate::ACCEPTED_SET_WORDING, $die['message']);
+        } finally {
+            $stillMissing = App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_schema_migrations') . ' WHERE version = %s',
+                [$latest]
+            );
+            if ((int) $stillMissing === 0) {
+                App::db()->insert('cpms_schema_migrations', [
+                    'version'     => (string) $latestRow['version'],
+                    'description' => (string) $latestRow['description'],
+                    'applied_at'  => (string) $latestRow['applied_at'],
+                ]);
+            }
+        }
+    }
+
+    public function testDatabaseCompatibilityProbeIsMemoizedPerRequestOnlyWithoutCrossRequestCaching(): void
+    {
+        $calls = 0;
+        App::set_db_compatibility_probe_for_tests(static function () use (&$calls): array {
+            ++$calls;
+            return DatabaseCompatibilityGate::check('11.8.6-MariaDB', 'mariadb.org binary distribution');
+        });
+
+        // Multiple gate evaluations in the same request read the probe once.
+        App::is_runtime_blocked_by_pending_schema();
+        App::is_runtime_blocked_by_pending_schema();
+        App::is_database_engine_supported();
+        self::assertSame(1, $calls, 'probe must be memoized within a single request');
+
+        // Verify no option or transient caches the probe result across requests
+        // (only the log-noise throttle transient is written).
+        foreach ($this->optionNames() as $optName) {
+            self::assertStringNotContainsString(
+                'db_compatibility',
+                $optName,
+                'probe result must never be persisted in wp_options/transients'
+            );
+        }
+
+        // Simulate a fresh request by resetting in-memory request state: the probe runs again.
+        App::reset_database_compatibility_state_for_tests();
+        App::set_db_compatibility_probe_for_tests(static function () use (&$calls): array {
+            ++$calls;
+            return DatabaseCompatibilityGate::check('8.0.36', 'MySQL Community Server - GPL');
+        });
+        self::assertTrue(App::is_database_engine_supported());
+        self::assertSame(2, $calls, 'a fresh request re-evaluates the probe instead of reading a cross-request cache');
     }
 }

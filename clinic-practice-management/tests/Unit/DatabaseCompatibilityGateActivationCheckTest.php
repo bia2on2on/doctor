@@ -150,4 +150,165 @@ final class DatabaseCompatibilityGateActivationCheckTest extends TestCase
             'the activation refusal must reuse migration 0027\'s exact accepted-set wording'
         );
     }
+
+    /**
+     * @return array<string, array{0: string, 1: string, 2: string}>
+     */
+    public static function runtimeEvidenceMatrix(): array
+    {
+        return [
+            'supported mysql 8.0'           => ['8.0.36', 'MySQL Community Server - GPL', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED],
+            'supported mariadb 10.11'       => ['10.11.19-MariaDB-ubu2404', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED],
+            'supported mariadb 11.4.13'     => ['11.4.13-MariaDB', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED],
+            'supported 5.5.5-prefixed'      => ['5.5.5-10.11.2-MariaDB-log', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED],
+            'unsupported mariadb 11.8.6'    => ['11.8.6-MariaDB', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported mariadb 11.4.12'   => ['11.4.12-MariaDB', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported mariadb 10.6.16'   => ['10.6.16-MariaDB', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported mysql 5.7'         => ['5.7.44', 'MySQL Community Server (GPL)', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported mysql 9.0'         => ['9.0.1', 'MySQL Community Server - GPL', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported sqlite'            => ['3.45.0', 'SQLite', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported postgresql'        => ['16.2', 'PostgreSQL', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unreadable empty'              => ['', '', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+            'unreadable garbage'            => ['garbage', '', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+            'unreadable garbage mysql hint' => ['garbage', 'MySQL', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+            'unreadable maria without ver'  => ['MariaDB-custom', 'MariaDB', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+            'unreadable stripped comment'   => ['8.0.36', '', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+        ];
+    }
+
+    /**
+     * F2 — تفکیکِ دقیقِ «پشتیبانی‌شده» / «با شواهدِ خوانا پشتیبانی‌نشده» / «شواهدِ ناخوانا»
+     * بدونِ بازکردنِ مجموعهٔ مجازِ فعال‌سازی یا مهاجرت 0027.
+     *
+     * @dataProvider runtimeEvidenceMatrix
+     */
+    public function testClassifyRuntimeEvidenceDistinguishesPositivelyUnsupportedFromUnreadable(
+        string $version,
+        string $comment,
+        string $expected_status
+    ): void {
+        self::assertSame(
+            $expected_status,
+            DatabaseCompatibilityGate::classify_runtime_evidence( $version, $comment ),
+            'runtime evidence classification mismatch for: ' . $version . ' / ' . $comment
+        );
+
+        $checked = DatabaseCompatibilityGate::check( $version, $comment );
+        self::assertSame( $expected_status, $checked['runtime_evidence'] );
+
+        if ( $expected_status !== DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED ) {
+            self::assertFalse( $checked['supported'], 'activation check stays fail-closed on both unsupported and unreadable evidence' );
+        }
+    }
+
+    public function testUnavailableEvidenceCarriesUnreadableRuntimeStatus(): void
+    {
+        $unavailable = DatabaseCompatibilityGate::unavailable_evidence();
+        self::assertSame( DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE, $unavailable['runtime_evidence'] );
+        self::assertFalse( $unavailable['supported'] );
+    }
+
+    public function testTestSeamGuardRejectsProductionContextsAndNonTestCallers(): void
+    {
+        $tests_root  = dirname( __DIR__, 2 ) . '/tests';
+        $worker_file = $tests_root . '/bin/refused-activation-worker.php';
+        $prod_file   = dirname( __DIR__, 2 ) . '/src/Bootstrap/App.php';
+
+        // Never allowed on web SAPIs, even if test classes or paths were present.
+        foreach ( [ 'fpm-fcgi', 'apache2handler', 'cgi-fcgi', 'litespeed' ] as $web_sapi ) {
+            self::assertFalse(
+                \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                    $web_sapi,
+                    true,
+                    self::class,
+                    __FILE__,
+                    $tests_root
+                ),
+                "web SAPI {$web_sapi} must never be allowed to use *_for_tests seams"
+            );
+        }
+
+        // Never allowed on CLI when PHPUnit / WP test suite runtime is absent (e.g. wp-cli, bin/cpms).
+        self::assertFalse(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                false,
+                self::class,
+                __FILE__,
+                $tests_root
+            )
+        );
+
+        // Never allowed when the caller is neither in ClinicCore\Tests\* nor under tests/.
+        self::assertFalse(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                'ClinicCore\\Bootstrap\\App',
+                $prod_file,
+                $tests_root
+            )
+        );
+        // Never allowed even if a file outside tests/ spoofs the ClinicCore\Tests\ namespace.
+        self::assertFalse(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                'ClinicCore\\Tests\\SpoofedOutsideTestsDir',
+                $prod_file,
+                $tests_root
+            )
+        );
+        // Never allowed when tests/ directory does not exist (packaged release zip).
+        self::assertFalse(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                self::class,
+                __FILE__,
+                $tests_root . '-nonexistent-release-dir'
+            )
+        );
+
+        // Allowed for genuine PHPUnit test classes and isolated workers inside tests/.
+        self::assertTrue(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                self::class,
+                __FILE__,
+                $tests_root
+            )
+        );
+        self::assertTrue(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                null,
+                $worker_file,
+                $tests_root
+            )
+        );
+    }
+
+    public function testSetDbCompatibilityProbeForTestsRejectsNonTestCallerAtRuntime(): void
+    {
+        $rogue_script = tempnam( sys_get_temp_dir(), 'cpms-rogue-caller-' );
+        self::assertIsString( $rogue_script );
+        file_put_contents(
+            $rogue_script,
+            "<?php\nreturn static function (): void {\n"
+            . "    \\ClinicCore\\Bootstrap\\App::set_db_compatibility_probe_for_tests( static fn (): array => [ 'supported' => true ] );\n"
+            . "};\n"
+        );
+
+        try {
+            /** @var \Closure():void $rogue_call */
+            $rogue_call = require $rogue_script;
+            $this->expectException( \LogicException::class );
+            $rogue_call();
+        } finally {
+            @unlink( $rogue_script );
+        }
+    }
 }

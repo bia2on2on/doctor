@@ -39,7 +39,7 @@ final class WooCommerceAdminAccessProfileTest extends WP_UnitTestCase
     {
         parent::setUp();
 
-        foreach (['pagenow', '_GET'] as $key) {
+        foreach (['pagenow', '_GET', '_POST', '_REQUEST', '_SERVER'] as $key) {
             $this->globalsBackup[$key] = $GLOBALS[$key] ?? null;
         }
     }
@@ -47,7 +47,14 @@ final class WooCommerceAdminAccessProfileTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         wp_set_current_user(0);
-        unset($GLOBALS['pagenow'], $_GET['user_id'], $_GET['page']);
+        unset(
+            $GLOBALS['pagenow'],
+            $_GET['user_id'],
+            $_GET['page'],
+            $_POST['user_id'],
+            $_REQUEST['user_id'],
+            $_REQUEST['page']
+        );
         foreach ($this->globalsBackup as $key => $value) {
             if ($value === null) {
                 unset($GLOBALS[$key]);
@@ -61,22 +68,26 @@ final class WooCommerceAdminAccessProfileTest extends WP_UnitTestCase
     // ============================ helpers ============================
 
     /**
-     * شبیه‌سازیِ درخواستِ wp-admin که سیاستِ ووکامرس می‌بیند.
+     * شبیه‌سازیِ درخواستِ GET در wp-admin که سیاستِ ووکامرس می‌بیند (هم‌راستا با SAPI:
+     * کلیدهای query هم در $_GET و هم در $_REQUEST قرار می‌گیرند).
      *
-     * @param mixed $user_id
+     * @param mixed $userId
      */
     private function serveAdminRequest(string $screen, $userId = null, ?string $page = null): void
     {
         $GLOBALS['pagenow'] = $screen;
+        unset($_POST['user_id']);
         if ($userId !== null) {
-            $_GET['user_id'] = (string) $userId;
+            $_GET['user_id']     = (string) $userId;
+            $_REQUEST['user_id'] = (string) $userId;
         } else {
-            unset($_GET['user_id']);
+            unset($_GET['user_id'], $_REQUEST['user_id']);
         }
         if ($page !== null) {
-            $_GET['page'] = $page;
+            $_GET['page']     = $page;
+            $_REQUEST['page'] = $page;
         } else {
-            unset($_GET['page']);
+            unset($_GET['page'], $_REQUEST['page']);
         }
     }
 
@@ -305,5 +316,107 @@ final class WooCommerceAdminAccessProfileTest extends WP_UnitTestCase
         $other = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_PATIENT]);
         $this->serveAdminRequest('profile.php', $other, 'cpms-doctor');
         $this->assertTrue($this->verdict());
+    }
+
+    // ============================ F3: GET / POST / REQUEST user_id ============================
+
+    public function testOwnProfileReadsRequestSuperglobalAcrossGetPostAndRequestAndDeniesOtherUserPost(): void
+    {
+        $staff = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_ACCOUNTANT]);
+        $other = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_PATIENT]);
+        wp_set_current_user($staff);
+
+        // 1. GET profile.php?user_id=<self> (PHP SAPI populates $_GET + $_REQUEST).
+        $GLOBALS['pagenow']  = 'profile.php';
+        unset($_POST['user_id']);
+        $_GET['user_id']     = (string) $staff;
+        $_REQUEST['user_id'] = (string) $staff;
+        $this->assertFalse($this->verdict(), 'GET profile.php?user_id=<self> must relax');
+
+        // 2. POST profile.php with user_id=<self> (form submit: $_GET absent, $_POST + $_REQUEST set).
+        unset($_GET['user_id']);
+        $_POST['user_id']    = (string) $staff;
+        $_REQUEST['user_id'] = (string) $staff;
+        $this->assertFalse($this->verdict(), 'POST profile.php with own user_id must relax');
+
+        // 3. POST profile.php with user_id=<other> ($_GET absent, $_POST + $_REQUEST carry other user).
+        unset($_GET['user_id']);
+        $_POST['user_id']    = (string) $other;
+        $_REQUEST['user_id'] = (string) $other;
+        $this->assertTrue($this->verdict(), 'POST profile.php with another user_id must NOT relax');
+
+        // 4. Direct $_REQUEST variants: absent, own digits, array, padded, float, leading-zero.
+        unset($_GET['user_id'], $_POST['user_id'], $_REQUEST['user_id']);
+        $this->assertFalse($this->verdict(), 'absent $_REQUEST[user_id] relaxes for CPMS staff');
+
+        $_REQUEST['user_id'] = (string) $staff;
+        $this->assertFalse($this->verdict(), 'strict digits $_REQUEST[user_id] equal to self relaxes');
+
+        foreach (
+            [
+                [(string) $staff],
+                ' ' . $staff . ' ',
+                '+' . $staff,
+                '0' . $staff,
+                $staff . '.0',
+                '',
+                '0',
+            ] as $malformed
+        ) {
+            $_REQUEST['user_id'] = $malformed;
+            $this->assertTrue(
+                $this->verdict(),
+                'malformed $_REQUEST[user_id] must fail closed: ' . var_export($malformed, true)
+            );
+        }
+    }
+
+    // ============================ F4: dual-role staff + patient ============================
+
+    /**
+     * @dataProvider staffRoles
+     */
+    public function testDualRoleStaffPlusPatientIsNeverClassifiedAsPatientOnlyAcrossAllFourStaffRoles(string $staffRole): void
+    {
+        $user  = self::factory()->user->create(['role' => $staffRole]);
+        $other = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_PATIENT]);
+
+        $wpUser = get_userdata($user);
+        $this->assertInstanceOf(\WP_User::class, $wpUser);
+        $wpUser->add_role(RolesAndCapabilities::ROLE_PATIENT);
+        wp_set_current_user($user);
+
+        $roles = (array) wp_get_current_user()->roles;
+        $this->assertContains($staffRole, $roles);
+        $this->assertContains(RolesAndCapabilities::ROLE_PATIENT, $roles);
+
+        // Must NOT be misclassified as patient-only (both WP_User and int overload).
+        $this->assertFalse(
+            PatientPortalPage::isPatientOnly($wpUser),
+            "{$staffRole}+cpms_patient must not be classified as patient-only"
+        );
+        $this->assertFalse(
+            PatientPortalPage::isPatientOnly((int) $user),
+            "{$staffRole}+cpms_patient (by user ID) must not be classified as patient-only"
+        );
+
+        // guardWpAdmin() must NOT redirect dual-role staff+patient out of wp-admin on GET.
+        $_SERVER['REQUEST_METHOD'] = 'GET';
+        $this->serveAdminRequest('profile.php');
+        $redirect = $this->captureRedirect(static function (): void {
+            PatientPortalPage::guardWpAdmin();
+        });
+        $this->assertNull($redirect, "guardWpAdmin must not redirect {$staffRole}+cpms_patient to the patient portal");
+
+        // Own profile.php is relaxed under WooCommerce, while other-user profile and unrelated screens stay blocked.
+        $this->assertFalse($this->verdict(), "{$staffRole}+cpms_patient must be relaxed on own profile.php");
+
+        $this->serveAdminRequest('profile.php', $other);
+        $this->assertTrue($this->verdict(), "{$staffRole}+cpms_patient must still be denied on another user's profile");
+
+        foreach (['users.php', 'plugins.php', 'options-general.php'] as $deniedScreen) {
+            $this->serveAdminRequest($deniedScreen);
+            $this->assertTrue($this->verdict(), "{$deniedScreen} remains blocked under WooCommerce for {$staffRole}+cpms_patient");
+        }
     }
 }

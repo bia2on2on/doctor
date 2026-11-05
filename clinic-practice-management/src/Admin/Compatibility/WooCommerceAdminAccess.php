@@ -161,8 +161,8 @@ final class WooCommerceAdminAccess {
         return self::decide_own_profile(
             $prevent_access,
             is_string( $pagenow ) ? $pagenow : '',
-            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only self-identity selector; never authority (screen + same-user + CPMS capability below).
-            $_GET['user_id'] ?? null,
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended,WordPress.Security.ValidatedSanitizedInput.InputNotSanitized,WordPress.Security.ValidatedSanitizedInput.MissingUnslash -- Read-only raw selector matching wp-admin/user-edit.php:16; decide_own_profile() rejects arrays and anything outside strict positive decimal digits equal to current user ID, and core enforces check_admin_referer() + current_user_can('edit_user', $user_id).
+            $_REQUEST['user_id'] ?? null,
             get_current_user_id(),
             RolesAndCapabilities::ALL_CAPS,
             static fn ( string $capability ): bool => current_user_can( $capability )
@@ -283,10 +283,17 @@ final class WooCommerceAdminAccess {
             return $prevent_access;
         }
 
-        // Own profile only: absent selector, or exactly the current user's id.
-        // Fail closed for any other id and for malformed selectors.
+        // Own profile only: absent selector, or strict positive decimal digits equal
+        // to the current user's id. Fail closed for any other id, arrays, whitespace,
+        // floats, leading zeros, or malformed selectors.
         if ( $requested_user_id !== null ) {
-            if ( ! is_numeric( $requested_user_id ) || (int) $requested_user_id !== $current_user_id ) {
+            if ( is_int( $requested_user_id ) ) {
+                if ( $requested_user_id !== $current_user_id ) {
+                    return $prevent_access;
+                }
+            } elseif ( ! is_string( $requested_user_id )
+                || 1 !== preg_match( '/\A[1-9][0-9]*\z/', $requested_user_id )
+                || (int) $requested_user_id !== $current_user_id ) {
                 return $prevent_access;
             }
         }

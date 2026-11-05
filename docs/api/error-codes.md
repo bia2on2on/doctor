@@ -38,6 +38,7 @@
 | `CLINIC_IDEMPOTENCY_REPLAY` | 200 | تکرار درخواست با `Idempotency-Key` شناخته‌شده — **پاسخ Origin** بازمی‌گردد (خطا نیست) |
 | `CLINIC_FILE_INVALID` | 400 | فایل آپلود‌شده نامعتبر (MIME/اندازه/نوع) |
 | `CLINIC_CONFLICT` | 409 | Conflict نگارشی (مثلاً Handwriting: `client_revision` ≠ `version` سرور) |
+| `CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE` | 503 | سایتِ از-پیش-فعال روی موتور دیتابیسِ خارج از مجموعهٔ مجاز قرار گرفته و مهاجرتِ schema در انتظار است — مسیرهای بالینی موقتاً متوقف‌اند (پاسخ بدون دادهٔ بیمار) |
 | `CLINIC_INTERNAL_ERROR` | 500 | خطای پیش‌بینی‌نشده سرور (جزئیات فنی فقط در Log — نه در Response) |
 
 ## Slots / Booking (F1/F2/F3)

@@ -102,8 +102,25 @@ final class PatientPortalPage
             return false;
         }
 
-        return !in_array(RolesAndCapabilities::ROLE_DOCTOR, $roles, true)
-            && !in_array(RolesAndCapabilities::ROLE_SECRETARY, $roles, true);
+        return ! in_array( RolesAndCapabilities::ROLE_DOCTOR, $roles, true )
+            && ! in_array( RolesAndCapabilities::ROLE_SECRETARY, $roles, true )
+            && ! in_array( RolesAndCapabilities::ROLE_ACCOUNTANT, $roles, true )
+            && ! in_array( RolesAndCapabilities::ROLE_MANAGER, $roles, true )
+            && ! user_can( $user, 'manage_options' )
+            && ! self::holds_any_cpms_capability( $user );
+    }
+
+    /**
+     * آیا کاربر دست‌کم یکی از قابلیت‌های بستهٔ CPMS (`ALL_CAPS` — بدون `read`) را دارد؟
+     */
+    private static function holds_any_cpms_capability( \WP_User $user ): bool {
+        foreach ( RolesAndCapabilities::ALL_CAPS as $capability ) {
+            if ( user_can( $user, $capability ) ) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -245,6 +262,14 @@ final class PatientPortalPage
     {
         if (!is_user_logged_in() || !self::isPatientOnly(wp_get_current_user())) {
             wp_die('دسترسی ندارید', 403);
+        }
+
+        if ( \ClinicCore\Bootstrap\RuntimeSchemaGate::is_blocked() ) {
+            echo '<div class="notice notice-warning" data-role="cpms-runtime-unavailable"><p>'
+                . esc_html( \ClinicCore\Bootstrap\RuntimeSchemaGate::NEUTRAL_MESSAGE )
+                . '</p></div>';
+
+            return;
         }
 
         $user_id = get_current_user_id();

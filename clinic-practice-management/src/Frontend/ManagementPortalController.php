@@ -87,6 +87,9 @@ final class ManagementPortalController {
 		if ( ! ManagementPortalShell::is_portal_request() ) {
 			return;
 		}
+		if ( \ClinicCore\Bootstrap\RuntimeSchemaGate::is_blocked() ) {
+			return;
+		}
 		if ( ! isset( $_SERVER['REQUEST_METHOD'] ) || 'POST' !== strtoupper( sanitize_text_field( wp_unslash( (string) $_SERVER['REQUEST_METHOD'] ) ) ) ) {
 			return;
 		}

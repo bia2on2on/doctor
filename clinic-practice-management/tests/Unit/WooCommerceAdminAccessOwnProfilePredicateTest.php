@@ -115,6 +115,21 @@ final class WooCommerceAdminAccessOwnProfilePredicateTest extends TestCase
             RolesAndCapabilities::ALL_CAPS,
             $this->granted( [] )
         ) );
+
+        // Strict decimal digits only: whitespace, signs, floats, leading zeros, '0', empty string all fail closed.
+        foreach ( [ '', '0', ' 7', '7 ', ' 7 ', '+7', '-7', '7.0', '7e0', '07', '007', true ] as $malformed ) {
+            self::assertTrue(
+                WooCommerceAdminAccess::decide_own_profile(
+                    true,
+                    'profile.php',
+                    $malformed,
+                    7,
+                    RolesAndCapabilities::ALL_CAPS,
+                    $this->granted( [] )
+                ),
+                'non-strict user_id must not relax WooCommerce access: ' . var_export( $malformed, true )
+            );
+        }
     }
 
     /**

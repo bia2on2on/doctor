@@ -61,6 +61,9 @@ final class DoctorPortalShell {
 	 * @param int $user_id WordPress user id.
 	 */
 	public static function legacy_redirect_target( int $user_id ): string {
+		if ( \ClinicCore\Bootstrap\RuntimeSchemaGate::is_blocked() ) {
+			return '';
+		}
 		if ( ! self::is_portal_request() || StaffPortalShell::is_portal_request() ) {
 			return '';
 		}

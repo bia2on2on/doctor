@@ -180,6 +180,9 @@ final class App
      */
     private const DB_ENGINE_LOG_THROTTLE = 'cpms_db_engine_unsupported_throttle';
 
+    /** F2 — throttleِ جداگانه برای لاگِ «شواهدِ نسخهٔ دیتابیس ناخوانا/مخدوش است». */
+    private const DB_EVIDENCE_LOG_THROTTLE = 'cpms_db_engine_unreadable_throttle';
+
     private const DB_ENGINE_LOG_WINDOW = 21600;
 
     private static ?CpmsDb $db = null;
@@ -225,6 +228,12 @@ final class App
      * @var array<string, mixed>|null
      */
     private static ?array $unsupported_engine = null;
+
+    /**
+     * F2 — memo فقط در طولِ همین درخواست برای بررسیِ وجودِ مهاجرتِ در انتظار
+     * (هیچ کشِ بین-درخواستی در Option/Transient/Object-Cache نوشته نمی‌شود).
+     */
+    private static ?bool $pending_migrations_memo = null;
 
 
     /**
@@ -410,7 +419,15 @@ final class App
         // هزینه: `ensure_scheduled()` فقط یک خواندنِ Optionِ autoload‌شدهٔ `cron`
         // است و **فقط** وقتی رویداد غایب باشد می‌نویسد؛ بنابراین درخواستِ عمومیِ
         // سالم هیچ نوشتنی در cron انجام نمی‌دهد. هیچ Jobی اجرا نمی‌شود.
-        CronScheduleRepair::ensure_scheduled();
+        //
+        // N1/F1: در طولِ includeِ آزمایشیِ `plugin_sandbox_scrape()` در
+        // `activate_plugin()` (پیش از اجرای `App::activate()`) زمان‌بندی انجام
+        // نمی‌شود تا فعال‌سازیِ ردشده هیچ رویدادِ `cpms_jobs_tick` روی سایت نگذارد؛
+        // مسیرِ فعال‌سازیِ مجاز خودش در `activate()` آن را ثبت می‌کند و هر درخواستِ
+        // عادیِ دیگر (غیرِ sandbox) مثل قبل اجرا می‌شود.
+        if ( ! ( defined( 'WP_SANDBOX_SCRAPING' ) && WP_SANDBOX_SCRAPING ) ) {
+            CronScheduleRepair::ensure_scheduled();
+        }
 
         // ترمیمِ خودکارِ سمتِ مدیریت (throttle‌شده، حداکثر یک‌بار در ساعت):
         // فقط **شکست** لاگ می‌شود. ثبتِ یک «ترمیمِ موفق» در این مسیرِ خودکار
@@ -461,6 +478,8 @@ final class App
         // N1 — اعلانِ مدیریتیِ «موتورِ دیتابیسِ پشتیبانی‌نشده» وقتی ensureMigrated()
         // مهاجرت را fail-closed رد کرده است (صفحهٔ سلامت سیستم دست‌نخورده می‌ماند).
         add_action( 'admin_notices', [ self::class, 'render_unsupported_engine_notice' ] );
+        add_action( 'network_admin_notices', [ self::class, 'render_unsupported_engine_notice' ] );
+        RuntimeSchemaGate::register();
 
         // F10 — به‌روزرسانی امن (ADR-0029): فقط slug خودمان؛ کش‌شده؛ بدون شبکه در
         // صفحات عادی. صحت sha256 بسته پیش از نصب (upgrader_pre_download).
@@ -555,28 +574,106 @@ final class App
     // ================= N1 — پیش‌بررسیِ موتورِ دیتابیس =================
 
     /**
-     * پیش‌بررسیِ واحدِ موتورِ دیتابیس — هم برای activate() و هم برای
-     * ensureMigrated(). شواهد را یک‌بار در هر درخواست می‌خواند (memo) و تصمیم
-     * را از {@see DatabaseCompatibilityGate::check()} می‌گیرد؛ یعنی همان
-     * مجموعهٔ مجازِ مهاجرت 0027 — نه بازتر، نه بسته‌تر.
+     * پیش‌بررسیِ واحدِ موتورِ دیتابیس — هم برای activate()، هم برای
+     * ensureMigrated() و هم برای گیتِ زمانِ اجرا (RuntimeSchemaGate).
+     * شواهد را یک‌بار در هر درخواست در حافظهٔ همان درخواست نگه می‌دارد
+     * (هیچ کشِ بین-درخواستی در Option/Transient/Object-Cache نوشته نمی‌شود)
+     * و تصمیم را از {@see DatabaseCompatibilityGate::check()} می‌گیرد؛ یعنی
+     * همان مجموعهٔ مجازِ مهاجرت 0027 — نه بازتر، نه بسته‌تر.
      *
-     * seam تستی: اگر probe تنظیم شده باشد، به‌جای خواندنِ واقعیِ DB، خروجیِ
-     * probe برگردانده می‌شود (بدون memo) تا مسیرِ ردِ فعال‌سازی در تست‌ها
-     * قابلِ شبیه‌سازی باشد. مصرف‌کننده‌ها فقط `supported` را با cast بولی
-     * می‌خوانند (fail-closed روی هر شکلِ غیرمنتظره).
+     * seam تستی: حتی اگر probe در حافظه باشد، فقط زیرِ زمانِ اجرای واقعیِ تستِ
+     * CLI خوانده می‌شود؛ در هر محیطِ تولیدی نادیده گرفته می‌شود.
      *
      * @return array<string, mixed>
      */
     private static function database_compatibility(): array {
-        if ( self::$db_compatibility_probe !== null ) {
-            return (array) ( self::$db_compatibility_probe )();
-        }
-
         if ( self::$db_compatibility === null ) {
-            self::$db_compatibility = self::read_database_compatibility();
+            if ( self::$db_compatibility_probe !== null && self::is_test_seam_runtime_active() ) {
+                self::$db_compatibility = (array) ( self::$db_compatibility_probe )();
+            } else {
+                self::$db_compatibility = self::read_database_compatibility();
+            }
         }
 
         return self::$db_compatibility;
+    }
+
+    /**
+     * آیا موتورِ دیتابیسِ فعلی در مجموعهٔ مجازِ تأییدشده است؟
+     */
+    public static function is_database_engine_supported(): bool {
+        return (bool) ( self::database_compatibility()['supported'] ?? false ) === true;
+    }
+
+    /**
+     * تصمیمِ متمرکزِ گیتِ زمانِ اجرا (F2):
+     * فقط وقتی `true` برمی‌گرداند که **هم‌زمان** (الف) موتورِ دیتابیس با شواهدِ
+     * خوانا خارج از مجموعهٔ مجاز شناسایی شده باشد و (ب) مهاجرتِ اعمال‌نشده واقعاً
+     * در انتظار باشد.
+     *
+     *  - اگر schema از قبل به‌روز باشد: `false` (مسیرهای زمانِ اجرا باز می‌مانند
+     *    و فقط اعلانِ مدیریتی ثبت می‌شود).
+     *  - اگر شواهدِ نسخه ناخوانا/مخدوش باشد: `false` (زمانِ اجرا مسدود نمی‌شود؛
+     *    فقط لاگِ عملیاتیِ throttled ثبت می‌شود؛ فعال‌سازی همچنان fail-closed می‌ماند).
+     */
+    public static function is_runtime_blocked_by_pending_schema(): bool {
+        $compatibility   = self::database_compatibility();
+        $evidence_status = self::runtime_evidence_status( $compatibility );
+
+        if ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED ) {
+            return false;
+        }
+
+        if ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE ) {
+            self::report_unreadable_database_evidence( $compatibility );
+
+            return false;
+        }
+
+        self::report_unsupported_database_engine( $compatibility );
+
+        return self::has_pending_migrations_memoized();
+    }
+
+    private static function has_pending_migrations_memoized(): bool {
+        if ( self::$pending_migrations_memo === null ) {
+            self::$pending_migrations_memo = self::migrations()->has_pending_migrations();
+        }
+
+        return self::$pending_migrations_memo;
+    }
+
+    /**
+     * استخراجِ وضعیتِ شواهدِ زمانِ اجرا از خروجیِ پیش‌بررسی (سازگار با probeهای ۴کلیدی).
+     *
+     * @param array<string, mixed> $result خروجیِ database_compatibility().
+     */
+    private static function runtime_evidence_status( array $result ): string {
+        $tagged = $result['runtime_evidence'] ?? null;
+        if ( is_string( $tagged ) && in_array(
+            $tagged,
+            [
+                DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED,
+                DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED,
+                DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE,
+            ],
+            true
+        ) ) {
+            return $tagged;
+        }
+
+        if ( (bool) ( $result['supported'] ?? false ) === true ) {
+            return DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED;
+        }
+
+        $engine  = is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN;
+        $version = is_string( $result['version'] ?? null ) ? trim( $result['version'] ) : '';
+        if ( in_array( $engine, [ DatabaseCompatibilityGate::ENGINE_MARIADB, DatabaseCompatibilityGate::ENGINE_MYSQL ], true )
+            && 1 === preg_match( '/\A(?:5\.5\.5-)?\d+\.\d+\.\d+/', $version ) ) {
+            return DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED;
+        }
+
+        return DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE;
     }
 
     /**
@@ -584,7 +681,7 @@ final class App
      * (`SELECT VERSION(), @@version_comment`؛ رشته‌نبودن/نبودِ فیلدها =
      * fail-closed با نتیجهٔ «هویت در دسترس نیست»).
      *
-     * @return array{supported: bool, engine: string, version: string, reason: string}
+     * @return array{supported: bool, engine: string, version: string, reason: string, runtime_evidence: string}
      */
     private static function read_database_compatibility(): array {
         $server = self::db()->fetchRow( 'SELECT VERSION() AS SERVER_VERSION, @@version_comment AS VERSION_COMMENT' );
@@ -617,32 +714,104 @@ final class App
     }
 
     /**
+     * پیش‌شرطِ خالصِ مجازبودنِ seamهای `*_for_tests`:
+     * ۱. فقط زیرِ `cli` (هیچ درخواستِ وب در تولید اجازه ندارد)؛
+     * ۲. فقط وقتی زمانِ اجرای تست واقعاً بارگذاری شده باشد (`PHPUnit\Framework\TestCase`
+     *    یا `WP_TESTS_DOMAIN`) — هیچ وابستگی‌ای به `WP_ENVIRONMENT_TYPE` یا `WP_DEBUG` نیست؛
+     * ۳. فایلِ فراخوانندهٔ مستقیم (`realpath`) باید واقعاً داخلِ درختِ `tests/` افزونه
+     *    باشد (صرفِ جعلِ `namespace ClinicCore\Tests\...` بیرون از `tests/` کافی نیست،
+     *    و در بستهٔ تولیدی که پوشهٔ `tests/` ندارد همیشه `false` است)؛ و اگر فراخوانی از
+     *    کلاس باشد، فضای نامِ آن هم نمی‌تواند کلاسِ تولیدیِ `ClinicCore\` بیرون از `Tests\` باشد.
+     */
+    public static function can_use_test_seam_frame(
+        string $sapi,
+        bool $has_test_runtime,
+        ?string $caller_class,
+        ?string $caller_file,
+        string $tests_root
+    ): bool {
+        if ( $sapi !== 'cli' || ! $has_test_runtime ) {
+            return false;
+        }
+
+        if ( $tests_root === '' || ! is_string( $caller_file ) || $caller_file === '' ) {
+            return false;
+        }
+
+        $resolved_caller = realpath( $caller_file );
+        $resolved_root   = realpath( $tests_root );
+        if ( ! is_string( $resolved_caller ) || ! is_string( $resolved_root ) ) {
+            return false;
+        }
+
+        if ( ! str_starts_with( $resolved_caller, rtrim( $resolved_root, DIRECTORY_SEPARATOR ) . DIRECTORY_SEPARATOR ) ) {
+            return false;
+        }
+
+        if ( is_string( $caller_class ) && $caller_class !== ''
+            && str_starts_with( $caller_class, 'ClinicCore\\' )
+            && ! str_starts_with( $caller_class, 'ClinicCore\\Tests\\' ) ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static function is_test_seam_runtime_active(): bool {
+        return PHP_SAPI === 'cli'
+            && ( class_exists( \PHPUnit\Framework\TestCase::class, false ) || defined( 'WP_TESTS_DOMAIN' ) );
+    }
+
+    private static function assert_test_seam_allowed(): void {
+        $frames       = ( new \Exception() )->getTrace();
+        $caller_file  = isset( $frames[1]['file'] ) && is_string( $frames[1]['file'] ) ? $frames[1]['file'] : null;
+        $caller_class = isset( $frames[2]['class'] ) && is_string( $frames[2]['class'] ) ? $frames[2]['class'] : null;
+        $tests_root   = dirname( __DIR__, 2 ) . '/tests';
+
+        if ( ! self::can_use_test_seam_frame(
+            PHP_SAPI,
+            self::is_test_seam_runtime_active(),
+            $caller_class,
+            $caller_file,
+            $tests_root
+        ) ) {
+            throw new \LogicException( 'CPMS test seams cannot be invoked outside the test suite.' );
+        }
+    }
+
+    /**
      * @internal فقط برای تست‌ها — جایگزینِ شواهدِ موتورِ دیتابیس (null = مسیرِ واقعی).
      *
      * @param (\Closure():(array<string, mixed>))|null $probe
      */
     public static function set_db_compatibility_probe_for_tests( ?\Closure $probe ): void {
-        self::$db_compatibility_probe = $probe;
+        self::assert_test_seam_allowed();
+        self::$db_compatibility_probe  = $probe;
+        self::$db_compatibility        = null;
+        self::$pending_migrations_memo = null;
     }
 
     /**
-     * @internal فقط برای تست‌ها — بازنشانیِ کلِ وضعیتِ N1 (probe + memo + اعلان
-     * + نشانگرِ throttleِ لاگ) تا تست‌ها به هم نشت نکنند.
+     * @internal فقط برای تست‌ها — بازنشانیِ کلِ وضعیتِ N1/F2 (probe + memo + اعلان
+     * + نشانگرهای throttleِ لاگ) تا تست‌ها به هم نشت نکنند.
      */
     public static function reset_database_compatibility_state_for_tests(): void {
-        self::$db_compatibility_probe = null;
-        self::$db_compatibility       = null;
-        self::$unsupported_engine     = null;
+        self::assert_test_seam_allowed();
+        self::$db_compatibility_probe  = null;
+        self::$db_compatibility        = null;
+        self::$unsupported_engine      = null;
+        self::$pending_migrations_memo = null;
         if ( function_exists( 'delete_transient' ) ) {
             delete_transient( self::DB_ENGINE_LOG_THROTTLE );
+            delete_transient( self::DB_EVIDENCE_LOG_THROTTLE );
         }
     }
 
     /**
-     * گزارشِ «موتورِ پشتیبانی‌نشده» در مسیرِ ensureMigrated():
-     *  - نتیجه را برای اعلانِ admin_noticesِ همین درخواست نگه می‌دارد (بدونِ
-     *    نوشتنِ Option؛ دقیق و بدون کهنگی)؛
-     *  - یک ردیفِ OpLog در هر پنجرهٔ throttle می‌نویسد (CPMS_DB_ENGINE_UNSUPPORTED).
+     * گزارشِ «موتورِ پشتیبانی‌نشده» در مسیرِ ensureMigrated()/RuntimeSchemaGate:
+     *  - نتیجه را برای اعلانِ admin_notices/network_admin_noticesِ همین درخواست
+     *    نگه می‌دارد (بدونِ نوشتنِ Option؛ دقیق و بدون کهنگی)؛
+     *  - یک ردیفِ OpLog در هر پنجرهٔ throttle می‌نویسد (CPMS_DB_ENGINE_UNSUPPORTED، بدون هیچ PHI).
      *
      * @param array<string, mixed> $result خروجیِ database_compatibility().
      */
@@ -666,6 +835,32 @@ final class App
             );
         } catch ( \Throwable $e ) {
             // ثبتِ Log عملیاتی هرگز نباید درخواست را بشکند (همان قرارداد OpLogger).
+            unset( $e );
+        }
+    }
+
+    /**
+     * گزارشِ throttled وقتی شواهدِ نسخهٔ دیتابیس در زمانِ اجرا ناخوانا/مخدوش است
+     * (زمانِ اجرا مسدود نمی‌شود؛ هیچ دادهٔ بیمار/کاربر ثبت نمی‌شود).
+     *
+     * @param array<string, mixed> $result خروجیِ database_compatibility().
+     */
+    private static function report_unreadable_database_evidence( array $result ): void {
+        if ( function_exists( 'get_transient' ) && false !== get_transient( self::DB_EVIDENCE_LOG_THROTTLE ) ) {
+            return;
+        }
+        if ( function_exists( 'set_transient' ) ) {
+            set_transient( self::DB_EVIDENCE_LOG_THROTTLE, 1, self::DB_ENGINE_LOG_WINDOW );
+        }
+
+        try {
+            self::op()->warning(
+                'CPMS_DB_ENGINE_EVIDENCE_UNREADABLE',
+                [
+                    'reason' => is_string( $result['reason'] ?? null ) ? $result['reason'] : 'unreadable',
+                ]
+            );
+        } catch ( \Throwable $e ) {
             unset( $e );
         }
     }
@@ -746,11 +941,18 @@ final class App
             // یک اعلانِ مدیریتی ثبت می‌شود. بقیهٔ مسیر (ذخیره‌سازی خصوصی و
             // مسیرِ ارزانِ هر-درخواستی) عیناً مثلِ قبل اجرا می‌شود — هیچ مسیرِ
             // نوشتنِ دیگری عوض نشده است. schemaٔ از-قبل-اعمال‌شده کار می‌کند.
-            $compatibility = self::database_compatibility();
-            if ( (bool) ( $compatibility['supported'] ?? false ) !== true ) {
-                self::report_unsupported_database_engine( $compatibility );
-            } else {
+            $compatibility   = self::database_compatibility();
+            $evidence_status = self::runtime_evidence_status( $compatibility );
+            if ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED ) {
                 self::migrations()->migrate();
+                self::$pending_migrations_memo = false;
+            } elseif ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED ) {
+                self::report_unsupported_database_engine( $compatibility );
+                if ( self::has_pending_migrations_memoized() ) {
+                    return;
+                }
+            } else {
+                self::report_unreadable_database_evidence( $compatibility );
             }
             self::ensurePrivateStorage();
             // مسیرِ ارزانِ هر-درخواستی: یک خواندنِ Option؛ فقط وقتی امضا عوض
@@ -2368,6 +2570,10 @@ final class App
      */
     public static function runTick(int $limit = 20): int
     {
+        if ( self::is_runtime_blocked_by_pending_schema() ) {
+            return 0;
+        }
+
         $db = self::db();
         $got = $db->fetchValue('SELECT GET_LOCK(%s, 0)', [self::TICK_LOCK]);
         if ((int) $got !== 1) {
@@ -2403,6 +2609,10 @@ final class App
 
     public static function scheduleRecurringJobs(): void
     {
+        if ( self::is_runtime_blocked_by_pending_schema() ) {
+            return;
+        }
+
         $queue = self::jobs();
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 

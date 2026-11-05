@@ -49,6 +49,15 @@ final class DatabaseCompatibilityGate {
     public const ENGINE_MARIADB = 'mariadb';
     public const ENGINE_MYSQL   = 'mysql';
 
+    /** شواهدِ نسخه در زمانِ اجرا تأیید می‌کند سرور در مجموعهٔ مجاز است. */
+    public const RUNTIME_EVIDENCE_SUPPORTED = 'supported';
+
+    /** شواهدِ نسخه خواناست و موتور/نسخه خارج از مجموعهٔ مجاز است. */
+    public const RUNTIME_EVIDENCE_UNSUPPORTED = 'positively_unsupported';
+
+    /** شواهدِ نسخه غایب، خالی یا مخدوش است (در فعال‌سازی fail-closed؛ در زمانِ اجرا بدون مسدودسازی). */
+    public const RUNTIME_EVIDENCE_UNREADABLE = 'unreadable';
+
     /**
      * موتورِ سرور بر پایهٔ شواهدِ `VERSION()`/`@@version_comment`.
      *
@@ -90,26 +99,67 @@ final class DatabaseCompatibilityGate {
      * @param string $version رشتهٔ خامِ `VERSION()` — همان شواهدی که مهاجرت 0027 می‌خواند.
      * @param string $comment رشتهٔ خامِ `@@version_comment`.
      *
-     * @return array{supported: bool, engine: string, version: string, reason: string}
+     * @return array{supported: bool, engine: string, version: string, reason: string, runtime_evidence: string}
      */
     public static function check( string $version, string $comment ): array {
-        $engine = self::engine( $version, $comment );
+        $engine           = self::engine( $version, $comment );
+        $runtime_evidence = self::classify_runtime_evidence( $version, $comment );
 
         if ( $engine !== null ) {
             return [
-                'supported' => true,
-                'engine'    => $engine,
-                'version'   => trim( $version ),
-                'reason'    => 'verified database server',
+                'supported'        => true,
+                'engine'           => $engine,
+                'version'          => trim( $version ),
+                'reason'           => 'verified database server',
+                'runtime_evidence' => $runtime_evidence,
             ];
         }
 
         return [
-            'supported' => false,
-            'engine'    => self::detected_engine_family( $version, $comment ),
-            'version'   => trim( $version ),
-            'reason'    => 'unsupported database server; ' . self::ACCEPTED_SET_WORDING,
+            'supported'        => false,
+            'engine'           => self::detected_engine_family( $version, $comment ),
+            'version'          => trim( $version ),
+            'reason'           => 'unsupported database server; ' . self::ACCEPTED_SET_WORDING,
+            'runtime_evidence' => $runtime_evidence,
         ];
+    }
+
+    /**
+     * تفکیکِ شواهدِ زمانِ اجرا برای سایتِ از-پیش-فعال:
+     *  - `supported`: دقیقاً همان مجموعهٔ مجازِ {@see engine()}؛
+     *  - `positively_unsupported`: خانوادهٔ MariaDB/MySQL با نسخهٔ عددیِ خوانا خارج از
+     *    مجموعهٔ مجاز، یا موتورِ غیرِ MySQL/MariaDB که صریحاً خودش را معرفی کرده است؛
+     *  - `unreadable`: شواهدِ خالی، ناقص یا مخدوش (در فعال‌سازی همچنان fail-closed
+     *    رد می‌شود، ولی سایتِ فعال را صرفاً به‌خاطرِ مخدوش‌بودنِ رشته قفل نمی‌کند).
+     */
+    public static function classify_runtime_evidence( string $version, string $comment ): string {
+        if ( null !== self::engine( $version, $comment ) ) {
+            return self::RUNTIME_EVIDENCE_SUPPORTED;
+        }
+
+        $normalized = self::normalize( $version );
+        if ( '' === $normalized ) {
+            return self::RUNTIME_EVIDENCE_UNREADABLE;
+        }
+
+        $is_maria = false !== stripos( $normalized, 'MariaDB' ) || false !== stripos( $comment, 'MariaDB' );
+        if ( $is_maria ) {
+            return 1 === preg_match( '/\A\d+\.\d+\.\d+/', $normalized )
+                ? self::RUNTIME_EVIDENCE_UNSUPPORTED
+                : self::RUNTIME_EVIDENCE_UNREADABLE;
+        }
+
+        if ( false !== stripos( $comment, 'MySQL' ) ) {
+            return 1 === preg_match( '/\A\d+\.\d+\.\d+/', $normalized )
+                ? self::RUNTIME_EVIDENCE_UNSUPPORTED
+                : self::RUNTIME_EVIDENCE_UNREADABLE;
+        }
+
+        if ( 1 === preg_match( '/\b(?:SQLite|PostgreSQL|CockroachDB|DuckDB)\b/i', $normalized . ' ' . $comment ) ) {
+            return self::RUNTIME_EVIDENCE_UNSUPPORTED;
+        }
+
+        return self::RUNTIME_EVIDENCE_UNREADABLE;
     }
 
     /**
@@ -117,14 +167,15 @@ final class DatabaseCompatibilityGate {
      * (کوئری ناموفق یا فیلدهای غیررشته‌ای) — همان موضعِ fail-closed مهاجرت
      * 0027: «هویت در دسترس نیست؛ از تغییرِ schema خودداری می‌شود».
      *
-     * @return array{supported: bool, engine: string, version: string, reason: string}
+     * @return array{supported: bool, engine: string, version: string, reason: string, runtime_evidence: string}
      */
     public static function unavailable_evidence(): array {
         return [
-            'supported' => false,
-            'engine'    => self::ENGINE_UNKNOWN,
-            'version'   => '',
-            'reason'    => 'database server identity is unavailable; refusing schema changes',
+            'supported'        => false,
+            'engine'           => self::ENGINE_UNKNOWN,
+            'version'          => '',
+            'reason'           => 'database server identity is unavailable; refusing schema changes',
+            'runtime_evidence' => self::RUNTIME_EVIDENCE_UNREADABLE,
         ];
     }
 
