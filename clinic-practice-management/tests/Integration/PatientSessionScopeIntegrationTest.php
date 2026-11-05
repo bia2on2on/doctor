@@ -234,7 +234,7 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         wp_set_current_user($zero);
         $ok = rest_do_request($this->mineRequest());
         self::assertSame(200, $ok->get_status());
-        self::assertSame([], $ok->get_data(), '0 links returns an empty list, not an error.');
+        self::assertSame([], $ok->get_data()['data'] ?? null, '0 links returns an empty list, not an error.');
 
         $multi = $this->makeUser('m5_rest_multi', RolesAndCapabilities::ROLE_PATIENT);
         $this->linkPatient($this->clinicA, $this->insertPatient($this->clinicA, 'RA'), $multi);

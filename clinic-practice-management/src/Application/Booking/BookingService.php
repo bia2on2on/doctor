@@ -2085,11 +2085,23 @@ final class BookingService
                     )
                 ) {
                     // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
-                    $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'appointment', $appointmentId, (int) $appt['patient_id'], null, null, [
-                        'mobile' => MobileValidator::mask((string) ($appt['patient_mobile'] ?? '')),
-                    ], (int) $appt['clinic_id'] );
+                    $mobile_mask = MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) );
+                    $this->audit(
+                        'FORBIDDEN_ACCESS_ATTEMPT',
+                        $wpUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing method parameter is retained.
+                        'patient',
+                        'appointment',
+                        $appointmentId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing method parameter is retained.
+                        (int) $appt['patient_id'],
+                        null,
+                        null,
+                        [
+                            'mobile' => $mobile_mask,
+                        ],
+                        (int) $appt['clinic_id']
+                    );
                     // phpcs:enable
-                    throw BookingException::of('CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403);
+                    throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
                 }
                 $this->assert_patient_session_matches_clinic( $wpUserId, (int) $appt['clinic_id'] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing method parameter is retained.
             }

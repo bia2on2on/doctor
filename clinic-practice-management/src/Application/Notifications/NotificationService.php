@@ -152,29 +152,29 @@ final class NotificationService
      *
      * @return array<string, mixed>
      */
-    public function inbox(int $actorUserId, bool $unreadOnly, int $limit, int $sinceId = 0, ?string $template = null): array
+    public function inbox( int $actor_user_id, bool $unread_only, int $limit, int $since_id = 0, ?string $template = null ): array
     {
-        if ( $this->is_patient_actor( $actorUserId ) ) {
-            $clinic_id = $this->session_scope()->require_clinic_for_read( $actorUserId );
+        if ( $this->is_patient_actor( $actor_user_id ) ) {
+            $clinic_id = $this->session_scope()->require_clinic_for_read( $actor_user_id );
             if ( null === $clinic_id ) {
                 return [
                     'notifications' => [],
                     'unread_count'  => 0,
                 ];
             }
-            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actorUserId, $clinic_id );
+            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actor_user_id, $clinic_id );
             if ( [] === $patient_ids ) {
                 return [
                     'notifications' => [],
                     'unread_count'  => 0,
                 ];
             }
-            $rows   = $this->patient_rows_in_clinic( $clinic_id, $patient_ids, $unreadOnly, $limit, $sinceId );
+            $rows   = $this->patient_rows_in_clinic( $clinic_id, $patient_ids, $unread_only, $limit, $since_id );
             $unread = $this->patient_unread_count_in_clinic( $clinic_id, $patient_ids );
         } else {
-            $clinicId = App::scope()->clinicId;
-            $rows     = $this->notifications->forUser($clinicId, $actorUserId, $unreadOnly, $limit, $sinceId, $template);
-            $unread   = $this->notifications->unreadCountForUser($clinicId, $actorUserId);
+            $clinic_id = App::scope()->clinicId;
+            $rows      = $this->notifications->forUser( $clinic_id, $actor_user_id, $unread_only, $limit, $since_id, $template );
+            $unread    = $this->notifications->unreadCountForUser( $clinic_id, $actor_user_id );
         }
 
         return [
@@ -188,10 +188,10 @@ final class NotificationService
      *
      * @return array<string, mixed>
      */
-    public function since(int $actorUserId, int $sinceId): array
+    public function since( int $actor_user_id, int $since_id ): array
     {
-        if ( $this->is_patient_actor( $actorUserId ) ) {
-            $clinic_id = $this->session_scope()->require_clinic_for_read( $actorUserId );
+        if ( $this->is_patient_actor( $actor_user_id ) ) {
+            $clinic_id = $this->session_scope()->require_clinic_for_read( $actor_user_id );
             if ( null === $clinic_id ) {
                 return [
                     'notifications' => [],
@@ -199,7 +199,7 @@ final class NotificationService
                     'unread_count'  => 0,
                 ];
             }
-            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actorUserId, $clinic_id );
+            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actor_user_id, $clinic_id );
             if ( [] === $patient_ids ) {
                 return [
                     'notifications' => [],
@@ -207,7 +207,7 @@ final class NotificationService
                     'unread_count'  => 0,
                 ];
             }
-            $rows    = $this->patient_rows_in_clinic( $clinic_id, $patient_ids, false, 50, $sinceId );
+            $rows    = $this->patient_rows_in_clinic( $clinic_id, $patient_ids, false, 50, $since_id );
             $last_id = $this->patient_last_id_in_clinic( $clinic_id, $patient_ids );
             $unread  = $this->patient_unread_count_in_clinic( $clinic_id, $patient_ids );
 
@@ -220,17 +220,17 @@ final class NotificationService
             ];
         }
 
-        $clinicId = App::scope()->clinicId;
-        $rows     = $this->notifications->forUser($clinicId, $actorUserId, false, 50, $sinceId);
-        $lastId   = $this->notifications->lastIdForUser($clinicId, $actorUserId);
-        $unread   = $this->notifications->unreadCountForUser($clinicId, $actorUserId);
+        $clinic_id = App::scope()->clinicId;
+        $rows      = $this->notifications->forUser( $clinic_id, $actor_user_id, false, 50, $since_id );
+        $last_id   = $this->notifications->lastIdForUser( $clinic_id, $actor_user_id );
+        $unread    = $this->notifications->unreadCountForUser( $clinic_id, $actor_user_id );
 
         // قدیمی→جدید تا کلاینت آخرین id را راحت نگه دارد
         $rows = array_reverse($rows);
 
         return [
             'notifications' => array_map([$this, 'present'], $rows),
-            'last_id'       => $lastId,
+            'last_id'       => $last_id,
             'unread_count'  => $unread,
         ];
     }
@@ -238,14 +238,14 @@ final class NotificationService
     /**
      * ETag برای R2 — آخرین id کلینیک‌محدودِ گیرنده (تغییر نکرده → 304).
      */
-    public function lastId(int $actorUserId): int
+    public function lastId( int $actor_user_id ): int // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Published public method name is retained.
     {
-        if ( $this->is_patient_actor( $actorUserId ) ) {
-            $clinic_id = $this->session_scope()->require_clinic_for_read( $actorUserId );
+        if ( $this->is_patient_actor( $actor_user_id ) ) {
+            $clinic_id = $this->session_scope()->require_clinic_for_read( $actor_user_id );
             if ( null === $clinic_id ) {
                 return 0;
             }
-            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actorUserId, $clinic_id );
+            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actor_user_id, $clinic_id );
             if ( [] === $patient_ids ) {
                 return 0;
             }
@@ -253,7 +253,7 @@ final class NotificationService
             return $this->patient_last_id_in_clinic( $clinic_id, $patient_ids );
         }
 
-        return $this->notifications->lastIdForUser(App::scope()->clinicId, $actorUserId);
+        return $this->notifications->lastIdForUser( App::scope()->clinicId, $actor_user_id );
     }
 
     /**
@@ -261,11 +261,11 @@ final class NotificationService
      *
      * @param list<int> $ids
      */
-    public function markRead(int $actorUserId, array $ids, bool $all): int
+    public function markRead( int $actor_user_id, array $ids, bool $all ): int // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Published public method name is retained.
     {
-        if ( $this->is_patient_actor( $actorUserId ) ) {
-            $clinic_id   = $this->session_scope()->require_clinic_for_write( $actorUserId );
-            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actorUserId, $clinic_id );
+        if ( $this->is_patient_actor( $actor_user_id ) ) {
+            $clinic_id   = $this->session_scope()->require_clinic_for_write( $actor_user_id );
+            $patient_ids = $this->active_linked_patient_ids_in_clinic( $actor_user_id, $clinic_id );
             if ( [] === $patient_ids ) {
                 return 0;
             }
@@ -274,7 +274,7 @@ final class NotificationService
         }
 
         if ($all) {
-            return $this->notifications->markAllRead($actorUserId, null);
+            return $this->notifications->markAllRead( $actor_user_id, null );
         }
 
         $ids = array_values(array_unique(array_filter(array_map('intval', $ids), static fn (int $i): bool => $i > 0)));
@@ -282,7 +282,7 @@ final class NotificationService
             return 0;
         }
 
-        return $this->notifications->markRead($actorUserId, null, array_slice($ids, 0, 200));
+        return $this->notifications->markRead( $actor_user_id, null, array_slice( $ids, 0, 200 ) );
     }
 
     // =========================================================
