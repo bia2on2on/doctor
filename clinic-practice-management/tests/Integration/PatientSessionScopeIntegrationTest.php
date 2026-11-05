@@ -432,15 +432,14 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         $this->locationA = $this->insertLocation($this->clinicA, 'Main A M5M11', 'main-a-m5m11-' . $uid);
         $this->locationB = $this->insertLocation($this->clinicB, 'Main B M5M11', 'main-b-m5m11-' . $uid);
 
-        App::db()->insert('cpms_clinicians', [
+        $this->clinicianB = $this->insertFixtureRow('cpms_clinicians', [
             'clinic_id'  => $this->clinicB,
             'full_name'  => 'Dr M5M11 B ' . $uid,
             'wp_user_id' => null,
             'is_active'  => 1,
             'created_at' => $now,
             'updated_at' => $now,
-        ]);
-        $this->clinicianB = App::db()->wpdb_last_insert_id();
+        ], 'clinician B');
 
         foreach ([$this->clinicA, $this->clinicB] as $clinicId) {
             $settings = new Settings(App::db(), $clinicId, App::audit());
@@ -516,10 +515,27 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         return App::db()->wpdb_last_insert_id();
     }
 
+    /**
+     * Fixture insert that fails loudly. The test DB is non-strict, so a rejected
+     * insert returns false and leaves a 0 or stale insert_id behind; both checks
+     * stop that from reaching the assertions as a plausible-looking id.
+     *
+     * @param array<string, mixed> $data
+     */
+    private function insertFixtureRow(string $table, array $data, string $what): int
+    {
+        self::assertTrue(App::db()->insert($table, $data), 'fixture: ' . $what . ' insert must succeed.');
+        $id = App::db()->wpdb_last_insert_id();
+        self::assertGreaterThan(0, $id, 'fixture: ' . $what . ' id must be > 0.');
+
+        return $id;
+    }
+
     private function insertClinician(int $clinicId, string $tag): int
     {
         $now = App::db()->nowUtcSql();
-        App::db()->insert('cpms_clinicians', [
+
+        return $this->insertFixtureRow('cpms_clinicians', [
             'clinic_id'  => $clinicId,
             'full_name'  => 'Dr M5M11 ' . $tag . ' ' . bin2hex(random_bytes(2)),
             // NULL = clinician without a login account. u_clinician_user (0007)
@@ -528,15 +544,13 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
             'is_active'  => 1,
             'created_at' => $now,
             'updated_at' => $now,
-        ]);
-
-        return App::db()->wpdb_last_insert_id();
+        ], 'clinician ' . $tag);
     }
 
     private function insertAppointment(int $clinicId, int $locationId, int $patientId, int $clinicianId, string $date, string $time): int
     {
         $now = App::db()->nowUtcSql();
-        App::db()->insert('cpms_schedule_slots', [
+        $slotId = $this->insertFixtureRow('cpms_schedule_slots', [
             'clinic_id'      => $clinicId,
             'location_id'    => $locationId,
             'clinician_id'   => $clinicianId,
@@ -550,10 +564,9 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
             'generated_from' => 'manual',
             'created_at'     => $now,
             'updated_at'     => $now,
-        ]);
-        $slotId = App::db()->wpdb_last_insert_id();
+        ], 'slot ' . $time);
 
-        App::db()->insert('cpms_appointments', [
+        return $this->insertFixtureRow('cpms_appointments', [
             'clinic_id'         => $clinicId,
             'location_id'       => $locationId,
             'reference_code'    => 'm5m11-' . bin2hex(random_bytes(3)),
@@ -571,9 +584,7 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
             'confirmed_at'      => $now,
             'created_at'        => $now,
             'updated_at'        => $now,
-        ]);
-
-        return App::db()->wpdb_last_insert_id();
+        ], 'appointment ' . $time);
     }
 
     private function makeUser(string $login, string $role): int
