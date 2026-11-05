@@ -50,6 +50,7 @@
 | `otp.daily_max` | `3` | کد/روز | حداکثر کد ارسالی در هر روز (بازه زمانی کلینیک) — ضد SMS Bombing. |
 | `otp.lockout_sec` | `900` | ثانیه | مدت قفل بعد از 5 شکست (15 دقیقه). |
 | `otp.hourly_max` | `10` | درخواست/ساعت | Rate Limit درخواست OTP (هر شماره + هر IP). |
+| `otp.ip_hourly_max` | `10` | درخواست/ساعت | سقف درخواست OTP از هر IP — ببینید تبصرهٔ پایین جدول. |
 | `booking.duration_default_min` | `20` | دقیقه | **پیش‌فرض کلینیک** مدت ویزیت (لایه 1 ADR-0017). |
 | `booking.slot_capacity_default` | `1` | تعداد | ظرفیت پیش‌فرض هر Slot. |
 | `booking.min_lead_hours` | `2` | ساعت | حداقل فاصله زمانی تا زودترین نوبت قابل رزرو. |
@@ -92,6 +93,17 @@
 | `sms.last_test` | `{}` | JSON | `{status: ok\|failed, at, provider, message}` — برای وضعیت `VERIFIED`/`ERROR` (بدون Secret). |
 | `rt.poll_sec_secretary` | `3` | ثانیه | بازه Polling داشبورد منشی. |
 | `rt.poll_sec_doctor` | `5` | ثانیه | بازه Polling داشبورد پزشک. |
+
+
+**تبصرهٔ `otp.ip_hourly_max` (مرور ۲۰۲۶-۱۱-۰۵):**
+- سطلِ شمارندهٔ `'otp-ip:'.$ip` سراسریِ per-IP است (بین همهٔ Clinicها مشترک)؛
+  فقط آستانه از Settings همان Clinic خوانده می‌شود. تداخلِ روی NAT مشترک:
+  خطرِ نهفتهٔ ثبت‌شده.
+- مقدارِ خامِ نامعتبر (null/بولی/غیرعددی) → پیش‌فرضِ ۱۰ (parity/ضدِlockout)؛
+  عددی خارج از ‎[1,1000]‎ clamp می‌شود.
+- صفحهٔ تنظیمات: نمایشِ فقط‌خواندنی؛ Writer محصولی وجود ندارد.
+- Scopeی‌کردنِ سطل: تصمیمِ بازِ Q6.
+  مرجع: docs/decisions/2026-11-05-otp-ip-bucket-shared-counter-record.md
 
 ## Timezone (قانون سفت — ADR-0013)
 - **ذخیره:** همه Timestampها `DATETIME(3)` در **UTC**.
