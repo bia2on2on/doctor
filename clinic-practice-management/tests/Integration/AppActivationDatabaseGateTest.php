@@ -48,7 +48,7 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         App::reset_database_compatibility_state_for_tests();
         delete_transient('cpms_migrate_lock');
 
-        foreach (['pagenow'] as $key) {
+        foreach (['pagenow', 'wp_rest_server'] as $key) {
             $this->globalsBackup[$key] = $GLOBALS[$key] ?? null;
         }
     }

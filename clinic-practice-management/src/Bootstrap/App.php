@@ -1260,13 +1260,25 @@ final class App
     public static function bookingService(): BookingService
     {
         static $booking = null;
-        if ($booking === null) {
-            $db = self::db();
+        static $deps    = null;
+        $current_deps   = [
+            self::db(),
+            self::settingsFactory(),
+            self::licenseGate(),
+            self::audit(),
+            self::op(),
+            self::idem(),
+            self::smsService(),
+            self::notificationService(),
+            self::patient_identity_activator(),
+        ];
+        if ( $booking === null || $deps !== $current_deps ) {
+            $db      = self::db();
             $booking = new BookingService(
                 $db,
-                new SlotRepository($db),
-                new AppointmentRepository($db),
-                new PatientRepository($db),
+                new SlotRepository( $db ),
+                new AppointmentRepository( $db ),
+                new PatientRepository( $db ),
                 // Scope-neutral construction: BookingService پیکربندی را در
                 // زمانِ هر عملیات و از Clinicِ **معتبرِ همان عملیات** می‌خواند
                 // (پزشک/نوبتِ پایدار، یا Scopeِ معتبرِ کارکنان) — نه از یک
@@ -1281,6 +1293,7 @@ final class App
                 new MembershipRepository( $db ),
                 self::patient_identity_activator()
             );
+            $deps = $current_deps;
         }
 
         return $booking;
@@ -1329,17 +1342,20 @@ final class App
     public static function scheduleService(): ScheduleService
     {
         static $schedule = null;
-        if ($schedule === null) {
-            $db = self::db();
+        static $deps     = null;
+        $current_deps    = [ self::db(), self::locationRepository(), self::jobs(), self::audit(), self::op() ];
+        if ( $schedule === null || $deps !== $current_deps ) {
+            $db       = self::db();
             $schedule = new ScheduleService(
                 $db,
-                new ScheduleRepository($db),
-                new MembershipRepository($db),
+                new ScheduleRepository( $db ),
+                new MembershipRepository( $db ),
                 self::locationRepository(),
                 self::jobs(),
                 self::audit(),
                 self::op()
             );
+            $deps     = $current_deps;
         }
 
         return $schedule;
@@ -1350,9 +1366,11 @@ final class App
      */
     public static function clinicianRepository(): ClinicianRepository
     {
-        static $repo = null;
-        if ($repo === null) {
-            $repo = new ClinicianRepository(self::db());
+        static $repo   = null;
+        static $db_ref = null;
+        if ( $repo === null || $db_ref !== self::db() ) {
+            $db_ref = self::db();
+            $repo   = new ClinicianRepository( $db_ref );
         }
 
         return $repo;
@@ -1360,9 +1378,11 @@ final class App
 
     public static function clinicRepository(): ClinicRepository
     {
-        static $repo = null;
-        if ($repo === null) {
-            $repo = new ClinicRepository(self::db());
+        static $repo   = null;
+        static $db_ref = null;
+        if ( $repo === null || $db_ref !== self::db() ) {
+            $db_ref = self::db();
+            $repo   = new ClinicRepository( $db_ref );
         }
 
         return $repo;
@@ -1388,9 +1408,11 @@ final class App
      */
     public static function locationRepository(): LocationRepository
     {
-        static $repo = null;
-        if ($repo === null) {
-            $repo = new LocationRepository(self::db());
+        static $repo   = null;
+        static $db_ref = null;
+        if ( $repo === null || $db_ref !== self::db() ) {
+            $db_ref = self::db();
+            $repo   = new LocationRepository( $db_ref );
         }
 
         return $repo;
@@ -1493,10 +1515,12 @@ final class App
     public static function authorization_service(): \ClinicCore\Application\Authorization\AuthorizationService
     {
         static $service = null;
-        if ($service === null) {
+        static $db_ref  = null;
+        if ( $service === null || $db_ref !== self::db() ) {
+            $db_ref  = self::db();
             $service = new \ClinicCore\Application\Authorization\AuthorizationService(
-                new MembershipRepository( self::db() ),
-                new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( self::db() )
+                new MembershipRepository( $db_ref ),
+                new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( $db_ref )
             );
         }
 
@@ -1508,12 +1532,15 @@ final class App
      */
     public static function patient_identity_service(): PatientIdentityService {
         static $service = null;
-        if ( $service === null ) {
+        static $deps    = null;
+        $current_deps   = [ self::db(), self::audit() ];
+        if ( $service === null || $deps !== $current_deps ) {
             $service = new PatientIdentityService(
                 self::db(),
                 new PatientIdentityRepository( self::db() ),
                 self::audit()
             );
+            $deps    = $current_deps;
         }
 
         return $service;
@@ -1527,11 +1554,14 @@ final class App
      */
     public static function patient_identity_activator(): PatientIdentityActivator {
         static $activator = null;
-        if ( $activator === null ) {
+        static $deps      = null;
+        $current_deps     = [ self::db(), self::patient_identity_service() ];
+        if ( $activator === null || $deps !== $current_deps ) {
             $activator = new PatientIdentityActivator(
                 new PatientIdentityRepository( self::db() ),
                 self::patient_identity_service()
             );
+            $deps      = $current_deps;
         }
 
         return $activator;
@@ -1540,22 +1570,25 @@ final class App
     public static function clinicalService(): ClinicalService
     {
         static $clinical = null;
-        if ($clinical === null) {
-            $db = self::db();
+        static $deps     = null;
+        $current_deps    = [ self::db(), self::visitService(), self::settingsFactory(), self::audit() ];
+        if ( $clinical === null || $deps !== $current_deps ) {
+            $db       = self::db();
             $clinical = new ClinicalService(
                 $db,
-                new VisitRepository($db),
+                new VisitRepository( $db ),
                 self::visitService(),
-                new ClinicalNoteRepository($db),
-                new PrescriptionRepository($db),
-                new RecommendationRepository($db),
-                new FollowUpRepository($db),
+                new ClinicalNoteRepository( $db ),
+                new PrescriptionRepository( $db ),
+                new RecommendationRepository( $db ),
+                new FollowUpRepository( $db ),
                 // Scope-neutral construction: policy از ردیفِ پایدارِ ویزیت خوانده می‌شود.
                 self::settingsFactory(),
                 self::audit(),
-                new PatientRepository($db),
-                new MedicalFileRepository($db)
+                new PatientRepository( $db ),
+                new MedicalFileRepository( $db )
             );
+            $deps = $current_deps;
         }
 
         return $clinical;
@@ -1567,19 +1600,22 @@ final class App
     public static function financeService(): FinanceService
     {
         static $finance = null;
-        if ($finance === null) {
-            $db = self::db();
+        static $deps    = null;
+        $current_deps   = [ self::db(), self::visitService(), self::audit(), self::visit_pricing_service() ];
+        if ( $finance === null || $deps !== $current_deps ) {
+            $db      = self::db();
             $finance = new FinanceService(
                 $db,
-                new ServiceRepository($db),
-                new InvoiceRepository($db),
-                new PaymentRepository($db),
-                new VisitRepository($db),
+                new ServiceRepository( $db ),
+                new InvoiceRepository( $db ),
+                new PaymentRepository( $db ),
+                new VisitRepository( $db ),
                 self::visitService(),
-                new PatientRepository($db),
+                new PatientRepository( $db ),
                 self::audit(),
                 self::visit_pricing_service()
             );
+            $deps    = $current_deps;
         }
 
         return $finance;
@@ -1591,7 +1627,9 @@ final class App
      */
     public static function visit_pricing_service(): VisitPricingService {
         static $pricing = null;
-        if ( $pricing === null ) {
+        static $deps    = null;
+        $current_deps   = [ self::db(), self::audit() ];
+        if ( $pricing === null || $deps !== $current_deps ) {
             $db      = self::db();
             $pricing = new VisitPricingService(
                 $db,
@@ -1604,6 +1642,7 @@ final class App
                 new PatientRepository( $db ),
                 self::audit()
             );
+            $deps    = $current_deps;
         }
 
         return $pricing;
@@ -1614,7 +1653,9 @@ final class App
      */
     public static function staff_messaging_service(): StaffMessagingService {
         static $messaging = null;
-        if ( $messaging === null ) {
+        static $deps      = null;
+        $current_deps     = [ self::db(), self::audit() ];
+        if ( $messaging === null || $deps !== $current_deps ) {
             $db        = self::db();
             $messaging = new StaffMessagingService(
                 $db,
@@ -1625,6 +1666,7 @@ final class App
                 new ClinicianRepository( $db ),
                 self::audit()
             );
+            $deps      = $current_deps;
         }
 
         return $messaging;
@@ -1636,18 +1678,21 @@ final class App
     public static function handwritingService(): HandwritingService
     {
         static $handwriting = null;
-        if ($handwriting === null) {
-            $db = self::db();
+        static $deps        = null;
+        $current_deps       = [ self::db(), self::settingsFactory(), self::audit() ];
+        if ( $handwriting === null || $deps !== $current_deps ) {
+            $db          = self::db();
             $handwriting = new HandwritingService(
                 $db,
-                new HandwritingRepository($db),
-                new VisitRepository($db),
+                new HandwritingRepository( $db ),
+                new VisitRepository( $db ),
                 // Phase 2 M-2 (W): سیاستِ per-Clinic از SettingsFactory حل
                 // می‌شود — سرویسِ دست‌خط دیگر به Scope محیطی وابسته نیست.
                 self::settingsFactory(),
                 self::audit(),
-                new Idempotency($db)
+                new Idempotency( $db )
             );
+            $deps = $current_deps;
         }
 
         return $handwriting;
@@ -1659,16 +1704,19 @@ final class App
     public static function notificationService(): NotificationService
     {
         static $notifications = null;
-        if ($notifications === null) {
+        static $deps          = null;
+        $current_deps         = [ self::db(), self::settingsFactory(), self::op() ];
+        if ( $notifications === null || $deps !== $current_deps ) {
             $notifications = new NotificationService(
                 self::db(),
-                new NotificationRepository(self::db()),
-                new MembershipRepository(self::db()),
+                new NotificationRepository( self::db() ),
+                new MembershipRepository( self::db() ),
                 // Scope-neutral construction (الگوی SmsService).
                 self::settingsFactory(),
                 static fn (): int => self::scope()->clinicId,
                 self::op()
             );
+            $deps = $current_deps;
         }
 
         return $notifications;
@@ -1798,11 +1846,13 @@ final class App
     public static function patientService(): PatientService
     {
         static $patients = null;
-        if ($patients === null) {
-            $db = self::db();
+        static $deps     = null;
+        $current_deps    = [ self::db(), self::licenseGate(), self::audit(), self::op(), self::patient_identity_activator() ];
+        if ( $patients === null || $deps !== $current_deps ) {
+            $db       = self::db();
             $patients = new PatientService(
                 $db,
-                new PatientRepository($db),
+                new PatientRepository( $db ),
                 // وابستگیِ Settings حذف شد: این سرویس هرگز از آن نمی‌خواند و
                 // نگه‌داشتنش تنها دلیلِ حل‌کردنِ Clinicِ محیطی در زمانِ ساخت بود.
                 self::licenseGate(),
@@ -1810,6 +1860,7 @@ final class App
                 self::op(),
                 self::patient_identity_activator()
             );
+            $deps = $current_deps;
         }
 
         return $patients;
@@ -1836,8 +1887,18 @@ final class App
 
     public static function otpService(): OtpService
     {
-        static $otp = null;
-        if ($otp === null) {
+        static $otp   = null;
+        static $deps  = null;
+        $current_deps = [
+            self::db(),
+            self::settingsFactory(),
+            self::rate(),
+            self::audit(),
+            self::op(),
+            self::smsService(),
+            self::jobs(),
+        ];
+        if ( $otp === null || $deps !== $current_deps ) {
             $otp = new OtpService(
                 self::db(),
                 // Scope-neutral construction (الگوی SmsService): پیکربندی در
@@ -1850,6 +1911,7 @@ final class App
                 self::smsService(),
                 self::jobs()
             );
+            $deps = $current_deps;
         }
 
         return $otp;
