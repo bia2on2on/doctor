@@ -4,9 +4,14 @@ description: >-
   release pins, reusing them from an exact-key cache on later runs.
 
   Browsers are executables, so the cache handling is deliberately strict:
-  * the cache key is exact — runner OS + arch + Playwright version + the exact
-    browser set — with no `restore-keys`, so a different version or a different
-    browser set can never be restored by accident;
+  * the cache key is exact — runner OS *image release* + arch + Playwright
+    version + the exact browser set — with no `restore-keys`, so a different
+    version, a different browser set, or a different runner OS release can never
+    be restored by accident. `runner.os` alone is not enough: browsers are
+    compiled against the runner image's shared libraries, so an entry written on
+    one Ubuntu release must not be restored on another (that is exactly how a
+    cached Chromium stopped launching when the `ubuntu-latest` label moved to a
+    newer Ubuntu release);
   * GitHub caches are branch-scoped, so a pull request from a fork cannot write
     the cache that default-branch runs read;
   * after a restore the browsers are re-validated every run: `playwright
@@ -22,8 +27,12 @@ description: >-
 
   Cold (cache miss): `playwright install <browsers>` downloads the pinned
   builds, the bounded dependency check runs, then a real launch is verified.
-  Warm (cache hit): no download; a launch proves the dependencies are still
-  present, and only a launch failure provisions them (once, bounded).
+  Warm (cache hit): no download; the dependency check runs anyway, then a real
+  launch is verified. A cache hit never skips the dependency answer, and the
+  answer always covers every requested browser (`install-deps --dry-run` is
+  given the whole list), so a lane that asks for three engines cannot pass with
+  only one engine's libraries present. Dependencies are never assumed from a
+  previous run.
 
 inputs:
   playwright-version:
@@ -81,7 +90,28 @@ runs:
           echo "::error title=playwright-browsers::no browsers requested"
           exit 1
         fi
-        key="pw-browsers-v2-${PW_OS}-${PW_ARCH}-${PW_VERSION}-${normalised}"
+        # Runner OS *release*, not the label: `runner.os` is only "Linux", so a
+        # cache written under one Ubuntu release could be restored under another
+        # although the browser binaries are linked against that release's shared
+        # libraries. /etc/os-release is the runner's own declaration of which
+        # release it is; VERSION_ID is the stable machine-readable field. A runner
+        # that cannot report it must not silently reuse another release's cache,
+        # so the key step fails closed instead of degrading to `runner.os`.
+        os_release_id=""
+        if [ -r /etc/os-release ]; then
+          os_release_id="$( . /etc/os-release && printf '%s' "${ID:-}-${VERSION_ID:-}" )"
+        fi
+        case "$os_release_id" in
+          ''|-*|*-)
+            echo "::error title=playwright-browsers::could not determine the runner OS release from /etc/os-release (ID/VERSION_ID); refusing to build a cache key that cannot distinguish OS releases"
+            exit 1
+            ;;
+        esac
+        os_release_id="$(printf '%s' "$os_release_id" | tr -c 'a-zA-Z0-9._-' '-')"
+        echo "runner os release: ${os_release_id} (kernel $(uname -r))"
+        # v3 marks the switch from `runner.os` to the OS release in the key; the
+        # browser set is NOT defaulted here, see the explicit check below.
+        key="pw-browsers-v3-${PW_OS}-${os_release_id}-${PW_ARCH}-${PW_VERSION}-${normalised}"
         echo "PW_CACHE_KEY=${key}" >> "$GITHUB_ENV"
         echo "normalised_browsers=${normalised}"
 
@@ -190,9 +220,15 @@ runs:
           # my required OS packages are missing?": it simulates the apt install for
           # exactly this browser set and exits non-zero when anything would still
           # have to be installed. When it exits 0 nothing is installed at all.
+          #
+          # The dry-run (and therefore the whole dependency answer) is always
+          # driven by the COMPLETE requested $BROWSERS list, so a lane that asks
+          # for three engines gets a dependency proof covering all three, not
+          # just the first one. This function is called on the cold path AND on
+          # the warm path, so a cache hit can never skip the dependency proof.
           if timeout "$PW_INSTALL_TIMEOUT" python3 -m playwright install-deps --dry-run "${BROWSERS[@]}" > "$deps_log" 2>&1; then
-            echo "playwright install-deps --dry-run: every required system dependency is already installed"
-            deps_note="reused (Playwright reports every required system dependency present)"
+            echo "playwright install-deps --dry-run: every required system dependency is already installed for ${BROWSERS[*]}"
+            deps_note="reused (Playwright reports every required system dependency present for ${BROWSERS[*]})"
             return 0
           fi
           echo "::warning title=playwright system dependencies::Playwright reports missing system dependencies for ${BROWSERS[*]}; installing exactly that list with bounded apt options."
@@ -211,17 +247,24 @@ runs:
                 exit 1
               fi
               if ! sudo timeout "$PW_APT_TIMEOUT_SECONDS" env DEBIAN_FRONTEND=noninteractive apt-get "${apt_opts[@]}" install -y -qq "${MISSING[@]}" >> "$deps_apt_log" 2>&1; then
-                echo "::error title=playwright system dependencies::apt-get install still failed or exceeded its ${PW_APT_TIMEOUT_SECONDS}s wall-clock cap after one index refresh; no further retry will be attempted. Diagnostic: $(tail -20 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
-                exit 1
+                # A parsed dry-run list can name packages that exist under a
+                # different name on a newer runner OS release (the t64 ABI
+                # renames are the known case: libasound2 -> libasound2t64).
+                # Hand the exact same browser set to Playwright's own apt path
+                # once before failing, so the fallback is Playwright's pinned
+                # mapping instead of a manual rename list. Still fail closed.
+                echo "::warning title=playwright system dependencies::the bounded apt install of the parsed list still failed; handing the same browser set (${BROWSERS[*]}) to 'playwright install-deps' once before failing. Diagnostic: $(tail -20 "$deps_apt_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-800)"
+                install_pw_deps
               fi
             fi
           fi
-          # Fail closed: the dependency set has to verify before the suite runs.
+          # Fail closed: the dependency set has to verify, for EVERY requested
+          # browser, before the suite runs.
           if ! timeout "$PW_INSTALL_TIMEOUT" python3 -m playwright install-deps --dry-run "${BROWSERS[@]}" >> "$deps_log" 2>&1; then
-            echo "::error title=playwright system dependencies::Playwright still reports missing system dependencies after provisioning. Diagnostic: $(tail -15 "$deps_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
+            echo "::error title=playwright system dependencies::Playwright still reports missing system dependencies for ${BROWSERS[*]} after provisioning. Diagnostic: $(tail -15 "$deps_log" 2>/dev/null | tr '\n\r' '  ' | sed 's/%/%25/g' | cut -c1-1200)"
             exit 1
           fi
-          deps_note="installed (bounded apt for exactly Playwright's missing-package list)"
+          deps_note="installed (bounded apt for exactly Playwright's missing-package list, verified for ${BROWSERS[*]})"
         }
 
         if [ "$PW_CACHE_HIT" = "true" ]; then
@@ -229,17 +272,17 @@ runs:
           # revisions and downloads nothing; it also prunes builds that this
           # browser set does not use.
           install_browsers
-          if python3 "$verifier" "${BROWSERS[@]}"; then
-            deps_note="reused (cached browsers launched; system dependencies already present)"
-          else
-            echo "::warning title=playwright system dependencies::cached browser binaries did not launch on this runner, so the dependency set is provisioned once (bounded) and re-verified."
-            ensure_system_deps
-            python3 "$verifier" "${BROWSERS[@]}" || {
-              echo "::error title=playwright launch failed::browsers still do not launch after one bounded dependency provisioning"
-              exit 1
-            }
-            deps_note="installed (bounded, after a launch failure on cached binaries)"
-          fi
+          # The dependency proof runs BEFORE the launch attempt: a launch
+          # failure is not the only evidence of missing libraries, and a cache
+          # written on a different runner OS release must not be able to skip
+          # the dependency answer. ensure_system_deps installs nothing when the
+          # dry-run already exits 0.
+          ensure_system_deps
+          python3 "$verifier" "${BROWSERS[@]}" || {
+            echo "::error title=playwright launch failed::cached browsers do not launch although the dependency proof passed for ${BROWSERS[*]}"
+            exit 1
+          }
+          deps_note="${deps_note} [cache hit]"
         else
           install_browsers
           ensure_system_deps

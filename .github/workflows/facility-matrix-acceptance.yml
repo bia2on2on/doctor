@@ -230,7 +230,19 @@ jobs:
       - name: Verify upgrade from schema 0030 and repeat activation
         run: |
           set -euo pipefail
-          BASE_SHA=d2c9f779df47f45137b5ffe9c8bc2dce2451f404
+          # Schema-0030 baseline = main commit d2c9f779 + ONE build-only commit
+          # (E1) that changes only clinic-practice-management/composer.lock to
+          # main's blob 440c8446. The original commit's locked
+          # symfony/filesystem v6.4.45 is inside an advisory range, so
+          # bin/build-release.sh's fail-closed `composer audit` refused to build
+          # the pinned schema-0030 ZIP and this job could not run its upgrade
+          # proof at all. E1 changes no source, migration or composer.json, so
+          # the baseline is still exactly schema 2026_10_27_0030
+          # (tests/bin/wp-activation-schema-proof.php 'baseline' asserts it).
+          # E1 is reachable because this repository's CI-environment-repair
+          # branch merges it with `-s ours`; see
+          # docs/decisions/2026-11-06-ci-environment-repair.md.
+          BASE_SHA=f92d5d744eb10d3dd04d8224efb42690b6d404b1
           UPGRADE_DIR=/home/runner/mtx-upgrade
           PROOF="$GITHUB_WORKSPACE/clinic-practice-management/tests/bin/wp-activation-schema-proof.php"
           ZIP=$(ls "$GITHUB_WORKSPACE"/clinic-practice-management/dist/clinic-practice-management-*.zip | head -1)
