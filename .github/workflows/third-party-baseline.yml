@@ -272,6 +272,14 @@ jobs:
     # (actions/runner-images#14748, whose own documented mitigation is exactly
     # this pin). Without the pin the PPA-free path below would silently stop
     # applying within days and the lane would fall back to Launchpad again.
+    #
+    # EXPIRY 2026-12-15 — recorded by the CI-environment-repair change
+    # (docs/decisions/2026-11-06-ci-environment-repair.md §"runner pins"), which
+    # added the contract test that requires an expiry next to every
+    # `ubuntu-24.04` pin. The pin itself and its reasoning predate that change
+    # and are not altered here; only the missing expiration marker is added, so
+    # this long-lived pin is revisited with the others instead of becoming
+    # permanent by inattention.
     runs-on: ubuntu-24.04
     timeout-minutes: 45
 
