@@ -232,17 +232,25 @@ applies to every statement in this section.
 reviewer challenge; the earlier "37 checks — 35 success / 2 failure" sentence in
 this section was **wrong** and is corrected here):
 
-- **Method A — latest check-run per distinct name** (`GET
-  /commits/{sha}/check-runs`, the view `gh pr checks` shows): **37 records** =
-  **36 success / 1 failure**, 0 pending. The single failure is *Real WordPress
-  acceptance (clean WP → CPMS → companion → teardown)*, job `127601112667`.
-- **Method B — every stored attempt** (`?filter=all`, counted by hand across
-  pagination because the endpoint reports `total_count: 37` while returning 42
-  records): **42 records** = **39 success / 3 failure**, 5 names carrying two
-  records each. The three failure records are the demo lane at attempt 1
-  (`127570978339`, 22:34:35Z) and attempt 2 (`127601112667`, 23:41:55Z), plus
-  *Real HTTP profile* at attempt 1 (`127570801387`, 22:19:41Z) which went
-  `success` at attempt 2.
+- **Method A — latest check-run per distinct name**: `GET
+  /commits/{sha}/check-runs` with `per_page=100` and no `filter` returns
+  `total_count: 37` and 37 records (the same numbers as `filter=latest`, and
+  the view `gh pr checks` shows): **37 records = 36 success / 1 failure**, 0
+  pending. The single failure is *Real WordPress acceptance (clean WP → CPMS →
+  companion → teardown)*, job `127601112667`.
+- **Method B — every stored attempt**: the *same* URL with `filter=all` returns
+  `total_count: 42` and 42 records, and `filter=all&page=2` returns the same
+  `total_count: 42` with 0 records: **42 records = 39 success / 3 failure**, 5
+  names carrying two records each. The three failure records are the demo lane
+  at attempt 1 (`127570978339`, 22:34:35Z) and attempt 2 (`127601112667`,
+  23:41:55Z), plus *Real HTTP profile* at attempt 1 (`127570801387`, 22:19:41Z)
+  which went `success` at attempt 2.
+  **Precision correction (2026-11-06, second review):** an earlier version of
+  this sentence said the endpoint "reports `total_count: 37` while returning 42
+  records", which describes **no single call**. The two numbers come from two
+  different calls — the default call is self-consistent at 37/37, and
+  `filter=all` is self-consistent at 42/42. Both were re-verified through the
+  API on 2026-11-06 before this correction was written.
 
 So the only lane red at that head, under either method, is the demo lane. The
 failing sentences this replaces are preserved in the git history, not silently
@@ -382,9 +390,17 @@ test (existence of the marker, never the date). Revisiting on or before
 observation the OS image and the PHP version changed together
 (`mod_php_enabled=php8.3.load` on 24.04 versus `php8.5.load` on the
 `ubuntu-latest` runs that failed), and there is no controlled run that changes
-only one of them. One sample with two variables changed cannot attribute the
-result to either variable, so the pin stays labelled EXPERIMENT and the cause
-stays UNPROVEN. It is certainly not evidenced that the pin *fixed* anything.
+only one of them. One sample with the recorded variables changing together
+cannot attribute the result to any of them, so the pin stays labelled
+EXPERIMENT and the cause stays UNPROVEN. It is certainly not evidenced that the pin *fixed* anything.
+A **third** variable also differed between the red and green demo runs: the
+browser cache entry is keyed per OS release
+(`pw-browsers-v3-${runner.os}-${ID-VERSION_ID}-…`, §2.2), so the 24.04 run
+restored a **different** cache entry than the newer-label run — measured
+`cache_hit=true` with a 9 s browser step on 24.04 versus `cache_hit=true` with
+681 s / 696 s on the newer label, i.e. a hit whose restored binaries still
+needed full dependency provisioning. Three variables moved together (OS image,
+PHP version, cache entry), so the cause of the green remains unproven.
 
 ### 8.8 What changed in the check census
 
@@ -421,9 +437,20 @@ stays UNPROVEN. It is certainly not evidenced that the pin *fixed* anything.
   `real-wp-acceptance.yml:102` were **not covered** — the test passed while that
   pin had no guard at all. The test now matches any `runs-on:` value naming
   `ubuntu-24.04`, and additionally asserts that exactly one such conditional pin
-  is discovered (so it cannot silently skip that surface again). No workflow
-  behaviour changed: the marker was already present next to that expression, so
-  no comment had to be added and no value was touched.
+  is discovered, so that one specific surface cannot silently drop out of the
+  check again. No workflow behaviour changed: the marker was already present next
+  to that expression, so no comment had to be added and no value was touched.
+  **Limit of the check (stated so it is not over-read):** it only inspects the
+  text of a `runs-on:` line. A pin that reaches `ubuntu-24.04` indirectly — for
+  example `runs-on: ${{ matrix.os }}` with `ubuntu-24.04` in a
+  `strategy.matrix` entry, or a pin defined in a reusable workflow *input*
+  consumed as `runs-on: ${{ inputs.runner }}` — contains no `ubuntu-24.04` on
+  the `runs-on:` line and is therefore **not seen, not validated and not
+  counted** by this test. The `exactly one` assertion also asserts one such
+  *expression* pin only: if a second legitimately-pinned expression is added
+  later, the test fails until it is reviewed and the count updated. The earlier
+  wording that the test "cannot silently skip that surface again" was too broad
+  and is narrowed here.
   Verified by **two negative controls**: (i) deleting the `EXPIRY` line from
   `real-wp-acceptance.yml` makes the test fail at `real-wp-acceptance.yml:102`;
   (ii) a scratch workflow copy with that marker removed is also caught, which
