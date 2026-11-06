@@ -732,12 +732,18 @@ final class PublicBookingShortcode
         $lines[] = self::renderTemplates();
         $lines[] = '</div>'; // calendar
 
-        // ---- Phase 8 Slice 2/3: ادامهٔ احراز/رزرو — وابسته به وضعیت احراز ----
-        $continuation = self::continuationState();
-        if ($continuation === self::CONTINUATION_ANONYMOUS) {
-            $lines[] = self::render_auth_continuation( $surface_id );
-        } elseif ($continuation === self::CONTINUATION_PATIENT) {
-            $lines[] = self::render_patient_continuation( $surface_id, $clinic_ids );
+        // ---- Phase 8 Slice 2/3 + M5: ادامهٔ احراز/رزرو — وابسته به وضعیت احراز و Clinicِ نشست ----
+        $continuation      = self::continuationState();
+        $session_clinic_id = self::CONTINUATION_PATIENT === $continuation
+            ? self::resolve_patient_session_clinic_id()
+            : null;
+        if ( self::CONTINUATION_ANONYMOUS === $continuation ) {
+            $lines[] = self::render_auth_continuation( $surface_id, false );
+        } elseif ( self::CONTINUATION_PATIENT === $continuation ) {
+            if ( $is_discovery || $session_clinic_id !== $clinic_id ) {
+                $lines[] = self::render_auth_continuation( $surface_id, true );
+            }
+            $lines[] = self::render_patient_continuation( $surface_id, $clinic_ids, $session_clinic_id );
         }
 
         $lines[] = '</div>'; // body
@@ -746,7 +752,8 @@ final class PublicBookingShortcode
             $is_discovery ? 0 : $clinic_id,
             $surface_id,
             $is_discovery ? $discovery : null,
-            $location_contract
+            $location_contract,
+            $session_clinic_id
         );
         $lines[] = '</div>'; // root
 
@@ -1103,21 +1110,49 @@ final class PublicBookingShortcode
     }
 
     /**
-     * Phase 8 Slice 2 — چرخهٔ ورود OTP برای بازدیدکنندهٔ آنونیم.
+     * Clinicِ معتبرِ نشستِ بیمارِ واردشده — از مرجعِ واحدِ PatientSessionScope.
+     * در هر ابهام یا نبودِ marker روی چند Clinic، `null` برمی‌گردد (fail-closed).
+     */
+    private static function resolve_patient_session_clinic_id(): ?int {
+        $uid = get_current_user_id();
+        if ( $uid <= 0 ) {
+            return null;
+        }
+
+        try {
+            return App::patient_session_scope()->resolve_clinic_id( $uid );
+        } catch ( Throwable ) {
+            return null;
+        }
+    }
+
+    /**
+     * Phase 8 Slice 2 — چرخهٔ ورود OTP برای بازدیدکنندهٔ آنونیم (یا احرازِ مجددِ
+     * بیمارِ واردشده هنگام عدمِ تطابقِ Clinicِ نشست با Clinicِ مقصد).
      *
      * همهٔ متن‌ها server-side و escape می‌شوند؛ JS فقط نشانه‌ها را toggle و
      * مقادیر را با textContent می‌گذارد. عمداً بدون nonce، بدون مسیرِ
      * hold/confirm و بدون هیچ PHI — ورود فقط با شمارهٔ موبایل و کدِ پیامکی
      * روی مسیرهای موجودِ A2/A3 انجام می‌شود.
      */
-    private static function render_auth_continuation( string $surface_id ): string
+    private static function render_auth_continuation( string $surface_id, bool $hidden = false ): string
     {
         $b = self::ROOT_CLASS;
-        $mobile_input_id = $surface_id . '-otp-mobile';
-        $code_input_id   = $surface_id . '-otp-code';
+        // Child ids use their own `cpms-auth-` namespace, not the root's
+        // `cpms-public-booking-` prefix, so an id selector on that prefix matches
+        // only the root surfaces. Classes and data-role hooks are unchanged.
+        $auth_ns         = 'cpms-auth-' . preg_replace( '/^cpms-public-booking-/', '', $surface_id );
+        $mobile_input_id = $auth_ns . '-otp-mobile';
+        $code_input_id   = $auth_ns . '-otp-code';
+        $otp_step_id     = $auth_ns . '-otp-step';
 
         $lines = [];
-        $lines[] = sprintf('<div class="%s">', esc_attr($b . '__auth'));
+        $lines[] = sprintf(
+            '<div class="%1$s" id="%2$s" data-role="otp-step"%3$s>',
+            esc_attr( $b . '__auth' ),
+            esc_attr( $otp_step_id ),
+            $hidden ? ' hidden' : ''
+        );
 
         // نقطهٔ شروعِ «ادامه» — انتخابِ غیر-PHI پیش از آن در سطح حفظ می‌شود.
         $lines[] = sprintf(
@@ -1190,28 +1225,31 @@ final class PublicBookingShortcode
      * با B1 موجود ادامه می‌یابد (B6 resume عمداً استفاده نمی‌شود).
      */
     // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published camelCase parameter names of this method.
-    private static function render_patient_continuation( string $surface_id, int|array $clinic_id ): string
+    private static function render_patient_continuation( string $surface_id, int|array $clinic_id, ?int $session_clinic_id = null ): string
     {
-        // Phase 8 Slice 4 — discovery mode passes every listed Clinic so the
-        // N>1 linked-patient chooser stays available per Clinic; single mode
-        // keeps the established one-Clinic behaviour.
+        // Phase 8 Slice 4 + M5 — chooser PHI (patient_id/first_name/last_name)
+        // MAY ONLY be rendered for the resolved session Clinic, never for
+        // unverified Clinics in discovery or mismatched single-Clinic mode.
         $clinic_ids        = is_array( $clinic_id ) ? array_map( 'intval', $clinic_id ) : [ (int) $clinic_id ];
         $primary_clinic_id = $clinic_ids[0] ?? (int) $clinic_id;
+        $scoped_clinic_ids = ( null !== $session_clinic_id && $session_clinic_id > 0 && in_array( $session_clinic_id, $clinic_ids, true ) )
+            ? [ $session_clinic_id ]
+            : [];
 
         $b = self::ROOT_CLASS;
         $first_name_id = $surface_id . '-first-name';
         $last_name_id  = $surface_id . '-last-name';
 
         // Phase 8 Slice 3 — chooser برای N>1 linked active Patients (LINKED-ONLY authority).
-        // فقط برای N>1 رندر می‌شود؛ 0 یا 1 هیچ chooserی ندارد. هرگز decoy/same-mobile/cross-clinic/archived را نشان نمی‌دهد.
+        // فقط برای N>1 در همان Clinicِ معتبرِ نشست رندر می‌شود؛ 0 یا 1 هیچ chooserی ندارد.
         // Render chooser OUTSIDE the hidden booking-continue box so it is visible immediately after login.
         $chooser_html     = '';
         $is_first_patient = false;
         try {
             $uid = get_current_user_id();
-            if ( $uid > 0 ) {
+            if ( $uid > 0 && $scoped_clinic_ids !== [] ) {
                 $db_chooser = \ClinicCore\Bootstrap\App::db();
-                foreach ( $clinic_ids as $choice_clinic_id ) {
+                foreach ( $scoped_clinic_ids as $choice_clinic_id ) {
                     if ( $choice_clinic_id <= 0 ) {
                         continue;
                     }
@@ -1236,7 +1274,7 @@ final class PublicBookingShortcode
                         '<div class="%s" data-role="patient-chooser" data-clinic-id="%d"%s>',
                         esc_attr( $b . '__chooser' ),
                         $choice_clinic_id,
-                        count( $clinic_ids ) > 1 ? ' hidden' : ''
+                        ( count( $clinic_ids ) > 1 && $choice_clinic_id !== $primary_clinic_id ) ? ' hidden' : ''
                     );
                     $chooser_parts[] = sprintf( '<p class="%s">%s</p>', esc_attr( $b . '__chooser-hint' ), esc_html( 'لطفاً بیمار مورد نظر برای رزرو را انتخاب کنید:' ) );
                     foreach ( $linked_patients as $lp ) {
@@ -1662,7 +1700,8 @@ final class PublicBookingShortcode
         int $clinic_id,
         string $surface_id,
         ?array $discovery = null,
-        array $location_contract = []
+        array $location_contract = [],
+        ?int $session_clinic_id = null
     ): string {
         // phpcs:disable WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- published method contract keeps its established camelCase parameters.
         $config = [
@@ -1692,14 +1731,19 @@ final class PublicBookingShortcode
         );
 
         $continuation = self::continuationState();
-        if ($continuation === self::CONTINUATION_ANONYMOUS) {
+        if ( self::CONTINUATION_ANONYMOUS === $continuation ) {
             $config['otp_request_path'] = self::OTP_REQUEST_PATH;
-            $config['otp_verify_path'] = self::OTP_VERIFY_PATH;
-        } elseif ($continuation === self::CONTINUATION_PATIENT) {
+            $config['otp_verify_path']  = self::OTP_VERIFY_PATH;
+        } elseif ( self::CONTINUATION_PATIENT === $continuation ) {
             // فقط برای بیمارِ واردشده — CSRF با wp_rest nonce (همان مرزِ B1/B2).
-            $config['nonce'] = wp_create_nonce('wp_rest');
-            $config['hold_path'] = self::HOLD_PATH;
-            $config['confirm_path'] = self::CONFIRM_PATH;
+            $config['nonce']             = wp_create_nonce( 'wp_rest' );
+            $config['hold_path']         = self::HOLD_PATH;
+            $config['confirm_path']      = self::CONFIRM_PATH;
+            $config['session_clinic_id'] = $session_clinic_id;
+            if ( null !== $discovery || $session_clinic_id !== $clinic_id ) {
+                $config['otp_request_path'] = self::OTP_REQUEST_PATH;
+                $config['otp_verify_path']  = self::OTP_VERIFY_PATH;
+            }
         }
 
         $json = wp_json_encode($config, JSON_HEX_TAG | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE);

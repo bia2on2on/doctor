@@ -1879,6 +1879,7 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         if ($user !== false) {
             $user->set_role('cpms_patient');
         }
+        cpms_test_seed_patient_session($userId, $this->clinicId);
 
         return [$userId, $mobile];
     }

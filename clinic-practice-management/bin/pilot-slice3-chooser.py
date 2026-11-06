@@ -215,7 +215,34 @@ def run_journey(browser, run):
             # Dump page content for diagnostics (no secrets)
             body_txt = page.content()[:2000]
             raise RuntimeError(f"login failed for {CFG['login']}: {page.url} body={body_txt[:500]}")
-        # Now go to booking page again
+        # M5 — fixture user has links in 2 clinics and just logged in via password (no OTP marker):
+        # verify chooser PHI stays suppressed before stamping clinic session scope.
+        page.goto(CFG["url"], wait_until="networkidle")
+        if page.locator('[data-role="patient-chooser"]').count() != 0:
+            raise RuntimeError("unscoped multi-clinic password session must not render patient-chooser before clinic OTP")
+        stamp = subprocess.run(
+            [
+                "php",
+                "-r",
+                (
+                    "require getenv('WP_HOME') . '/wp-load.php';"
+                    "$uid = (int) $argv[1]; $cid = (int) $argv[2];"
+                    "$tokens = get_user_meta($uid, 'session_tokens', true);"
+                    "if (!is_array($tokens) || $tokens === []) { exit(2); }"
+                    "foreach ($tokens as $k => $row) { if (is_array($row)) { $tokens[$k]['cpms_clinic_id'] = $cid; } }"
+                    "update_user_meta($uid, 'session_tokens', $tokens);"
+                ),
+                str(user_check),
+                str(CFG["clinic_id"]),
+            ],
+            env={**os.environ, "WP_HOME": WP_DIR},
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        if stamp.returncode != 0:
+            raise RuntimeError(f"session_tokens clinic stamp failed (rc={stamp.returncode})")
+        # Now go to booking page again with clinic-scoped session marker
         page.goto(CFG["url"], wait_until="networkidle")
         # Wait for chooser to appear (it is server-rendered, so should be immediate, but wait)
         # Increase timeout and add diagnostics if not found

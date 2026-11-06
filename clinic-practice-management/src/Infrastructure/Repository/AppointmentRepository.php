@@ -193,8 +193,8 @@ final class AppointmentRepository
      *
      * @return list<array<string, mixed>>
      */
-    public function list_for_patient_portal( int $wp_user_id, string $from_date, string $to_date ): array {
-        if ( $wp_user_id <= 0 ) {
+    public function list_for_patient_portal( int $wp_user_id, string $from_date, string $to_date, int $clinic_id ): array {
+        if ( $wp_user_id <= 0 || $clinic_id <= 0 ) {
             return [];
         }
 
@@ -213,9 +213,10 @@ final class AppointmentRepository
             . ' ON loc.id = a.location_id AND loc.clinic_id = a.clinic_id'
             . ' LEFT JOIN ' . $this->db->table( 'cpms_clinicians' ) . ' d'
             . ' ON d.id = a.clinician_id AND d.clinic_id = a.clinic_id'
-            . ' WHERE pul.wp_user_id = %d AND a.slot_date BETWEEN %s AND %s'
+            . ' WHERE pul.wp_user_id = %d AND pul.clinic_id = %d AND a.clinic_id = %d'
+            . ' AND a.slot_date BETWEEN %s AND %s'
             . ' ORDER BY a.slot_date ASC, a.slot_time ASC, a.id ASC',
-            [ $wp_user_id, $from_date, $to_date ]
+            [ $wp_user_id, $clinic_id, $clinic_id, $from_date, $to_date ]
         );
     }
 
