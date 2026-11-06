@@ -90,6 +90,7 @@ use ClinicCore\Infrastructure\Audit\AuditLogger;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use ClinicCore\Infrastructure\Db\DatabaseCompatibilityGate;
 use ClinicCore\Infrastructure\Licensing\HttpVendorGateway;
 use ClinicCore\Infrastructure\Licensing\VendorGateway;
 use ClinicCore\Infrastructure\Logging\CorrelationId;
@@ -172,6 +173,18 @@ final class App
 
     private const PRIVATE_STORAGE_DONE = '1';
 
+    /**
+     * N1 — throttleِ لاگِ عملیاتیِ «موتورِ پشتیبانی‌نشده» در ensureMigrated():
+     * فقط یک ردیفِ OpLog در هر پنجرهٔ ۶ ساعته (الگوی CronScheduleRepair)؛
+     * خودِ اعلانِ مدیریتی request-scoped است و به این throttle وابسته نیست.
+     */
+    private const DB_ENGINE_LOG_THROTTLE = 'cpms_db_engine_unsupported_throttle';
+
+    /** F2 — throttleِ جداگانه برای لاگِ «شواهدِ نسخهٔ دیتابیس ناخوانا/مخدوش است». */
+    private const DB_EVIDENCE_LOG_THROTTLE = 'cpms_db_engine_unreadable_throttle';
+
+    private const DB_ENGINE_LOG_WINDOW = 21600;
+
     private static ?CpmsDb $db = null;
     private static ?OpLogger $op = null;
     private static ?AuditLogger $audit = null;
@@ -189,6 +202,39 @@ final class App
     private static ?LicenseGate $licenseGate = null;
     private static ?VisitService $visitService = null;
     private static bool $booted = false;
+
+    /**
+     * N1 — نتیجهٔ پیش‌بررسیِ موتورِ دیتابیس (memoized در هر درخواست؛ موتور
+     * سرور وسطِ یک درخواست عوض نمی‌شود). probe تستی این memo را دور می‌زند.
+     *
+     * @var array{supported: bool, engine: string, version: string, reason: string}|null
+     */
+    private static ?array $db_compatibility = null;
+
+    /**
+     * N1 — seam تستی: جایگزینِ خواندنِ شواهدِ `VERSION()`/`@@version_comment`.
+     * فقط برای تست‌ها (@internal)؛ production همیشه null است.
+     *
+     * @var (\Closure():(array<string, mixed>))|null
+     */
+    private static ?\Closure $db_compatibility_probe = null;
+
+    /**
+     * N1 — نتیجهٔ «موتورِ پشتیبانی‌نشده» که در همین درخواست توسط
+     * ensureMigrated() دیده شده است؛ اعلانِ admin_notices فقط همین را
+     * نمایش می‌دهد (request-scoped: دقیق و بدونِ کهنگیِ Option ماندگار —
+     * اگر میزبان موتور را درست کند، اعلان در همان درخواستِ بعدی غیب می‌شود).
+     *
+     * @var array<string, mixed>|null
+     */
+    private static ?array $unsupported_engine = null;
+
+    /**
+     * F2 — memo فقط در طولِ همین درخواست برای بررسیِ وجودِ مهاجرتِ در انتظار
+     * (هیچ کشِ بین-درخواستی در Option/Transient/Object-Cache نوشته نمی‌شود).
+     */
+    private static ?bool $pending_migrations_memo = null;
+
 
     /**
      * CPMS Classic Admin UX (B) — کشِ **per-Clinic** برای سرویس‌هایی که
@@ -252,7 +298,20 @@ final class App
         }
         self::$booted = true;
 
-        RolesAndCapabilities::register();
+        // N1 — WordPress فایل افزونه را **پیش از** اجرای هوکِ فعال‌سازی، از طریقِ
+        // `plugin_sandbox_scrape()` در `activate_plugin()` لود می‌کند (هستهٔ 7.1.3،
+        // `wp-admin/includes/plugin.php`) و همان‌جا `WP_SANDBOX_SCRAPING` تعریف
+        // می‌شود؛ یعنی این boot() در همان درخواستِ فعال‌سازی، قبل از
+        // `App::activate()` اجرا می‌شود. اگر اینجا نقش‌ها ثبت شوند، فعال‌سازیِ
+        // ردشده (موتورِ دیتابیسِ پشتیبانی‌نشده) باقی‌ماندهٔ ۵ نقش روی سایت
+        // می‌گذارد — دقیقاً همان ردی که N1 باید صفر نگهش دارد. پس در همان
+        // includeِ sandbox ثبتِ نقش به `activate()` موکول می‌شود (که در مسیرِ
+        // مجاز خودش `RolesAndCapabilities::register()` را صدا می‌زند). هر
+        // درخواستِ عادی — از جمله retry حالت بازیابی برای افزونهٔ فعال که
+        // نقش‌ها از قبل در Optionها ماندگارند — رفتارِ امروز را نگه می‌دارد.
+        if ( ! ( defined( 'WP_SANDBOX_SCRAPING' ) && WP_SANDBOX_SCRAPING ) ) {
+            RolesAndCapabilities::register();
+        }
 
         // Phase 1A — Item 3: محدودسازی نرخ ورود. پیش از این هیچ کنترل
         // Bruteforce ای روی wp-login و احراز هویت REST وجود نداشت.
@@ -360,7 +419,15 @@ final class App
         // هزینه: `ensure_scheduled()` فقط یک خواندنِ Optionِ autoload‌شدهٔ `cron`
         // است و **فقط** وقتی رویداد غایب باشد می‌نویسد؛ بنابراین درخواستِ عمومیِ
         // سالم هیچ نوشتنی در cron انجام نمی‌دهد. هیچ Jobی اجرا نمی‌شود.
-        CronScheduleRepair::ensure_scheduled();
+        //
+        // N1/F1: در طولِ includeِ آزمایشیِ `plugin_sandbox_scrape()` در
+        // `activate_plugin()` (پیش از اجرای `App::activate()`) زمان‌بندی انجام
+        // نمی‌شود تا فعال‌سازیِ ردشده هیچ رویدادِ `cpms_jobs_tick` روی سایت نگذارد؛
+        // مسیرِ فعال‌سازیِ مجاز خودش در `activate()` آن را ثبت می‌کند و هر درخواستِ
+        // عادیِ دیگر (غیرِ sandbox) مثل قبل اجرا می‌شود.
+        if ( ! ( defined( 'WP_SANDBOX_SCRAPING' ) && WP_SANDBOX_SCRAPING ) ) {
+            CronScheduleRepair::ensure_scheduled();
+        }
 
         // ترمیمِ خودکارِ سمتِ مدیریت (throttle‌شده، حداکثر یک‌بار در ساعت):
         // فقط **شکست** لاگ می‌شود. ثبتِ یک «ترمیمِ موفق» در این مسیرِ خودکار
@@ -407,6 +474,12 @@ final class App
         add_action('rest_api_init', static function (): void {
             self::ensureMigrated();
         });
+
+        // N1 — اعلانِ مدیریتیِ «موتورِ دیتابیسِ پشتیبانی‌نشده» وقتی ensureMigrated()
+        // مهاجرت را fail-closed رد کرده است (صفحهٔ سلامت سیستم دست‌نخورده می‌ماند).
+        add_action( 'admin_notices', [ self::class, 'render_unsupported_engine_notice' ] );
+        add_action( 'network_admin_notices', [ self::class, 'render_unsupported_engine_notice' ] );
+        RuntimeSchemaGate::register();
 
         // F10 — به‌روزرسانی امن (ADR-0029): فقط slug خودمان؛ کش‌شده؛ بدون شبکه در
         // صفحات عادی. صحت sha256 بسته پیش از نصب (upgrader_pre_download).
@@ -455,6 +528,18 @@ final class App
 
     public static function activate( bool $network_wide = false ): void
     {
+        // N1 — پیش‌بررسیِ موتورِ دیتابیس باید **اولین** کارِ فعال‌سازی باشد:
+        // قبل از ثبتِ نقش‌ها، قبل از مهاجرت‌ها، قبل از هر اثرِ جانبیِ
+        // Option/Cron/Storage. روی موتورِ پشتیبانی‌نشده (مثلاً MariaDB 11.8.6)
+        // فعال‌سازی با wp_die خوانا رد می‌شود و افزونه غیرفعال می‌ماند — بدونِ
+        // هیچ ردی. مهاجرت 0027 همچنان گاردِ دفاع‌عمقیِ خودش را دارد (دست‌نخورده).
+        $compatibility = self::database_compatibility();
+        if ( (bool) ( $compatibility['supported'] ?? false ) !== true ) {
+            self::refuse_activation( $compatibility );
+
+            return;
+        }
+
         RolesAndCapabilities::register();
         self::db(); // lazy init برای migrate
         self::migrations()->migrate();
@@ -485,6 +570,327 @@ final class App
     {
         wp_clear_scheduled_hook('cpms_jobs_tick');
     }
+
+    // ================= N1 — پیش‌بررسیِ موتورِ دیتابیس =================
+
+    /**
+     * پیش‌بررسیِ واحدِ موتورِ دیتابیس — هم برای activate()، هم برای
+     * ensureMigrated() و هم برای گیتِ زمانِ اجرا (RuntimeSchemaGate).
+     * شواهد را یک‌بار در هر درخواست در حافظهٔ همان درخواست نگه می‌دارد
+     * (هیچ کشِ بین-درخواستی در Option/Transient/Object-Cache نوشته نمی‌شود)
+     * و تصمیم را از {@see DatabaseCompatibilityGate::check()} می‌گیرد؛ یعنی
+     * همان مجموعهٔ مجازِ مهاجرت 0027 — نه بازتر، نه بسته‌تر.
+     *
+     * seam تستی: حتی اگر probe در حافظه باشد، فقط زیرِ زمانِ اجرای واقعیِ تستِ
+     * CLI خوانده می‌شود؛ در هر محیطِ تولیدی نادیده گرفته می‌شود.
+     *
+     * @return array<string, mixed>
+     */
+    private static function database_compatibility(): array {
+        if ( self::$db_compatibility === null ) {
+            if ( self::$db_compatibility_probe !== null && self::is_test_seam_runtime_active() ) {
+                self::$db_compatibility = (array) ( self::$db_compatibility_probe )();
+            } else {
+                self::$db_compatibility = self::read_database_compatibility();
+            }
+        }
+
+        return self::$db_compatibility;
+    }
+
+    /**
+     * آیا موتورِ دیتابیسِ فعلی در مجموعهٔ مجازِ تأییدشده است؟
+     */
+    public static function is_database_engine_supported(): bool {
+        return (bool) ( self::database_compatibility()['supported'] ?? false ) === true;
+    }
+
+    /**
+     * تصمیمِ متمرکزِ گیتِ زمانِ اجرا (F2):
+     * فقط وقتی `true` برمی‌گرداند که **هم‌زمان** (الف) موتورِ دیتابیس با شواهدِ
+     * خوانا خارج از مجموعهٔ مجاز شناسایی شده باشد و (ب) مهاجرتِ اعمال‌نشده واقعاً
+     * در انتظار باشد.
+     *
+     *  - اگر schema از قبل به‌روز باشد: `false` (مسیرهای زمانِ اجرا باز می‌مانند
+     *    و فقط اعلانِ مدیریتی ثبت می‌شود).
+     *  - اگر شواهدِ نسخه ناخوانا/مخدوش باشد: `false` (زمانِ اجرا مسدود نمی‌شود؛
+     *    فقط لاگِ عملیاتیِ throttled ثبت می‌شود؛ فعال‌سازی همچنان fail-closed می‌ماند).
+     */
+    public static function is_runtime_blocked_by_pending_schema(): bool {
+        $compatibility   = self::database_compatibility();
+        $evidence_status = self::runtime_evidence_status( $compatibility );
+
+        if ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED ) {
+            return false;
+        }
+
+        if ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE ) {
+            self::report_unreadable_database_evidence( $compatibility );
+
+            return false;
+        }
+
+        self::report_unsupported_database_engine( $compatibility );
+
+        return self::has_pending_migrations_memoized();
+    }
+
+    private static function has_pending_migrations_memoized(): bool {
+        if ( self::$pending_migrations_memo === null ) {
+            self::$pending_migrations_memo = self::migrations()->has_pending_migrations();
+        }
+
+        return self::$pending_migrations_memo;
+    }
+
+    /**
+     * استخراجِ وضعیتِ شواهدِ زمانِ اجرا از خروجیِ پیش‌بررسی (سازگار با probeهای ۴کلیدی).
+     *
+     * @param array<string, mixed> $result خروجیِ database_compatibility().
+     */
+    private static function runtime_evidence_status( array $result ): string {
+        $tagged = $result['runtime_evidence'] ?? null;
+        if ( is_string( $tagged ) && in_array(
+            $tagged,
+            [
+                DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED,
+                DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED,
+                DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE,
+            ],
+            true
+        ) ) {
+            return $tagged;
+        }
+
+        if ( (bool) ( $result['supported'] ?? false ) === true ) {
+            return DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED;
+        }
+
+        $engine  = is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN;
+        $version = is_string( $result['version'] ?? null ) ? trim( $result['version'] ) : '';
+        if ( in_array( $engine, [ DatabaseCompatibilityGate::ENGINE_MARIADB, DatabaseCompatibilityGate::ENGINE_MYSQL ], true )
+            && 1 === preg_match( '/\A(?:5\.5\.5-)?\d+\.\d+\.\d+/', $version ) ) {
+            return DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED;
+        }
+
+        return DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE;
+    }
+
+    /**
+     * خواندنِ واقعیِ شواهد — همان کوئری و همان اعتبارسنجیِ مهاجرت 0027
+     * (`SELECT VERSION(), @@version_comment`؛ رشته‌نبودن/نبودِ فیلدها =
+     * fail-closed با نتیجهٔ «هویت در دسترس نیست»).
+     *
+     * @return array{supported: bool, engine: string, version: string, reason: string, runtime_evidence: string}
+     */
+    private static function read_database_compatibility(): array {
+        $server = self::db()->fetchRow( 'SELECT VERSION() AS SERVER_VERSION, @@version_comment AS VERSION_COMMENT' );
+        if ( $server === null
+            || ! isset( $server['SERVER_VERSION'], $server['VERSION_COMMENT'] )
+            || ! is_string( $server['SERVER_VERSION'] )
+            || ! is_string( $server['VERSION_COMMENT'] ) ) {
+            return DatabaseCompatibilityGate::unavailable_evidence();
+        }
+
+        return DatabaseCompatibilityGate::check( $server['SERVER_VERSION'], $server['VERSION_COMMENT'] );
+    }
+
+    /**
+     * خاتمهٔ فعال‌سازیِ ردشده — پیامِ خوانا با موتور/نسخهٔ شناسایی‌شده و
+     * مجموعهٔ پذیرفته‌شده (واژگانِ عینِ مهاجرت 0027) + back link.
+     *
+     * هستهٔ وردپرس گزینهٔ active_plugins را **بعد از** هوکِ فعال‌سازی می‌نویسد
+     * (7.1.3 `activate_plugin()`)، پس wp_die اینجا یعنی افزونه غیرفعال می‌ماند.
+     * escape/nl2br اینجا انجام می‌شود تا متنِ ساخت‌یافته در gate خالص بماند.
+     *
+     * @param array<string, mixed> $result خروجیِ database_compatibility().
+     */
+    private static function refuse_activation( array $result ): void {
+        wp_die(
+            nl2br( esc_html( DatabaseCompatibilityGate::activation_refusal_message( $result ) ) ),
+            'CPMS — activation refused',
+            [ 'back_link' => true ]
+        );
+    }
+
+    /**
+     * پیش‌شرطِ خالصِ مجازبودنِ seamهای `*_for_tests`:
+     * ۱. فقط زیرِ `cli` (هیچ درخواستِ وب در تولید اجازه ندارد)؛
+     * ۲. فقط وقتی زمانِ اجرای تست واقعاً بارگذاری شده باشد (`PHPUnit\Framework\TestCase`
+     *    یا `WP_TESTS_DOMAIN`) — هیچ وابستگی‌ای به `WP_ENVIRONMENT_TYPE` یا `WP_DEBUG` نیست؛
+     * ۳. فایلِ فراخوانندهٔ مستقیم (`realpath`) باید واقعاً داخلِ درختِ `tests/` افزونه
+     *    باشد (صرفِ جعلِ `namespace ClinicCore\Tests\...` بیرون از `tests/` کافی نیست،
+     *    و در بستهٔ تولیدی که پوشهٔ `tests/` ندارد همیشه `false` است)؛ و اگر فراخوانی از
+     *    کلاس باشد، فضای نامِ آن هم نمی‌تواند کلاسِ تولیدیِ `ClinicCore\` بیرون از `Tests\` باشد.
+     */
+    public static function can_use_test_seam_frame(
+        string $sapi,
+        bool $has_test_runtime,
+        ?string $caller_class,
+        ?string $caller_file,
+        string $tests_root
+    ): bool {
+        if ( $sapi !== 'cli' || ! $has_test_runtime ) {
+            return false;
+        }
+
+        if ( $tests_root === '' || ! is_string( $caller_file ) || $caller_file === '' ) {
+            return false;
+        }
+
+        $resolved_caller = realpath( $caller_file );
+        $resolved_root   = realpath( $tests_root );
+        if ( ! is_string( $resolved_caller ) || ! is_string( $resolved_root ) ) {
+            return false;
+        }
+
+        if ( ! str_starts_with( $resolved_caller, rtrim( $resolved_root, DIRECTORY_SEPARATOR ) . DIRECTORY_SEPARATOR ) ) {
+            return false;
+        }
+
+        if ( is_string( $caller_class ) && $caller_class !== ''
+            && str_starts_with( $caller_class, 'ClinicCore\\' )
+            && ! str_starts_with( $caller_class, 'ClinicCore\\Tests\\' ) ) {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static function is_test_seam_runtime_active(): bool {
+        return PHP_SAPI === 'cli'
+            && ( class_exists( \PHPUnit\Framework\TestCase::class, false ) || defined( 'WP_TESTS_DOMAIN' ) );
+    }
+
+    private static function assert_test_seam_allowed(): void {
+        $frames       = ( new \Exception() )->getTrace();
+        $caller_file  = isset( $frames[1]['file'] ) && is_string( $frames[1]['file'] ) ? $frames[1]['file'] : null;
+        $caller_class = isset( $frames[2]['class'] ) && is_string( $frames[2]['class'] ) ? $frames[2]['class'] : null;
+        $tests_root   = dirname( __DIR__, 2 ) . '/tests';
+
+        if ( ! self::can_use_test_seam_frame(
+            PHP_SAPI,
+            self::is_test_seam_runtime_active(),
+            $caller_class,
+            $caller_file,
+            $tests_root
+        ) ) {
+            throw new \LogicException( 'CPMS test seams cannot be invoked outside the test suite.' );
+        }
+    }
+
+    /**
+     * @internal فقط برای تست‌ها — جایگزینِ شواهدِ موتورِ دیتابیس (null = مسیرِ واقعی).
+     *
+     * @param (\Closure():(array<string, mixed>))|null $probe
+     */
+    public static function set_db_compatibility_probe_for_tests( ?\Closure $probe ): void {
+        self::assert_test_seam_allowed();
+        self::$db_compatibility_probe  = $probe;
+        self::$db_compatibility        = null;
+        self::$pending_migrations_memo = null;
+    }
+
+    /**
+     * @internal فقط برای تست‌ها — بازنشانیِ کلِ وضعیتِ N1/F2 (probe + memo + اعلان
+     * + نشانگرهای throttleِ لاگ) تا تست‌ها به هم نشت نکنند.
+     */
+    public static function reset_database_compatibility_state_for_tests(): void {
+        self::assert_test_seam_allowed();
+        self::$db_compatibility_probe  = null;
+        self::$db_compatibility        = null;
+        self::$unsupported_engine      = null;
+        self::$pending_migrations_memo = null;
+        if ( function_exists( 'delete_transient' ) ) {
+            delete_transient( self::DB_ENGINE_LOG_THROTTLE );
+            delete_transient( self::DB_EVIDENCE_LOG_THROTTLE );
+        }
+    }
+
+    /**
+     * گزارشِ «موتورِ پشتیبانی‌نشده» در مسیرِ ensureMigrated()/RuntimeSchemaGate:
+     *  - نتیجه را برای اعلانِ admin_notices/network_admin_noticesِ همین درخواست
+     *    نگه می‌دارد (بدونِ نوشتنِ Option؛ دقیق و بدون کهنگی)؛
+     *  - یک ردیفِ OpLog در هر پنجرهٔ throttle می‌نویسد (CPMS_DB_ENGINE_UNSUPPORTED، بدون هیچ PHI).
+     *
+     * @param array<string, mixed> $result خروجیِ database_compatibility().
+     */
+    private static function report_unsupported_database_engine( array $result ): void {
+        self::$unsupported_engine = $result;
+
+        if ( function_exists( 'get_transient' ) && false !== get_transient( self::DB_ENGINE_LOG_THROTTLE ) ) {
+            return;
+        }
+        if ( function_exists( 'set_transient' ) ) {
+            set_transient( self::DB_ENGINE_LOG_THROTTLE, 1, self::DB_ENGINE_LOG_WINDOW );
+        }
+
+        try {
+            self::op()->warning(
+                'CPMS_DB_ENGINE_UNSUPPORTED',
+                [
+                    'engine'  => is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN,
+                    'version' => is_string( $result['version'] ?? null ) ? $result['version'] : '',
+                ]
+            );
+        } catch ( \Throwable $e ) {
+            // ثبتِ Log عملیاتی هرگز نباید درخواست را بشکند (همان قرارداد OpLogger).
+            unset( $e );
+        }
+    }
+
+    /**
+     * گزارشِ throttled وقتی شواهدِ نسخهٔ دیتابیس در زمانِ اجرا ناخوانا/مخدوش است
+     * (زمانِ اجرا مسدود نمی‌شود؛ هیچ دادهٔ بیمار/کاربر ثبت نمی‌شود).
+     *
+     * @param array<string, mixed> $result خروجیِ database_compatibility().
+     */
+    private static function report_unreadable_database_evidence( array $result ): void {
+        if ( function_exists( 'get_transient' ) && false !== get_transient( self::DB_EVIDENCE_LOG_THROTTLE ) ) {
+            return;
+        }
+        if ( function_exists( 'set_transient' ) ) {
+            set_transient( self::DB_EVIDENCE_LOG_THROTTLE, 1, self::DB_ENGINE_LOG_WINDOW );
+        }
+
+        try {
+            self::op()->warning(
+                'CPMS_DB_ENGINE_EVIDENCE_UNREADABLE',
+                [
+                    'reason' => is_string( $result['reason'] ?? null ) ? $result['reason'] : 'unreadable',
+                ]
+            );
+        } catch ( \Throwable $e ) {
+            unset( $e );
+        }
+    }
+
+    /**
+     * اعلانِ مدیریتیِ N1 — فقط برای مدیران، فقط وقتی در همین درخواستِ
+     * مدیریتی موتورِ پشتیبانی‌نشده دیده شده باشد. صفحهٔ سلامتِ موجود
+     * (admin.php?page=cpms-system) دست‌نخورده باقی می‌ماند و مرجعِ کامل است.
+     */
+    public static function render_unsupported_engine_notice(): void {
+        $result = self::$unsupported_engine;
+        if ( $result === null ) {
+            return;
+        }
+        if ( ! function_exists( 'current_user_can' ) || ! current_user_can( 'manage_options' ) ) {
+            return;
+        }
+
+        $version  = is_string( $result['version'] ?? null ) ? $result['version'] : '';
+        $engine   = is_string( $result['engine'] ?? null ) ? $result['engine'] : DatabaseCompatibilityGate::ENGINE_UNKNOWN;
+        $detected = $version !== '' ? $version : $engine;
+
+        printf(
+            '<div class="notice notice-error"><p><strong>CPMS:</strong> سرور دیتابیس این سایت پشتیبانی نمی‌شود (شناسایی‌شده: %s). مهاجرت‌های جدید تا اصلاحِ سرور اجرا نمی‌شوند و پیامِ خطا از مسیرِ مدیریتی حذف شده است. مجموعهٔ پذیرفته‌شده: %s. جزئیات کامل در <a href="%s">صفحهٔ سلامت سیستم</a>.</p></div>',
+            esc_html( $detected ),
+            esc_html( DatabaseCompatibilityGate::ACCEPTED_SET_WORDING ),
+            esc_url( admin_url( 'admin.php?page=cpms-system' ) )
+        );
+    }
+
 
     /**
      * بازهٔ یک‌دقیقه‌ایِ CPMS در `cron_schedules`.
@@ -529,7 +935,24 @@ final class App
         }
         set_transient($lock, 1, 30);
         try {
-            self::migrations()->migrate();
+            // N1 — روی موتورِ پشتیبانی‌نشده، migrate() اصلاً صدا زده نمی‌شود:
+            // مهاجرتِ 0027 (و هر مهاجرتِ بعدیِ pending) دیگر درخواستِ مدیریتی/
+            // REST را با RuntimeException نمی‌کُشد؛ به‌جایش یک OpLogِ throttled و
+            // یک اعلانِ مدیریتی ثبت می‌شود. بقیهٔ مسیر (ذخیره‌سازی خصوصی و
+            // مسیرِ ارزانِ هر-درخواستی) عیناً مثلِ قبل اجرا می‌شود — هیچ مسیرِ
+            // نوشتنِ دیگری عوض نشده است. schemaٔ از-قبل-اعمال‌شده کار می‌کند.
+            $compatibility   = self::database_compatibility();
+            $evidence_status = self::runtime_evidence_status( $compatibility );
+            if ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED ) {
+                self::migrations()->migrate();
+                self::$pending_migrations_memo = false;
+            } elseif ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED ) {
+                self::report_unsupported_database_engine( $compatibility );
+                // Skip only schema migrations; private-storage initialization remains
+                // identical to main and is still safe/idempotent on this request.
+            } else {
+                self::report_unreadable_database_evidence( $compatibility );
+            }
             self::ensurePrivateStorage();
             // مسیرِ ارزانِ هر-درخواستی: یک خواندنِ Option؛ فقط وقتی امضا عوض
             // شود یا آخرین تلاش ناموفق بوده باشد کارِ واقعی انجام می‌شود.
@@ -836,13 +1259,25 @@ final class App
     public static function bookingService(): BookingService
     {
         static $booking = null;
-        if ($booking === null) {
-            $db = self::db();
+        static $deps    = null;
+        $current_deps   = [
+            self::db(),
+            self::settingsFactory(),
+            self::licenseGate(),
+            self::audit(),
+            self::op(),
+            self::idem(),
+            self::smsService(),
+            self::notificationService(),
+            self::patient_identity_activator(),
+        ];
+        if ( $booking === null || $deps !== $current_deps ) {
+            $db      = self::db();
             $booking = new BookingService(
                 $db,
-                new SlotRepository($db),
-                new AppointmentRepository($db),
-                new PatientRepository($db),
+                new SlotRepository( $db ),
+                new AppointmentRepository( $db ),
+                new PatientRepository( $db ),
                 // Scope-neutral construction: BookingService پیکربندی را در
                 // زمانِ هر عملیات و از Clinicِ **معتبرِ همان عملیات** می‌خواند
                 // (پزشک/نوبتِ پایدار، یا Scopeِ معتبرِ کارکنان) — نه از یک
@@ -857,6 +1292,7 @@ final class App
                 new MembershipRepository( $db ),
                 self::patient_identity_activator()
             );
+            $deps = $current_deps;
         }
 
         return $booking;
@@ -905,17 +1341,20 @@ final class App
     public static function scheduleService(): ScheduleService
     {
         static $schedule = null;
-        if ($schedule === null) {
-            $db = self::db();
+        static $deps     = null;
+        $current_deps    = [ self::db(), self::locationRepository(), self::jobs(), self::audit(), self::op() ];
+        if ( $schedule === null || $deps !== $current_deps ) {
+            $db       = self::db();
             $schedule = new ScheduleService(
                 $db,
-                new ScheduleRepository($db),
-                new MembershipRepository($db),
+                new ScheduleRepository( $db ),
+                new MembershipRepository( $db ),
                 self::locationRepository(),
                 self::jobs(),
                 self::audit(),
                 self::op()
             );
+            $deps     = $current_deps;
         }
 
         return $schedule;
@@ -926,9 +1365,11 @@ final class App
      */
     public static function clinicianRepository(): ClinicianRepository
     {
-        static $repo = null;
-        if ($repo === null) {
-            $repo = new ClinicianRepository(self::db());
+        static $repo   = null;
+        static $db_ref = null;
+        if ( $repo === null || $db_ref !== self::db() ) {
+            $db_ref = self::db();
+            $repo   = new ClinicianRepository( $db_ref );
         }
 
         return $repo;
@@ -936,9 +1377,11 @@ final class App
 
     public static function clinicRepository(): ClinicRepository
     {
-        static $repo = null;
-        if ($repo === null) {
-            $repo = new ClinicRepository(self::db());
+        static $repo   = null;
+        static $db_ref = null;
+        if ( $repo === null || $db_ref !== self::db() ) {
+            $db_ref = self::db();
+            $repo   = new ClinicRepository( $db_ref );
         }
 
         return $repo;
@@ -964,9 +1407,11 @@ final class App
      */
     public static function locationRepository(): LocationRepository
     {
-        static $repo = null;
-        if ($repo === null) {
-            $repo = new LocationRepository(self::db());
+        static $repo   = null;
+        static $db_ref = null;
+        if ( $repo === null || $db_ref !== self::db() ) {
+            $db_ref = self::db();
+            $repo   = new LocationRepository( $db_ref );
         }
 
         return $repo;
@@ -1069,10 +1514,12 @@ final class App
     public static function authorization_service(): \ClinicCore\Application\Authorization\AuthorizationService
     {
         static $service = null;
-        if ($service === null) {
+        static $db_ref  = null;
+        if ( $service === null || $db_ref !== self::db() ) {
+            $db_ref  = self::db();
             $service = new \ClinicCore\Application\Authorization\AuthorizationService(
-                new MembershipRepository( self::db() ),
-                new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( self::db() )
+                new MembershipRepository( $db_ref ),
+                new \ClinicCore\Infrastructure\Repository\CustomRoleRepository( $db_ref )
             );
         }
 
@@ -1084,12 +1531,15 @@ final class App
      */
     public static function patient_identity_service(): PatientIdentityService {
         static $service = null;
-        if ( $service === null ) {
+        static $deps    = null;
+        $current_deps   = [ self::db(), self::audit() ];
+        if ( $service === null || $deps !== $current_deps ) {
             $service = new PatientIdentityService(
                 self::db(),
                 new PatientIdentityRepository( self::db() ),
                 self::audit()
             );
+            $deps    = $current_deps;
         }
 
         return $service;
@@ -1103,11 +1553,14 @@ final class App
      */
     public static function patient_identity_activator(): PatientIdentityActivator {
         static $activator = null;
-        if ( $activator === null ) {
+        static $deps      = null;
+        $current_deps     = [ self::db(), self::patient_identity_service() ];
+        if ( $activator === null || $deps !== $current_deps ) {
             $activator = new PatientIdentityActivator(
                 new PatientIdentityRepository( self::db() ),
                 self::patient_identity_service()
             );
+            $deps      = $current_deps;
         }
 
         return $activator;
@@ -1116,22 +1569,25 @@ final class App
     public static function clinicalService(): ClinicalService
     {
         static $clinical = null;
-        if ($clinical === null) {
-            $db = self::db();
+        static $deps     = null;
+        $current_deps    = [ self::db(), self::visitService(), self::settingsFactory(), self::audit() ];
+        if ( $clinical === null || $deps !== $current_deps ) {
+            $db       = self::db();
             $clinical = new ClinicalService(
                 $db,
-                new VisitRepository($db),
+                new VisitRepository( $db ),
                 self::visitService(),
-                new ClinicalNoteRepository($db),
-                new PrescriptionRepository($db),
-                new RecommendationRepository($db),
-                new FollowUpRepository($db),
+                new ClinicalNoteRepository( $db ),
+                new PrescriptionRepository( $db ),
+                new RecommendationRepository( $db ),
+                new FollowUpRepository( $db ),
                 // Scope-neutral construction: policy از ردیفِ پایدارِ ویزیت خوانده می‌شود.
                 self::settingsFactory(),
                 self::audit(),
-                new PatientRepository($db),
-                new MedicalFileRepository($db)
+                new PatientRepository( $db ),
+                new MedicalFileRepository( $db )
             );
+            $deps = $current_deps;
         }
 
         return $clinical;
@@ -1143,19 +1599,22 @@ final class App
     public static function financeService(): FinanceService
     {
         static $finance = null;
-        if ($finance === null) {
-            $db = self::db();
+        static $deps    = null;
+        $current_deps   = [ self::db(), self::visitService(), self::audit(), self::visit_pricing_service() ];
+        if ( $finance === null || $deps !== $current_deps ) {
+            $db      = self::db();
             $finance = new FinanceService(
                 $db,
-                new ServiceRepository($db),
-                new InvoiceRepository($db),
-                new PaymentRepository($db),
-                new VisitRepository($db),
+                new ServiceRepository( $db ),
+                new InvoiceRepository( $db ),
+                new PaymentRepository( $db ),
+                new VisitRepository( $db ),
                 self::visitService(),
-                new PatientRepository($db),
+                new PatientRepository( $db ),
                 self::audit(),
                 self::visit_pricing_service()
             );
+            $deps    = $current_deps;
         }
 
         return $finance;
@@ -1167,7 +1626,9 @@ final class App
      */
     public static function visit_pricing_service(): VisitPricingService {
         static $pricing = null;
-        if ( $pricing === null ) {
+        static $deps    = null;
+        $current_deps   = [ self::db(), self::audit() ];
+        if ( $pricing === null || $deps !== $current_deps ) {
             $db      = self::db();
             $pricing = new VisitPricingService(
                 $db,
@@ -1180,6 +1641,7 @@ final class App
                 new PatientRepository( $db ),
                 self::audit()
             );
+            $deps    = $current_deps;
         }
 
         return $pricing;
@@ -1190,7 +1652,9 @@ final class App
      */
     public static function staff_messaging_service(): StaffMessagingService {
         static $messaging = null;
-        if ( $messaging === null ) {
+        static $deps      = null;
+        $current_deps     = [ self::db(), self::audit() ];
+        if ( $messaging === null || $deps !== $current_deps ) {
             $db        = self::db();
             $messaging = new StaffMessagingService(
                 $db,
@@ -1201,6 +1665,7 @@ final class App
                 new ClinicianRepository( $db ),
                 self::audit()
             );
+            $deps      = $current_deps;
         }
 
         return $messaging;
@@ -1212,18 +1677,21 @@ final class App
     public static function handwritingService(): HandwritingService
     {
         static $handwriting = null;
-        if ($handwriting === null) {
-            $db = self::db();
+        static $deps        = null;
+        $current_deps       = [ self::db(), self::settingsFactory(), self::audit() ];
+        if ( $handwriting === null || $deps !== $current_deps ) {
+            $db          = self::db();
             $handwriting = new HandwritingService(
                 $db,
-                new HandwritingRepository($db),
-                new VisitRepository($db),
+                new HandwritingRepository( $db ),
+                new VisitRepository( $db ),
                 // Phase 2 M-2 (W): سیاستِ per-Clinic از SettingsFactory حل
                 // می‌شود — سرویسِ دست‌خط دیگر به Scope محیطی وابسته نیست.
                 self::settingsFactory(),
                 self::audit(),
-                new Idempotency($db)
+                new Idempotency( $db )
             );
+            $deps = $current_deps;
         }
 
         return $handwriting;
@@ -1235,16 +1703,19 @@ final class App
     public static function notificationService(): NotificationService
     {
         static $notifications = null;
-        if ($notifications === null) {
+        static $deps          = null;
+        $current_deps         = [ self::db(), self::settingsFactory(), self::op() ];
+        if ( $notifications === null || $deps !== $current_deps ) {
             $notifications = new NotificationService(
                 self::db(),
-                new NotificationRepository(self::db()),
-                new MembershipRepository(self::db()),
+                new NotificationRepository( self::db() ),
+                new MembershipRepository( self::db() ),
                 // Scope-neutral construction (الگوی SmsService).
                 self::settingsFactory(),
                 static fn (): int => self::scope()->clinicId,
                 self::op()
             );
+            $deps = $current_deps;
         }
 
         return $notifications;
@@ -1374,11 +1845,13 @@ final class App
     public static function patientService(): PatientService
     {
         static $patients = null;
-        if ($patients === null) {
-            $db = self::db();
+        static $deps     = null;
+        $current_deps    = [ self::db(), self::licenseGate(), self::audit(), self::op(), self::patient_identity_activator() ];
+        if ( $patients === null || $deps !== $current_deps ) {
+            $db       = self::db();
             $patients = new PatientService(
                 $db,
-                new PatientRepository($db),
+                new PatientRepository( $db ),
                 // وابستگیِ Settings حذف شد: این سرویس هرگز از آن نمی‌خواند و
                 // نگه‌داشتنش تنها دلیلِ حل‌کردنِ Clinicِ محیطی در زمانِ ساخت بود.
                 self::licenseGate(),
@@ -1386,6 +1859,7 @@ final class App
                 self::op(),
                 self::patient_identity_activator()
             );
+            $deps = $current_deps;
         }
 
         return $patients;
@@ -1412,8 +1886,18 @@ final class App
 
     public static function otpService(): OtpService
     {
-        static $otp = null;
-        if ($otp === null) {
+        static $otp   = null;
+        static $deps  = null;
+        $current_deps = [
+            self::db(),
+            self::settingsFactory(),
+            self::rate(),
+            self::audit(),
+            self::op(),
+            self::smsService(),
+            self::jobs(),
+        ];
+        if ( $otp === null || $deps !== $current_deps ) {
             $otp = new OtpService(
                 self::db(),
                 // Scope-neutral construction (الگوی SmsService): پیکربندی در
@@ -1426,6 +1910,7 @@ final class App
                 self::smsService(),
                 self::jobs()
             );
+            $deps = $current_deps;
         }
 
         return $otp;
@@ -2146,6 +2631,10 @@ final class App
      */
     public static function runTick(int $limit = 20): int
     {
+        if ( self::is_runtime_blocked_by_pending_schema() ) {
+            return 0;
+        }
+
         $db = self::db();
         $got = $db->fetchValue('SELECT GET_LOCK(%s, 0)', [self::TICK_LOCK]);
         if ((int) $got !== 1) {
@@ -2181,6 +2670,10 @@ final class App
 
     public static function scheduleRecurringJobs(): void
     {
+        if ( self::is_runtime_blocked_by_pending_schema() ) {
+            return;
+        }
+
         $queue = self::jobs();
         $now = new \DateTimeImmutable('now', new \DateTimeZone('UTC'));
 
