@@ -223,12 +223,31 @@ Nothing here converts an unrun check into a pass.
 
 ## 8. Post-run evidence (2026-11-06, appended after the first CI cycle)
 
-Head **`fb63a97713ed9e939ee75f2f4888f436060b7a8b`**. Census from the checks API
-at that SHA: **37 checks, all terminal — 35 success / 2 failure / 0 pending.**
-All 9 required contexts green with unchanged names. Everything below is read
+Head **`fb63a97713ed9e939ee75f2f4888f436060b7a8b`**. Everything below is read
 from **annotations, job/step lists, run lists and repository-advisory APIs**;
 job logs stayed unreadable from the authoring sandbox (§6), and that limit
 applies to every statement in this section.
+
+**Census, with the counting method stated** (re-measured 2026-11-06 after a
+reviewer challenge; the earlier "37 checks — 35 success / 2 failure" sentence in
+this section was **wrong** and is corrected here):
+
+- **Method A — latest check-run per distinct name** (`GET
+  /commits/{sha}/check-runs`, the view `gh pr checks` shows): **37 records** =
+  **36 success / 1 failure**, 0 pending. The single failure is *Real WordPress
+  acceptance (clean WP → CPMS → companion → teardown)*, job `127601112667`.
+- **Method B — every stored attempt** (`?filter=all`, counted by hand across
+  pagination because the endpoint reports `total_count: 37` while returning 42
+  records): **42 records** = **39 success / 3 failure**, 5 names carrying two
+  records each. The three failure records are the demo lane at attempt 1
+  (`127570978339`, 22:34:35Z) and attempt 2 (`127601112667`, 23:41:55Z), plus
+  *Real HTTP profile* at attempt 1 (`127570801387`, 22:19:41Z) which went
+  `success` at attempt 2.
+
+So the only lane red at that head, under either method, is the demo lane. The
+failing sentences this replaces are preserved in the git history, not silently
+deleted from the record. All 9 required contexts are green with unchanged
+names.
 
 ### 8.1 E1 and E2 were sufficient for the baseline builds (proven)
 
@@ -303,9 +322,20 @@ applies to every statement in this section.
 - **Attempt 1** (job `127570978339`) and **attempt 2** (job `127601112667`), same
   head `fb63a977`: identical annotation, verbatim:
   `CPDD_BROWSER | stage=1-2. ZIP installation and activation through wp-admin TimeoutError: Locator.wait_for: Timeout 60000ms exceeded. Call log: - waiting for locator("a[href*='action=activate']").first to be visible`
-- Attempt 2 hit the browser cache (`cache_hit=true`) while attempt 1 missed, and
-  the failure did not move — so a cold/warm browser cache is not the
-  discriminator here.
+- **Correction (2026-11-06, after a reviewer challenge; verified through the
+  annotations API).** This section previously said attempt 1 missed the browser
+  cache. That was **wrong**: **both** failing attempts reported
+  `cache_hit=true`. Verbatim from the two jobs' `playwright browsers`
+  annotations:
+  attempt 1 (`127570978339`) — `browsers=chromium cache_hit=true deps=installed
+  (bounded apt for exactly Playwright's missing-package list, verified for
+  chromium) [cache hit] seconds=681`;
+  attempt 2 (`127601112667`) — same text with `[cache hit] seconds=696`.
+  Both jobs also report `labels=['ubuntu-latest']` and
+  `mod_php_enabled=php8.5.load`. So **cache temperature is not the
+  discriminator**: the failure was identical with the browser binaries restored
+  from cache in both attempts, and the dependency provisioning that followed
+  still ended with a launch that the lane could use.
 - Green reference: `main` push run `41775097740`, same job `success`, same
   workflow, whose annotation reported `mod_php_enabled=php8.3.load` and
   `deps=reused (cached browsers launched; system dependencies already present)`.
@@ -336,7 +366,27 @@ commits preserved:
 - Also required afterwards: **do not delete branch `arena/5375738f-doctor`**
   until `main` has run both baseline lanes green at least once after the merge.
 
-### 8.7 What changed in the check census
+### 8.7 Nothing enforces the expiry, and the demo-lane green is one sample
+
+**Nothing enforces the 2026-12-15 expiry automatically.** The date is a recorded
+marker, not a mechanism: no workflow, test or scheduled job compares it to the
+current date, and none of the contract tests in this repository would fail when
+the date passes. The pins will keep running exactly as they are until a human
+opens this record and removes them; the only automated guard is that a pin
+without an `EXPIRY YYYY-MM-DD` marker next to it fails the workflow contract
+test (existence of the marker, never the date). Revisiting on or before
+2026-12-15 is therefore a manual obligation.
+
+**The demo-lane green is one sample, and its cause remains unproven.** At head
+`8cc0bb55` the lane passed on the `ubuntu-24.04` pin, but in that single
+observation the OS image and the PHP version changed together
+(`mod_php_enabled=php8.3.load` on 24.04 versus `php8.5.load` on the
+`ubuntu-latest` runs that failed), and there is no controlled run that changes
+only one of them. One sample with two variables changed cannot attribute the
+result to either variable, so the pin stays labelled EXPERIMENT and the cause
+stays UNPROVEN. It is certainly not evidenced that the pin *fixed* anything.
+
+### 8.8 What changed in the check census
 
 - Green where the starting list was red: Facility mysql + mariadb; First-practice
   mysql + mariadb; Responsive smoke; all seven Real WP coexistence lanes;
@@ -354,18 +404,32 @@ commits preserved:
   `.github/workflows/disposable-demo-installer.yml` as *lane plumbing*, and its
   decision function fails only on production↔companion/compatibility mixing. The
   check was re-run after the edit (§10).
-- New test
+- Test
   `test_every_runner_pin_records_an_expiry_and_the_cache_key_separates_os_releases`
   in `.github/workflows/test_workflow_contracts.py`:
-  (a) every `runs-on: ubuntu-24.04` line in `.github/workflows/*.yml` must have
-  an `EXPIRY YYYY-MM-DD` marker in its own comment block;
+  (a) every `runs-on:` value in `.github/workflows/*.yml` that **names**
+  `ubuntu-24.04` must have an `EXPIRY YYYY-MM-DD` marker in its own comment
+  block — whether the pin is literal or a **conditional expression**;
   (b) the composite action's cache key must contain the runner OS release token
   and the architecture, read from the runner, with the fail-closed text present.
   It contains **no date comparison**, so it can never start failing because time
   passed; the date is checked for presence, not compared to today.
-  Verified as a real check by negative control: removing the marker makes it
-  fail (and it is what flagged a missing marker on the pre-existing
-  `third-party-baseline.yml` pin, now annotated there without changing that pin).
+  **Correction after reviewer challenge (2026-11-06):** the first version of this
+  test matched only the literal string `runs-on: ubuntu-24.04`, so the seven
+  coexistence lanes pinned through
+  `${{ inputs.persian_coexistence && 'ubuntu-24.04' || 'ubuntu-latest' }}` in
+  `real-wp-acceptance.yml:102` were **not covered** — the test passed while that
+  pin had no guard at all. The test now matches any `runs-on:` value naming
+  `ubuntu-24.04`, and additionally asserts that exactly one such conditional pin
+  is discovered (so it cannot silently skip that surface again). No workflow
+  behaviour changed: the marker was already present next to that expression, so
+  no comment had to be added and no value was touched.
+  Verified by **two negative controls**: (i) deleting the `EXPIRY` line from
+  `real-wp-acceptance.yml` makes the test fail at `real-wp-acceptance.yml:102`;
+  (ii) a scratch workflow copy with that marker removed is also caught, which
+  proves the conditional pin is really discovered rather than skipped. The test
+  earlier flagged a missing marker on the pre-existing `third-party-baseline.yml`
+  pin, now annotated there without changing that pin.
 
 ## 10. Known side effect of this batch
 

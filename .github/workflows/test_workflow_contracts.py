@@ -1476,15 +1476,20 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         deliberately does not compare against today's date, so it cannot start
         failing because time passed.
         """
-        pin = "runs-on: ubuntu-24.04"
+        # A pin is any `runs-on:` value that NAMES ubuntu-24.04, whether literally
+        # or inside a conditional expression (the seven coexistence lanes are
+        # pinned through `${{ inputs.persian_coexistence && 'ubuntu-24.04' || ... }}`
+        # in real-wp-acceptance.yml, which a literal-line match would miss).
         expiry = re.compile(r"EXPIRY\s+\d{4}-\d{2}-\d{2}")
-        pinned_files = []
+        pinned_locations = {}
         for path in sorted(WORKFLOWS.glob("*.yml")):
             lines = path.read_text(encoding="utf-8").splitlines()
             for index, line in enumerate(lines):
-                if line.strip() != pin:
+                stripped = line.strip()
+                if not stripped.startswith("runs-on:"):
                     continue
-                pinned_files.append(path.name)
+                if "ubuntu-24.04" not in stripped:
+                    continue
                 # The expiry is recorded in the comment block belonging to this
                 # pin: the pin's own line or the contiguous comment lines above it.
                 block = [line]
@@ -1492,17 +1497,36 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
                 while cursor >= 0 and lines[cursor].strip().startswith("#"):
                     block.insert(0, lines[cursor])
                     cursor -= 1
+                label = f"{path.name}:{index + 1}"
+                pinned_locations[label] = stripped
                 self.assertRegex(
                     "\n".join(block),
                     expiry,
-                    f"{path.name}:{index + 1}: a temporary runner pin must carry an "
-                    f"'EXPIRY YYYY-MM-DD' comment (found: {block[:1]})",
+                    f"{label}: a temporary runner pin must carry an "
+                    f"'EXPIRY YYYY-MM-DD' comment next to the runs-on expression "
+                    f"(found: {block[:1]})",
                 )
         self.assertIn(
             "disposable-demo-installer.yml",
-            pinned_files,
+            {label.split(":")[0] for label in pinned_locations},
             "the demo lane's experimental runner pin is not in place",
         )
+        # The conditional pin must be discovered, not silently skipped: without
+        # it this test would pass while the seven coexistence lanes stayed
+        # unpinned in the place it cannot see.
+        conditional = [
+            (label, value)
+            for label, value in pinned_locations.items()
+            if "inputs." in value and "ubuntu-24.04" in value
+        ]
+        self.assertEqual(
+            1,
+            len(conditional),
+            "the conditional coexistence pin was not found exactly once: "
+            f"{sorted(pinned_locations)}",
+        )
+        self.assertIn("real-wp-acceptance.yml", conditional[0][0])
+        self.assertIn("persian_coexistence", conditional[0][1])
 
         action = (ROOT / ".github" / "actions" / "playwright-browsers" / "action.yml").read_text(
             encoding="utf-8"
