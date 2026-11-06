@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Unit;
 
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use PHPUnit\Framework\TestCase;
 
@@ -65,11 +66,23 @@ use PHPUnit\Framework\TestCase;
  */
 final class HoldsExpireHandlerCapacityTest extends TestCase
 {
+    /**
+     * Concrete fake used by this test. It is created at runtime because the
+     * class it must extend depends on which `\wpdb` is loaded: another unit file
+     * (tests/Unit/RefundLostUpdateTest.php) declares a global `wpdb` at file
+     * load, and `CpmsDb::__construct(private readonly wpdb $wpdb)` needs an
+     * instance of whatever class holds that name. Subclassing it, instead of
+     * racing to declare the same global name, makes this file independent of
+     * load order.
+     */
     private \wpdb $wpdb;
 
     private CpmsDb $db;
 
     private \PDO $pdo;
+
+    /** @var array{wpdb: mixed, app_db: mixed} */
+    private array $saved = [];
 
     protected function setUp(): void
     {
@@ -82,9 +95,11 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
             define('OBJECT', 'OBJECT');
         }
 
-        if (!class_exists('wpdb', false)) {
-            eval($this->wpdbStubSource());
-        }
+        // Save every global this test touches so tearDown can restore exactly.
+        $this->saved = [
+            'wpdb'   => $GLOBALS['wpdb'] ?? null,
+            'app_db' => $this->currentAppDb(),
+        ];
 
         $this->pdo = new \PDO('sqlite::memory:');
         $this->pdo->setAttribute(\PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION);
@@ -119,14 +134,152 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
             )'
         );
 
-        $this->wpdb = new \wpdb($this->pdo);
+        $this->wpdb = $this->makeFake($this->pdo);
         $this->db   = new CpmsDb($this->wpdb);
+
+        // The production code reaches the database through $GLOBALS['wpdb'] in
+        // other paths; publish this fake for the duration of the test only.
+        $GLOBALS['wpdb'] = $this->wpdb;
     }
 
     protected function tearDown(): void
     {
         $this->db->setStrict(false);
+
+        // Restore exactly what was there before, including "nothing".
+        if (array_key_exists('wpdb', $this->saved)) {
+            if ($this->saved['wpdb'] === null) {
+                unset($GLOBALS['wpdb']);
+            } else {
+                $GLOBALS['wpdb'] = $this->saved['wpdb'];
+            }
+        }
+        $this->restoreAppDb($this->saved['app_db'] ?? null);
+        $this->saved = [];
+
         parent::tearDown();
+    }
+
+    /**
+     * The App DB singleton as it is right now, or null when unset. Read through
+     * reflection because `App` exposes no setter; nothing is written here.
+     */
+    private function currentAppDb(): ?CpmsDb
+    {
+        $prop = new \ReflectionProperty(App::class, 'db');
+        $current = $prop->getValue();
+
+        return $current instanceof CpmsDb ? $current : null;
+    }
+
+    /**
+     * Put the App DB singleton back exactly as it was. Passing null restores
+     * the "not built yet" state that other unit files rely on.
+     */
+    private function restoreAppDb(?CpmsDb $previous): void
+    {
+        $prop = new \ReflectionProperty(App::class, 'db');
+        $prop->setValue(null, $previous);
+    }
+
+    /**
+     * Build the fake at runtime so it extends whichever `\wpdb` class is loaded
+     * (this repo's unit suite has more than one test file that declares one) and
+     * therefore satisfies `CpmsDb`'s `wpdb` constructor type hint either way.
+     *
+     * Every method `CpmsDb` and `HoldsExpireHandler` call is overridden:
+     * prepare, query, get_row, get_results, get_var, insert, update, delete, and
+     * the `prefix` / `last_error` / `insert_id` properties. The overrides are
+     * untyped on purpose, exactly like the stub they are copied from, so they
+     * stay valid against a typed parent on PHP 8.1 through 8.5; the properties
+     * those names refer to are inherited from the parent, never redeclared.
+     */
+    private function makeFake(\PDO $pdo): \wpdb
+    {
+        $base = class_exists('wpdb', false) ? 'wpdb' : $this->declareMinimalBase();
+
+        $class = 'CpmsHoldsExpireFakeSqlite';
+        if (class_exists($class, false)) {
+            return new $class($pdo);
+        }
+
+        eval($this->fakeClassSource($class, $base));
+
+        return new $class($pdo);
+    }
+
+    /**
+     * Only used when no `\wpdb` exists at all. Minimal, untyped members so a
+     * subclass can narrow or widen them freely on PHP 8.1 through 8.5.
+     */
+    private function declareMinimalBase(): string
+    {
+        if (!class_exists('wpdb', false)) {
+            eval($this->baseClassSource());
+        }
+
+        return 'wpdb';
+    }
+
+    private function baseClassSource(): string
+    {
+        return <<<'PHP'
+namespace {
+    class wpdb
+    {
+        public $prefix = 'wp_';
+        public $last_error = '';
+        public $insert_id = 0;
+
+        public function prepare($query, ...$args) { return $query; }
+        public function query($query) { return 0; }
+        public function get_row($query = null, $output = null, $y = 0) { return null; }
+        public function get_results($query = null, $output = null) { return []; }
+        public function get_var($query = null, $x = 0, $y = 0) { return null; }
+        public function insert($table, $data, $format = null) { return 1; }
+        public function update($table, $data, $where, $format = null, $where_format = null) { return 1; }
+        public function delete($table, $where, $format = null) { return 1; }
+    }
+}
+PHP;
+    }
+
+    /**
+     * Re-home the stub in a uniquely named subclass of whatever `\wpdb` the
+     * current process has. The stub source already carries its own
+     * `namespace { ... }` wrapper, so only the class name and parent change.
+     *
+     * Property types are invariant in PHP: a subclass may not re-declare an
+     * inherited property with a different type, and the two possible parents
+     * here disagree (one is fully typed, the minimal fallback is untyped). So
+     * any property the parent already declares is dropped from the subclass and
+     * inherited as-is; the stub's values are plain strings and ints, which fits
+     * both parents.
+     */
+    private function fakeClassSource(string $class, string $base): string
+    {
+        $inherited = [];
+        foreach ((new \ReflectionClass($base))->getProperties(
+            \ReflectionProperty::IS_PUBLIC | \ReflectionProperty::IS_PROTECTED
+        ) as $prop) {
+            $inherited[$prop->getName()] = true;
+        }
+
+        $kept  = [];
+        $regex = '/^\s*(?:public|protected|var)\s+(?:[?\\\\A-Za-z_][\\\\\w]*\s+)?\$([A-Za-z_]\w*)/';
+        foreach (explode("\n", $this->wpdbStubSource()) as $line) {
+            if (preg_match($regex, $line, $m) === 1 && isset($inherited[$m[1]])) {
+                continue;
+            }
+            $kept[] = $line;
+        }
+
+        return preg_replace(
+            '/\bclass wpdb\b/',
+            'class ' . $class . ' extends ' . $base,
+            implode("\n", $kept),
+            1
+        );
     }
 
     // ================= fixtures =================
