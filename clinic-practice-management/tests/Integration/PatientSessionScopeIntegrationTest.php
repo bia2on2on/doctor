@@ -77,6 +77,7 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         wp_set_current_user(0);
         ScopeContext::clear();
         App::patient_session_scope()->reset_in_process_state();
+        unset($_COOKIE[LOGGED_IN_COOKIE]);
         App::resetScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
@@ -412,6 +413,107 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
     // =================================================================
     // Helpers
     // =================================================================
+
+    // =================================================================
+    // Cookie-only resolution: the real auth cookie is the only binding.
+    // No in-process token is injected, so PatientSessionScope must validate
+    // the logged_in cookie through WordPress core to see the session at all.
+    // =================================================================
+
+    public function testCookieOnlyStampedMarkerResolvesMultiLinkUser(): void
+    {
+        $this->buildTwoClinicFixture();
+        $scope = App::patient_session_scope();
+        $uid   = $this->makeUser('m5_cookie_multi', RolesAndCapabilities::ROLE_PATIENT);
+        $this->linkPatient($this->clinicA, $this->insertPatient($this->clinicA, 'CKA'), $uid);
+        $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'CKB'), $uid);
+
+        $this->bindCookieOnlySession($uid, $this->clinicB);
+
+        self::assertSame($this->clinicB, $scope->stamped_session_clinic_id($uid), 'marker read through the cookie-validated session.');
+        self::assertSame($this->clinicB, $scope->require_clinic_for_read($uid));
+        self::assertSame($this->clinicB, $scope->require_clinic_matching($uid, $this->clinicB));
+        $this->assertScopeRequired(fn () => $scope->require_clinic_matching($uid, $this->clinicA));
+    }
+
+    public function testCookieOnlyWithoutMarkerMultiLinkFailsClosed(): void
+    {
+        $this->buildTwoClinicFixture();
+        $scope = App::patient_session_scope();
+        $uid   = $this->makeUser('m5_cookie_unmarked', RolesAndCapabilities::ROLE_PATIENT);
+        $this->linkPatient($this->clinicA, $this->insertPatient($this->clinicA, 'UMA'), $uid);
+        $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'UMB'), $uid);
+
+        $this->bindCookieOnlySession($uid, null);
+
+        self::assertNull($scope->stamped_session_clinic_id($uid));
+        self::assertNull($scope->resolve_clinic_id($uid));
+        $this->assertScopeRequired(static fn () => $scope->require_clinic_for_read($uid));
+        $this->assertScopeRequired(static fn () => $scope->require_clinic_for_write($uid));
+    }
+
+    public function testCookieOnlyStaleMarkerFailsClosedAfterLinkRemoved(): void
+    {
+        $this->buildTwoClinicFixture();
+        $scope = App::patient_session_scope();
+        $uid   = $this->makeUser('m5_cookie_stale', RolesAndCapabilities::ROLE_PATIENT);
+        $this->linkPatient($this->clinicA, $this->insertPatient($this->clinicA, 'STA'), $uid);
+        $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'STB'), $uid);
+
+        // Session stamped for Clinic A while the user is linked to both Clinics.
+        $this->bindCookieOnlySession($uid, $this->clinicA);
+        self::assertSame($this->clinicA, $scope->require_clinic_for_read($uid), 'precondition: marker current.');
+
+        // Clinic A link is removed; only Clinic B remains live.
+        App::db()->execute(
+            'DELETE FROM ' . App::db()->table('cpms_patient_user_links') . ' WHERE clinic_id = %d AND wp_user_id = %d',
+            [$this->clinicA, $uid]
+        );
+
+        // The raw marker is still on the session, but it no longer grants authority.
+        self::assertSame($this->clinicA, $scope->stamped_session_clinic_id($uid));
+        self::assertNull($scope->resolve_clinic_id($uid));
+        $this->assertScopeRequired(static fn () => $scope->require_clinic_for_read($uid));
+        $this->assertScopeRequired(static fn () => $scope->require_clinic_for_write($uid));
+        // Endpoint level (M6 inbox): fails closed rather than reading Clinic B silently.
+        $this->assertScopeRequired(static fn () => App::notificationService()->since($uid, 0));
+    }
+
+    public function testCookieOnlyNewPatientWithoutLinksKeepsStampedClinic(): void
+    {
+        $this->buildTwoClinicFixture();
+        $scope = App::patient_session_scope();
+        // OTP-verified new patient: stamped for Clinic A, no link yet.
+        $uid = $this->makeUser('m5_cookie_newpatient', RolesAndCapabilities::ROLE_PATIENT);
+
+        $this->bindCookieOnlySession($uid, $this->clinicA);
+
+        self::assertSame($this->clinicA, $scope->resolve_clinic_id($uid));
+        self::assertSame($this->clinicA, $scope->require_clinic_for_read($uid));
+        self::assertSame($this->clinicA, $scope->require_clinic_for_write($uid));
+    }
+
+    /**
+     * Bind a session through a real logged_in cookie only. The in-process map
+     * is cleared first, so nothing but WordPress core cookie validation can
+     * resolve the session.
+     */
+    private function bindCookieOnlySession(int $uid, ?int $stampClinicId): void
+    {
+        App::patient_session_scope()->reset_in_process_state();
+
+        $manager = \WP_Session_Tokens::get_instance($uid);
+        $token   = $manager->create(time() + DAY_IN_SECONDS);
+        if (null !== $stampClinicId) {
+            $session = $manager->get($token);
+            self::assertIsArray($session);
+            $session = array_merge($session, App::patient_session_scope()->session_marker_for($uid, $stampClinicId));
+            $manager->update($token, $session);
+        }
+
+        $_COOKIE[LOGGED_IN_COOKIE] = wp_generate_auth_cookie($uid, time() + DAY_IN_SECONDS, 'logged_in', $token);
+        self::assertSame($uid, (int) wp_validate_auth_cookie('', 'logged_in'), 'fixture: logged_in cookie validates.');
+    }
 
     private function buildTwoClinicFixture(): void
     {

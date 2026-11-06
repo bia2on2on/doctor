@@ -161,4 +161,76 @@ final class PatientSessionScopeUnitTest extends TestCase
             self::assertSame($captured[0], $tuple);
         }
     }
+
+    public function testStampedMarkerIsRevalidatedAgainstLiveLinks(): void
+    {
+        // Every session is stamped for Clinic 202; the snapshot is the live link
+        // set taken at stamp time, and $clinicsByUser is the live link set now.
+        $sessions = [
+            30 => ['expiration' => 9999999999, PatientSessionScope::SESSION_CLINIC_KEY => 202, PatientSessionScope::SESSION_LINKS_KEY => [101, 202]],
+            31 => ['expiration' => 9999999999, PatientSessionScope::SESSION_CLINIC_KEY => 202, PatientSessionScope::SESSION_LINKS_KEY => []],
+            32 => ['expiration' => 9999999999, PatientSessionScope::SESSION_CLINIC_KEY => 202, PatientSessionScope::SESSION_LINKS_KEY => [202]],
+            33 => ['expiration' => 9999999999, PatientSessionScope::SESSION_CLINIC_KEY => 202, PatientSessionScope::SESSION_LINKS_KEY => [101]],
+            34 => ['expiration' => 9999999999, PatientSessionScope::SESSION_CLINIC_KEY => 202],
+        ];
+        // 30: link to 202 was removed after stamping (snapshot [101,202], now [101]) => stale.
+        // 31: no live link at stamp or now (OTP-verified new patient) => marker stands.
+        // 32: live link in 202 => marker stands.
+        // 33: linked only to 101, verified by OTP at 202, link set unchanged => marker stands.
+        // 34: legacy marker with no snapshot, Clinic 202 not live => stale.
+        $clinicsByUser = [
+            30 => [101],
+            31 => [],
+            32 => [202],
+            33 => [101],
+            34 => [101],
+        ];
+
+        $scope = new PatientSessionScope(
+            null,
+            static fn (int $uid, ?string $token): ?array => $sessions[$uid] ?? null,
+            static fn (int $uid): array => $clinicsByUser[$uid] ?? [],
+            static fn (): bool => false
+        );
+
+        // Stale: the raw marker is still readable, but it grants no authority.
+        self::assertSame(202, $scope->stamped_session_clinic_id(30));
+        self::assertNull($scope->resolve_clinic_id(30));
+        $this->assertScopeRequiredFor(static fn () => $scope->require_clinic_for_read(30));
+        $this->assertScopeRequiredFor(static fn () => $scope->require_clinic_for_write(30));
+        $this->assertScopeRequiredFor(static fn () => $scope->require_clinic_matching(30, 202));
+        // No silent fallback to the remaining live link 101.
+        $this->assertScopeRequiredFor(static fn () => $scope->require_clinic_matching(30, 101));
+
+        // New patient with no live links: the stamped Clinic is the session Clinic.
+        self::assertSame(202, $scope->resolve_clinic_id(31));
+        self::assertSame(202, $scope->require_clinic_for_read(31));
+        self::assertSame(202, $scope->require_clinic_for_write(31));
+        self::assertSame(202, $scope->require_clinic_matching(31, 202));
+
+        // Current marker: unchanged behaviour.
+        self::assertSame(202, $scope->resolve_clinic_id(32));
+        self::assertSame(202, $scope->require_clinic_for_read(32));
+        self::assertSame(202, $scope->require_clinic_matching(32, 202));
+
+        // Linked only elsewhere, verified by OTP at 202, link set unchanged: accepted
+        // (same behaviour as before the live check, so this flow is not broken).
+        self::assertSame(202, $scope->resolve_clinic_id(33));
+        self::assertSame(202, $scope->require_clinic_for_read(33));
+        self::assertSame(202, $scope->require_clinic_matching(33, 202));
+
+        // Legacy marker without a snapshot and not a live link: fail closed.
+        $this->assertScopeRequiredFor(static fn () => $scope->require_clinic_for_read(34));
+    }
+
+    private function assertScopeRequiredFor(callable $call): void
+    {
+        try {
+            $call();
+            self::fail('Expected CLINIC_SCOPE_REQUIRED.');
+        } catch (ScopeRequiredException $e) {
+            self::assertSame('CLINIC_SCOPE_REQUIRED', $e->apiCode());
+            self::assertSame(400, $e->httpStatus());
+        }
+    }
 }

@@ -21,6 +21,14 @@ final class PatientSessionScope {
 
     public const SESSION_CLINIC_KEY = 'cpms_clinic_id';
 
+    /**
+     * Snapshot of the live linked Clinic IDs taken when the marker was stamped.
+     * A stamped marker that is not itself a live link is still current while the
+     * live link set is unchanged (e.g. a user with links only in another Clinic who
+     * verifies by OTP here). Any change to the link set makes the marker stale.
+     */
+    public const SESSION_LINKS_KEY = 'cpms_clinic_links';
+
     public const SCOPE_REQUIRED_MESSAGE = 'برای ادامه در این مرکز، احراز هویت با کد یک‌بارمصرف الزامی است';
 
     private ?int $pending_otp_user_id = null;
@@ -208,7 +216,26 @@ final class PatientSessionScope {
      * or `null` when the request has no token or the token carries no marker.
      */
     public function stamped_session_clinic_id( int $wp_user_id ): ?int {
-        $session = $this->active_session_for_user( $wp_user_id );
+        return $this->clinic_id_from_session( $this->active_session_for_user( $wp_user_id ) );
+    }
+
+    /**
+     * Session data that marks `$clinic_id` as the session Clinic for `$wp_user_id`,
+     * including the live link snapshot used to revalidate the marker later.
+     *
+     * @return array<string, mixed>
+     */
+    public function session_marker_for( int $wp_user_id, int $clinic_id ): array {
+        return [
+            self::SESSION_CLINIC_KEY => $clinic_id,
+            self::SESSION_LINKS_KEY  => $this->distinct_linked_clinic_ids( $wp_user_id ),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed>|null $session
+     */
+    private function clinic_id_from_session( ?array $session ): ?int {
         if ( ! is_array( $session ) ) {
             return null;
         }
@@ -226,7 +253,8 @@ final class PatientSessionScope {
 
     /**
      * Non-throwing clinic resolution for `$wp_user_id`:
-     *  - stamped `cpms_clinic_id` on active session => that clinic ID;
+     *  - stamped `cpms_clinic_id` that is still current => that clinic ID;
+     *  - stamped marker that is stale => `null` (see `stamped_marker_is_current()`);
      *  - no marker + 1 distinct linked clinic => that clinic ID;
      *  - no marker + 0 or >1 distinct linked clinics => `null`.
      */
@@ -235,9 +263,10 @@ final class PatientSessionScope {
             return null;
         }
 
-        $stamped = $this->stamped_session_clinic_id( $wp_user_id );
+        $session = $this->active_session_for_user( $wp_user_id );
+        $stamped = $this->clinic_id_from_session( $session );
         if ( null !== $stamped ) {
-            return $stamped;
+            return $this->stamped_marker_is_current( $wp_user_id, $stamped, $session ) ? $stamped : null;
         }
 
         $clinic_ids = $this->distinct_linked_clinic_ids( $wp_user_id );
@@ -250,22 +279,29 @@ final class PatientSessionScope {
 
     /**
      * Clinic resolution for patient READ endpoints:
-     *  - stamped `cpms_clinic_id` => `int` clinic ID;
+     *  - stamped `cpms_clinic_id` that is still current => `int` clinic ID;
+     *  - stamped marker that is stale => throws `ScopeRequiredException`;
      *  - no marker + 1 distinct linked clinic => `int` clinic ID;
      *  - no marker + 0 links => `null` (caller returns empty read result);
      *  - no marker + >1 distinct linked clinics => throws `ScopeRequiredException`
      *    (`CLINIC_SCOPE_REQUIRED`, HTTP 400, no clinic names).
      *
-     * @throws ScopeRequiredException When a no-marker session spans >1 clinics.
+     * @throws ScopeRequiredException When a no-marker session spans >1 clinics,
+     *                                or a stamped marker is stale.
      */
     public function require_clinic_for_read( int $wp_user_id ): ?int {
         if ( $wp_user_id <= 0 ) {
             return null;
         }
 
-        $stamped = $this->stamped_session_clinic_id( $wp_user_id );
+        $session = $this->active_session_for_user( $wp_user_id );
+        $stamped = $this->clinic_id_from_session( $session );
         if ( null !== $stamped ) {
-            return $stamped;
+            if ( $this->stamped_marker_is_current( $wp_user_id, $stamped, $session ) ) {
+                return $stamped;
+            }
+
+            throw $this->scope_required_exception();
         }
 
         $clinic_ids = $this->distinct_linked_clinic_ids( $wp_user_id );
@@ -319,6 +355,53 @@ final class PatientSessionScope {
         }
 
         return $resolved;
+    }
+
+    /**
+     * A stamped marker is current when:
+     *  - the user has a live link in the marker's Clinic; or
+     *  - the live link set is unchanged since the marker was stamped (the OTP
+     *    decision for that Clinic was made against this same link set, e.g. a
+     *    new patient or a user linked only elsewhere verifying here).
+     *
+     * Otherwise the marker is stale (a link was removed or added since stamping)
+     * and grants no authority; the caller fails closed and the user re-verifies.
+     * A marker with no snapshot (stamped before this check existed) is stale
+     * unless the marker Clinic is a live link.
+     *
+     * @param array<string, mixed>|null $session
+     */
+    private function stamped_marker_is_current( int $wp_user_id, int $clinic_id, ?array $session ): bool {
+        $linked_clinic_ids = $this->distinct_linked_clinic_ids( $wp_user_id );
+        if ( in_array( $clinic_id, $linked_clinic_ids, true ) ) {
+            return true;
+        }
+
+        $snapshot = $this->link_snapshot_from_session( $session );
+
+        return null !== $snapshot && $snapshot === $linked_clinic_ids;
+    }
+
+    /**
+     * @param array<string, mixed>|null $session
+     * @return list<int>|null
+     */
+    private function link_snapshot_from_session( ?array $session ): ?array {
+        $raw = is_array( $session ) ? ( $session[ self::SESSION_LINKS_KEY ] ?? null ) : null;
+        if ( ! is_array( $raw ) ) {
+            return null;
+        }
+
+        $ids = [];
+        foreach ( $raw as $cid ) {
+            $cid = (int) $cid;
+            if ( $cid > 0 && ! in_array( $cid, $ids, true ) ) {
+                $ids[] = $cid;
+            }
+        }
+        sort( $ids );
+
+        return $ids;
     }
 
     /**
@@ -496,7 +579,7 @@ final class PatientSessionScope {
             return;
         }
 
-        $session[ self::SESSION_CLINIC_KEY ] = $this->pending_otp_clinic_id;
+        $session = array_merge( $session, $this->session_marker_for( $resolved_user_id, $this->pending_otp_clinic_id ) );
         $manager->update( $resolved_token, $session );
     }
 }
