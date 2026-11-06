@@ -167,6 +167,8 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
         cpms_test_seed_patient_session($uid, $this->clinicB);
         self::assertSame($this->clinicB, $scope->stamped_session_clinic_id($uid));
 
+        // Logout: the browser drops the auth cookie, so the request no longer carries it.
+        unset($_COOKIE[LOGGED_IN_COOKIE]);
         do_action('clear_auth_cookie');
 
         self::assertNull($scope->stamped_session_clinic_id($uid), 'clear_auth_cookie must drop in-process session authority.');
