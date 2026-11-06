@@ -1557,7 +1557,19 @@ jobs:
   # ============================================================
   responsive:
     name: Responsive smoke (Chromium ×4 viewport)
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin, see
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    # This is the lane that asks the shared Playwright action for ALL THREE
+    # browsers (chromium firefox webkit). On the ubuntu-latest image that moved
+    # to Ubuntu 26.04 it failed closed with "cached browser binaries did not
+    # launch on this runner" and then "browsers still do not launch after one
+    # bounded dependency provisioning". Two changes address the cause: the
+    # browser cache key now includes the runner OS *release*, so a cache written
+    # on another Ubuntu release cannot be restored, and the dependency proof
+    # now runs for the whole requested browser set before the launch. The pin
+    # keeps the lane on the release where the three-browser set was last proven
+    # until the new-key/deps evidence is green. Job name and steps unchanged.
+    runs-on: ubuntu-24.04
     needs: release-artifact
     # Measured across 48 completed runs: max 12.8m, median 5.3m — the second
     # heaviest job in the repository and the one whose spread is widest (real

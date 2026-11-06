@@ -114,22 +114,33 @@ install-first path was removed again.
   later release exists), so the pin freezes the browser revisions the suites
   were last proven on instead of drifting per release.
 * Cache: `~/.cache/ms-playwright`, exact key
-  `pw-browsers-v2-<os>-<arch>-<version>-<browser-set>`, no `restore-keys`, so a
-  cache can never cross versions or browser sets (v2 marks the switch to
-  explicit restore/save and the launch-verified dependency path). Restore and save are explicit
-  steps, and the save runs only on a miss and only after the install/launch
-  verification in the same run succeeded.
+  `pw-browsers-v3-<os>-<os-release>-<arch>-<version>-<browser-set>`, no
+  `restore-keys`, so a cache can never cross versions, browser sets or runner
+  OS *releases*. v2 marked the switch to explicit restore/save and the
+  launch-verified dependency path; v3 adds the runner OS release
+  (`ID-VERSION_ID` from `/etc/os-release`, not the `ubuntu-latest` label and not
+  the coarse `runner.os`), because the browser binaries link against the runner
+  image's shared libraries and an entry written on one Ubuntu release must not
+  be restored on another. The key step fails closed when the release cannot be
+  determined. Restore and save are explicit steps, and the save runs only on a
+  miss and only after the install/launch verification in the same run
+  succeeded.
   Microsoft's CI documentation warns that restoring browsers can cost as much as
   downloading them (`microsoft/playwright` `docs/src/ci.md` § "Caching
   browsers"); that is why the effect is measured (§ 4) rather than assumed.
 * System dependencies are **asked for, not assumed**: `playwright
   install-deps --dry-run <browsers>` simulates the apt install for exactly this
   browser set and exits non-zero when any required package would still have to
-  be installed. When it exits 0 nothing is installed at all; otherwise only the
-  reported package names are installed, with the bounded options above, and the
-  answer is re-verified before the suite runs. `install --with-deps` is not used
-  anywhere, so the dependency set is never re-installed when it is already
-  satisfied and apt never repeats a full index refetch on a happy path.
+  be installed — for the **complete** requested browser set, on the cold path
+  **and** on a cache hit. When it exits 0 nothing is installed at all; otherwise
+  only the reported package names are installed, with the bounded options
+  above, and the answer is re-verified before the launch. If that bounded apt
+  install of the parsed list still fails (a parsed name can be the pre-`t64`
+  spelling on a newer Ubuntu release), the same browser set is handed once to
+  `playwright install-deps` — Playwright's own pinned mapping — before the step
+  fails closed. `install --with-deps` is still not used anywhere, so the
+  dependency set is never re-installed when it is already satisfied and apt
+  never repeats a full index refetch on a happy path.
 * Every provisioned engine is launched once (`verify_launch.py`), so a missing
   system library fails at provisioning time with a clear message instead of
   halfway through an acceptance journey.
@@ -171,7 +182,19 @@ same `matrix.source == 'wordpress_org'` condition.
 Numbers are reported as measured, including any lane where the change is
 neutral or slower.
 
-### 4.1 Measured result (three full matrices on the delivered code)
+### 4.1 Measured result — **HISTORICAL v2 EVIDENCE** (three full matrices on the v2 cache key)
+
+> **Historical, not current.** Everything in §4.1 was measured with the
+> `pw-browsers-v2-<os>-<arch>-<version>-<browser-set>` cache key, i.e. a key that
+> did **not** distinguish runner OS releases. Those numbers describe v2
+> behaviour and must not be quoted as the performance of the current v3 action.
+> Two things changed since: the key gained the runner OS release (`v3`, §2.3), and
+> the dependency proof now runs on cache hits as well as cold misses and always
+> covers the full requested browser set. Consequence measured on head
+> `fb63a977`: with v3 every lane whose key had no saved entry provisioned
+> dependencies (Responsive 38 s of dependency work; the demo lane's browser step
+> hit once its own key had been saved). A v3 re-measurement is **NOT RUN**.
+> Recorded in `docs/decisions/2026-11-06-ci-environment-repair.md` §8.3.
 
 Three complete matrices of all eight workflows were measured; between them the
 action code is identical (the last head differs only by a no-op commit):

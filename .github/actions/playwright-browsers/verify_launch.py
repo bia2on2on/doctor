@@ -2,11 +2,13 @@
 """Prove that the requested Playwright browsers actually launch on this runner.
 
 Why this exists: a warm browser-binary cache skips the download, but it says
-nothing about the *system* libraries those binaries need. Rather than running
-`playwright install --with-deps` (an apt operation against every configured apt
-source) on every job, the composite action launches each requested browser
-headless against a blank page. A failure is evidence that the dependency set is
-genuinely missing, and only then does the action run one bounded `install-deps`.
+nothing about the *system* libraries those binaries need. The composite action
+therefore (a) asks `playwright install-deps --dry-run` for the whole requested
+browser set and provisions exactly that list with bounded apt options, and
+(b) launches every requested browser headless against a blank page here. This
+launch is the independent second signal: it proves the binaries really run on
+this runner instead of trusting the package list. Every requested browser is
+launched; the first failure is reported verbatim and the run fails.
 
 Exit code 0 = every requested browser launched and closed cleanly.
 Exit code 1 = at least one browser failed (reason printed, never swallowed).

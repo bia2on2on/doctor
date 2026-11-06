@@ -1464,6 +1464,88 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         self.assertIn("unexpected WordPress-discoverable plugin headers", build)
         self.assertIn("CPMS Embedded Core:", build)
 
+    def test_every_runner_pin_records_an_expiry_and_the_cache_key_separates_os_releases(self):
+        """Temporary `ubuntu-24.04` pins must say when they expire, and the browser
+        cache key must be able to tell two runner OS *releases* apart.
+
+        Why: a pin that nobody revisits silently becomes permanent, and a browser
+        cache keyed on `runner.os` alone ("Linux") lets a binary linked against one
+        Ubuntu release be restored on another. Both are statement-level checks with
+        no clock in them: the test reads that an expiry date is *recorded* next to
+        the pin and that the key contains the OS version and the architecture. It
+        deliberately does not compare against today's date, so it cannot start
+        failing because time passed.
+        """
+        # A pin is any `runs-on:` value that NAMES ubuntu-24.04, whether literally
+        # or inside a conditional expression (the seven coexistence lanes are
+        # pinned through `${{ inputs.persian_coexistence && 'ubuntu-24.04' || ... }}`
+        # in real-wp-acceptance.yml, which a literal-line match would miss).
+        expiry = re.compile(r"EXPIRY\s+\d{4}-\d{2}-\d{2}")
+        pinned_locations = {}
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for index, line in enumerate(lines):
+                stripped = line.strip()
+                if not stripped.startswith("runs-on:"):
+                    continue
+                if "ubuntu-24.04" not in stripped:
+                    continue
+                # The expiry is recorded in the comment block belonging to this
+                # pin: the pin's own line or the contiguous comment lines above it.
+                block = [line]
+                cursor = index - 1
+                while cursor >= 0 and lines[cursor].strip().startswith("#"):
+                    block.insert(0, lines[cursor])
+                    cursor -= 1
+                label = f"{path.name}:{index + 1}"
+                pinned_locations[label] = stripped
+                self.assertRegex(
+                    "\n".join(block),
+                    expiry,
+                    f"{label}: a temporary runner pin must carry an "
+                    f"'EXPIRY YYYY-MM-DD' comment next to the runs-on expression "
+                    f"(found: {block[:1]})",
+                )
+        self.assertIn(
+            "disposable-demo-installer.yml",
+            {label.split(":")[0] for label in pinned_locations},
+            "the demo lane's experimental runner pin is not in place",
+        )
+        # The conditional pin must be discovered, not silently skipped: without
+        # it this test would pass while the seven coexistence lanes stayed
+        # unpinned in the place it cannot see.
+        conditional = [
+            (label, value)
+            for label, value in pinned_locations.items()
+            if "inputs." in value and "ubuntu-24.04" in value
+        ]
+        self.assertEqual(
+            1,
+            len(conditional),
+            "the conditional coexistence pin was not found exactly once: "
+            f"{sorted(pinned_locations)}",
+        )
+        self.assertIn("real-wp-acceptance.yml", conditional[0][0])
+        self.assertIn("persian_coexistence", conditional[0][1])
+
+        action = (ROOT / ".github" / "actions" / "playwright-browsers" / "action.yml").read_text(
+            encoding="utf-8"
+        )
+        # The key itself must carry an OS-release token and the architecture, both
+        # fed from the runner rather than hard-coded, so two Ubuntu releases never
+        # share an entry.
+        self.assertRegex(
+            action,
+            r'(?m)^\s*key="pw-browsers-v\d+-\$\{PW_OS\}-\$\{os_release_id\}-\$\{PW_ARCH\}-',
+            "the browser cache key must include the runner OS release and the architecture",
+        )
+        self.assertIn("os_release_id=", action)
+        self.assertIn("/etc/os-release", action)
+        # Fail closed: an undeterminable release must not fall back to runner.os.
+        self.assertIn(
+            "refusing to build a cache key that cannot distinguish OS releases", action
+        )
+
     def test_auto_sync_opens_a_reviewable_pr_and_never_merges(self):
         text = workflow("companion-sync.yml")
         self.assertIn("gh pr create", text)
