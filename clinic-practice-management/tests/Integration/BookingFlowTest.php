@@ -23,6 +23,7 @@ use WP_UnitTestCase;
  */
 final class BookingFlowTest extends WP_UnitTestCase
 {
+    private int $clinicId = 0;
     private int $clinicianId;
     private int $patientUserId;
     private int $otherUserId;
@@ -36,6 +37,7 @@ final class BookingFlowTest extends WP_UnitTestCase
     {
         parent::setUp();
         App::migrations()->migrate();
+        $this->clinicId = $this->migratedDefaultClinicId();
         \ClinicCore\Settings\Settings::flushCache();
         App::settings()->set('booking.min_lead_hours', 2);
         App::settings()->set('booking.max_future_days', 60);
@@ -49,7 +51,8 @@ final class BookingFlowTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
                      (clinic_id, full_name, is_active, created_at, updated_at)
-                 VALUES (1, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
                 'Dr Test',
                 $now,
                 $now
@@ -62,7 +65,8 @@ final class BookingFlowTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
                      (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
-                 VALUES (1, %s, "Test", "Patient", %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, "Test", "Patient", %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
                 'MR-TEST-0001',
                 '09120000001',
                 $now,
@@ -76,7 +80,8 @@ final class BookingFlowTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
                      (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
-                 VALUES (1, %d, %d, %s, 1, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %d, %s, 1, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
                 $patientId,
                 $this->patientUserId,
                 '09120000001',
@@ -86,6 +91,7 @@ final class BookingFlowTest extends WP_UnitTestCase
 
         // کاربر دوم (بدون Patient — برای تست Auto-Creation)
         $this->otherUserId = (int) wp_create_user('patient_2', 'pass-12345', '09120000002@otp.cpms.local', ['role' => 'cpms_patient']);
+        cpms_test_seed_patient_session($this->otherUserId, $this->clinicId);
     }
 
     protected function tearDown(): void
@@ -98,6 +104,25 @@ final class BookingFlowTest extends WP_UnitTestCase
     /**
      * @return array{id: int, date: string, time: string, location_id: int}
      */
+
+    /**
+     * Resolve the Clinic created by the initial migration (seed slug `default`)
+     * so every fixture references the suite's real Clinic ID.
+     */
+    private function migratedDefaultClinicId(): int
+    {
+        global $wpdb;
+        $id = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE slug = %s LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'default'
+            )
+        );
+        $this->assertGreaterThan(0, $id, 'The migrated default Clinic must exist.');
+
+        return $id;
+    }
+
     private function makeSlot(int $dayOffset, string $time, int $capacity = 1, int $duration = 20, ?int $locationId = null): array
     {
         global $wpdb;
@@ -106,7 +131,7 @@ final class BookingFlowTest extends WP_UnitTestCase
                 $wpdb->prepare(
                     'SELECT id FROM ' . $wpdb->prefix . 'cpms_locations'
                     . ' WHERE clinic_id = %d AND is_primary = 1 LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                    1
+                    $this->clinicId
                 )
             );
         }
@@ -117,14 +142,15 @@ final class BookingFlowTest extends WP_UnitTestCase
                 $locationId
             )
         );
-        $this->assertSame(1, $locationClinicId, 'The booking Slot Location must belong to Clinic 1.');
+        $this->assertSame($this->clinicId, $locationClinicId, 'The booking Slot Location must belong to the suite Clinic.');
         $date = gmdate('Y-m-d', time() + $dayOffset * 86400);
         $now = App::db()->nowUtcSql();
         $wpdb->query(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
                      (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (1, %d, %d, %s, %s, %d, %d, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %d, %s, %s, %d, %d, 0, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
                 $locationId,
                 $this->clinicianId,
                 $date,
@@ -147,7 +173,7 @@ final class BookingFlowTest extends WP_UnitTestCase
         $inserted = $wpdb->insert(
             $wpdb->prefix . 'cpms_locations',
             [
-                'clinic_id' => 1,
+                'clinic_id' => $this->clinicId,
                 'name' => 'Booking lifecycle ' . bin2hex(random_bytes(3)),
                 'slug' => 'booking-lifecycle-' . bin2hex(random_bytes(4)),
                 'timezone' => 'Asia/Tehran',
@@ -171,7 +197,7 @@ final class BookingFlowTest extends WP_UnitTestCase
         $changed = $wpdb->update(
             $wpdb->prefix . 'cpms_locations',
             ['is_active' => 0, 'updated_at' => App::db()->nowUtcSql()],
-            ['id' => $locationId, 'clinic_id' => 1],
+            ['id' => $locationId, 'clinic_id' => $this->clinicId],
             ['%d', '%s'],
             ['%d', '%d']
         );
@@ -442,7 +468,7 @@ final class BookingFlowTest extends WP_UnitTestCase
             1,
             (int) App::db()->fetchValue(
                 "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d AND patient_id = %d AND clinic_id = %d",
-                [ 'PATIENT_IDENTITY_LINKED', $identityId, (int) $patient['id'], 1 ]
+                [ 'PATIENT_IDENTITY_LINKED', $identityId, (int) $patient['id'], $this->clinicId ]
             ),
             'production BookingService::confirm persists the identity linkage event'
         );
@@ -453,7 +479,7 @@ final class BookingFlowTest extends WP_UnitTestCase
         global $wpdb;
         $organizationId = (int) App::db()->fetchValue(
             'SELECT organization_id FROM ' . App::db()->table( 'cpms_clinics' ) . ' WHERE id = %d',
-            [ 1 ]
+            [ $this->clinicId ]
         );
         $identityService = App::patient_identity_service();
         $identityId = $identityService->create_identity( $organizationId );
@@ -487,7 +513,7 @@ final class BookingFlowTest extends WP_UnitTestCase
             1,
             (int) App::db()->fetchValue(
                 "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d AND patient_id = %d AND clinic_id = %d",
-                [ 'PATIENT_IDENTITY_LINKED', $identityId, (int) $patient['id'], 1 ]
+                [ 'PATIENT_IDENTITY_LINKED', $identityId, (int) $patient['id'], $this->clinicId ]
             ),
             'verified-reuse path through BookingService::confirm must audit the new patient edge'
         );

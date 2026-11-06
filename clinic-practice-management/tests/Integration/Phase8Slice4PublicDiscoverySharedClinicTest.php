@@ -581,6 +581,7 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         ]);
         self::assertGreaterThan(0, $wpUserId, 'Fixture WordPress user must be created.');
         $this->patientUserId = $wpUserId;
+        cpms_test_seed_patient_session($this->patientUserId, $this->clinicB);
 
         // Shared clinician: home Clinic A, ACTIVE membership in Clinic B.
 
