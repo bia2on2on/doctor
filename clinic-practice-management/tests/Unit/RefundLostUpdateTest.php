@@ -388,17 +388,58 @@ namespace ClinicCore\Tests\Unit {
             $this->assertSame(40.0, $this->invoicePaid(), 'invoice must stay unchanged after rejected refund');
         }
 
-        public function testRetryOfSameRefundDoesNotDoubleCount(): void
+        /**
+         * What this actually proves: a second refund of the same amount is refused
+         * because it no longer fits under the capacity ceiling (60 + 60 > 100), not
+         * because the request is recognised as a retry. There is no refund
+         * idempotency key, so a retry that still fits WOULD be applied twice.
+         * See the debts appended to docs/agent-log.md for this PR.
+         */
+        public function testRepeatRefundExceedingRemainingCapacityIsRejectedNotRecognisedAsRetry(): void
         {
             $this->service->refundPayment(self::ACTOR, self::PAYMENT_ID, 'r1', ['amount' => 60]);
             try {
                 $this->service->refundPayment(self::ACTOR, self::PAYMENT_ID, 'r1-retry', ['amount' => 60]);
-                $this->fail('retry of the same refund must not be applied twice');
+                $this->fail('a second refund of 60 on a 100 payment must be rejected');
             } catch (FinanceException $e) {
                 $this->assertSame('CLINIC_VALIDATION_FAILED', $e->errorCode);
             }
             $this->assertSame(60.0, $this->refundedAmount());
             $this->assertSame(40.0, $this->invoicePaid());
+        }
+
+        public function testRefundOfZeroOrNegativeAmountIsRejectedWithNoStateChange(): void
+        {
+            foreach ([0, -1, -50] as $bad) {
+                try {
+                    $this->service->refundPayment(self::ACTOR, self::PAYMENT_ID, 'bad', ['amount' => $bad]);
+                    $this->fail('refund amount <= 0 must be rejected: ' . $bad);
+                } catch (FinanceException $e) {
+                    $this->assertSame('CLINIC_VALIDATION_FAILED', $e->errorCode);
+                    $this->assertSame(422, $e->httpStatus);
+                }
+                $this->assertSame(0.0, $this->refundedAmount(), 'no state change after rejected amount ' . $bad);
+                $this->assertSame(100.0, $this->invoicePaid(), 'invoice unchanged after rejected amount ' . $bad);
+            }
+            $this->assertSame('captured', $this->fake->tables['wp_cpms_payments'][0]['status']);
+        }
+
+        public function testRefundOnNonCapturedPaymentIsRejectedWith409AndNothingChanged(): void
+        {
+            $this->fake->tables['wp_cpms_payments'][0]['status'] = 'voided';
+
+            try {
+                $this->service->refundPayment(self::ACTOR, self::PAYMENT_ID, 'r1', ['amount' => 10]);
+                $this->fail('refund on a non-captured payment must be rejected');
+            } catch (FinanceException $e) {
+                $this->assertSame('CLINIC_INVALID_TRANSITION', $e->errorCode);
+                $this->assertSame(409, $e->httpStatus);
+                $this->assertSame('voided', $e->data['status'] ?? null);
+            }
+            $this->assertSame(0.0, $this->refundedAmount(), 'no refund recorded');
+            $this->assertSame('voided', $this->fake->tables['wp_cpms_payments'][0]['status'], 'payment status unchanged');
+            $this->assertSame(100.0, $this->invoicePaid(), 'invoice unchanged');
+            $this->assertCount(0, $this->fake->tables['wp_cpms_audit_logs'] ?? [], 'no audit row written');
         }
 
         /**
