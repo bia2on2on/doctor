@@ -73,35 +73,54 @@ final class HoldsExpireHandler
      * واقعی DB» را با «صفر ردیفِ اثرگرفته» اشتباه نمی‌گیرد.
      *
      * چرا لازم است: `CpmsDb::execute()` در حالت soft هر خطای SQL را به `0`
-     * تبدیل می‌کند (فقط در Strict mode Exception می‌دهد). اگر خطا را همان
-     * «صفر ردیف» ببینیم، یک Hold دست‌نخورده «منقضی» شمرده نمی‌شود ولی
-     * آزادسازیِ ظرفیت و شمارشِ `$freed` ممکن است بی‌صدا جلو برود یا شکست
-     * پنهان بماند. اینجا خطا → Exception → `transactional()` همان Hold را
-     * ROLLBACK می‌کند، `$freed` افزایش نمی‌یابد و Hold در وضعیت active
-     * می‌ماند تا اجرای بعدی دوباره تلاش کند.
+     * تبدیل می‌کند (فقط در Strict mode Exception می‌دهد). صفرِ ناشی از خطا و
+     * صفرِ «هیچ ردیفی مطابقت نکرد» دو واقعیتِ متفاوت‌اند، پس اینجا هیچ‌کدام از
+     * دو سیگنال به‌تنهایی کافی نیست:
      *
-     * چطور خطا از صفر-ردیف تشخیص داده می‌شود، بدون تغییر معنایی برای سایر
-     * فراخوان‌های `CpmsDb`: قرارداد مستند `wpdb` می‌گوید «موفقیت خطای قبلی را
-     * پاک می‌کند» و خودِ `wpdb::query()` پیش از اجرا `flush()` می‌زند که
-     * `last_error` را خالی می‌کند. پس بعد از هر فراخوانی، `last_error` اگر
-     * غیرخالی باشد متعلق به همین عبارت است. تنها مورد مرزی: کوئری‌ای که
-     * `wpdb` پیش از `flush()` رد می‌کند (کوئریِ خالی، یا دادهٔ نامعتبرِ
-     * غیرقابل‌پاک‌سازی) و `last_error` را دست نمی‌زند؛ آن حالت باقی‌ماندهٔ
-     * قدیمی است و محافظه‌کارانه خطا فرض می‌شود (Hold فعال می‌ماند، هرگز
-     * ظرفیتِ اضافه آزاد نمی‌شود). برای هر کوئریِ واقعاً اجراشده رفتار
-     * `execute()` دست‌نخورده است.
+     *   1) مقدار خامِ `$wpdb->query()`: `false` یعنی نوشتن شکست خورد و باید
+     *      خطا شمرده شود، حتی اگر درایور هیچ پیامی ثبت نکرده باشد؛ عدد صحیح
+     *      یعنی تعداد ردیف‌های اثرگرفته.
+     *   2) `$wpdb->last_error`: اگر درایور خطا ثبت کرده باشد، غیرخالی است.
+     *
+     * چرا دور زدنِ `CpmsDb::execute()` اینجا بی‌خطر است و به رفتار سایر
+     * فراخوان‌ها دست نمی‌زند: `execute()` روی همین `wpdb` فقط سه کار می‌کند —
+     * `RequestProfiler::query_start()`، آماده‌سازی با `prepare()`
+     * (`CpmsDb.php:72-79`)، و `query()` سپس profiler/`ensureNoSqlError`. اینجا
+     * `prepare()` خودِ `CpmsDb` استفاده می‌شود و شمارش profiler برای ردیف‌های
+     * خطادار (که `query()` هم آن‌ها را می‌شمارد) از دست می‌رود؛ در بدترین حالت
+     * profiler یک کوئریِ *ناموفق* را کمتر می‌شمارد. هیچ تغییری در `CpmsDb`
+     * یا در معنای `execute()`/`query()` برای فراخوان‌های دیگر انجام نشده است.
+     *
+     * نتیجه در تراکنشِ همان Hold: خطا → Exception → `transactional()` همان
+     * Hold را ROLLBACK می‌کند (شامل وضعیت‌گذاری‌ای که پیش‌تر در همان تراکنش
+     * موفق شده بود)، `$freed` افزایش نمی‌یابد و Hold در وضعیت active می‌ماند
+     * تا اجرای بعدی دوباره تلاش کند. صفرِ موجه (اسلات از قبل روی کف صفر) عدد
+     * صحیح است، پس Hold منقضی می‌شود.
      *
      * @param array<int, mixed> $params
      */
     private function guardedWrite( string $sql, array $params ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- camelCase matches the PSR-4 class convention used across this file.
-        $wpdb    = $this->db->wpdb();
-        $before  = $wpdb->last_error;
-        $changed = $this->db->execute( $sql, $params );
-        $error   = $wpdb->last_error;
-        if ( $error === '' || $error === $before ) {
-            return $changed;
+        // Two independent signals, both required. `$wpdb->query()` returns
+        // `false` on a failed write and an int (affected rows) on success, so
+        // `false` is an error on its own — even when the driver recorded no
+        // message. `last_error` catches the case where wpdb reports an error and
+        // returns `false` without the count changing either.
+        $prepared = $this->db->prepare( $sql, $params );
+        $result   = $this->db->wpdb()->query( $prepared ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- prepared immediately above.
+        $error    = $this->db->wpdb()->last_error;
+
+        if ( $result === false ) {
+            throw new RuntimeException(
+                'holds.expire write failed: ' . ( $error === '' ? 'wpdb returned false without an error message' : $error )
+            );
+        }
+        if ( ! is_int( $result ) ) {
+            throw new RuntimeException( 'holds.expire write returned a non-int result for a write statement' );
+        }
+        if ( $error !== '' ) {
+            throw new RuntimeException( 'holds.expire write failed: ' . $error );
         }
 
-        throw new RuntimeException( 'holds.expire write failed: ' . $error );
+        return $result;
     }
 }

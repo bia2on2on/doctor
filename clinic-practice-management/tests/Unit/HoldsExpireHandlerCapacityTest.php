@@ -394,6 +394,65 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
     }
 
     /**
+     * RED for a last_error-only guard — a failed write that reports NO error
+     * message. `query()` returns false while `last_error` stays empty, which is
+     * exactly the shape a driver takes when it fails without a message. Reading
+     * `last_error` alone misses it and the run would look like a clean no-op.
+     */
+    public function testSilentFailedHoldUpdateAbortsAndLeavesHoldActive(): void
+    {
+        $this->seedSlot(1, 1, 0, 1);
+        $this->seedHold(10, 1, 'active', $this->past());
+        $this->wpdb->writeFault = static function (string $sql): ?string {
+            return strpos($sql, 'cpms_slot_holds') !== false ? 'FALSE_WITHOUT_ERROR' : null;
+        };
+
+        $freed = $this->runExpectingFailure();
+
+        self::assertSame(0, $freed, 'a silent failure must not report a freed hold');
+        self::assertSame(1, $this->heldCount(1), 'capacity must not be released');
+        self::assertSame('active', $this->holdStatus(10), 'the hold stays active for a later retry');
+    }
+
+    /**
+     * Same silent failure, but on the slot-release write, after the hold status
+     * change already succeeded inside this transaction. The whole hold must be
+     * rolled back, so the hold cannot be left expired while the slot still
+     * counts it.
+     */
+    public function testSilentFailedSlotReleaseRollsBackTheHoldStatusChange(): void
+    {
+        $this->seedSlot(1, 1, 0, 1);
+        $this->seedHold(10, 1, 'active', $this->past());
+        $this->wpdb->writeFault = static function (string $sql): ?string {
+            return strpos($sql, 'cpms_schedule_slots') !== false ? 'FALSE_WITHOUT_ERROR' : null;
+        };
+
+        $freed = $this->runExpectingFailure();
+
+        self::assertSame(0, $freed, 'a silent failure must not report a freed hold');
+        self::assertSame(1, $this->heldCount(1), 'the slot counter is exactly what it was');
+        self::assertSame('active', $this->holdStatus(10), 'the status change was rolled back');
+    }
+
+    /**
+     * Guard for the other direction: a legitimate zero-row slot release is an
+     * int (0), never false, so it must NOT be treated as an error. The hold is
+     * still expired and counted once.
+     */
+    public function testLegitimateZeroRowSlotReleaseStillExpiresTheHold(): void
+    {
+        $this->seedSlot(1, 1, 0, 0);
+        $this->seedHold(10, 1, 'active', $this->past());
+
+        $freed = (new HoldsExpireHandler($this->db))([]);
+
+        self::assertSame(1, $freed, 'the hold expires even though the slot was already at zero');
+        self::assertSame(0, $this->heldCount(1), 'the counter stays at the floor of zero');
+        self::assertSame('expired', $this->holdStatus(10), 'the hold is expired');
+    }
+
+    /**
      * Runs the handler and returns the number of holds it reported as freed,
      * asserting that the run surfaced the injected DB error instead of
      * swallowing it.
@@ -437,7 +496,9 @@ namespace {
         public $afterNextSelect = null;
         /**
          * @var callable|null failure injection: receives the SQL about to run and
-         * returns an error message to fail it with, or null to run it normally.
+         * returns an error message to fail it with, null to run it normally, or
+         * the literal string 'FALSE_WITHOUT_ERROR' to return false while leaving
+         * last_error untouched (a driver that reports failure with no message).
          */
         public $writeFault = null;
         /** @var list<mixed> */
@@ -531,6 +592,13 @@ namespace {
                 if ($this->writeFault !== null
                     && preg_match('/^\s*(UPDATE|DELETE|INSERT|REPLACE)\b/i', $sql) === 1) {
                     $fault = ($this->writeFault)($sql);
+                    if ($fault === 'FALSE_WITHOUT_ERROR') {
+                        // A failed write with NO error message: query() returns
+                        // false and last_error stays empty. A guard that reads
+                        // last_error alone cannot see this failure.
+                        $this->pending = [];
+                        return false;
+                    }
                     if (is_string($fault) && $fault !== '') {
                         // wpdb contract: the statement fails, last_error is set,
                         // query() returns false and the row is left untouched.
