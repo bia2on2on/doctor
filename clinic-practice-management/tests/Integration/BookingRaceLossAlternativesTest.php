@@ -547,6 +547,7 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         );
         self::assertNotWPError($userId, 'fixture: patient user created');
         self::assertGreaterThan(0, (int) $userId, 'fixture: patient user created');
+        cpms_test_seed_patient_session((int) $userId, self::FX_CLINIC_ID);
 
         return (int) $userId;
     }

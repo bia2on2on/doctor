@@ -355,6 +355,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         // User has 0 linked Patients in booking Clinic A.
         $userId = (int) wp_create_user('p8s3_t03_user_' . uniqid('', false), 'pass-not-used-123', $mobile . '@otp.cpms.local');
         $this->setRole($userId, 'cpms_patient');
+        cpms_test_seed_patient_session($userId, $this->clinicA);
         self::assertSame(0, $this->countPatientLinksForUser($userId), 'precondition: 0 links');
 
         // Unlinked same-mobile Patient exists in same Clinic A (active).
@@ -416,6 +417,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $userId = $this->createPatientUserWithLinks($this->clinicB, [
             ['id' => $patientB, 'mobile' => $this->mobileFor('t04'), 'primary' => 1],
         ]);
+        cpms_test_seed_patient_session($userId, $this->clinicA);
         // Booking slot is in Clinic A.
         $slotA = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '13:00:00', 1);
 
@@ -547,6 +549,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $mobile = $this->mobileFor('t07');
         $userId = (int) wp_create_user('p8s3_t07_user_' . uniqid('', false), 'pass-not-used-123', $mobile . '@otp.cpms.local');
         $this->setRole($userId, 'cpms_patient');
+        cpms_test_seed_patient_session($userId, $this->clinicA);
         self::assertSame(0, $this->countPatientLinksForUser($userId), 'precondition: 0 links in Clinic A');
         // Also ensure no same-mobile unlinked Patient exists for this mobile in Clinic A.
         self::assertSame(0, $this->countPatientsForMobile($this->clinicA, $mobile), 'precondition: true new patient (no same-mobile)');
@@ -1041,6 +1044,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $this->insertLink($this->clinicB, $crossClinic, $userN, $this->mobileFor('t12e'), 0);
         // Link archived patient (should be filtered out by UI because inactive)
         $this->insertLink($this->clinicA, $archived, $userN, $this->mobileFor('t12f'), 0);
+        cpms_test_seed_patient_session($userN, $this->clinicA);
 
         wp_set_current_user($userN);
         $htmlN = $this->renderSurface($this->clinicA);
@@ -1072,6 +1076,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $mobile0 = $this->mobileFor('t13a');
         $user0 = (int) wp_create_user('p8s3_t13_0_' . uniqid('', false), 'pass-123', $mobile0 . '@otp.cpms.local');
         $this->setRole($user0, 'cpms_patient');
+        cpms_test_seed_patient_session($user0, $this->clinicA);
         $slot0 = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '07:00:00', 1);
         $hold0 = $this->restPost(self::NS . self::HOLD_PATH, [
             'clinician_id' => $this->clinicianA,

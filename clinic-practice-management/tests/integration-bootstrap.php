@@ -381,6 +381,49 @@ if (!function_exists('cpms_test_seed_membership')) {
     }
 }
 
+if (!function_exists('cpms_test_seed_patient_session')) {
+    /**
+     * Explicit clinic-scoped patient session fixture for integration tests that
+     * construct a 0-link or multi-clinic patient user directly (without running
+     * OtpService::verify()) to exercise downstream clinic-scoped surfaces.
+     *
+     * The session is bound the way a browser binds it: a real `logged_in` auth
+     * cookie for a real `WP_Session_Tokens` token, validated by WordPress core.
+     * The production cookie path (PatientSessionScope::active_cookie_token_for_user)
+     * therefore resolves it. If core does not validate the cookie, the fixture
+     * fails loudly instead of silently falling back.
+     *
+     * Limitation: one PHP request carries one auth cookie, so only the most
+     * recently seeded user is resolved through the cookie. Suites that seed
+     * several users and act as an earlier one keep the in-process binding as a
+     * fallback (used only when the cookie does not validate for that user).
+     * Cookie-only resolution is asserted explicitly in
+     * PatientSessionScopeIntegrationTest.
+     */
+    function cpms_test_seed_patient_session(int $userId, int $clinicId): string
+    {
+        if ($userId <= 0 || $clinicId <= 0) {
+            throw new \InvalidArgumentException('seed_patient_session: user and clinic must be positive.');
+        }
+        $manager = \WP_Session_Tokens::get_instance($userId);
+        $token   = $manager->create(time() + DAY_IN_SECONDS);
+        $session = $manager->get($token);
+        if (!is_array($session)) {
+            $session = ['expiration' => time() + DAY_IN_SECONDS];
+        }
+        $session = array_merge($session, App::patient_session_scope()->session_marker_for($userId, $clinicId));
+        $manager->update($token, $session);
+
+        $_COOKIE[LOGGED_IN_COOKIE] = wp_generate_auth_cookie($userId, time() + DAY_IN_SECONDS, 'logged_in', $token);
+        if ((int) wp_validate_auth_cookie('', 'logged_in') !== $userId) {
+            throw new \RuntimeException('seed_patient_session: logged_in cookie did not validate for the seeded user.');
+        }
+        App::patient_session_scope()->set_in_process_session_token($userId, $token);
+
+        return $token;
+    }
+}
+
 cpms_mariadb_startup_diagnostic_mark('BOOTSTRAP_COMPLETE');
 if (getenv('CPMS_MARIADB_STARTUP_DIAGNOSTICS') === '1') {
     $GLOBALS['__cpms_mariadb_bootstrap_complete'] = true;

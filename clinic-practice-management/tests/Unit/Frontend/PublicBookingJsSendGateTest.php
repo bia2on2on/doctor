@@ -140,4 +140,12 @@ final class PublicBookingJsSendGateTest extends TestCase
     {
         self::assertStringContainsString('result.body.data.sms_sent === true', $this->js);
     }
+
+    public function testClinicSessionGatePreventsCrossClinicHoldAndResetsStateOnClinicSwitch(): void
+    {
+        self::assertStringContainsString('function sessionMatchesClinic(', $this->js, 'pure clinic-session matcher must exist');
+        self::assertStringContainsString('if (!currentSessionMatchesClinic()) {', $this->js, 'beginHold must gate on session clinic match');
+        self::assertStringContainsString("code === 'CLINIC_SCOPE_REQUIRED' && hasOtpPaths", $this->js, 'B1/B2 CLINIC_SCOPE_REQUIRED must fall back to OTP prompt');
+        self::assertStringContainsString('function syncClinicSessionState()', $this->js, 'discovery mode must synchronize chooser and OTP state per clinic');
+    }
 }

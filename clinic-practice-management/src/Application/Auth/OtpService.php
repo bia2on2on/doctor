@@ -9,6 +9,7 @@ namespace ClinicCore\Application\Auth;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Otp\OtpPolicy;
 use ClinicCore\Domain\Otp\OtpState;
 use ClinicCore\Domain\Sms\SmsEvents;
@@ -107,8 +108,13 @@ final class OtpService
         private readonly AuditLogger $audit,
         private readonly OpLogger $op,
         private readonly SmsService $sms,
-        private readonly JobQueue $jobs
+        private readonly JobQueue $jobs,
+        private readonly ?PatientSessionScope $session_scope = null
     ) {
+    }
+
+    private function session_scope(): PatientSessionScope {
+        return $this->session_scope ?? App::patient_session_scope();
     }
 
     /**
@@ -550,7 +556,7 @@ final class OtpService
                     // Session — فقط برای Purposeهای ورود (Context Binding).
                     // یک کد `verify_mobile` نباید به Login تبدیل شود.
                     $session_issued = in_array( $purpose, self::SESSION_PURPOSES, true ) && $user_id > 0;
-                    $patient_links  = $user_id > 0 ? $this->patientLinks( $user_id ) : [];
+                    $patient_links  = $user_id > 0 ? $this->patientLinks( $user_id, $clinic_id ) : [];
 
                     // phpcs:ignore PEAR.Functions.FunctionCallSignature.SpaceAfterOpenBracket,PEAR.Functions.FunctionCallSignature.SpaceBeforeCloseBracket -- compact audit helper.
                     $this->audit( 'OTP_VERIFY_OK', $user_id, $mobile, $ip, [ 'purpose' => $purpose ], $clinic_id );
@@ -561,6 +567,7 @@ final class OtpService
 
                     return [
                         'user_id'        => $user_id,
+                        'clinic_id'      => $clinic_id,
                         'patient_links'  => $patient_links,
                         'is_new_user'    => $is_new_user,
                         'session_issued' => $session_issued,
@@ -583,7 +590,13 @@ final class OtpService
         // کوکی احراز هویت وردپرس پس از Commitِ پایدار صادر می‌شود (اثر جانبی
         // غیرتراکنشی) — هر شکست در مرز بالا پیش از این نقطه کامل roll back شده.
         if ( $verify_outcome['session_issued'] && function_exists( 'wp_set_auth_cookie' ) ) {
-            wp_set_auth_cookie( (int) $verify_outcome['user_id'], true );
+            $scope = $this->session_scope();
+            $scope->begin_otp_cookie_issue( (int) $verify_outcome['user_id'], (int) $verify_outcome['clinic_id'] );
+            try {
+                wp_set_auth_cookie( (int) $verify_outcome['user_id'], true );
+            } finally {
+                $scope->end_otp_cookie_issue();
+            }
         }
 
         return [
@@ -835,15 +848,15 @@ final class OtpService
     /**
      * @return list<array<string, mixed>>
      */
-    private function patientLinks(int $userId): array
-    {
+    private function patientLinks( int $user_id, int $clinic_id ): array { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid
         return $this->db->fetchAll(
-            'SELECT p.id, p.mrn, p.first_name, p.last_name, l.is_primary
-             FROM ' . $this->db->table('cpms_patient_user_links') . ' l
-             JOIN ' . $this->db->table('cpms_patients') . ' p ON p.id = l.patient_id
-             WHERE l.wp_user_id = %d AND p.status = %s
-             ORDER BY l.is_primary DESC, l.id ASC',
-            [$userId, 'active']
+            'SELECT p.id, p.mrn, p.first_name, p.last_name, l.is_primary'
+            . ' FROM ' . $this->db->table( 'cpms_patient_user_links' ) . ' l'
+            . ' INNER JOIN ' . $this->db->table( 'cpms_patients' ) . ' p'
+            . ' ON p.id = l.patient_id AND p.clinic_id = l.clinic_id'
+            . ' WHERE l.wp_user_id = %d AND l.clinic_id = %d AND p.status = %s'
+            . ' ORDER BY l.is_primary DESC, l.id ASC',
+            [ $user_id, $clinic_id, 'active' ]
         );
     }
 
