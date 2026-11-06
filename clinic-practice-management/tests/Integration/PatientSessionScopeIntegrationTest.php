@@ -427,20 +427,22 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
 
     public function testHoldOnClinicASlotRefusesSessionStampedForClinicB(): void
     {
+        // Booking window: a slot must fall within booking.max_future_days (default 60) of now.
+        $date      = $this->bookableDate();
         $this->buildTwoClinicFixture();
         $clinicianA = $this->insertClinician($this->clinicA, 'D13 hold A');
         $uid        = $this->makeUser('d13_hold', RolesAndCapabilities::ROLE_PATIENT);
         $this->linkPatient($this->clinicA, $this->insertPatient($this->clinicA, 'D13HA'), $uid);
         $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'D13HB'), $uid);
         $locationA = $this->locationA;
-        $slotId    = $this->insertOpenSlot($this->clinicA, $locationA, $clinicianA, self::FUTURE_DATE, '11:00');
+        $slotId    = $this->insertOpenSlot($this->clinicA, $locationA, $clinicianA, $date, '11:00');
         $before    = $this->bookingStateSnapshot([$slotId], []);
         $service   = App::bookingService();
 
         // Refused: the session is stamped for Clinic B, the persisted slot is in Clinic A.
         cpms_test_seed_patient_session($uid, $this->clinicB);
         $denied = $this->bookingExceptionOf(
-            fn () => $service->hold($uid, $clinicianA, self::FUTURE_DATE, '11:00', $slotId, null, $locationA)
+            fn () => $service->hold($uid, $clinicianA, $date, '11:00', $slotId, null, $locationA)
         );
         $this->assertScopeRequiredException($denied);
         self::assertSame(
@@ -451,7 +453,7 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
 
         // Positive control: the same slot with a session stamped for Clinic A passes the guard.
         cpms_test_seed_patient_session($uid, $this->clinicA);
-        $hold = $service->hold($uid, $clinicianA, self::FUTURE_DATE, '11:00', $slotId, null, $locationA);
+        $hold = $service->hold($uid, $clinicianA, $date, '11:00', $slotId, null, $locationA);
         self::assertNotSame('', (string) ($hold['hold_token'] ?? ''), 'positive control: the matching-Clinic session creates the hold.');
         self::assertSame(1, (int) $this->slotRow($slotId)['held_count'], 'positive control: exactly one held unit.');
     }
@@ -487,22 +489,24 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
 
     public function testPatientRescheduleOfClinicAAppointmentRefusesSessionStampedForClinicB(): void
     {
+        // Booking window: the destination slot must fall within booking.max_future_days (default 60) of now.
+        $date         = $this->bookableDate();
         $this->buildTwoClinicFixture();
         $clinicianA = $this->insertClinician($this->clinicA, 'D13 resched A');
         $uid        = $this->makeUser('d13_resched', RolesAndCapabilities::ROLE_PATIENT);
         $patientA   = $this->insertPatient($this->clinicA, 'D13RA');
         $this->linkPatient($this->clinicA, $patientA, $uid);
         $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'D13RB'), $uid);
-        $apptId       = $this->insertAppointment($this->clinicA, $this->locationA, $patientA, $clinicianA, self::FUTURE_DATE, '10:00');
+        $apptId       = $this->insertAppointment($this->clinicA, $this->locationA, $patientA, $clinicianA, $date, '10:00');
         $sourceSlotId = $this->appointmentSlotId($apptId);
-        $destSlotId   = $this->insertOpenSlot($this->clinicA, $this->locationA, $clinicianA, self::FUTURE_DATE, '12:00');
+        $destSlotId   = $this->insertOpenSlot($this->clinicA, $this->locationA, $clinicianA, $date, '12:00');
         $before       = $this->bookingStateSnapshot([$sourceSlotId, $destSlotId], [$apptId]);
         $service      = App::bookingService();
 
         // Refused at the source-appointment preflight, before any idempotency claim.
         cpms_test_seed_patient_session($uid, $this->clinicB);
         $denied = $this->bookingExceptionOf(
-            fn () => $service->reschedule($uid, $apptId, $clinicianA, self::FUTURE_DATE, '12:00', wp_generate_uuid4(), $destSlotId)
+            fn () => $service->reschedule($uid, $apptId, $clinicianA, $date, '12:00', wp_generate_uuid4(), $destSlotId)
         );
         $this->assertScopeRequiredException($denied);
         self::assertSame(
@@ -513,7 +517,7 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
 
         // Positive control: the same reschedule with a session stamped for Clinic A passes the guard and moves the booking.
         cpms_test_seed_patient_session($uid, $this->clinicA);
-        $result = $service->reschedule($uid, $apptId, $clinicianA, self::FUTURE_DATE, '12:00', wp_generate_uuid4(), $destSlotId);
+        $result = $service->reschedule($uid, $apptId, $clinicianA, $date, '12:00', wp_generate_uuid4(), $destSlotId);
         self::assertSame($apptId, (int) $result['previous_appointment_id'], 'positive control: the replacement points back at the source appointment.');
         self::assertNotSame($apptId, (int) $result['appointment_id'], 'positive control: a replacement appointment is created.');
         self::assertSame(0, (int) $this->slotRow($sourceSlotId)['booked_count'], 'positive control: the source slot is released.');
@@ -1038,6 +1042,15 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
             'created_at'     => $now,
             'updated_at'     => $now,
         ], 'open slot ' . $time);
+    }
+
+    /**
+     * A date that the booking window accepts: 5 days ahead, as the Phase 8 suite does.
+     * The fixed FUTURE_DATE is years ahead and fails the window check (booking.max_future_days).
+     */
+    private function bookableDate(): string
+    {
+        return gmdate('Y-m-d', time() + 5 * 86400);
     }
 
     private function appointmentSlotId(int $apptId): int
