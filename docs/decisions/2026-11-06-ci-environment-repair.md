@@ -374,7 +374,7 @@ commits preserved:
 - Also required afterwards: **do not delete branch `arena/5375738f-doctor`**
   until `main` has run both baseline lanes green at least once after the merge.
 
-### 8.7 Nothing enforces the expiry, and the demo-lane green is one sample
+### 8.7 Nothing enforces the expiry, and the demo-lane green is three same-configuration observations
 
 **Nothing enforces the 2026-12-15 expiry automatically.** The date is a recorded
 marker, not a mechanism: no workflow, test or scheduled job compares it to the
@@ -385,14 +385,28 @@ without an `EXPIRY YYYY-MM-DD` marker next to it fails the workflow contract
 test (existence of the marker, never the date). Revisiting on or before
 2026-12-15 is therefore a manual obligation.
 
-**The demo-lane green is one sample, and its cause remains unproven.** At head
-`8cc0bb55` the lane passed on the `ubuntu-24.04` pin, but in that single
-observation the OS image and the PHP version changed together
-(`mod_php_enabled=php8.3.load` on 24.04 versus `php8.5.load` on the
-`ubuntu-latest` runs that failed), and there is no controlled run that changes
-only one of them. One sample with the recorded variables changing together
-cannot attribute the result to any of them, so the pin stays labelled
-EXPERIMENT and the cause stays UNPROVEN. It is certainly not evidenced that the pin *fixed* anything.
+**The demo lane has been green three times under the same configuration, and its
+cause remains unproven.** Measured through the API (annotations and job
+records), the demo lane passed at **three heads**: `8cc0bb55` (job
+`127623459458`, attempt 1), `54c48231` (job `127637661167`, attempt 1) and
+`9859ee3a` (job `127700197381`, attempt 1) — all `labels=['ubuntu-24.04']`, all
+`mod_php_enabled=php8.3.load`, all `cache_hit=true` with browser steps of 9 s,
+9 s and 8 s. The configuration is literally the same file bytes at all three
+heads: `disposable-demo-installer.yml` blob `980f30be…`,
+`playwright-browsers/action.yml` blob `606d48f7…` and
+`bin/build-release.sh` blob `91e6b378…` are identical in all three commits.
+
+**These three observations are not independent.** They share the same runner
+pin, the same code path, the same workflow/action blobs and the same runner
+family, so they are repeats of one configuration rather than three independent
+tests of a hypothesis; three correlated runs do not turn one observation into a
+controlled experiment. Compared with the red runs
+(`fb63a977`, `labels=['ubuntu-latest']`, `php8.5.load`), the OS image and the
+PHP version changed together (`php8.3.load` on 24.04 versus `php8.5.load` on
+the newer label), and there is no controlled run that changes only one of them.
+Repeats under one configuration cannot attribute the result to any variable, so
+the pin stays labelled EXPERIMENT and the cause stays UNPROVEN. It is certainly
+not evidenced that the pin *fixed* anything.
 A **third** variable also differed between the red and green demo runs: the
 browser cache entry is keyed per OS release
 (`pw-browsers-v3-${runner.os}-${ID-VERSION_ID}-…`, §2.2), so the 24.04 run
