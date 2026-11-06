@@ -213,14 +213,19 @@ final class WooCommerceAdminAccessProfileTest extends WP_UnitTestCase
 
     // ============================ negative ============================
 
-    public function testSomeoneElsesProfileIsDenied(): void
+    /**
+     * @dataProvider staffRoles
+     */
+    public function testOtherUsersProfileAndEditRoutesStayDeniedForEachCpmsStaffRole(string $role): void
     {
-        $doctor = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_DOCTOR]);
-        $other  = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_PATIENT]);
-        wp_set_current_user($doctor);
+        $staff = self::factory()->user->create(['role' => $role]);
+        $other = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_PATIENT]);
+        wp_set_current_user($staff);
 
-        $this->serveAdminRequest('profile.php', $other);
-        $this->assertTrue($this->verdict(), 'profile.php?user_id=<other user> keeps WooCommerce\'s verdict');
+        foreach (['profile.php', 'user-edit.php'] as $screen) {
+            $this->serveAdminRequest($screen, $other);
+            $this->assertTrue($this->verdict(), "{$role} cannot use {$screen} to access another user's profile");
+        }
     }
 
     public function testPatientOnlyUserIsNotRelaxedAndStaysRedirectedByGuardWpAdmin(): void
@@ -238,9 +243,20 @@ final class WooCommerceAdminAccessProfileTest extends WP_UnitTestCase
         wp_set_current_user($user);
         $this->assertTrue(PatientPortalPage::isPatientOnly((int) $user));
 
-        // Not relaxed by the own-profile predicate…
-        $this->serveAdminRequest('profile.php');
-        $this->assertTrue($this->verdict(), 'a patient-only user must stay under the third-party policy');
+        // Default: a patient-only user cannot reach profile.php, their own or anyone else's.
+        foreach ([
+            ['profile.php', null],
+            ['profile.php', $user],
+            ['profile.php', self::factory()->user->create(['role' => 'subscriber'])],
+            ['user-edit.php', $user],
+            ['user-edit.php', self::factory()->user->create(['role' => 'subscriber'])],
+        ] as [$screen, $targetUser]) {
+            $this->serveAdminRequest($screen, $targetUser);
+            $this->assertTrue(
+                $this->verdict(),
+                "patient-only access remains denied for {$screen} target " . var_export($targetUser, true)
+            );
+        }
 
         // …and still redirected to the frontend portal by the existing patient guard.
         $location = $this->captureRedirect(static function (): void {
@@ -250,12 +266,32 @@ final class WooCommerceAdminAccessProfileTest extends WP_UnitTestCase
         $this->assertSame(PatientPortalPage::page_url(), $location, 'the redirect target is the existing frontend portal URL, unchanged');
     }
 
-    public function testLoggedOutRequestIsDenied(): void
+    public function testPatientWithAnotherWordPressRoleIsNotPatientOnlyOrRedirected(): void
+    {
+        $user = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_PATIENT]);
+        $wpUser = get_userdata($user);
+        $this->assertNotFalse($wpUser);
+        $wpUser->add_role('subscriber');
+        wp_set_current_user($user);
+
+        $this->assertFalse(PatientPortalPage::isPatientOnly($wpUser), 'a patient account with another WP role is not patient-only');
+        foreach (['profile.php', 'user-edit.php'] as $screen) {
+            $_SERVER['REQUEST_METHOD'] = 'GET';
+            $this->serveAdminRequest($screen, $user);
+            $redirect = $this->captureRedirect(static function (): void {
+                PatientPortalPage::guardWpAdmin();
+            });
+            $this->assertNull($redirect, "the patient-only guard must not affect a patient+subscriber on {$screen}");
+            $this->assertTrue($this->verdict(), 'a non-CPMS role does not gain the CPMS own-profile exception');
+        }
+    }
+
+    public function testLoggedOutRequestIsDeniedEvenWithSpoofedRequestUserId(): void
     {
         wp_set_current_user(0);
+        $this->serveAdminRequest('profile.php', '987654321');
 
-        $this->serveAdminRequest('profile.php');
-        $this->assertTrue($this->verdict(), 'a logged-out request must never be relaxed');
+        $this->assertTrue($this->verdict(), 'an unauthenticated request cannot use $_REQUEST[user_id] to obtain profile access');
     }
 
     public function testAUserHoldingOnlyReadIsDenied(): void

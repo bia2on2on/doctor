@@ -11,6 +11,7 @@ use ClinicCore\Frontend\ManagementPortalShell;
 use ClinicCore\Frontend\PatientPortalShell;
 use ClinicCore\Frontend\StaffPortalShell;
 use ClinicCore\Infrastructure\Db\DatabaseCompatibilityGate;
+use ClinicCore\Infrastructure\Storage\PrivateStorageInitializer;
 use WP_UnitTestCase;
 
 /**
@@ -308,6 +309,7 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
         self::assertNotContains($latest, $this->ledgerVersions());
 
         $this->unsupportedProbe();
+        PrivateStorageInitializer::forget();
 
         try {
             $this->invokeEnsureMigrated();
@@ -321,6 +323,10 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
             'the pending migration must NOT be applied on an unsupported engine'
         );
         self::assertSame($unsupportedBefore + 1, $this->opLogRowCount('CPMS_DB_ENGINE_UNSUPPORTED'), 'exactly one throttled OpLog row on first sight');
+        self::assertNotNull(
+            PrivateStorageInitializer::state(),
+            'unsupported engine skips schema migrations but still initializes private storage as on main'
+        );
 
         // Throttle: a second run within the window logs nothing more.
         delete_transient('cpms_migrate_lock');
@@ -610,7 +616,9 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
             $this->unsupportedProbe();
             self::assertTrue(App::is_runtime_blocked_by_pending_schema());
 
-            // (1) Clinical REST routes return HTTP 503 with stable error code and NO clinical/patient data.
+            // (1) Anonymous Clinical REST requests return only the stable, neutral 503 envelope.
+            wp_set_current_user(0);
+            self::assertFalse(is_user_logged_in(), 'the leakage check must exercise an unauthenticated caller');
             $server = rest_get_server();
             foreach (
                 [
@@ -622,9 +630,13 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
                 $response = $server->dispatch(new \WP_REST_Request($method, $route));
                 self::assertSame(503, $response->get_status(), "{$method} {$route} must return HTTP 503 when blocked");
                 $body = $response->get_data();
-                self::assertSame(RuntimeSchemaGate::ERROR_CODE, $body['code'] ?? null);
+                self::assertSame(RuntimeSchemaGate::PUBLIC_ERROR_CODE, $body['code'] ?? null, 'anonymous callers receive a non-environment-specific code');
                 self::assertSame(RuntimeSchemaGate::NEUTRAL_MESSAGE, $body['message'] ?? null);
                 self::assertSame(['status' => 503], $body['data'] ?? null, '503 envelope must carry no clinical or patient data');
+                $encodedBody = (string) wp_json_encode($body);
+                self::assertStringNotContainsString('11.8.6', $encodedBody, 'unauthenticated 503 does not reveal the database version');
+                self::assertStringNotContainsString('MariaDB', $encodedBody, 'unauthenticated 503 does not reveal the database engine');
+                self::assertStringNotContainsString(DatabaseCompatibilityGate::ACCEPTED_SET_WORDING, $encodedBody, 'unauthenticated 503 does not reveal accepted environment details');
             }
 
             // Core WordPress REST routes outside /clinic/v1 remain untouched.

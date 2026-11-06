@@ -371,10 +371,24 @@ final class WooCommerceAdminAccessCoexistenceTest extends WP_UnitTestCase
         $this->assertTrue($this->verdict(), 'a page not registered for this request must not be exempted');
     }
 
-    public function testExceptionNeverGrantsWooCommerceOrUnrelatedAdminScreens(): void
+    /** @return list<array{string}> */
+    public static function staffRoles(): array
     {
-        $doctor = self::factory()->user->create(['role' => RolesAndCapabilities::ROLE_DOCTOR]);
-        wp_set_current_user($doctor);
+        return [
+            [RolesAndCapabilities::ROLE_DOCTOR],
+            [RolesAndCapabilities::ROLE_SECRETARY],
+            [RolesAndCapabilities::ROLE_ACCOUNTANT],
+            [RolesAndCapabilities::ROLE_MANAGER],
+        ];
+    }
+
+    /**
+     * @dataProvider staffRoles
+     */
+    public function testExceptionNeverGrantsWooCommerceOrUnrelatedAdminScreens(string $staffRole): void
+    {
+        $staff = self::factory()->user->create(['role' => $staffRole]);
+        wp_set_current_user($staff);
 
         foreach ([
             'wc-admin', 'wc-settings', 'wc-status', 'wc-addons', 'woocommerce',

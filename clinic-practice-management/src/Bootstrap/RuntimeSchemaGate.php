@@ -27,6 +27,8 @@ final class RuntimeSchemaGate {
 
     public const ERROR_CODE = 'CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE';
 
+    public const PUBLIC_ERROR_CODE = 'CLINIC_SERVICE_UNAVAILABLE';
+
     public const NEUTRAL_MESSAGE = 'سرویس موقتاً در دسترس نیست.';
 
     public const TEMPLATE_REL = 'templates/runtime-unavailable-shell.php';
@@ -74,7 +76,7 @@ final class RuntimeSchemaGate {
         }
 
         return new WP_Error(
-            self::ERROR_CODE,
+            is_user_logged_in() ? self::ERROR_CODE : self::PUBLIC_ERROR_CODE,
             self::NEUTRAL_MESSAGE,
             [ 'status' => 503 ]
         );

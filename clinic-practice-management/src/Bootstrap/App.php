@@ -948,9 +948,8 @@ final class App
                 self::$pending_migrations_memo = false;
             } elseif ( $evidence_status === DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED ) {
                 self::report_unsupported_database_engine( $compatibility );
-                if ( self::has_pending_migrations_memoized() ) {
-                    return;
-                }
+                // Skip only schema migrations; private-storage initialization remains
+                // identical to main and is still safe/idempotent on this request.
             } else {
                 self::report_unreadable_database_evidence( $compatibility );
             }
