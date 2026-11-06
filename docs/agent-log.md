@@ -3463,3 +3463,11 @@ Applied the five approved corrections on top:
 - **Changed (tests):** `integration-bootstrap.php`: `cpms_test_seed_patient_session` binds a real `logged_in` cookie that core must validate. The in-process binding stays only as a fallback, because one request carries one cookie. `PatientSessionScopeIntegrationTest.php`: four cookie-only tests. `PatientSessionScopeUnitTest.php`: `testStampedMarkerIsRevalidatedAgainstLiveLinks`.
 - **Local checks:** `php -l` on every changed PHP file. Unit suite under a local PHPUnit-compatible shim (not PHPUnit): 4 of 4 pass, and the stale-marker test fails on the pre-change source. Workflow contract tests 75 of 75 with PyYAML; `check-workflow-yaml.py` WORKFLOW_YAML_OK files=17; `companion-isolation.py` PASS; tenant tripwire PASS (0 production hardcodes).
 - **Not run:** Integration suites (no MySQL here), PHPCS/WPCS, and the other Unit files. CI on the pushed head is the source of truth.
+
+### [2026-11-06] — PR #326: Integration failure at 20ce0975 (cookie left after logout simulation), test-only fix
+
+- **Failure:** `Integration (WP 7.1 + MySQL 8)`, run 42188227976, attempt 1, job 127798143674: `tests=2632 assertions=74284 failures=1 errors=0 skipped=0`. Failing test: `PatientSessionScopeIntegrationTest::testClearAuthCookieDropsInProcessAuthority`.
+- **Cause:** the shared seed helper leaves a valid `logged_in` cookie in `$_COOKIE`. The test simulated logout by firing `clear_auth_cookie` alone, so the cookie path still resolved the session. A browser drops that cookie on logout; production is unaffected.
+- **Fix:** the test unsets `$_COOKIE[LOGGED_IN_COOKIE]` before `do_action('clear_auth_cookie')`. The in-process reset remains the thing asserted; no assertion was removed or weakened.
+- **Workspace note:** the local commit for this fix (`39c8ef55`) was lost when the workspace was re-cloned. The same two-line change was recreated as `d7721f0a` on top of `20ce0975`.
+- **Not run locally:** the Integration suite (no MySQL here) and PHPCS/WPCS. `php -l` passed on the changed file. CI on the pushed head is the source of truth.
