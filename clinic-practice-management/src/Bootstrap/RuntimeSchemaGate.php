@@ -22,6 +22,10 @@ use WP_REST_Request;
  * مدیریتی نمایش داده می‌شود؛ اگر شواهدِ نسخه ناخوانا/مخدوش باشد، زمانِ اجرا
  * مسدود نمی‌شود (فقط لاگِ throttled عملیاتی). مدیریتِ افزونه‌ها در wp-admin
  * (`plugins.php` و غیرفعال‌سازی) همیشه در دسترس می‌ماند.
+ *
+ * پاسخ REST برای کاربرِ دارای capability `manage_options` کدِ دقیقِ schema/engine
+ * را می‌دهد؛ همهٔ callerهای دیگر (از جمله بیمار/کاربر واردشدهٔ غیرمدیر و ناشناس)
+ * کدِ خنثیِ `CLINIC_SERVICE_UNAVAILABLE` را می‌گیرند.
  */
 final class RuntimeSchemaGate {
 
@@ -75,8 +79,12 @@ final class RuntimeSchemaGate {
             return $result;
         }
 
+        $error_code = current_user_can( 'manage_options' )
+            ? self::ERROR_CODE
+            : self::PUBLIC_ERROR_CODE;
+
         return new WP_Error(
-            is_user_logged_in() ? self::ERROR_CODE : self::PUBLIC_ERROR_CODE,
+            $error_code,
             self::NEUTRAL_MESSAGE,
             [ 'status' => 503 ]
         );

@@ -639,6 +639,45 @@ final class AppActivationDatabaseGateTest extends WP_UnitTestCase
                 self::assertStringNotContainsString(DatabaseCompatibilityGate::ACCEPTED_SET_WORDING, $encodedBody, 'unauthenticated 503 does not reveal accepted environment details');
             }
 
+            // The detailed engine/schema code is reserved for the manage_options capability.
+            $diagnosticAdmin = self::factory()->user->create(['role' => 'administrator']);
+            wp_set_current_user($diagnosticAdmin);
+            self::assertTrue(current_user_can('manage_options'));
+            $adminResponse = $server->dispatch(new \WP_REST_Request('GET', '/clinic/v1/health'));
+            self::assertSame(503, $adminResponse->get_status());
+            self::assertSame(RuntimeSchemaGate::ERROR_CODE, $adminResponse->get_data()['code'] ?? null);
+            self::assertSame(RuntimeSchemaGate::NEUTRAL_MESSAGE, $adminResponse->get_data()['message'] ?? null);
+
+            $nonAdminCallers = [
+                ['patient-only', RolesAndCapabilities::ROLE_PATIENT],
+                ['subscriber', 'subscriber'],
+                ['staff without manage_options', RolesAndCapabilities::ROLE_DOCTOR],
+            ];
+            foreach ($nonAdminCallers as [$label, $role]) {
+                $userId = self::factory()->user->create(['role' => $role]);
+                wp_set_current_user($userId);
+                self::assertTrue(is_user_logged_in(), "{$label} test caller must be logged in");
+                self::assertFalse(current_user_can('manage_options'), "{$label} must not have manage_options");
+
+                $response = $server->dispatch(new \WP_REST_Request('GET', '/clinic/v1/health'));
+                self::assertSame(503, $response->get_status(), "{$label} receives HTTP 503");
+                $body = $response->get_data();
+                self::assertSame(RuntimeSchemaGate::PUBLIC_ERROR_CODE, $body['code'] ?? null, "{$label} receives the neutral code");
+                self::assertSame(RuntimeSchemaGate::NEUTRAL_MESSAGE, $body['message'] ?? null);
+                $encodedBody = (string) wp_json_encode($body);
+                self::assertStringNotContainsString('ENGINE', $encodedBody, "{$label} response must not disclose engine details");
+                self::assertStringNotContainsString('UNSUPPORTED', $encodedBody, "{$label} response must not disclose unsupported status");
+            }
+
+            wp_set_current_user(0);
+            $anonymousResponse = $server->dispatch(new \WP_REST_Request('GET', '/clinic/v1/health'));
+            self::assertSame(503, $anonymousResponse->get_status());
+            self::assertSame(RuntimeSchemaGate::PUBLIC_ERROR_CODE, $anonymousResponse->get_data()['code'] ?? null);
+            self::assertSame(RuntimeSchemaGate::NEUTRAL_MESSAGE, $anonymousResponse->get_data()['message'] ?? null);
+            $anonymousBody = (string) wp_json_encode($anonymousResponse->get_data());
+            self::assertStringNotContainsString('ENGINE', $anonymousBody);
+            self::assertStringNotContainsString('UNSUPPORTED', $anonymousBody);
+
             // Core WordPress REST routes outside /clinic/v1 remain untouched.
             $coreResponse = $server->dispatch(new \WP_REST_Request('GET', '/wp/v2/types'));
             self::assertNotSame(503, $coreResponse->get_status(), 'non-CPMS WordPress REST routes must remain reachable');
