@@ -256,6 +256,10 @@ final class PublicBookingShortcode
     public static function render(mixed $atts = null, mixed $content = null, string $tag = self::TAG): string
     {
         try {
+            if ( \ClinicCore\Bootstrap\RuntimeSchemaGate::is_blocked() ) {
+                return \ClinicCore\Bootstrap\RuntimeSchemaGate::shortcode_markup();
+            }
+
             $request = self::parse_request( $atts, $tag );
             if ( $request === null ) {
                 return self::renderClosed();

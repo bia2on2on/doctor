@@ -69,11 +69,19 @@ App::boot();
 
 switch ($cmd) {
     case 'migrate':
+        if ( ! App::is_database_engine_supported() ) {
+            fwrite( STDERR, "Refusing to run migrations on an unsupported or unreadable database server.\n" );
+            exit( 1 );
+        }
         $applied = App::migrations()->migrate();
         echo $applied === [] ? 'Schema already up to date.' : 'Applied: ' . implode(', ', $applied) . "\n";
         break;
 
     case 'jobs':
+        if ( in_array( $sub, [ 'tick', 'retry' ], true ) && App::is_runtime_blocked_by_pending_schema() ) {
+            fwrite( STDERR, "Runtime blocked: unsupported database server with pending schema migrations.\n" );
+            exit( 1 );
+        }
         switch ($sub) {
             case 'tick':
                 // F1-7 — قفل داخل App::runTick() است (WP-Cron و CLI همان
@@ -157,6 +165,10 @@ switch ($cmd) {
 
     case 'slots':
         if ($sub === 'generate') {
+            if ( App::is_runtime_blocked_by_pending_schema() ) {
+                fwrite( STDERR, "Runtime blocked: unsupported database server with pending schema migrations.\n" );
+                exit( 1 );
+            }
             // Canonical queue-consumption: all production consumers must go through runTick()
             // which owns GET_LOCK('cpms_jobs_tick'). Direct dispatcher()->tick() without lock
             // created a second global consumer (previous bug). Using runTick preserves

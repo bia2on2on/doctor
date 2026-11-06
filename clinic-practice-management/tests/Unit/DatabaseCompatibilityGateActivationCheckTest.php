@@ -1,0 +1,314 @@
+<?php
+
+declare(strict_types=1);
+
+namespace ClinicCore\Tests\Unit;
+
+use ClinicCore\Infrastructure\Db\DatabaseCompatibilityGate;
+use PHPUnit\Framework\TestCase;
+
+/**
+ * N1 — پیش‌بررسیِ ساختاریافتهٔ موتورِ دیتابیس برای فعال‌سازی.
+ *
+ * این تست ماتریسِ نسخه‌ها را به {@see DatabaseCompatibilityGate::check()} می‌دهد و
+ * سه چیز را ثابت می‌کند:
+ *  ۱. تصمیمِ `supported` عیناً همان تصمیمِ {@see DatabaseCompatibilityGate::engine()}
+ *     است — یعنی همان دروازه‌ای که مهاجرت 0027 استفاده می‌کند؛ پیش‌بررسیِ
+ *     فعال‌سازی نمی‌تواند مجموعهٔ مجاز را بازتر یا بسته‌تر از دروازهٔ واقعی
+ *     اعلام کند (MariaDB 11.8.6 / 11.4.12 / 10.6.x و MySQL 5.7 رد می‌شوند).
+ *  ۲. فیلدهای engine/version فقط گزارشِ شواهدند (مثلاً MariaDB 11.8 با
+ *     supported=false و engine=mariadb) و هیچ اثری روی تصمیم ندارند.
+ *  ۳. پیامِ ردِ فعال‌سازی، موتور/نسخهٔ شناسایی‌شده و مجموعهٔ پذیرفته‌شده را با
+ *     واژگانِ عینِ مهاجرت 0027 اعلام می‌کند — تستِ هم‌خوانی، متنِ خودِ فایلِ
+ *     مهاجرت را با همان ثابت می‌سنجد.
+ *
+ * مجموعهٔ مجاز اینجا گسترده نمی‌شود و تستِ سیاستیِ موجود
+ * (CustomRoleArchivalMigrationTest::test_mariadb_118_is_outside_the_verified_gate_and_fails_closed_before_ddl)
+ * دست‌نخورده باقی می‌ماند.
+ */
+final class DatabaseCompatibilityGateActivationCheckTest extends TestCase
+{
+    /**
+     * @return array<string, array{0: string, 1: string, 2: bool, 3: string}>
+     *     version, comment, expected supported, expected reported engine family
+     */
+    public static function matrix(): array
+    {
+        return [
+            'mysql 8.0'             => ['8.0.36', 'MySQL Community Server - GPL', true, DatabaseCompatibilityGate::ENGINE_MYSQL],
+            'mysql 8.4'             => ['8.4.6', 'MySQL Community Server - GPL', true, DatabaseCompatibilityGate::ENGINE_MYSQL],
+            'mariadb 10.11.x'       => ['10.11.19-MariaDB-ubu2404', 'mariadb.org binary distribution', true, DatabaseCompatibilityGate::ENGINE_MARIADB],
+            'mariadb 11.4.13'       => ['11.4.13-MariaDB', 'mariadb.org binary distribution', true, DatabaseCompatibilityGate::ENGINE_MARIADB],
+            'mariadb 11.4.12'       => ['11.4.12-MariaDB', 'mariadb.org binary distribution', false, DatabaseCompatibilityGate::ENGINE_MARIADB],
+            'mariadb 11.8.6 live'   => ['11.8.6-MariaDB', 'mariadb.org binary distribution', false, DatabaseCompatibilityGate::ENGINE_MARIADB],
+            'mariadb 10.6.x'        => ['10.6.16-MariaDB', 'mariadb.org binary distribution', false, DatabaseCompatibilityGate::ENGINE_MARIADB],
+            'mysql 5.7'             => ['5.7.44', 'MySQL Community Server (GPL)', false, DatabaseCompatibilityGate::ENGINE_MYSQL],
+            'empty evidence'        => ['', '', false, DatabaseCompatibilityGate::ENGINE_UNKNOWN],
+            'garbage version'       => ['garbage', '', false, DatabaseCompatibilityGate::ENGINE_UNKNOWN],
+            'garbage with mysql hint' => ['garbage', 'MySQL', false, DatabaseCompatibilityGate::ENGINE_MYSQL],
+            '5.5.5-prefixed mariadb' => ['5.5.5-10.11.2-MariaDB-log', 'mariadb.org binary distribution', true, DatabaseCompatibilityGate::ENGINE_MARIADB],
+        ];
+    }
+
+    /**
+     * تصمیمِ supported دقیقاً همان engine() است؛ engine/version گزارشِ شواهدند.
+     *
+     * @dataProvider matrix
+     */
+    public function testCheckAgreesWithTheMigrationGateAndReportsEvidence(
+        string $version,
+        string $comment,
+        bool $supported,
+        string $engine_family
+    ): void {
+        $result = DatabaseCompatibilityGate::check( $version, $comment );
+
+        self::assertSame( $supported, $result['supported'], 'supported must mirror the verified-set gate: ' . $version );
+        self::assertSame(
+            $supported,
+            DatabaseCompatibilityGate::engine( $version, $comment ) !== null,
+            'check() may never diverge from engine() — the migration-0027 defence in depth stays aligned: ' . $version
+        );
+        self::assertSame( $engine_family, $result['engine'], 'reported engine family for: ' . $version );
+        self::assertSame( trim( $version ), $result['version'], 'the detected version string is reported verbatim: ' . $version );
+        self::assertNotSame( '', $result['reason'], 'a reason is always present' );
+
+        if ( $supported ) {
+            self::assertSame( 'verified database server', $result['reason'] );
+        } else {
+            self::assertSame(
+                'unsupported database server; ' . DatabaseCompatibilityGate::ACCEPTED_SET_WORDING,
+                $result['reason']
+            );
+        }
+    }
+
+    /**
+     * D-ادامهٔ ماتریس — موتورِ «شناسایی‌شده» هیچ‌وقت به معنای پذیرش نیست:
+     * MariaDB 11.8.6 شناسایی و گزارش می‌شود ولی رد.
+     */
+    public function testRejectedEnginesAreStillReportedAsEvidence(): void
+    {
+        $result = DatabaseCompatibilityGate::check( '11.8.6-MariaDB', 'mariadb.org binary distribution' );
+
+        self::assertFalse( $result['supported'] );
+        self::assertSame( DatabaseCompatibilityGate::ENGINE_MARIADB, $result['engine'] );
+        self::assertSame( '11.8.6-MariaDB', $result['version'] );
+    }
+
+    /**
+     * شواهدِ ناخوانا (کوئری ناموفق/فیلد غیررشته‌ای) → fail-closed با همان
+     * موضعِ مهاجرت 0027: «هویت در دسترس نیست؛ از تغییرِ schema خودداری می‌شود».
+     */
+    public function testUnavailableEvidenceFailsClosed(): void
+    {
+        $result = DatabaseCompatibilityGate::unavailable_evidence();
+
+        self::assertFalse( $result['supported'] );
+        self::assertSame( DatabaseCompatibilityGate::ENGINE_UNKNOWN, $result['engine'] );
+        self::assertSame( '', $result['version'] );
+        self::assertSame( 'database server identity is unavailable; refusing schema changes', $result['reason'] );
+    }
+
+    /**
+     * پیامِ ردِ فعال‌سازی: موتور/نسخهٔ شناسایی‌شده + مجموعهٔ پذیرفته‌شده با
+     * واژگانِ مهاجرت 0027 + عبارتِ صریحِ «هیچ‌چیز نصب/نوشته نشده».
+     */
+    public function testActivationRefusalMessageNamesTheEngineVersionAndAcceptedSet(): void
+    {
+        $message = DatabaseCompatibilityGate::activation_refusal_message(
+            DatabaseCompatibilityGate::check( '11.8.6-MariaDB', 'mariadb.org binary distribution' )
+        );
+
+        self::assertStringContainsString( '11.8.6-MariaDB', $message );
+        self::assertStringContainsString( DatabaseCompatibilityGate::ENGINE_MARIADB, $message );
+        self::assertStringContainsString( DatabaseCompatibilityGate::ACCEPTED_SET_WORDING, $message );
+        self::assertStringContainsString( 'no CPMS roles, database tables, options or scheduled events have been created', $message );
+    }
+
+    public function testActivationRefusalMessageForUnavailableEvidenceStillNamesTheAcceptedSet(): void
+    {
+        $message = DatabaseCompatibilityGate::activation_refusal_message( DatabaseCompatibilityGate::unavailable_evidence() );
+
+        self::assertStringContainsString( 'database server identity is unavailable', $message );
+        self::assertStringContainsString( DatabaseCompatibilityGate::ACCEPTED_SET_WORDING, $message );
+    }
+
+    /**
+     * هم‌خوانیِ واژگان با مهاجرت 0027 — همان الگوی تستِ پاریتیِ موجود: متنِ
+     * خودِ فایلِ مهاجرت باید همان عبارتِ مجموعهٔ پذیرفته‌شده را داشته باشد.
+     * اگر کسی یکی از دو طرف را عوض کند، این تست می‌شکند.
+     */
+    public function testAcceptedSetWordingMatchesMigration0027Source(): void
+    {
+        $path   = dirname( __DIR__, 2 ) . '/src/Migrations/2026_10_13_0027_custom_role_archival.php';
+        $source = (string) file_get_contents( $path );
+
+        self::assertStringContainsString(
+            DatabaseCompatibilityGate::ACCEPTED_SET_WORDING,
+            $source,
+            'the activation refusal must reuse migration 0027\'s exact accepted-set wording'
+        );
+    }
+
+    /**
+     * @return array<string, array{0: string, 1: string, 2: string}>
+     */
+    public static function runtimeEvidenceMatrix(): array
+    {
+        return [
+            'supported mysql 8.0'           => ['8.0.36', 'MySQL Community Server - GPL', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED],
+            'supported mariadb 10.11'       => ['10.11.19-MariaDB-ubu2404', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED],
+            'supported mariadb 11.4.13'     => ['11.4.13-MariaDB', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED],
+            'supported 5.5.5-prefixed'      => ['5.5.5-10.11.2-MariaDB-log', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED],
+            'unsupported mariadb 11.8.6'    => ['11.8.6-MariaDB', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported mariadb 11.4.12'   => ['11.4.12-MariaDB', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported mariadb 10.6.16'   => ['10.6.16-MariaDB', 'mariadb.org binary distribution', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported mysql 5.7'         => ['5.7.44', 'MySQL Community Server (GPL)', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported mysql 9.0'         => ['9.0.1', 'MySQL Community Server - GPL', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported sqlite'            => ['3.45.0', 'SQLite', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unsupported postgresql'        => ['16.2', 'PostgreSQL', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNSUPPORTED],
+            'unreadable empty'              => ['', '', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+            'unreadable garbage'            => ['garbage', '', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+            'unreadable garbage mysql hint' => ['garbage', 'MySQL', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+            'unreadable maria without ver'  => ['MariaDB-custom', 'MariaDB', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+            'unreadable stripped comment'   => ['8.0.36', '', DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE],
+        ];
+    }
+
+    /**
+     * F2 — تفکیکِ دقیقِ «پشتیبانی‌شده» / «با شواهدِ خوانا پشتیبانی‌نشده» / «شواهدِ ناخوانا»
+     * بدونِ بازکردنِ مجموعهٔ مجازِ فعال‌سازی یا مهاجرت 0027.
+     *
+     * @dataProvider runtimeEvidenceMatrix
+     */
+    public function testClassifyRuntimeEvidenceDistinguishesPositivelyUnsupportedFromUnreadable(
+        string $version,
+        string $comment,
+        string $expected_status
+    ): void {
+        self::assertSame(
+            $expected_status,
+            DatabaseCompatibilityGate::classify_runtime_evidence( $version, $comment ),
+            'runtime evidence classification mismatch for: ' . $version . ' / ' . $comment
+        );
+
+        $checked = DatabaseCompatibilityGate::check( $version, $comment );
+        self::assertSame( $expected_status, $checked['runtime_evidence'] );
+
+        if ( $expected_status !== DatabaseCompatibilityGate::RUNTIME_EVIDENCE_SUPPORTED ) {
+            self::assertFalse( $checked['supported'], 'activation check stays fail-closed on both unsupported and unreadable evidence' );
+        }
+    }
+
+    public function testUnavailableEvidenceCarriesUnreadableRuntimeStatus(): void
+    {
+        $unavailable = DatabaseCompatibilityGate::unavailable_evidence();
+        self::assertSame( DatabaseCompatibilityGate::RUNTIME_EVIDENCE_UNREADABLE, $unavailable['runtime_evidence'] );
+        self::assertFalse( $unavailable['supported'] );
+    }
+
+    public function testTestSeamGuardRejectsProductionContextsAndNonTestCallers(): void
+    {
+        $tests_root  = dirname( __DIR__, 2 ) . '/tests';
+        $worker_file = $tests_root . '/bin/refused-activation-worker.php';
+        $prod_file   = dirname( __DIR__, 2 ) . '/src/Bootstrap/App.php';
+
+        // Never allowed on web SAPIs, even if test classes or paths were present.
+        foreach ( [ 'fpm-fcgi', 'apache2handler', 'cgi-fcgi', 'litespeed' ] as $web_sapi ) {
+            self::assertFalse(
+                \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                    $web_sapi,
+                    true,
+                    self::class,
+                    __FILE__,
+                    $tests_root
+                ),
+                "web SAPI {$web_sapi} must never be allowed to use *_for_tests seams"
+            );
+        }
+
+        // Never allowed on CLI when PHPUnit / WP test suite runtime is absent (e.g. wp-cli, bin/cpms).
+        self::assertFalse(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                false,
+                self::class,
+                __FILE__,
+                $tests_root
+            )
+        );
+
+        // Never allowed when the caller is neither in ClinicCore\Tests\* nor under tests/.
+        self::assertFalse(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                'ClinicCore\\Bootstrap\\App',
+                $prod_file,
+                $tests_root
+            )
+        );
+        // Never allowed even if a file outside tests/ spoofs the ClinicCore\Tests\ namespace.
+        self::assertFalse(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                'ClinicCore\\Tests\\SpoofedOutsideTestsDir',
+                $prod_file,
+                $tests_root
+            )
+        );
+        // Never allowed when tests/ directory does not exist (packaged release zip).
+        self::assertFalse(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                self::class,
+                __FILE__,
+                $tests_root . '-nonexistent-release-dir'
+            )
+        );
+
+        // Allowed for genuine PHPUnit test classes and isolated workers inside tests/.
+        self::assertTrue(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                self::class,
+                __FILE__,
+                $tests_root
+            )
+        );
+        self::assertTrue(
+            \ClinicCore\Bootstrap\App::can_use_test_seam_frame(
+                'cli',
+                true,
+                null,
+                $worker_file,
+                $tests_root
+            )
+        );
+    }
+
+    public function testSetDbCompatibilityProbeForTestsRejectsNonTestCallerAtRuntime(): void
+    {
+        $rogue_script = tempnam( sys_get_temp_dir(), 'cpms-rogue-caller-' );
+        self::assertIsString( $rogue_script );
+        file_put_contents(
+            $rogue_script,
+            "<?php\nreturn static function (): void {\n"
+            . "    \\ClinicCore\\Bootstrap\\App::set_db_compatibility_probe_for_tests( static fn (): array => [ 'supported' => true ] );\n"
+            . "};\n"
+        );
+
+        try {
+            /** @var \Closure():void $rogue_call */
+            $rogue_call = require $rogue_script;
+            $this->expectException( \LogicException::class );
+            $rogue_call();
+        } finally {
+            @unlink( $rogue_script );
+        }
+    }
+}

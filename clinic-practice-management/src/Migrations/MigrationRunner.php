@@ -188,6 +188,44 @@ final class MigrationRunner
     }
 
     /**
+     * بررسیِ فقط‌خواندنیِ وجودِ مهاجرتِ اعمال‌نشده (بدونِ هیچ DDL یا ساختِ جدول).
+     *
+     * اگر جدولِ ledger وجود نداشته باشد یا هر یک از فایل‌های مهاجرتِ ارائه‌شده
+     * در ledger ثبت نشده باشد، مقدار `true` برمی‌گرداند.
+     */
+    public function has_pending_migrations(): bool {
+        $files = $this->migrationFiles();
+        if ( array() === $files ) {
+            return false;
+        }
+
+        $table  = $this->db->table( self::SCHEMA_TABLE );
+        $exists = $this->db->fetchValue(
+            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = %s',
+            array( $table )
+        );
+        if ( (int) $exists <= 0 ) {
+            return true;
+        }
+
+        $rows    = $this->db->fetchAll( 'SELECT version FROM ' . $table );
+        $applied = array();
+        foreach ( $rows as $row ) {
+            if ( isset( $row['version'] ) && is_string( $row['version'] ) ) {
+                $applied[ $row['version'] ] = true;
+            }
+        }
+
+        foreach ( $files as $file ) {
+            if ( ! isset( $applied[ $this->versionOf( $file['name'] ) ] ) ) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * @return list<array{name: string, path: string}>
      */
     private function migrationFiles(): array
