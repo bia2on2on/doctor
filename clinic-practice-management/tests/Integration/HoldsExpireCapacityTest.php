@@ -40,6 +40,23 @@ final class HoldsExpireCapacityTest extends WP_UnitTestCase
     /** @var list<int> */
     private array $createdHoldIds = [];
 
+    /**
+     * The fixture inserts must fail loudly. `$wpdb->query()` returns false on a
+     * SQL error (for example a NOT NULL violation) while the test used to keep
+     * going and fail on a later, unrelated assertion. This surfaces the driver
+     * message at the exact statement that broke.
+     */
+    private function mustQuery( string $sql ): void
+    {
+        global $wpdb;
+        $before = $wpdb->last_error;
+        $ok     = $wpdb->query( $sql );
+        if ( $ok === false ) {
+            self::fail( 'fixture query failed: ' . ( $wpdb->last_error !== '' ? $wpdb->last_error : 'wpdb returned false without an error message' ) . ' | SQL: ' . $sql );
+        }
+        unset( $before );
+    }
+
     protected function setUp(): void
     {
         parent::setUp();
@@ -50,11 +67,33 @@ final class HoldsExpireCapacityTest extends WP_UnitTestCase
         $now  = App::db()->nowUtcSql();
         $slug = 'holds-expire-' . wp_generate_password( 8, false, false );
 
+        // Clinics belong to an Organization: migration 0010 makes
+        // cpms_clinics.organization_id BIGINT UNSIGNED NOT NULL with a FK to
+        // cpms_organizations, and seeds a default Organization row. Reuse that
+        // seeded row (as every other Integration test does) instead of omitting
+        // the column — an insert without it violates NOT NULL and never persists.
+        $orgId = (int) $wpdb->get_var( 'SELECT id FROM ' . $wpdb->prefix . 'cpms_organizations ORDER BY id LIMIT 1' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        if ( $orgId <= 0 ) {
+            $this->mustQuery(
+                $wpdb->prepare(
+                    'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at)
+                     VALUES (%s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'Holds Expire Org',
+                    $slug . '-org',
+                    'active',
+                    $now,
+                    $now
+                )
+            );
+            $orgId = (int) $wpdb->insert_id;
+        }
+
         // Clinic خودِ تست — نه clinic_id = 1.
-        $wpdb->query(
+        $this->mustQuery(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (name, slug, timezone, created_at, updated_at)
-                 VALUES (%s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at)
+                 VALUES (%d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $orgId,
                 'Holds Expire Clinic',
                 $slug,
                 'Asia/Tehran',
@@ -63,10 +102,10 @@ final class HoldsExpireCapacityTest extends WP_UnitTestCase
             )
         );
         $this->clinicId = (int) $wpdb->insert_id;
-        self::assertGreaterThan( 0, $this->clinicId, 'the test must persist its own Clinic' );
+        self::assertGreaterThan( 0, $this->clinicId, 'the test must persist its own Clinic — organization_id is NOT NULL since migration 0010' );
 
         // Location خودِ تست (is_primary = 0 تا با fixture مشترک تعارض نکند).
-        $wpdb->query(
+        $this->mustQuery(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_locations
                      (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
@@ -82,7 +121,7 @@ final class HoldsExpireCapacityTest extends WP_UnitTestCase
         $this->locationId = (int) $wpdb->insert_id;
         self::assertGreaterThan( 0, $this->locationId, 'the test must persist its own Location' );
 
-        $wpdb->query(
+        $this->mustQuery(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
                      (clinic_id, full_name, is_active, created_at, updated_at)
@@ -156,7 +195,7 @@ final class HoldsExpireCapacityTest extends WP_UnitTestCase
         $now  = App::db()->nowUtcSql();
         $date = gmdate( 'Y-m-d', time() + 86400 );
 
-        $wpdb->query(
+        $this->mustQuery(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
                      (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
@@ -174,7 +213,7 @@ final class HoldsExpireCapacityTest extends WP_UnitTestCase
         self::assertGreaterThan( 0, $slotId, 'slot must persist' );
         $this->createdSlotIds[] = $slotId;
 
-        $wpdb->query(
+        $this->mustQuery(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_slot_holds
                      (clinic_id, slot_id, holder_wp_user_id, token, expires_at, status, created_at)
