@@ -16,6 +16,11 @@
  *    mismatched session 400).
  *  - M6 patient inbox: clinic-filtered reads, fail-closed multi-link reads,
  *    cross-Clinic markRead as a no-op, and hostile ambient ScopeContext.
+ *  - D13 booking guards: hold, reschedule-options and patient reschedule refuse a
+ *    session stamped for another Clinic, leave every counter, hold, appointment
+ *    and idempotency row unchanged, and pass the guard for the matching Clinic.
+ *  - Notification routing by account type (staff role, linked user without role,
+ *    patient role without link, multi-Clinic without marker, resolved-Clinic markRead).
  *
  * Application-password exclusion is covered in the pure-PHP Unit suite
  * (PatientSessionScopeUnitTest) through the app_password_check seam, because
@@ -413,6 +418,264 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
     }
 
     // =================================================================
+    // D13 — booking operations under a session stamped for another Clinic.
+    // Each guard runs before any write, so a refused call must leave the slot
+    // counters, the appointment row, the hold rows and the idempotency rows
+    // exactly as they were. The positive control in each test uses a session
+    // stamped for the slot's own Clinic and must pass the same guard.
+    // =================================================================
+
+    public function testHoldOnClinicASlotRefusesSessionStampedForClinicB(): void
+    {
+        $this->buildTwoClinicFixture();
+        $clinicianA = $this->insertClinician($this->clinicA, 'D13 hold A');
+        $uid        = $this->makeUser('d13_hold', RolesAndCapabilities::ROLE_PATIENT);
+        $this->linkPatient($this->clinicA, $this->insertPatient($this->clinicA, 'D13HA'), $uid);
+        $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'D13HB'), $uid);
+        $locationA = $this->locationA;
+        $slotId    = $this->insertOpenSlot($this->clinicA, $locationA, $clinicianA, self::FUTURE_DATE, '11:00');
+        $before    = $this->bookingStateSnapshot([$slotId], []);
+        $service   = App::bookingService();
+
+        // Refused: the session is stamped for Clinic B, the persisted slot is in Clinic A.
+        cpms_test_seed_patient_session($uid, $this->clinicB);
+        $denied = $this->bookingExceptionOf(
+            fn () => $service->hold($uid, $clinicianA, self::FUTURE_DATE, '11:00', $slotId, null, $locationA)
+        );
+        $this->assertScopeRequiredException($denied);
+        self::assertSame(
+            $before,
+            $this->bookingStateSnapshot([$slotId], []),
+            'a refused hold must leave slot counters, hold rows and idempotency rows unchanged.'
+        );
+
+        // Positive control: the same slot with a session stamped for Clinic A passes the guard.
+        cpms_test_seed_patient_session($uid, $this->clinicA);
+        $hold = $service->hold($uid, $clinicianA, self::FUTURE_DATE, '11:00', $slotId, null, $locationA);
+        self::assertNotSame('', (string) ($hold['hold_token'] ?? ''), 'positive control: the matching-Clinic session creates the hold.');
+        self::assertSame(1, (int) $this->slotRow($slotId)['held_count'], 'positive control: exactly one held unit.');
+    }
+
+    public function testRescheduleOptionsOnClinicAAppointmentRefusesSessionStampedForClinicB(): void
+    {
+        $this->buildTwoClinicFixture();
+        $clinicianA = $this->insertClinician($this->clinicA, 'D13 options A');
+        $uid        = $this->makeUser('d13_options', RolesAndCapabilities::ROLE_PATIENT);
+        $patientA   = $this->insertPatient($this->clinicA, 'D13OA');
+        $this->linkPatient($this->clinicA, $patientA, $uid);
+        $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'D13OB'), $uid);
+        $apptId  = $this->insertAppointment($this->clinicA, $this->locationA, $patientA, $clinicianA, self::FUTURE_DATE, '10:00');
+        $slotId  = $this->appointmentSlotId($apptId);
+        $before  = $this->bookingStateSnapshot([$slotId], [$apptId]);
+        $service = App::bookingService();
+
+        // Refused: the appointment belongs to Clinic A, the session is stamped for Clinic B.
+        cpms_test_seed_patient_session($uid, $this->clinicB);
+        $denied = $this->bookingExceptionOf(fn () => $service->reschedule_options($uid, $apptId));
+        $this->assertScopeRequiredException($denied);
+        self::assertSame(
+            $before,
+            $this->bookingStateSnapshot([$slotId], [$apptId]),
+            'refused reschedule-options must leave the appointment row, slot counters and idempotency rows unchanged.'
+        );
+
+        // Positive control: the same appointment with a session stamped for Clinic A passes the guard.
+        cpms_test_seed_patient_session($uid, $this->clinicA);
+        $options = $service->reschedule_options($uid, $apptId);
+        self::assertSame($apptId, (int) ($options['appointment_id'] ?? 0), 'positive control: the matching-Clinic session returns the options for this appointment.');
+    }
+
+    public function testPatientRescheduleOfClinicAAppointmentRefusesSessionStampedForClinicB(): void
+    {
+        $this->buildTwoClinicFixture();
+        $clinicianA = $this->insertClinician($this->clinicA, 'D13 resched A');
+        $uid        = $this->makeUser('d13_resched', RolesAndCapabilities::ROLE_PATIENT);
+        $patientA   = $this->insertPatient($this->clinicA, 'D13RA');
+        $this->linkPatient($this->clinicA, $patientA, $uid);
+        $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'D13RB'), $uid);
+        $apptId       = $this->insertAppointment($this->clinicA, $this->locationA, $patientA, $clinicianA, self::FUTURE_DATE, '10:00');
+        $sourceSlotId = $this->appointmentSlotId($apptId);
+        $destSlotId   = $this->insertOpenSlot($this->clinicA, $this->locationA, $clinicianA, self::FUTURE_DATE, '12:00');
+        $before       = $this->bookingStateSnapshot([$sourceSlotId, $destSlotId], [$apptId]);
+        $service      = App::bookingService();
+
+        // Refused at the source-appointment preflight, before any idempotency claim.
+        cpms_test_seed_patient_session($uid, $this->clinicB);
+        $denied = $this->bookingExceptionOf(
+            fn () => $service->reschedule($uid, $apptId, $clinicianA, self::FUTURE_DATE, '12:00', wp_generate_uuid4(), $destSlotId)
+        );
+        $this->assertScopeRequiredException($denied);
+        self::assertSame(
+            $before,
+            $this->bookingStateSnapshot([$sourceSlotId, $destSlotId], [$apptId]),
+            'a refused patient reschedule must leave the appointment row, both slot counters and idempotency rows unchanged.'
+        );
+
+        // Positive control: the same reschedule with a session stamped for Clinic A passes the guard and moves the booking.
+        cpms_test_seed_patient_session($uid, $this->clinicA);
+        $result = $service->reschedule($uid, $apptId, $clinicianA, self::FUTURE_DATE, '12:00', wp_generate_uuid4(), $destSlotId);
+        self::assertSame($apptId, (int) $result['previous_appointment_id'], 'positive control: the replacement points back at the source appointment.');
+        self::assertNotSame($apptId, (int) $result['appointment_id'], 'positive control: a replacement appointment is created.');
+        self::assertSame(0, (int) $this->slotRow($sourceSlotId)['booked_count'], 'positive control: the source slot is released.');
+        self::assertSame(1, (int) $this->slotRow($destSlotId)['booked_count'], 'positive control: the destination slot is booked.');
+    }
+
+    // =================================================================
+    // Notification routing by account type (merged tree). These tests
+    // document the current behaviour; PR #326 body, section 3a.
+    // =================================================================
+
+    public function testStaffRoleWithActivePatientLinkTakesStaffPath(): void
+    {
+        $this->buildTwoClinicFixture();
+        $uid       = $this->makeUser('n_staff_link', RolesAndCapabilities::ROLE_SECRETARY);
+        $patientId = $this->insertPatient($this->clinicA, 'NSL');
+        $this->linkPatient($this->clinicA, $patientId, $uid);
+        $service       = App::notificationService();
+        $patientNotif  = (int) $service->publishToPatient($this->clinicA, $patientId, 'appt_reminder', $this->apptVars(), null);
+        $staffNotif    = (int) $service->publishToUser($this->clinicA, $uid, 'report_export_ready', $this->reportVars(), null);
+        self::assertGreaterThan(0, $patientNotif, 'fixture: patient-addressed notification is published.');
+        self::assertGreaterThan(0, $staffNotif, 'fixture: user-addressed notification is published.');
+
+        // Without an ambient scope the staff path resolves App::scope(), which fails closed on a
+        // multi-Clinic install. The patient path would have resolved the single linked Clinic.
+        $this->assertScopeRequired(static fn () => $service->inbox($uid, false, 20));
+
+        ScopeContext::set(ClinicScope::forClinic($this->clinicA));
+        try {
+            $ids = $this->inboxIds($uid);
+            self::assertContains($staffNotif, $ids, 'staff path lists the staff-addressed notification.');
+            self::assertNotContains($patientNotif, $ids, 'staff path does not list the patient-addressed notification.');
+            self::assertSame(0, $service->markRead($uid, [$patientNotif], false), 'staff path cannot mark a patient-addressed row.');
+            self::assertSame(1, $service->markRead($uid, [$staffNotif], false), 'staff path marks its own staff-addressed row.');
+        } finally {
+            ScopeContext::clear();
+        }
+        self::assertNull($this->readAt($patientNotif), 'the patient-addressed row stays unread.');
+        self::assertNotNull($this->readAt($staffNotif), 'the staff-addressed row is read.');
+    }
+
+    public function testLinkedUserWithoutPatientOrStaffRoleFollowsAmbientScope(): void
+    {
+        $this->buildTwoClinicFixture();
+        $uid       = $this->makeUser('n_bare_link', 'subscriber');
+        $patientId = $this->insertPatient($this->clinicA, 'NBL');
+        $this->linkPatient($this->clinicA, $patientId, $uid);
+        $service      = App::notificationService();
+        $patientNotif = (int) $service->publishToPatient($this->clinicA, $patientId, 'appt_reminder', $this->apptVars(), null);
+        $staffNotif   = (int) $service->publishToUser($this->clinicA, $uid, 'report_export_ready', $this->reportVars(), null);
+
+        // No ambient ScopeContext: patient path (the user has one linked Clinic).
+        $ids = $this->inboxIds($uid);
+        self::assertContains($patientNotif, $ids, 'no ambient scope: patient path lists the linked patient notification.');
+        self::assertNotContains($staffNotif, $ids, 'no ambient scope: patient path does not list the user-addressed notification.');
+
+        // With an ambient ScopeContext: staff path (current behaviour; the ambient scope decides).
+        ScopeContext::set(ClinicScope::forClinic($this->clinicA));
+        try {
+            $ids = $this->inboxIds($uid);
+            self::assertContains($staffNotif, $ids, 'ambient scope: staff path lists the user-addressed notification.');
+            self::assertNotContains($patientNotif, $ids, 'ambient scope: staff path does not list the patient notification.');
+        } finally {
+            ScopeContext::clear();
+        }
+    }
+
+    public function testPatientRoleWithoutActiveLinkTakesPatientPathAndSeesNothing(): void
+    {
+        $this->buildTwoClinicFixture();
+        $service = App::notificationService();
+
+        // (1) Patient role, no link at all.
+        $uid        = $this->makeUser('n_patient_nolink', RolesAndCapabilities::ROLE_PATIENT);
+        $staffNotif = (int) $service->publishToUser($this->clinicA, $uid, 'report_export_ready', $this->reportVars(), null);
+        self::assertGreaterThan(0, $staffNotif, 'fixture: user-addressed notification is published.');
+
+        // No exception and empty results: the patient path with zero links. The staff path
+        // would have thrown here, because a multi-Clinic install has no implicit scope.
+        $result = $service->inbox($uid, false, 20);
+        self::assertSame([], $result['notifications'], 'zero-link patient: inbox is empty.');
+        self::assertSame(0, (int) $result['unread_count']);
+        self::assertSame(0, $service->lastId($uid), 'zero-link patient: lastId is 0.');
+        $since = $service->since($uid, 0);
+        self::assertSame([], $since['notifications'], 'zero-link patient: since is empty.');
+        self::assertSame(0, (int) $since['last_id']);
+        // markRead resolves a Clinic for writes, so a zero-link patient fails closed here.
+        $this->assertScopeRequired(static fn () => $service->markRead($uid, [$staffNotif], false));
+        self::assertNull($this->readAt($staffNotif), 'refused markRead leaves the row unread.');
+
+        // (2) Patient role, link to an inactive patient: a Clinic resolves, but no active patient does.
+        $uid2            = $this->makeUser('n_patient_inactive', RolesAndCapabilities::ROLE_PATIENT);
+        $inactivePatient = $this->insertPatient($this->clinicA, 'NIN');
+        $this->linkPatient($this->clinicA, $inactivePatient, $uid2);
+        App::db()->execute(
+            'UPDATE ' . App::db()->table('cpms_patients') . ' SET status = %s WHERE id = %d',
+            ['inactive', $inactivePatient]
+        );
+        $inactiveNotif = (int) $service->publishToPatient($this->clinicA, $inactivePatient, 'appt_reminder', $this->apptVars(), null);
+        self::assertSame([], $this->inboxIds($uid2), 'inactive-link patient: inbox is empty.');
+        self::assertSame(0, $service->markRead($uid2, [$inactiveNotif], false), 'inactive-link patient: markRead changes nothing and does not throw.');
+        self::assertNull($this->readAt($inactiveNotif));
+    }
+
+    public function testMultiClinicPatientWithoutMarkerFailsClosedOnEveryNotificationRead(): void
+    {
+        $this->buildTwoClinicFixture();
+        $uid      = $this->makeUser('n_multi_nomarker', RolesAndCapabilities::ROLE_PATIENT);
+        $patientA = $this->insertPatient($this->clinicA, 'NMA');
+        $this->linkPatient($this->clinicA, $patientA, $uid);
+        $this->linkPatient($this->clinicB, $this->insertPatient($this->clinicB, 'NMB'), $uid);
+        $service = App::notificationService();
+        $notif   = (int) $service->publishToPatient($this->clinicA, $patientA, 'appt_reminder', $this->apptVars(), null);
+        self::assertGreaterThan(0, $notif, 'fixture: patient-addressed notification is published.');
+
+        // No session marker, two linked Clinics: every read and every write throws, never a silent empty result.
+        $this->assertScopeRequired(static fn () => $service->inbox($uid, false, 20));
+        $this->assertScopeRequired(static fn () => $service->since($uid, 0));
+        $this->assertScopeRequired(static fn () => $service->lastId($uid));
+        $this->assertScopeRequired(static fn () => $service->markRead($uid, [], true));
+        $this->assertScopeRequired(static fn () => $service->markRead($uid, [$notif], false));
+        self::assertNull($this->readAt($notif), 'refused markRead leaves the row unread.');
+    }
+
+    public function testMarkReadAllInResolvedClinicMarksEveryActiveLinkedPatientThere(): void
+    {
+        $this->buildTwoClinicFixture();
+        $uid       = $this->makeUser('n_resolved_all', RolesAndCapabilities::ROLE_PATIENT);
+        $a1        = $this->insertPatient($this->clinicA, 'RA1');
+        $a2        = $this->insertPatient($this->clinicA, 'RA2');
+        $a3        = $this->insertPatient($this->clinicA, 'RA3');
+        $b1        = $this->insertPatient($this->clinicB, 'RB1');
+        $unlinked  = $this->insertPatient($this->clinicA, 'RX');
+        $this->linkPatient($this->clinicA, $a1, $uid);
+        $this->linkPatient($this->clinicA, $a2, $uid);
+        $this->linkPatient($this->clinicA, $a3, $uid);
+        $this->linkPatient($this->clinicB, $b1, $uid);
+        App::db()->execute(
+            'UPDATE ' . App::db()->table('cpms_patients') . ' SET status = %s WHERE id = %d',
+            ['inactive', $a3]
+        );
+
+        $nA1 = $this->publishTo($this->clinicA, $a1);
+        $nA2 = $this->publishTo($this->clinicA, $a2);
+        $nA3 = $this->publishTo($this->clinicA, $a3);
+        $nB1 = $this->publishTo($this->clinicB, $b1);
+        $nX  = $this->publishTo($this->clinicA, $unlinked);
+
+        // Clinic resolved by the session marker (current: Clinic A is a live link).
+        cpms_test_seed_patient_session($uid, $this->clinicA);
+        $changed = App::notificationService()->markRead($uid, [], true);
+
+        // Documented behaviour: all active linked patients of the resolved Clinic, not only the primary one.
+        self::assertSame(2, $changed, 'resolved Clinic A marks the two active linked patients there.');
+        self::assertNotNull($this->readAt($nA1), 'active linked patient A1 is marked.');
+        self::assertNotNull($this->readAt($nA2), 'active linked patient A2 is marked.');
+        self::assertNull($this->readAt($nA3), 'linked but inactive patient A3 is not marked.');
+        self::assertNull($this->readAt($nB1), 'the linked patient in Clinic B is not marked.');
+        self::assertNull($this->readAt($nX), 'an unlinked patient in Clinic A is not marked.');
+    }
+
+    // =================================================================
     // Helpers
     // =================================================================
 
@@ -751,5 +1014,141 @@ final class PatientSessionScopeIntegrationTest extends WP_UnitTestCase
     private function assertScopeRequired(callable $fn): void
     {
         self::assertSame('CLINIC_SCOPE_REQUIRED', $this->errorCodeOf($fn));
+    }
+
+    /**
+     * Open, unbooked slot (capacity 1). Unlike insertAppointment(), no appointment is created.
+     */
+    private function insertOpenSlot(int $clinicId, int $locationId, int $clinicianId, string $date, string $time): int
+    {
+        $now = App::db()->nowUtcSql();
+
+        return $this->insertFixtureRow('cpms_schedule_slots', [
+            'clinic_id'      => $clinicId,
+            'location_id'    => $locationId,
+            'clinician_id'   => $clinicianId,
+            'slot_date'      => $date,
+            'slot_time'      => $time,
+            'duration_min'   => 20,
+            'capacity'       => 1,
+            'booked_count'   => 0,
+            'held_count'     => 0,
+            'is_open'        => 1,
+            'generated_from' => 'manual',
+            'created_at'     => $now,
+            'updated_at'     => $now,
+        ], 'open slot ' . $time);
+    }
+
+    private function appointmentSlotId(int $apptId): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT slot_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
+            [$apptId]
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function slotRow(int $slotId): array
+    {
+        $row = App::db()->fetchRow(
+            'SELECT * FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d',
+            [$slotId]
+        );
+        self::assertIsArray($row, 'fixture: slot row exists.');
+
+        return $row;
+    }
+
+    /**
+     * Full rows for the given slots and appointments, plus the table-level counts that a
+     * refused booking call must not change (hold rows, appointment rows, idempotency rows).
+     *
+     * @param list<int> $slotIds
+     * @param list<int> $apptIds
+     * @return array<string, mixed>
+     */
+    private function bookingStateSnapshot(array $slotIds, array $apptIds): array
+    {
+        $db    = App::db();
+        $state = [
+            'slots'           => [],
+            'appointments'    => [],
+            'hold_rows'       => 0,
+            'appointment_rows' => 0,
+            'idempotency_rows' => 0,
+        ];
+        foreach ($slotIds as $slotId) {
+            $state['slots'][$slotId] = $db->fetchRow(
+                'SELECT * FROM ' . $db->table('cpms_schedule_slots') . ' WHERE id = %d',
+                [$slotId]
+            );
+        }
+        foreach ($apptIds as $apptId) {
+            $state['appointments'][$apptId] = $db->fetchRow(
+                'SELECT * FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+                [$apptId]
+            );
+        }
+        $state['hold_rows']        = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_slot_holds'));
+        $state['appointment_rows'] = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_appointments'));
+        $state['idempotency_rows'] = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_idempotency_keys'));
+
+        return $state;
+    }
+
+    /**
+     * Run a booking call that must be refused and return the BookingException it raised.
+     * A ScopeRequiredException is normalised the same way BookingService does.
+     */
+    private function bookingExceptionOf(callable $fn): BookingException
+    {
+        try {
+            $fn();
+        } catch (BookingException $e) {
+            return $e;
+        } catch (ScopeRequiredException $e) {
+            return BookingException::of($e->apiCode(), $e->getMessage(), $e->httpStatus(), $e->getData());
+        }
+
+        self::fail('expected a refused booking call, but it returned.');
+    }
+
+    private function assertScopeRequiredException(BookingException $e): void
+    {
+        self::assertSame('CLINIC_SCOPE_REQUIRED', $e->errorCode);
+        self::assertSame(400, $e->httpStatus);
+        self::assertSame(PatientSessionScope::SCOPE_REQUIRED_MESSAGE, $e->getMessage());
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function reportVars(): array
+    {
+        return [
+            'report_label' => 'Test report',
+            'expires_at'   => '1405-01-01',
+        ];
+    }
+
+    private function publishTo(int $clinicId, int $patientId): int
+    {
+        return (int) App::notificationService()->publishToPatient($clinicId, $patientId, 'appt_reminder', $this->apptVars(), null);
+    }
+
+    /**
+     * read_at of one notification row; null means unread.
+     */
+    private function readAt(int $notificationId): ?string
+    {
+        $value = App::db()->fetchValue(
+            'SELECT read_at FROM ' . App::db()->table('cpms_notifications') . ' WHERE id = %d',
+            [$notificationId]
+        );
+
+        return null === $value ? null : (string) $value;
     }
 }
