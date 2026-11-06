@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Jobs;
 
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use RuntimeException;
 
 /**
  * آزادسازی Holdهای منقضی (Job: holds.expire — هر دقیقه).
@@ -43,7 +44,7 @@ final class HoldsExpireHandler
             $this->db->transactional(function () use ($hold, $now, &$freed) {
                 // وضعیت‌گذاری شرطی (اگر در این لحظه convert شده باشد، اثر نمی‌کند).
                 // B2: تعداد ردیف‌های اثرگرفته مرجع است، نه bool نتیجهٔ query.
-                $changed = $this->db->execute(
+                $changed = $this->guardedWrite(
                     'UPDATE ' . $this->db->table('cpms_slot_holds') .
                     ' SET status = %s WHERE id = %d AND status = %s AND expires_at <= %s',
                     ['expired', (int) $hold['id'], 'active', $now]
@@ -52,8 +53,9 @@ final class HoldsExpireHandler
                     // هیچ ردیفی تغییر نکرد ⇒ ظرفیت قبلاً آزاد شده؛ دوباره کم نکن.
                     return;
                 }
-                // آزادسازی ظرفیت (کاهش اتمیک با کف صفر)
-                $this->db->execute(
+                // آزادسازی ظرفیت (کاهش اتمیک با کف صفر). صفرِ موجه اینجا یعنی
+                // slot از قبل روی کف صفر بوده؛ Hold باز هم منقضی می‌شود.
+                $this->guardedWrite(
                     'UPDATE ' . $this->db->table('cpms_schedule_slots') .
                     ' SET held_count = GREATEST(held_count - 1, 0), updated_at = %s
                      WHERE id = %d AND held_count > 0',
@@ -64,5 +66,42 @@ final class HoldsExpireHandler
         }
 
         return $freed;
+    }
+
+    /**
+     * نوشتنِ محافظت‌شده: تعداد ردیف‌های اثرگرفته را برمی‌گرداند، اما یک «خطای
+     * واقعی DB» را با «صفر ردیفِ اثرگرفته» اشتباه نمی‌گیرد.
+     *
+     * چرا لازم است: `CpmsDb::execute()` در حالت soft هر خطای SQL را به `0`
+     * تبدیل می‌کند (فقط در Strict mode Exception می‌دهد). اگر خطا را همان
+     * «صفر ردیف» ببینیم، یک Hold دست‌نخورده «منقضی» شمرده نمی‌شود ولی
+     * آزادسازیِ ظرفیت و شمارشِ `$freed` ممکن است بی‌صدا جلو برود یا شکست
+     * پنهان بماند. اینجا خطا → Exception → `transactional()` همان Hold را
+     * ROLLBACK می‌کند، `$freed` افزایش نمی‌یابد و Hold در وضعیت active
+     * می‌ماند تا اجرای بعدی دوباره تلاش کند.
+     *
+     * چطور خطا از صفر-ردیف تشخیص داده می‌شود، بدون تغییر معنایی برای سایر
+     * فراخوان‌های `CpmsDb`: قرارداد مستند `wpdb` می‌گوید «موفقیت خطای قبلی را
+     * پاک می‌کند» و خودِ `wpdb::query()` پیش از اجرا `flush()` می‌زند که
+     * `last_error` را خالی می‌کند. پس بعد از هر فراخوانی، `last_error` اگر
+     * غیرخالی باشد متعلق به همین عبارت است. تنها مورد مرزی: کوئری‌ای که
+     * `wpdb` پیش از `flush()` رد می‌کند (کوئریِ خالی، یا دادهٔ نامعتبرِ
+     * غیرقابل‌پاک‌سازی) و `last_error` را دست نمی‌زند؛ آن حالت باقی‌ماندهٔ
+     * قدیمی است و محافظه‌کارانه خطا فرض می‌شود (Hold فعال می‌ماند، هرگز
+     * ظرفیتِ اضافه آزاد نمی‌شود). برای هر کوئریِ واقعاً اجراشده رفتار
+     * `execute()` دست‌نخورده است.
+     *
+     * @param array<int, mixed> $params
+     */
+    private function guardedWrite( string $sql, array $params ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- camelCase matches the PSR-4 class convention used across this file.
+        $wpdb    = $this->db->wpdb();
+        $before  = $wpdb->last_error;
+        $changed = $this->db->execute( $sql, $params );
+        $error   = $wpdb->last_error;
+        if ( $error === '' || $error === $before ) {
+            return $changed;
+        }
+
+        throw new RuntimeException( 'holds.expire write failed: ' . $error );
     }
 }

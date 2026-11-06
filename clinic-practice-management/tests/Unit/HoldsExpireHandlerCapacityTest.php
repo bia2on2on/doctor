@@ -330,6 +330,87 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
         self::assertSame(0, $this->heldCount(1), 'held_count stayed at the floor of zero, not -1');
     }
 
+    /**
+     * RED — a real DB error in the hold-status UPDATE must not be read as
+     * "zero rows changed". The hold stays active, capacity is untouched and
+     * the handler reports an error instead of a silent no-op.
+     */
+    public function testHoldStatusUpdateErrorAbortsWithoutReleasingCapacity(): void
+    {
+        $this->seedSlot(1, 1, 0, 1);
+        $this->seedHold(10, 1, 'active', $this->past());
+        $this->wpdb->writeFault = static function (string $sql): ?string {
+            return strpos($sql, 'cpms_slot_holds') !== false ? 'simulated deadlock on holds' : null;
+        };
+
+        $freed = $this->runExpectingFailure();
+
+        self::assertSame(0, $freed, 'a failed run must not report a freed hold');
+        self::assertSame(1, $this->heldCount(1), 'capacity must not be released on a DB error');
+        self::assertSame('active', $this->holdStatus(10), 'the hold stays active so a later run retries it');
+    }
+
+    /**
+     * RED — a real DB error in the slot-release UPDATE must roll the whole hold
+     * back, including the status change that already succeeded in this
+     * transaction. Otherwise the hold would be marked expired while the slot
+     * still counts it: capacity silently lost, never retried.
+     */
+    public function testSlotReleaseUpdateErrorRollsBackTheHoldStatusChange(): void
+    {
+        $this->seedSlot(1, 1, 0, 1);
+        $this->seedHold(10, 1, 'active', $this->past());
+        $this->wpdb->writeFault = static function (string $sql): ?string {
+            return strpos($sql, 'cpms_schedule_slots') !== false ? 'simulated deadlock on slots' : null;
+        };
+
+        $freed = $this->runExpectingFailure();
+
+        self::assertSame(0, $freed, 'a failed run must not report a freed hold');
+        self::assertSame(1, $this->heldCount(1), 'the slot counter must be exactly what it was');
+        self::assertSame('active', $this->holdStatus(10), 'the status change must have been rolled back');
+    }
+
+    /**
+     * Positive control for the error path: the same injected fault is removed
+     * and the identical fixture must now expire the hold and free one unit.
+     * Without this, the two tests above could pass for the wrong reason.
+     */
+    public function testRecoveryAfterDbErrorSucceedsOnTheNextRun(): void
+    {
+        $this->seedSlot(1, 1, 0, 1);
+        $this->seedHold(10, 1, 'active', $this->past());
+        $this->wpdb->writeFault = static function (string $sql): ?string {
+            return strpos($sql, 'cpms_slot_holds') !== false ? 'simulated deadlock on holds' : null;
+        };
+        self::assertSame(0, $this->runExpectingFailure(), 'the faulty run frees nothing');
+
+        $this->wpdb->writeFault = null;
+        $freed = (new HoldsExpireHandler($this->db))([]);
+
+        self::assertSame(1, $freed, 'the retry frees the hold that stayed active');
+        self::assertSame(0, $this->heldCount(1), 'the retry releases exactly one unit');
+        self::assertSame('expired', $this->holdStatus(10), 'the hold is expired on the retry');
+    }
+
+    /**
+     * Runs the handler and returns the number of holds it reported as freed,
+     * asserting that the run surfaced the injected DB error instead of
+     * swallowing it.
+     */
+    private function runExpectingFailure(): int
+    {
+        try {
+            (new HoldsExpireHandler($this->db))([]);
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('holds.expire write failed', $e->getMessage());
+
+            return 0;
+        }
+
+        self::fail('a real DB error must abort the run, not be treated as zero affected rows');
+    }
+
     // ================= stub =================
 
     /**
@@ -354,6 +435,11 @@ namespace {
         public $last_result = [];
         /** @var callable|null runs once, right after the next SELECT returns rows */
         public $afterNextSelect = null;
+        /**
+         * @var callable|null failure injection: receives the SQL about to run and
+         * returns an error message to fail it with, or null to run it normally.
+         */
+        public $writeFault = null;
         /** @var list<mixed> */
         private array $pending = [];
         private \PDO $pdo;
@@ -440,6 +526,18 @@ namespace {
                     }
                     $this->pending = [];
                     return 1;
+                }
+
+                if ($this->writeFault !== null
+                    && preg_match('/^\s*(UPDATE|DELETE|INSERT|REPLACE)\b/i', $sql) === 1) {
+                    $fault = ($this->writeFault)($sql);
+                    if (is_string($fault) && $fault !== '') {
+                        // wpdb contract: the statement fails, last_error is set,
+                        // query() returns false and the row is left untouched.
+                        $this->last_error = $fault;
+                        $this->pending = [];
+                        return false;
+                    }
                 }
 
                 $stmt = $this->run($sql);
