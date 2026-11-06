@@ -3418,6 +3418,10 @@ Applied the five approved corrections on top:
 
 - Verified and corrected the pure-patient boundary: only an account whose sole WordPress role is `cpms_patient` is patient-only; patient+any-other-role remains outside the patient-only redirect policy. Added own/other profile and route coverage, plus an independent App factory rebind test. Removed the pending-migration early return so unsupported-engine requests still run private-storage initialization exactly as `main` did; added an integration assertion for the initializer state while confirming pending schema remains unapplied.
 - Added anonymous REST 503 redaction assertions (no DB version, engine, or accepted-environment wording); because `CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE` itself revealed the reason, anonymous requests now receive generic `CLINIC_SERVICE_UNAVAILABLE` while authenticated diagnostics retain the detailed code (`RuntimeSchemaGate.php`, `docs/api/error-codes.md`). No workflow/composer/migration files changed; no tests removed or weakened.
+
+### [2026-11-06] — PR #325 WPCS-only correction
+
+- Retrieved the exact eight WPCS annotations for `PatientPortalPage.php:101` from the sanitized `ci-wpcs-violations` comment tied to run `42187967025` / head `efc874f9`; corrected only WordPress spacing on that condition, with no intended behavior change. Local PHPCS unavailable in this workspace; workflow-contract, YAML, and companion-isolation checks will be run before push.
 ## 2026-11-06 — CI environment repair (baseline builds, runner OS, browser cache key)
 
 - **Base/verified state:** branch `arena/5375738f-doctor` from `main` `aa94819c0799a59b8f853f1b3958a5644f73e643` (full clone; `git rev-list --count HEAD` = 2770, `--is-shallow-repository` = false). Read `AGENTS.md`, `docs/agent-guide.md`, `docs/governance/engineering-tooling.md`, `docs/governance/project-phase-taxonomy.md`.

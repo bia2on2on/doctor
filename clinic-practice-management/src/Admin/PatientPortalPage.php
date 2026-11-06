@@ -98,7 +98,7 @@ final class PatientPortalPage
             }
         }
         $roles = (array) ($user->roles ?? []);
-        if (!in_array(RolesAndCapabilities::ROLE_PATIENT, $roles, true) || count($roles) !== 1) {
+        if ( ! in_array( RolesAndCapabilities::ROLE_PATIENT, $roles, true ) || count( $roles ) !== 1 ) {
             return false;
         }
 
