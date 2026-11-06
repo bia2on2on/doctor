@@ -45,7 +45,16 @@ env:
 jobs:
   first-practice:
     name: First-practice browser (${{ matrix.database }})
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin (EXPERIMENT — see
+    # docs/decisions/2026-11-06-ci-environment-repair.md).
+    # This is the only lane observed failing at "Apache + mod_php" after apt
+    # succeeded (mod_php on the newer label is php8.5.load while the lane
+    # configures /etc/php/*/apache2/php.ini); the cause is NOT PROVEN — the job
+    # log was not retrievable (see the decision record), so this pin is an
+    # experiment to be read as evidence, not a fix. Because it is unproven, the
+    # lane's own pin is the only thing changed: job name, matrix and every
+    # step are untouched.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     strategy:
       fail-fast: false

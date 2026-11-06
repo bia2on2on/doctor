@@ -52,7 +52,16 @@ jobs:
     env:
       WP_TESTS_DIR: /tmp/wordpress-test-lib
       WP_CORE_DIR: /tmp/wordpress
-      BASELINE_SHA: 9bf84304b2b143138c638fa1ca1d71869aa1e244
+      # Archived Classic V1 baseline = 9bf84304 + ONE build-only commit (E2)
+      # that changes only clinic-practice-management/composer.lock to main's
+      # blob 440c8446. The original commit's locked symfony/filesystem v6.4.45 is
+      # inside an advisory range, so bin/build-release.sh's fail-closed
+      # `composer audit` refused to build the baseline ZIP (both the regression
+      # baseline and the Real HTTP profile baseline). E2 changes no source or
+      # test file, so the archived test selection and the business logic under
+      # measurement are unchanged. See
+      # docs/decisions/2026-11-06-ci-environment-repair.md.
+      BASELINE_SHA: a17a8d7a70598c959d8d726c664ff48f8a27a882
     steps:
       - uses: actions/checkout@v4
         with:
@@ -197,7 +206,16 @@ jobs:
     env:
       WP_DIR: /home/runner/www
       WP_URL: http://localhost:8080
-      BASELINE_SHA: 9bf84304b2b143138c638fa1ca1d71869aa1e244
+      # Archived Classic V1 baseline = 9bf84304 + ONE build-only commit (E2)
+      # that changes only clinic-practice-management/composer.lock to main's
+      # blob 440c8446. The original commit's locked symfony/filesystem v6.4.45 is
+      # inside an advisory range, so bin/build-release.sh's fail-closed
+      # `composer audit` refused to build the baseline ZIP (both the regression
+      # baseline and the Real HTTP profile baseline). E2 changes no source or
+      # test file, so the archived test selection and the business logic under
+      # measurement are unchanged. See
+      # docs/decisions/2026-11-06-ci-environment-repair.md.
+      BASELINE_SHA: a17a8d7a70598c959d8d726c664ff48f8a27a882
     steps:
       - uses: actions/checkout@v4
         with: {fetch-depth: 0}
