@@ -116,9 +116,19 @@ git merge -s ours --no-ff E1 E2   # octopus, accepted by git
 ```
 
 Result: merge commit `7400c9059b229390ca8acd50ca63476f9bb0ff9d` with parents
-`aa94819c…`, E1 and E2. Verified: `git diff aa94819c HEAD` is **empty** (the
-merge's tree `cd6ff252…` is identical to `main`'s tree) and both
-`git merge-base --is-ancestor E1 HEAD` and `… E2 HEAD` succeed.
+`aa94819c…`, E1 and E2. Verified at that merge commit: its own tree
+`cd6ff252…` is identical to `main`'s tree, so `git diff aa94819c <merge>` is
+empty; both `git merge-base --is-ancestor E1 <merge>` and `… E2 <merge>`
+succeed.
+
+**Correction (2026-11-06, post-run).** An earlier version of this record said
+`git diff aa94819c HEAD` is empty *for the branch*. That was true only of the
+merge commit itself. The **final branch head is not an empty diff**: it adds the
+workflow changes and the docs on top of the merge. The accurate statements are
+(i) the merge commit introduces no content change, and (ii) the branch head
+differs from `main` by exactly the files listed in §2 plus this record — and by
+nothing under `clinic-practice-management/`, which is what the companion
+isolation check verifies (§4).
 
 **Consequence that must be stated:** E2's only useful purpose after publication
 is to be an ancestor; when this branch is merged to `main`, **E1 and E2 become
@@ -160,16 +170,32 @@ Nothing here converts an unrun check into a pass.
    `php8.5.load` while the step edits `/etc/php/*/apache2/php.ini` and starts
    Apache) is **not proven**; the pin is recorded as an experiment whose value
    is the evidence it produces.
-5. **The advisory range was not independently verified in the GitHub Advisory
-   Database.** On 2026-11-06 the advisory API returned an empty list for
-   `symfony/filesystem`, and the public advisory search returned no advisory for
-   that package; `symfony/filesystem` `v6.4.50` was released 2026-11-04, i.e.
-   inside the window. The only first-party evidence for the advisory is
-   `composer audit` itself failing on the old lock in CI.
+5. **~~The advisory range was not independently verified.~~ Resolved.** It is
+   advisory **GHSA-6prc-h956-hxjq** ("Filesystem Path Treats Any Prefix Before
+   `://` as a Root, Letting Paths Escape Their Base Directory", severity *high*,
+   published 2026-11-04T11:43:35Z, no CVE assigned): `symfony/filesystem`
+   `>=6, <6.4.50` is vulnerable and `6.4.50` is the patch. That is the range the
+   original report stated. Sources read directly: the repository security
+   advisory `repos/symfony/symfony/security-advisories/GHSA-6prc-h956-hxjq` and
+   the composer-audit feed entry `symfony/filesystem/2026-11-04-18.yaml` in
+   `FriendsOfPHP/security-advisories`. The advisory ID and range were **not**
+   seen in a CPMS job log: job logs remain unreadable from this sandbox (§6), so
+   the link from this advisory to the failing builds rests on the blobs, the
+   range arithmetic and the now-green baseline builds — see §8.
+   Note on why the earlier lookup failed: `GET /advisories?affects=…` and the
+   public advisory search returned nothing for this package on 2026-11-06, while
+   the repository-advisory endpoint and the composer feed do list it.
 6. **`t64` rename path** (the new `install-deps` fallback) has not been
    exercised on a real 26.04 runner.
-7. Responsive smoke on 24.04 with the new key: the cache is a guaranteed miss
-   (`v3`), so the next run is cold for every browser lane.
+7. ~~Responsive smoke on 24.04 with the new key: the cache is a guaranteed miss
+   (`v3`), so the next run is cold for every browser lane.~~ **Corrected after
+   the run — this prediction was wrong.** A `v3` key can only miss where no
+   `v3` entry exists *for that key*. Measured on head `fb63a977`: every browser
+   lane that ran on the `ubuntu-latest` label missed (`cache_hit=false`) and had
+   to provision dependencies, while the demo lane, which had already written a
+   `v3` entry for its own key, hit (`cache_hit=true`). "Cold for every lane" was
+   an overstatement; the observed rule is "cold for every lane whose key had not
+   been saved yet". See §8.
 
 ## 6. Limits of this record's evidence
 
@@ -194,3 +220,156 @@ Nothing here converts an unrun check into a pass.
   distro PHP. That is a separate change with its own evidence.
 - **Follow-up:** once both Ubuntu releases have current Playwright browser
   dependencies, remove the pins and rely on the OS-release cache key alone.
+
+## 8. Post-run evidence (2026-11-06, appended after the first CI cycle)
+
+Head **`fb63a97713ed9e939ee75f2f4888f436060b7a8b`**. Census from the checks API
+at that SHA: **37 checks, all terminal — 35 success / 2 failure / 0 pending.**
+All 9 required contexts green with unchanged names. Everything below is read
+from **annotations, job/step lists, run lists and repository-advisory APIs**;
+job logs stayed unreadable from the authoring sandbox (§6), and that limit
+applies to every statement in this section.
+
+### 8.1 E1 and E2 were sufficient for the baseline builds (proven)
+
+- **Facility matrix (mariadb) and (mysql): pass** (7m34s / 6m48s). The step that
+  used to fail — *"Verify upgrade from schema 0030 and repeat activation"* — is
+  `success`, and the following *"Verify schema + no PHP fatal"* step is
+  `success` too. So the pinned schema-0030 ZIP built from E1 **and** the
+  `baseline-not-0030` assertion did not fire. The 0030 requirement is therefore
+  still enforced, not bypassed.
+- **Classic V1 Regressions (mysql) and (mariadb): pass**, so E2's archived
+  baseline ZIP built as well.
+- This converts the §5.1 inference into an observed outcome for these three
+  lanes: the advisory-bearing lock in the old baseline trees was the blocking
+  factor. It does **not** prove that no other defect exists in those trees —
+  only that the build gate that was red is now green.
+
+### 8.2 Real HTTP profile: attempt 1 network timeout, attempt 2 green
+
+- **Attempt 1** (same head `fb63a977`): failed at *"Build baseline and candidate
+  official ZIPs"*, exit 100, annotation verbatim:
+  `curl error 28 while downloading https://packagist.org/api/security-advisories/: Connection timed out after 10006 milliseconds`.
+  That is the composer audit download path - a network timeout, not an advisory
+  and not a code defect. The downstream
+  `'/tmp/classic-http/baseline.json'` annotation is a consequence.
+- **Attempt 2** (owner re-run of the same run, `run_attempt=2`): the job is
+  `success`; the run's `attempt=2` conclusion is `success`. The job's attempts
+  list shows attempt 1 `failure`, attempt 2 `success`.
+- Not changed in response: the audit stays fail-closed in both baseline and
+  candidate builds. A transient timeout was **not** converted into an ignore
+  rule or a `continue-on-error`.
+- The advisory ID and range were **not** observed in any CPMS job log (logs
+  unreadable); they were established independently in §5.5.
+
+### 8.3 Responsive lane: green on the pinned 24.04 with a cold cache
+
+- *Responsive smoke (Chromium ×4 viewport)*: **pass**, 12m16s.
+- Its Playwright annotation, verbatim (trimmed):
+  `browsers=chromium firefox webkit cache_hit=false deps=installed (bounded apt for exactly Playwright's missing-package list, verified for chromium firefox webkit) [cache miss] seconds=38 builds=chromium-1248 chromium_headless_shell-1248 ffmpeg-1013 firefox-1555 webkit-2370`.
+- So: the lane that had failed closed on all three engines was green on
+  `ubuntu-24.04`, with a **cache miss** and a dependency proof covering **all
+  three** requested browsers. Both the runner pin and the v3 key were in effect.
+- **What this does not show:** that the three-browser set launches on the newer
+  label. No lane asked for three browsers on `ubuntu-latest` in this run, so
+  that is unproven (§8.4).
+
+### 8.4 install-deps fallback: exercised on the newer label, Chromium only
+
+- On every `ubuntu-latest` runner in this run the ladder behaved as designed:
+  `Playwright reports missing system dependencies for chromium` →
+  `the first apt-get install failed or hit its 240s wall-clock cap` →
+  **`the bounded apt install of the parsed list still failed; handing the same
+  browser set (chromium) to 'playwright install-deps' once before failing`** →
+  final `notice` reports `verified for chromium` and the job proceeded.
+  Observed on the demo lane, both First-practice lanes, both Facility lanes and
+  both Disposable-site lanes.
+- **Chromium only.** No lane in this run exercised the fallback with firefox or
+  webkit, and the three-browser combination on the newer label is therefore
+  **unproven**. Do not read the Chromium result as covering three engines.
+- Correction to a related assumption: the runner notices say the label **"will
+  migrate to Ubuntu 26 beginning October 19, 2026"**, i.e. they are
+  future-tense, and `mod_php_enabled=php8.5.load` is reported on runners that
+  still carry that notice. This record does therefore **not** claim those
+  runners were running Ubuntu 26.04. What is recorded is the observed behaviour
+  of the newer label (PHP 8.5 mod_php, missing Playwright system libraries,
+  versioned `php8.3-*` packages absent), which is what the pins address.
+
+### 8.5 The demo lane failed twice at the same step
+
+- Workflow: `.github/workflows/disposable-demo-installer.yml`, job
+  `real-wordpress`, check name *"Real WordPress acceptance (clean WP → CPMS →
+  companion → teardown)"*.
+- **Attempt 1** (job `127570978339`) and **attempt 2** (job `127601112667`), same
+  head `fb63a977`: identical annotation, verbatim:
+  `CPDD_BROWSER | stage=1-2. ZIP installation and activation through wp-admin TimeoutError: Locator.wait_for: Timeout 60000ms exceeded. Call log: - waiting for locator("a[href*='action=activate']").first to be visible`
+- Attempt 2 hit the browser cache (`cache_hit=true`) while attempt 1 missed, and
+  the failure did not move — so a cold/warm browser cache is not the
+  discriminator here.
+- Green reference: `main` push run `41775097740`, same job `success`, same
+  workflow, whose annotation reported `mod_php_enabled=php8.3.load` and
+  `deps=reused (cached browsers launched; system dependencies already present)`.
+  This branch's runs report `php8.5.load` and had to provision dependencies.
+  **That contrast is an association on the recorded evidence, not a proven
+  cause.**
+- Therefore the lane is now pinned to `ubuntu-24.04` as an **EXPERIMENT**
+  (`EXPIRY 2026-12-15`, cause unproven). Its value is the evidence the next run
+  produces: green here and still red on the newer label implicates the image;
+  red here too means the image is not the cause and the pin is removed.
+  No job, step or matrix name was changed.
+
+### 8.6 Merge strategy: a merge commit, never squash or rebase
+
+The workflows resolve their baselines **by SHA**
+(`facility-matrix-acceptance.yml` `BASE_SHA=<E1>`,
+`classic-v1-remediation.yml` `BASELINE_SHA=<E2>`). E1 and E2 exist only as
+merged ancestors of this branch, so the branch must reach `main` with those
+commits preserved:
+
+- **A GitHub "Squash and merge" or a rebase-merge would collapse/rewrite the
+  history and E1/E2 would not be ancestors of `main`**; the next run on `main`
+  would then fail to resolve `f92d5d74…`/`a17a8d7a…` and the Facility and
+  Classic V1 baseline proofs would break again.
+- Required: a **merge commit** (`gh pr merge --merge`), keeping this branch's
+  commits. This is recorded as a merge constraint, not as an authorization to
+  merge: this task does not merge.
+- Also required afterwards: **do not delete branch `arena/5375738f-doctor`**
+  until `main` has run both baseline lanes green at least once after the merge.
+
+### 8.7 What changed in the check census
+
+- Green where the starting list was red: Facility mysql + mariadb; First-practice
+  mysql + mariadb; Responsive smoke; all seven Real WP coexistence lanes;
+  Classic V1 Regressions mysql + mariadb; and (attempt 2) Real HTTP profile.
+- Still red at head `fb63a977`: the demo lane (§8.5). Nothing else.
+- Newly added by this batch: the contract test in §9, which changes no runtime
+  behaviour.
+
+## 9. Second batch (appended): the demo lane pin and the new contract test
+
+- `disposable-demo-installer.yml` `real-wordpress` → `runs-on: ubuntu-24.04`
+  with `EXPERIMENT — EXPIRY 2026-12-15, cause UNPROVEN` and the reasoning in
+  §8.5. **Allowed under the companion-isolation contract**: the script's own
+  docstring and `WORKFLOW_PREFIXES` classify
+  `.github/workflows/disposable-demo-installer.yml` as *lane plumbing*, and its
+  decision function fails only on production↔companion/compatibility mixing. The
+  check was re-run after the edit (§10).
+- New test
+  `test_every_runner_pin_records_an_expiry_and_the_cache_key_separates_os_releases`
+  in `.github/workflows/test_workflow_contracts.py`:
+  (a) every `runs-on: ubuntu-24.04` line in `.github/workflows/*.yml` must have
+  an `EXPIRY YYYY-MM-DD` marker in its own comment block;
+  (b) the composite action's cache key must contain the runner OS release token
+  and the architecture, read from the runner, with the fail-closed text present.
+  It contains **no date comparison**, so it can never start failing because time
+  passed; the date is checked for presence, not compared to today.
+  Verified as a real check by negative control: removing the marker makes it
+  fail (and it is what flagged a missing marker on the pre-existing
+  `third-party-baseline.yml` pin, now annotated there without changing that pin).
+
+## 10. Known side effect of this batch
+
+`third-party-baseline.yml` gained only a comment block (the `EXPIRY 2026-12-15`
+marker) on a pin whose reasoning predates this change. That job was green at
+head `fb63a977` and its behaviour is unchanged; the comment exists so the
+long-lived pin is revisited with the others rather than by inattention.

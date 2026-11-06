@@ -182,7 +182,19 @@ same `matrix.source == 'wordpress_org'` condition.
 Numbers are reported as measured, including any lane where the change is
 neutral or slower.
 
-### 4.1 Measured result (three full matrices on the delivered code)
+### 4.1 Measured result — **HISTORICAL v2 EVIDENCE** (three full matrices on the v2 cache key)
+
+> **Historical, not current.** Everything in §4.1 was measured with the
+> `pw-browsers-v2-<os>-<arch>-<version>-<browser-set>` cache key, i.e. a key that
+> did **not** distinguish runner OS releases. Those numbers describe v2
+> behaviour and must not be quoted as the performance of the current v3 action.
+> Two things changed since: the key gained the runner OS release (`v3`, §2.3), and
+> the dependency proof now runs on cache hits as well as cold misses and always
+> covers the full requested browser set. Consequence measured on head
+> `fb63a977`: with v3 every lane whose key had no saved entry provisioned
+> dependencies (Responsive 38 s of dependency work; the demo lane's browser step
+> hit once its own key had been saved). A v3 re-measurement is **NOT RUN**.
+> Recorded in `docs/decisions/2026-11-06-ci-environment-repair.md` §8.3.
 
 Three complete matrices of all eight workflows were measured; between them the
 action code is identical (the last head differs only by a no-op commit):

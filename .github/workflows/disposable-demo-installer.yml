@@ -154,7 +154,20 @@ jobs:
   real-wordpress:
     name: Real WordPress acceptance (clean WP → CPMS → companion → teardown)
     needs: static
-    runs-on: ubuntu-latest
+    # EXPERIMENT — EXPIRY 2026-12-15, cause UNPROVEN. See
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    # This lane failed twice at the same place (attempt 1 and attempt 2 of the
+    # same run): stage 1-2, a 60s Playwright timeout waiting for
+    # a[href*='action=activate'] after the wp-admin ZIP upload. The same step
+    # passed on a main run whose annotation reported mod_php_enabled=php8.3.load,
+    # while this branch's runs report php8.5.load; that contrast is the ONLY
+    # recorded difference, and it is an association, not a proven cause. This
+    # pin is therefore an experiment whose value is the evidence it produces:
+    # if the lane goes green here and stays red on ubuntu-latest, the image is
+    # implicated; if it stays red here too, the image is not the cause and this
+    # pin is removed. No job, step or matrix name is changed — the check name
+    # stays "Real WordPress acceptance (clean WP → CPMS → companion → teardown)".
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     services:
       mysql:
