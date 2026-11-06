@@ -709,7 +709,7 @@ final class FinanceService
             );
         }
 
-        return $this->db->transactional(function () use ($actorUserId, $paymentId, $reason, $refund, $alreadyRefunded): array {
+        return $this->db->transactional(function () use ($actorUserId, $paymentId, $reason, $refund): array { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase, PEAR.Functions.FunctionCallSignature.ContentAfterOpenBracket, Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen, Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- legacy camelCase service API (published signature unchanged); closure style carried over unchanged from the pre-existing method.
             $payment = $this->payments->findForUpdate($paymentId);
             if (!$this->rowBelongsToTrustedClinic($payment)) {
                 throw FinanceException::of('CLINIC_NOT_FOUND', 'پرداخت یافت نشد', 404);
@@ -730,10 +730,24 @@ final class FinanceService
                 throw FinanceException::of('CLINIC_INVOICE_NOT_MODIFIABLE', 'فاکتور قابل تغییر نیست', 409);
             }
 
-            $newRefunded = $alreadyRefunded + $refund;
+            // B1 — the pre-transaction read of refunded_amount is stale under
+            // concurrency; re-derive the guard from the row locked by findForUpdate
+            // so refunded_amount can never exceed captured and no update is lost.
+            $paid_amount      = $this->toMinor( (string) $payment['amount'] ) ?? 0;
+            $already_refunded = $this->toMinor( (string) $payment['refunded_amount'] ) ?? 0;
+            $max_refundable   = $paid_amount - $already_refunded;
+            if ( $refund > $max_refundable ) {
+                throw FinanceException::of(
+                    'CLINIC_VALIDATION_FAILED',
+                    'مبلغ بازپرداخت خارج از محدوده مجاز است',
+                    422,
+                    ['max_refundable' => $max_refundable]
+                );
+            }
+            $new_refunded = $already_refunded + $refund;
             $this->payments->update($paymentId, [
-                'refunded_amount' => $this->minorToDb($newRefunded),
-                'status' => $newRefunded >= ($this->toMinor((string) $payment['amount']) ?? 0) ? 'refunded' : 'captured',
+                'refunded_amount' => $this->minorToDb( $new_refunded ),
+                'status'          => $new_refunded >= $paid_amount ? 'refunded' : 'captured',
             ]);
             $restored = $this->reverseInvoicePayment($invoice, $refund);
 
@@ -749,7 +763,7 @@ final class FinanceService
                     'invoice.status' => (string) $invoice['status'],
                 ],
                 [
-                    'payment.refunded_amount' => $newRefunded,
+                    'payment.refunded_amount' => $new_refunded,
                     'invoice.balance' => $restored['balance'],
                     'invoice.status' => $restored['status'],
                 ],
