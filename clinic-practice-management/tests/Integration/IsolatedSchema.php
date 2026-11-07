@@ -120,6 +120,17 @@ trait IsolatedSchema
     private static array $openSchemas = [];
 
     /**
+     * Fail-closed drop refusal: schemas that must NOT be dropped because a
+     * forked child is known or potentially still active. Set via
+     * blockDisposableSchemaDrop(); honored by dropDisposableSchema() and by
+     * the shutdown-hook backstop. A retained, loudly-reported schema beats a
+     * drop issued under a live, potentially mid-transaction process.
+     *
+     * @var array<string, string> schema => reason
+     */
+    private static array $dropBlockedSchemas = [];
+
+    /**
      * Create the disposable schema and skip the test loudly if it cannot be
      * created (the only precondition we can afford to skip; everything else
      * fails hard).
@@ -244,22 +255,63 @@ trait IsolatedSchema
      * DROP the whole disposable schema regardless of what any test did. No
      * scanning, no per-table DELETE of anything shared.
      */
+    /**
+     * Mark this test's disposable schema as NOT safe to DROP (e.g. forked
+     * children unconfirmed reaped). Honored by dropDisposableSchema() and by
+     * the shutdown-hook backstop; both refuse and report loudly instead of
+     * dropping under potentially active processes.
+     */
+    protected function blockDisposableSchemaDrop(string $reason): void
+    {
+        $name = $this->disposableDb;
+        if ('' === $name) {
+            return;
+        }
+        self::$dropBlockedSchemas[$name] = $reason;
+        fwrite(STDERR, 'disposable schema cleanup: drop REFUSED for ' . $name . ' — ' . $reason . PHP_EOL);
+    }
+
     protected function dropDisposableSchema(): void
     {
-        global $wpdb;
         if ($this->fixtureWpdb instanceof \wpdb) {
             $this->fixtureWpdb->close();
             $this->fixtureWpdb = null;
         }
         if ('' !== $this->disposableDb) {
-            $dropped = $wpdb->query('DROP DATABASE IF EXISTS `' . $this->disposableDb . '`');
-            if (false === $dropped) {
-                // Loud failure: a leaked disposable schema must never pass silently.
-                // Keep it registered so the shutdown hook retries the drop.
-                fwrite(STDERR, 'disposable schema cleanup: DROP DATABASE failed: ' . $wpdb->last_error . PHP_EOL);
-            } else {
-                unset(self::$openSchemas[$this->disposableDb]);
+            $schema = $this->disposableDb;
+            // FAIL CLOSED: refuse the drop when a forked child is known or
+            // potentially still active. The schema is RETAINED (leaked by
+            // design, safe) and reported loudly; silent pass is impossible.
+            if (isset(self::$dropBlockedSchemas[$schema])) {
+                $reason = self::$dropBlockedSchemas[$schema];
+                fwrite(STDERR, 'disposable schema cleanup: refusing DROP (fail-closed): ' . $schema . ' — ' . $reason . PHP_EOL);
+                throw new \RuntimeException('disposable schema drop refused (fail-closed): ' . $schema . ' — ' . $reason);
             }
+            // Dedicated fresh connection for the DDL (never the WP query filter,
+            // never the harness transaction) with a bounded metadata-lock wait:
+            // if a surviving forked child holds metadata locks on the schema,
+            // the DROP fails LOUDLY within ~10s instead of hanging tearDown
+            // indefinitely. A failure is an exception, never silent.
+            $dropped = false;
+            $error   = 'unknown error';
+            try {
+                $ddl = $this->rawMysqli(null);
+                $ddl->query('SET SESSION lock_wait_timeout = 10');
+                $dropped = (bool) $ddl->query('DROP DATABASE IF EXISTS `' . $schema . '`');
+                $error   = (string) $ddl->error;
+                $ddl->close();
+            } catch (\Throwable $e) {
+                $error = $e->getMessage();
+            }
+            if (!$dropped) {
+                // Loud failure: a leaked disposable schema must never pass silently.
+                // Keep it registered in self::$openSchemas so the shutdown hook
+                // retries the drop, and keep $this->disposableDb set so a second
+                // drop attempt can retry. The exception fails the test loudly.
+                fwrite(STDERR, 'disposable schema cleanup: DROP DATABASE failed: ' . $error . PHP_EOL);
+                throw new \RuntimeException('disposable schema cleanup failed: DROP DATABASE `' . $schema . '` error: ' . $error);
+            }
+            unset(self::$openSchemas[$schema]);
             $this->disposableDb = '';
         }
     }
@@ -572,6 +624,12 @@ trait IsolatedSchema
                 unset($ignored);
             }
             foreach (array_keys(self::$openSchemas) as $name) {
+                if (isset(self::$dropBlockedSchemas[$name])) {
+                    // FAIL CLOSED at process end as well: a known/potentially
+                    // active forked child outranks cleanup. Retain + report.
+                    fwrite(STDERR, 'disposable schema cleanup: backstop RETAINING ' . $name . ' (fail-closed): ' . self::$dropBlockedSchemas[$name] . PHP_EOL);
+                    continue;
+                }
                 if (1 !== preg_match('/^cpms_[a-z][a-z0-9_]*$/', $name)) {
                     // Paranoia: never issue DROP for an unexpected name.
                     unset(self::$openSchemas[$name]);
@@ -599,6 +657,8 @@ trait IsolatedSchema
                         fwrite(STDERR, 'disposable schema cleanup: could not connect to drop ' . $name . PHP_EOL);
                         continue;
                     }
+                    // Bounded metadata-lock wait at process end: 10s, notifies loudly otherwise.
+                    $mysqli->query('SET SESSION lock_wait_timeout = 10');
                     if (!$mysqli->query('DROP DATABASE IF EXISTS `' . $name . '`')) {
                         fwrite(STDERR, 'disposable schema cleanup: DROP DATABASE failed for ' . $name . ': ' . $mysqli->error . PHP_EOL);
                     }
