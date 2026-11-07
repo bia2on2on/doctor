@@ -91,12 +91,12 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
 
         // Clinics belong to an Organization (FK, migration 0010). Reuse the
         // seeded default Organization when present, else create one.
-        $orgId = (int) $wpdb->get_var( 'SELECT id FROM ' . $wpdb->prefix . 'cpms_organizations ORDER BY id LIMIT 1' ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $orgId = (int) $wpdb->get_var( 'SELECT id FROM ' . $wpdb->prefix . 'cpms_organizations ORDER BY id LIMIT 1' );
         if ( $orgId <= 0 ) {
             $this->mustQuery(
                 $wpdb->prepare(
                     'INSERT INTO ' . $wpdb->prefix . 'cpms_organizations (name, slug, status, created_at, updated_at)
-                     VALUES (%s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                     VALUES (%s, %s, %s, %s, %s)',
                     'Hold Interleave Org',
                     $slug . '-org',
                     'active',
@@ -110,7 +110,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         $this->mustQuery(
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at)
-                 VALUES (%d, %s, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, %s, %s, %s, %s)',
                 $orgId,
                 'Hold Interleave Clinic',
                 $slug,
@@ -126,7 +126,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_locations
                      (clinic_id, name, slug, timezone, is_primary, is_active, created_at, updated_at)
-                 VALUES (%d, %s, %s, %s, 0, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, %s, %s, 0, 1, %s, %s)',
                 $this->clinicId,
                 'Hold Interleave Location',
                 $slug . '-loc',
@@ -142,7 +142,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_clinicians
                      (clinic_id, full_name, is_active, created_at, updated_at)
-                 VALUES (%d, %s, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, 1, %s, %s)',
                 $this->clinicId,
                 'Dr Hold Interleave',
                 $now,
@@ -167,7 +167,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
                      (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
-                 VALUES (%d, %d, %d, %s, 1, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %d, %s, 1, %s)',
                 $this->clinicId,
                 $patientA,
                 $this->userAId,
@@ -179,7 +179,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
                      (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
-                 VALUES (%d, %d, %d, %s, 1, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %d, %s, 1, %s)',
                 $this->clinicId,
                 $patientB,
                 $this->userBId,
@@ -199,7 +199,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule_slots
                      (clinic_id, location_id, clinician_id, slot_date, slot_time, duration_min, capacity, booked_count, held_count, is_open, created_at, updated_at)
-                 VALUES (%d, %d, %d, %s, %s, 20, 2, 0, 2, 1, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %d, %s, %s, 20, 2, 0, 2, 1, %s, %s)',
                 $this->clinicId,
                 $this->locationId,
                 $this->clinicianId,
@@ -229,7 +229,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         foreach ( $this->createdHoldIds as $holdId ) {
             $wpdb->query(
                 $wpdb->prepare(
-                    'DELETE FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'DELETE FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE id = %d',
                     $holdId
                 )
             );
@@ -237,7 +237,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         foreach ( $this->createdSlotIds as $slotId ) {
             $wpdb->query(
                 $wpdb->prepare(
-                    'DELETE FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'DELETE FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d',
                     $slotId
                 )
             );
@@ -245,14 +245,14 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         foreach ( $this->createdPatientIds as $patientId ) {
             $wpdb->query(
                 $wpdb->prepare(
-                    'DELETE FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d AND clinic_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'DELETE FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d AND clinic_id = %d',
                     $patientId,
                     $this->clinicId
                 )
             );
             $wpdb->query(
                 $wpdb->prepare(
-                    'DELETE FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'DELETE FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d',
                     $patientId
                 )
             );
@@ -260,7 +260,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         if ( $this->clinicianId > 0 ) {
             $wpdb->query(
                 $wpdb->prepare(
-                    'DELETE FROM ' . $wpdb->prefix . 'cpms_clinicians WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'DELETE FROM ' . $wpdb->prefix . 'cpms_clinicians WHERE id = %d',
                     $this->clinicianId
                 )
             );
@@ -268,7 +268,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         if ( $this->locationId > 0 ) {
             $wpdb->query(
                 $wpdb->prepare(
-                    'DELETE FROM ' . $wpdb->prefix . 'cpms_locations WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'DELETE FROM ' . $wpdb->prefix . 'cpms_locations WHERE id = %d',
                     $this->locationId
                 )
             );
@@ -276,7 +276,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         if ( $this->clinicId > 0 ) {
             $wpdb->query(
                 $wpdb->prepare(
-                    'DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    'DELETE FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d',
                     $this->clinicId
                 )
             );
@@ -497,7 +497,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
                      (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
-                 VALUES (%d, %s, %s, %s, %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %s, %s, %s, %s, "active", %s, %s)',
                 $this->clinicId,
                 'MR-INT-' . strtoupper( substr( $tag, -6 ) ) . '-' . wp_generate_password( 4, false, false ),
                 'Interleave',
@@ -522,7 +522,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
             $wpdb->prepare(
                 'INSERT INTO ' . $wpdb->prefix . 'cpms_slot_holds
                      (clinic_id, slot_id, holder_wp_user_id, token, expires_at, status, created_at)
-                 VALUES (%d, %d, %d, %s, %s, %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                 VALUES (%d, %d, %d, %s, %s, %s, %s)',
                 $this->clinicId,
                 $slotId,
                 $holderUserId,
@@ -558,7 +558,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         $holdId = $this->holdIdFor( $tag );
         $token  = (string) $wpdb->get_var(
             $wpdb->prepare(
-                'SELECT token FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'SELECT token FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE id = %d',
                 $holdId
             )
         );
@@ -579,7 +579,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
         global $wpdb;
         $this->mustQuery(
             $wpdb->prepare(
-                'UPDATE ' . $wpdb->prefix . 'cpms_slot_holds SET expires_at = %s WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'UPDATE ' . $wpdb->prefix . 'cpms_slot_holds SET expires_at = %s WHERE id = %d',
                 gmdate( 'Y-m-d H:i:s', time() - 60 ) . '.000',
                 $holdId
             )
@@ -592,7 +592,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
 
         return (int) $wpdb->get_var(
             $wpdb->prepare(
-                'SELECT held_count FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'SELECT held_count FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d',
                 $slotId
             )
         );
@@ -604,7 +604,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
 
         return (int) $wpdb->get_var(
             $wpdb->prepare(
-                'SELECT booked_count FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'SELECT booked_count FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d',
                 $slotId
             )
         );
@@ -616,7 +616,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
 
         return (string) $wpdb->get_var(
             $wpdb->prepare(
-                'SELECT status FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'SELECT status FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE id = %d',
                 $holdId
             )
         );
@@ -628,7 +628,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
 
         return (int) $wpdb->get_var(
             $wpdb->prepare(
-                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments WHERE slot_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments WHERE slot_id = %d',
                 $slotId
             )
         );

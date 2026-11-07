@@ -856,7 +856,7 @@ final class BookingService
             try {
                 $this->db->transactional(
                     function () use ( $hold, $now_sql ): void {
-                        $changed = $this->guardedCapacityWrite(
+                        $changed = $this->guarded_capacity_write(
                             'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'expired' WHERE id = %d AND status = 'active' AND expires_at <= %s",
                             [ (int) $hold['id'], $now_sql ]
                         );
@@ -1048,7 +1048,7 @@ final class BookingService
                     // است؛ پس صفر ردیف فقط زیر خطای پنهان‌شده در حالت soft رخ
                     // می‌دهد. هر شکست اینجا تراکنش را ROLLBACK می‌کند تا
                     // appointment با Holdِ همچنان active commit نشود.
-                    $conversion_changed = $this->guardedCapacityWrite(
+                    $conversion_changed = $this->guarded_capacity_write(
                         'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'converted' WHERE id = %d AND status = 'active'",
                         [ $hold_id ]
                     );
@@ -1113,42 +1113,48 @@ final class BookingService
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
             $denial_code = $denial->errorCode;
             if ( 'CLINIC_SUSPENDED' !== $denial_code && self::LOCK_BUSY_CODE !== $denial_code && 'CLINIC_SCOPE_REQUIRED' !== $denial_code ) {
-                // گارد affected-rows + تمایز خطا از صفر: اگر worker انقضا
-                // پیش‌تر Hold را released/expired کرده باشد، این UPDATE صفر
-                // ردیف است و ظرفیت دوباره آزاد نمی‌شود. اگر خودِ نوشتن با خطای
-                // واقعی شکست بخورد، Hold دست‌نخورده می‌ماند و خطا فقط لاگ
-                // می‌شود (جبران خارج از تراکنش است؛ نمی‌تواند ROLLBACK شود) —
-                // ظرفیت هرگز «کورکورانه» آزاد نمی‌شود.
+                // گارد affected-rows + اتمی: گذارِ Hold و کاهش شمارندهٔ اسلات
+                // در یک transaction انجام می‌شوند. اگر کاهش شمارنده شکست
+                // بخورد، همان transaction ROLLBACK می‌شود — شامل گذارِ Hold —
+                // پس Hold در وضعیت active باقی می‌ماند و worker انقضا (یا
+                // تلاش بعدیِ همان بیمار) می‌تواند آن را آزاد کند؛ ظرفیت هرگز
+                // «گیر» نمی‌کند و هرگز دوبار آزاد نمی‌شود. اگر Hold را worker
+                // قبلاً transition داده باشد، این UPDATE صفر ردیف است و release
+                // انجام نمی‌شود. خطای واقعیِ نوشتن فقط لاگ می‌شود و از catch
+                // بیرون نمی‌آید؛ رفتارِ «جبران هرگز درخواست را نمی‌کشد» حفظ
+                // می‌شود.
+                $compensation_stage = 'hold_transition';
                 try {
-                    $released_hold = $this->guardedCapacityWrite(
-                        'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
-                        [ $hold_id ]
+                    $this->db->transactional(
+                        function () use ( $hold_id, $slot_id, &$compensation_stage ): void {
+                            $compensation_stage = 'hold_transition';
+                            $released_hold      = $this->guarded_capacity_write(
+                                'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
+                                [ $hold_id ]
+                            );
+                            if ( $released_hold < 1 ) {
+                                // An expiry worker (or a competing transition) may
+                                // already have released it — nothing to compensate.
+                                $compensation_stage = null;
+                                return;
+                            }
+                            $compensation_stage = 'slot_release';
+                            $this->slots->release_hold( $slot_id );
+                        }
                     );
-                } catch ( \Throwable $compensation_transition_error ) {
-                    $released_hold = -1;
+                } catch ( \Throwable $compensation_error ) {
+                    // The whole compensation rolled back with the failure: the
+                    // hold is untouched and still holds its capacity. Log the
+                    // stage that failed so operators can distinguish a failed
+                    // transition from a failed counter release.
                     $this->op->error(
-                        'booking.hold_release_compensation_failed',
+                        $compensation_stage === 'slot_release' ? 'booking.hold_capacity_release_failed' : 'booking.hold_release_compensation_failed',
                         [
                             'hold_id' => $hold_id,
-                            'error'   => mb_substr( $compensation_transition_error->getMessage(), 0, 200 ),
+                            'slot_id' => $slot_id,
+                            'error'   => mb_substr( $compensation_error->getMessage(), 0, 200 ),
                         ]
                     );
-                }
-                // Decrement capacity only if this compensation actually changed
-                // the active Hold. An expiry worker may already have released it.
-                if ( $released_hold >= 1 ) {
-                    try {
-                        $this->slots->release_hold( $slot_id );
-                    } catch ( \Throwable $compensation_release_error ) {
-                        $this->op->error(
-                            'booking.hold_capacity_release_failed',
-                            [
-                                'hold_id' => $hold_id,
-                                'slot_id' => $slot_id,
-                                'error'   => mb_substr( $compensation_release_error->getMessage(), 0, 200 ),
-                            ]
-                        );
-                    }
                 }
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
@@ -1209,7 +1215,7 @@ final class BookingService
             try {
                 $this->db->transactional(
                     function () use ( $hold ): void {
-                        $changed = $this->guardedCapacityWrite(
+                        $changed = $this->guarded_capacity_write(
                             'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'expired' WHERE id = %d AND status = 'active'",
                             [ (int) $hold['id'] ]
                         );
@@ -2129,112 +2135,130 @@ final class BookingService
     {
         $this->assertLicense(LicenseGate::OP_APPOINTMENT_CANCEL);
 
-        [$appt, $toState, $slotId] = $this->db->transactional(function () use ($wpUserId, $appointmentId, $reason, $actor): array {
-            $appt = $this->appointments->findForUpdate($appointmentId);
-            $this->assert_read_succeeded(
-                'cancel_appointment',
-                [ 'appointment_id' => (int) ( $appt['id'] ?? 0 ) ]
-            );
-            if ($appt === null) {
-                throw BookingException::of('CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404);
-            }
-            if ($actor === 'staff') {
-                // Phase 3 Slice 6B — D11 مسیر کارکنی: مالکیت پایدار نوبت در
-                // برابر Clinic معتبرِ صریحِ درخواست؛ نوبتِ Clinic دیگر همان
-                // پاکتِ «نوبت یافت نشد» را می‌گیرد — پیش از هر UPDATE/Release.
-                // شاخه بیمار (B4) مالکیت خودش را در ادامه اعمال می‌کند.
-                $this->assertAppointmentWithinExplicitScope($appt);
-            }
-            if ( $actor === 'patient' ) {
-                if (
-                    ! $this->user_has_active_patient_in_clinic(
-                        $wpUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing public method parameter is retained.
-                        (int) $appt['patient_id'],
-                        (int) $appt['clinic_id']
-                    )
-                ) {
-                    // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
-                    $mobile_mask = MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) );
-                    $this->audit(
-                        'FORBIDDEN_ACCESS_ATTEMPT',
-                        $wpUserId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing method parameter is retained.
-                        'patient',
-                        'appointment',
-                        $appointmentId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing method parameter is retained.
-                        (int) $appt['patient_id'],
-                        null,
-                        null,
-                        [
-                            'mobile' => $mobile_mask,
-                        ],
-                        (int) $appt['clinic_id']
-                    );
-                    // phpcs:enable
-                    throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
-                }
-                $this->assert_patient_session_matches_clinic( $wpUserId, (int) $appt['clinic_id'] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing method parameter is retained.
-            }
+        // The published parameter names are part of the PHP 8 named-argument
+        // contract and cannot change. Read them through compact() string keys
+        // so the body below works with snake_case locals only (same pattern
+        // as hold()/confirm()).
+        $cancel_args           = compact( 'wpUserId', 'appointmentId' );
+        $cancel_wp_user_id     = (int) $cancel_args['wpUserId'];
+        $cancel_appointment_id = (int) $cancel_args['appointmentId'];
 
-            $toState = $this->machineCheck((string) $appt['status'], 'cancel', $actor);
-
-            // I-3 (Phase 7 Slice 2) — T5/T6: تا وقتی ویزیتِ واقعاً فعال به این
-            // نوبت متصل است، لغو ممنوع است. بررسی روی همان ردیفِ قفل‌شده و پیش
-            // از هر تغییر وضعیت/Slot انجام می‌شود.
-            $this->assertNoActiveVisit($appointmentId);
-
-            if ($actor === 'patient') {
-                // SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
-                $err = $this->patient_change_violation( $appt, 'booking.cancel_deadline_hours', 24, $this->now() );
-                if ($err !== null) {
-                    throw BookingException::of('CLINIC_POLICY_VIOLATION', 'زمان لغو این نوبت گذشته است (سیاست مطب)', 409);
-                }
-            }
-
-            $slotId = (int) $appt['slot_id'];
-            $nowSql = $this->db->nowUtcSql();
-            $this->appointments->updateStatus($appointmentId, [
-                'status' => $toState,
-                'cancelled_at' => $nowSql,
-                'cancel_reason' => is_string($reason) && $reason !== '' ? mb_substr($reason, 0, 255) : null,
-                'cancelled_by_wp_user_id' => $wpUserId,
-                'updated_at' => $nowSql,
-            ]);
-            $this->slots->release_booking( (int) $appt['slot_id'] );
-
-            // D6 audit atomicity: the cancellation, slot release and mandatory
-            // audit commit/roll back together (staff and patient paths share it).
-            $wp_user_id     = (int) $wpUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-            $appointment_id = (int) $appointmentId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-            $to_state       = (string) $toState; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- Existing legacy parameter naming preserved.
-
-            $this->audit(
-                'APPOINTMENT_CANCELLED',
-                $wp_user_id,
-                $actor === 'patient' ? 'patient' : 'staff',
-                'appointment',
-                $appointment_id,
-                (int) $appt['patient_id'],
-                [ 'status' => (string) $appt['status'] ],
-                [ 'status' => $to_state, 'reason' => is_string( $reason ) ? mb_substr( $reason, 0, 255 ) : null ],
-                [],
-                (int) $appt['clinic_id']
-            );
-
-            // Transactional outbox: a committed cancellation cannot lose its
-            // patient notification if PHP exits immediately after COMMIT. The
-            // worker only queues SMS/internal rows; it never claims delivery.
-            if ( $actor === 'staff' && (string) $appt['status'] === 'confirmed' ) {
-                App::jobs()->enqueue(
-                    'appointment.cancel_notify',
-                    [
-                        'clinic_id'      => (int) $appt['clinic_id'],
-                        'appointment_id' => $appointmentId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy method parameter.
-                    ],
-                    priority: 8
+        [$appt, $to_state, $slot_id] = $this->db->transactional(
+            function () use ( $cancel_wp_user_id, $cancel_appointment_id, $reason, $actor ): array {
+                $appt = $this->appointments->findForUpdate( $cancel_appointment_id );
+                $this->assert_read_succeeded(
+                    'cancel_appointment',
+                    [ 'appointment_id' => (int) ( $appt['id'] ?? 0 ) ]
                 );
-            }
+                if ( $appt === null ) {
+                    throw BookingException::of( 'CLINIC_NOT_FOUND', 'نوبت یافت نشد', 404 );
+                }
+                if ( $actor === 'staff' ) {
+                    // Phase 3 Slice 6B — D11 مسیر کارکنی: مالکیت پایدار نوبت در
+                    // برابر Clinic معتبرِ صریحِ درخواست؛ نوبتِ Clinic دیگر همان
+                    // پاکتِ «نوبت یافت نشد» را می‌گیرد — پیش از هر UPDATE/Release.
+                    // شاخه بیمار (B4) مالکیت خودش را در ادامه اعمال می‌کند.
+                    $this->assertAppointmentWithinExplicitScope( $appt );
+                }
+                if ( $actor === 'patient' ) {
+                    if (
+                        ! $this->user_has_active_patient_in_clinic(
+                            $cancel_wp_user_id,
+                            (int) $appt['patient_id'],
+                            (int) $appt['clinic_id']
+                        )
+                    ) {
+                        // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
+                        $mobile_mask = MobileValidator::mask( (string) ( $appt['patient_mobile'] ?? '' ) );
+                        $this->audit(
+                            'FORBIDDEN_ACCESS_ATTEMPT',
+                            $cancel_wp_user_id,
+                            'patient',
+                            'appointment',
+                            $cancel_appointment_id,
+                            (int) $appt['patient_id'],
+                            null,
+                            null,
+                            [
+                                'mobile' => $mobile_mask,
+                            ],
+                            (int) $appt['clinic_id']
+                        );
+                        // phpcs:enable
+                        throw BookingException::of( 'CLINIC_PERMISSION_DENIED', 'به این نوبت دسترسی ندارید', 403 );
+                    }
+                    $this->assert_patient_session_matches_clinic( $cancel_wp_user_id, (int) $appt['clinic_id'] );
+                }
 
-            return [$appt, $toState, $slotId];
+                $to_state = $this->machineCheck( (string) $appt['status'], 'cancel', $actor );
+
+                // I-3 (Phase 7 Slice 2) — T5/T6: تا وقتی ویزیتِ واقعاً فعال به این
+                // نوبت متصل است، لغو ممنوع است. بررسی روی همان ردیفِ قفل‌شده و پیش
+                // از هر تغییر وضعیت/Slot انجام می‌شود.
+                $this->assertNoActiveVisit( $cancel_appointment_id );
+
+                if ( $actor === 'patient' ) {
+                    // SRS FR-4.9: حداقل X ساعت قبل از شروع — با timezone Location خود appointment (Two-Clock)
+                    $err = $this->patient_change_violation( $appt, 'booking.cancel_deadline_hours', 24, $this->now() );
+                    if ( $err !== null ) {
+                        throw BookingException::of( 'CLINIC_POLICY_VIOLATION', 'زمان لغو این نوبت گذشته است (سیاست مطب)', 409 );
+                    }
+                }
+
+                $slot_id        = (int) $appt['slot_id'];
+                $now_sql        = $this->db->nowUtcSql();
+                $appointment_id = (int) $cancel_appointment_id;
+                $wp_user_id     = (int) $cancel_wp_user_id;
+                $to_state       = (string) $to_state;
+                // گارد affected-rows: `updateStatus()` در حالت soft روی خطای واقعی
+                // درایور صفر (بدون استثنا) برمی‌گرداند — چون شناسهٔ قفل‌شده از قبل
+                // خوانده شده صفر در حالت عادی یعنی خطای پنهان‌شدهٔ DB. صفر ردیف
+                // ⇒ تراکنش ROLLBACK می‌شود ⇒ نوبت/ظرفیت/Audit نیمه‌کاره نمی‌ماند.
+                $cancelled_rows = (int) $this->appointments->updateStatus(
+                    $appointment_id,
+                    [
+                        'status'                  => $to_state,
+                        'cancelled_at'            => $now_sql,
+                        'cancel_reason'           => is_string( $reason ) && $reason !== '' ? mb_substr( $reason, 0, 255 ) : null,
+                        'cancelled_by_wp_user_id' => $wp_user_id,
+                        'updated_at'              => $now_sql,
+                    ]
+                );
+                if ( $cancelled_rows < 1 ) {
+                    throw new \RuntimeException( 'cancel appointment status update affected zero rows' );
+                }
+                $this->slots->release_booking( (int) $appt['slot_id'] );
+
+                // D6 audit atomicity: the cancellation, slot release and mandatory
+                // audit commit/roll back together (staff and patient paths share it).
+                $this->audit(
+                    'APPOINTMENT_CANCELLED',
+                    $wp_user_id,
+                    $actor === 'patient' ? 'patient' : 'staff',
+                    'appointment',
+                    $appointment_id,
+                    (int) $appt['patient_id'],
+                    [ 'status' => (string) $appt['status'] ],
+                    [ 'status' => $to_state, 'reason' => is_string( $reason ) ? mb_substr( $reason, 0, 255 ) : null ],
+                    [],
+                    (int) $appt['clinic_id']
+                );
+
+                // Transactional outbox: a committed cancellation cannot lose its
+                // patient notification if PHP exits immediately after COMMIT. The
+                // worker only queues SMS/internal rows; it never claims delivery.
+                if ( $actor === 'staff' && (string) $appt['status'] === 'confirmed' ) {
+                    App::jobs()->enqueue(
+                        'appointment.cancel_notify',
+                        [
+                            'clinic_id'      => (int) $appt['clinic_id'],
+                            'appointment_id' => $cancel_appointment_id,
+                        ],
+                        priority: 8
+                    );
+                }
+
+                return [$appt, $to_state, $slot_id];
         });
 
         // Mandatory APPOINTMENT_CANCELLED audit now commits inside the
@@ -2243,7 +2267,7 @@ final class BookingService
 
         // F8 §5 — انصراف خودکار: لغو نوبت → Cancel اعلان‌های queued مرتبط
         // (یادآوری‌های queued همان نوبت — apt:{id}).
-        $this->notifications?->cancelQueuedForAppointment($appointmentId);
+        $this->notifications?->cancelQueuedForAppointment( $cancel_appointment_id );
 
         if ( $actor === 'patient' && (string) $appt['status'] === 'confirmed' ) {
             $patient = $this->patients->find( (int) $appt['patient_id'] );
@@ -2252,7 +2276,7 @@ final class BookingService
             }
         }
 
-        return ['appointment_id' => $appointmentId, 'status' => $toState];
+        return ['appointment_id' => $cancel_appointment_id, 'status' => $to_state];
     }
 
     /** Durable cancellation outbox worker; safe to retry after a crash. */
@@ -2407,7 +2431,7 @@ final class BookingService
      *
      * @param array<int, mixed> $params
      */
-    private function guardedCapacityWrite( string $sql, array $params ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- camelCase matches the PSR-4 class convention used across this file.
+    private function guarded_capacity_write( string $sql, array $params ): int {
         $prepared = $this->db->prepare( $sql, $params );
         $result   = $this->db->wpdb()->query( $prepared ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- prepared immediately above.
         $error    = $this->db->wpdb()->last_error;
