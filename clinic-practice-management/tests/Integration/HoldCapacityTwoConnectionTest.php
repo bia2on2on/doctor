@@ -17,7 +17,7 @@
  *    finally. Unrelated data (the shared WP test DB, other tests) can never
  *    be read or modified here, and cleanup is total even on failure: the
  *    whole schema is dropped — there is no scanning and no per-table delete.
- *    See DisposableSchema.php for the shared machinery.
+ *    See IsolatedSchema.php for the shared machinery.
  *  - Fixture visibility: fixture rows are INSERTed on a connection with
  *    autocommit, so they are durable and visible from the moment they exist.
  *    No fixture is ever written to the harness's global connection.
@@ -86,13 +86,13 @@ use ClinicCore\Application\Jobs\HoldsExpireHandler;
 use ClinicCore\Domain\Booking\BookingException;
 use WP_UnitTestCase;
 
-require_once __DIR__ . '/DisposableSchema.php';
+require_once __DIR__ . '/IsolatedSchema.php';
 require_once __DIR__ . '/RealTableMigrations.php';
 
 final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
 {
     use RealTableMigrations;
-    use DisposableSchema;
+    use IsolatedSchema;
 
     private const READY_TIMEOUT_SEC = 20.0;
     private const LOCK_WAIT_TIMEOUT_SEC = 10.0;
@@ -141,14 +141,38 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         $outcomeA  = $tag . '-outcome-a.json';
         $readyB    = $tag . '-ready-b';
         $outcomeB  = $tag . '-outcome-b.json';
+        $raceFiles = [ $readyA, $goA, $holdDoneA, $commitA, $outcomeA, $readyB, $outcomeB ];
+        $pids      = [];
 
-        // Competitor A (fork): takes the Slot row lock, waits for GO, runs the
-        // production hold(), signals completion, waits for COMMIT, then commits
-        // for real. Its connection keeps the lock until COMMIT.
+        // The whole forked race lives inside try/finally so coordination files
+        // and child PIDs are ALWAYS reaped — on assertion failure exactly as on
+        // success. The catch preserves the workers' non-sensitive outcome JSON
+        // (result/error code only) on STDERR; nothing is retried or ignored.
+        try {
+        // Competitor A (fork): takes the canonical tenant-prefix locks
+        // (Organization -> Clinic) AND the Slot row lock, in the same order
+        // production's lock_booking_tenant_prefix() uses, waits for GO, runs
+        // the production hold(), signals completion, waits for COMMIT, then
+        // commits for real. Its connection keeps the locks until COMMIT.
+        //
+        // Historical note (evidence-backed 2026-11-07): a previous revision of
+        // this test pre-locked ONLY the Slot row here. Production hold() locks
+        // Organization -> Clinic before the Slot, and competitor B holds those
+        // prefix locks while blocked on the Slot — a guaranteed two-transaction
+        // deadlock cycle. InnoDB rolled back a victim (measured 6/6 on
+        // MariaDB 11.4.13: the A side discarded with error 1213), the forked
+        // worker took the catch(\Throwable) escape hatch, hold-done was never
+        // signalled, and this exact test failed in CI with
+        //   "competitor A did not complete its hold"
+        // at HoldCapacityTwoConnectionTest.php:178. Locking the prefix in the
+        // same order removes the inversion; the assertion strength is unchanged
+        // (B must still be observed blocked behind A before GO, still blocked
+        // after hold(), and must still lose with CLINIC_SLOT_TAKEN).
         $pidA = pcntl_fork();
         if (0 === $pidA) {
             $this->childCompetitorHold($readyA, $goA, $holdDoneA, $commitA, $outcomeA, $slotId, $date, $this->userAId, $this->capturedSessions[$this->userAId]);
         }
+        $pids[] = is_int($pidA) ? $pidA : 0;
         self::assertNotFalse($pidA);
         self::assertGreaterThan(0, $pidA, 'competitor A fork');
         self::assertTrue($this->waitForFile($readyA, self::READY_TIMEOUT_SEC), 'competitor A never signalled readiness');
@@ -161,30 +185,40 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         if (0 === $pidB) {
             $this->childCompetingHoldLoser($readyB, $outcomeB, $slotId, $date, $this->userBId, $this->capturedSessions[$this->userBId]);
         }
+        $pids[] = is_int($pidB) ? $pidB : 0;
         self::assertNotFalse($pidB);
         self::assertGreaterThan(0, $pidB, 'competitor B fork');
         self::assertTrue($this->waitForFile($readyB, self::READY_TIMEOUT_SEC), 'competitor B never signalled readiness');
         $workerConnection = $this->readConnectionIdFromFile($readyB);
         self::assertGreaterThan(0, $workerConnection);
 
-        // Deterministic overlap proof: B is in InnoDB LOCK WAIT on the Slot row
+        // Deterministic overlap proof: B is in InnoDB LOCK WAIT on the
+        // Organization row (the canonical prefix lock production takes first)
         // behind A's connection BEFORE A proceeds.
-        $edge = $this->waitForLockWait($workerConnection, $coordinatorConnection, 'cpms_schedule_slots', self::LOCK_WAIT_TIMEOUT_SEC);
-        self::assertNotNull($edge, 'competitor B must be observed in InnoDB LOCK WAIT on the Slot row');
-        self::assertStringContainsString('cpms_schedule_slots', strtolower((string) ($edge['lock_table'] ?? '')));
+        $edge = $this->waitForLockWait($workerConnection, $coordinatorConnection, 'cpms_organizations', self::LOCK_WAIT_TIMEOUT_SEC);
+        self::assertNotNull($edge, 'competitor B must be observed in InnoDB LOCK WAIT on the tenant prefix behind A');
+        self::assertStringContainsString('cpms_organizations', strtolower((string) ($edge['lock_table'] ?? '')));
 
         // A completes its hold while B is blocked.
         file_put_contents($goA, 'go');
-        self::assertTrue($this->waitForFile($holdDoneA, self::GO_DEADLINE_SEC), 'competitor A did not complete its hold');
+        $holdDoneAOk = $this->waitForFile($holdDoneA, self::GO_DEADLINE_SEC);
+        self::assertTrue(
+            $holdDoneAOk,
+            'competitor A did not complete its hold; outcomeA='
+            . (string) @file_get_contents($outcomeA)
+            . ' outcomeB='
+            . (string) @file_get_contents($outcomeB)
+        );
 
-        // B must STILL be blocked: A's connection holds the row until COMMIT.
-        $stillWaiting = $this->waitForLockWait($workerConnection, $coordinatorConnection, 'cpms_schedule_slots', 1.0);
+        // B must STILL be blocked: A's connection holds the prefix and the Slot row until COMMIT.
+        $stillWaiting = $this->waitForLockWait($workerConnection, $coordinatorConnection, 'cpms_organizations', 1.0);
         self::assertNotNull($stillWaiting, 'competitor B must remain blocked until A commits');
 
         // Release A; B unblocks, sees the capacity consumed, and must lose.
         file_put_contents($commitA, 'go');
         pcntl_waitpid($pidA, $statusA);
         pcntl_waitpid($pidB, $statusB);
+        $pids = []; // both reaped above; finally then only removes files
 
         $outcomeBJson = json_decode((string) @file_get_contents($outcomeB), true);
         self::assertIsArray($outcomeBJson, 'B must write its outcome');
@@ -195,8 +229,12 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         self::assertSame('1', $this->rawScalar('SELECT held_count FROM ' . $this->rawTable('cpms_schedule_slots') . ' WHERE id = ' . $slotId));
         self::assertSame('1', $this->rawScalar("SELECT COUNT(*) FROM " . $this->rawTable('cpms_slot_holds') . " WHERE slot_id = {$slotId} AND status = 'active'"));
         self::assertSame('0', $this->rawScalar('SELECT COUNT(*) FROM ' . $this->rawTable('cpms_appointments') . ' WHERE slot_id = ' . $slotId));
-
-        $this->cleanupRaceFiles([$readyA, $goA, $holdDoneA, $commitA, $outcomeA, $readyB, $outcomeB]);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, '[hold-race diagnostic] ' . $this->describeRaceFiles($raceFiles) . PHP_EOL);
+            throw $e;
+        } finally {
+            $this->reapRaceChildren($pids, $raceFiles);
+        }
     }
 
     // ================= scenario 2: expiry worker vs confirm =================
@@ -217,13 +255,19 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         $goA       = $tag . '-go-a';
         $readyB    = $tag . '-ready-b';
         $outcomeB  = $tag . '-outcome-b.json';
+        $raceFiles = [ $readyA, $goA, $readyB, $outcomeB ];
+        $pids      = [];
 
+        // Same guarantee as scenario 1: race files and child PIDs are always
+        // reaped; worker outcome JSON reaches STDERR on failure only.
+        try {
         // Coordinator A (fork): holds the Hold row's record lock exactly where
         // confirm() takes it (HOLD before SLOT), signals readiness, waits for GO.
         $pidA = pcntl_fork();
         if (0 === $pidA) {
             $this->childHoldLockHolder($readyA, $goA, $holdId);
         }
+        $pids[] = is_int($pidA) ? $pidA : 0;
         self::assertNotFalse($pidA);
         self::assertGreaterThan(0, $pidA);
         self::assertTrue($this->waitForFile($readyA, self::READY_TIMEOUT_SEC), 'coordinator A never signalled readiness');
@@ -236,6 +280,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         if (0 === $pidB) {
             $this->childExpiryWorker($readyB, $outcomeB);
         }
+        $pids[] = is_int($pidB) ? $pidB : 0;
         self::assertNotFalse($pidB);
         self::assertGreaterThan(0, $pidB);
         self::assertTrue($this->waitForFile($readyB, self::READY_TIMEOUT_SEC), 'expiry worker never signalled readiness');
@@ -249,6 +294,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         file_put_contents($goA, 'go');
         pcntl_waitpid($pidA, $statusA);
         pcntl_waitpid($pidB, $statusB);
+        $pids = []; // both reaped above; finally then only removes files
         $outcomeBJson = json_decode((string) @file_get_contents($outcomeB), true);
         self::assertIsArray($outcomeBJson, 'worker B must write its outcome');
         self::assertSame('ok', $outcomeBJson['result'] ?? '');
@@ -278,8 +324,12 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
             . " WHERE message IN ('booking.hold_release_compensation_failed', 'booking.hold_capacity_release_failed')"
         );
         self::assertSame(0, $compensationFailures, 'the gate denial must not release capacity or log a release failure');
-
-        $this->cleanupRaceFiles([$readyA, $goA, $readyB, $outcomeB]);
+        } catch (\Throwable $e) {
+            fwrite(STDERR, '[hold-race diagnostic] ' . $this->describeRaceFiles($raceFiles) . PHP_EOL);
+            throw $e;
+        } finally {
+            $this->reapRaceChildren($pids, $raceFiles);
+        }
     }
 
     // ================= scenario 3a: injected conversion failure =================
@@ -392,7 +442,9 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
      */
     private function runScenarioOneConnectionFallback( int $slotId, string $date ): void
     {
-        $coordinator = $this->newDisposableConnection();
+        $connections = [];
+        try {
+        $coordinator = $connections[] = $this->newDisposableConnection();
         $coordinator->query( 'START TRANSACTION' );
         $locked = $coordinator->get_var(
             $coordinator->prepare( 'SELECT id FROM ' . $coordinator->prefix . 'cpms_schedule_slots WHERE id = %d FOR UPDATE', $slotId )
@@ -400,7 +452,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         self::assertSame( $slotId, (int) $locked, 'coordinator must hold the Slot row lock' );
 
         // Production hold() on an independent connection behind the held lock.
-        $worker = $this->newDisposableConnection();
+        $worker = $connections[] = $this->newDisposableConnection();
         $worker->query( 'SET SESSION innodb_lock_wait_timeout = 1' );
         $worker->query( 'START TRANSACTION' );
         $busyError = null;
@@ -421,7 +473,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         $coordinator->close();
 
         // A fresh production hold now succeeds and consumes the last unit.
-        $winner = $this->newDisposableConnection();
+        $winner = $connections[] = $this->newDisposableConnection();
         $winner->query( 'START TRANSACTION' );
         $stack = $this->stackOn( $winner, false );
         $winnerResult = $stack['service']->hold( $this->userAId, $this->clinicianId, $date, '09:00:00', $slotId );
@@ -430,7 +482,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         $winner->close();
 
         // A third connection must now be rejected: capacity is consumed.
-        $loser = $this->newDisposableConnection();
+        $loser = $connections[] = $this->newDisposableConnection();
         $loser->query( 'START TRANSACTION' );
         $loserError = null;
         try {
@@ -449,6 +501,15 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         self::assertSame( '1', $this->rawScalar( 'SELECT held_count FROM ' . $this->rawTable( 'cpms_schedule_slots' ) . ' WHERE id = ' . $slotId ) );
         self::assertSame( '1', $this->rawScalar( "SELECT COUNT(*) FROM " . $this->rawTable( 'cpms_slot_holds' ) . " WHERE slot_id = {$slotId} AND status = 'active'" ) );
         self::assertSame( '0', $this->rawScalar( 'SELECT COUNT(*) FROM ' . $this->rawTable( 'cpms_appointments' ) . ' WHERE slot_id = ' . $slotId ) );
+        } finally {
+            foreach ( $connections as $connRef ) {
+                try {
+                    $connRef->close();
+                } catch ( \Throwable $ignored ) {
+                    unset( $ignored );
+                }
+            }
+        }
     }
 
     /**
@@ -463,14 +524,16 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
      */
     private function runScenarioTwoConnectionFallback( int $slotId, int $holdId ): void
     {
-        $coordinator = $this->newDisposableConnection();
+        $connections = [];
+        try {
+        $coordinator = $connections[] = $this->newDisposableConnection();
         $coordinator->query( 'START TRANSACTION' );
         $locked = $coordinator->get_var(
             $coordinator->prepare( 'SELECT id FROM ' . $coordinator->prefix . 'cpms_slot_holds WHERE id = %d FOR UPDATE', $holdId )
         );
         self::assertSame( $holdId, (int) $locked, 'coordinator must hold the Hold row lock' );
 
-        $worker = $this->newDisposableConnection();
+        $worker = $connections[] = $this->newDisposableConnection();
         $worker->query( 'SET SESSION innodb_lock_wait_timeout = 1' );
         $worker->query( 'START TRANSACTION' );
         $expireError = null;
@@ -492,7 +555,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         $coordinator->close();
 
         // Now the handler runs clean: it expires the hold and frees capacity.
-        $cleanup = $this->newDisposableConnection();
+        $cleanup = $connections[] = $this->newDisposableConnection();
         $cleanup->query( 'START TRANSACTION' );
         $stack = $this->stackOn( $cleanup, false );
         $handler = new HoldsExpireHandler( $stack['db'] );
@@ -525,6 +588,15 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
             . " WHERE message IN ('booking.hold_release_compensation_failed', 'booking.hold_capacity_release_failed')"
         );
         self::assertSame( 0, $compensationFailures, 'the gate denial must not release capacity or log a release failure' );
+        } finally {
+            foreach ( $connections as $connRef ) {
+                try {
+                    $connRef->close();
+                } catch ( \Throwable $ignored ) {
+                    unset( $ignored );
+                }
+            }
+        }
     }
 
     /**
@@ -556,13 +628,16 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
                 $stack['service']->confirm( $token, $userId, null, $this->uuid() );
             } catch ( \Throwable $e ) {
                 $conn->query( 'COMMIT' );
-                return [
+                $result = [
                     'result' => 'error',
                     'code' => $e instanceof BookingException ? $e->errorCode : get_class( $e ),
                     'fault_fired' => isset( $conn->faultFired ) ? $conn->faultFired : null,
                 ];
+                $this->closeConfirmConnection($conn);
+                return $result;
             }
             $conn->query( 'COMMIT' );
+            $this->closeConfirmConnection($conn);
             return [ 'result' => 'ok' ];
         } catch ( \Throwable $e ) {
             try {
@@ -572,13 +647,32 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
             } catch ( \Throwable $ignored ) {
                 unset( $ignored );
             }
+            $this->closeConfirmConnection($conn);
             return [ 'result' => 'fatal', 'code' => get_class( $e ) ];
+        }
+    }
+
+    /** Best-effort close for confirm-path connections; never throws. */
+    private function closeConfirmConnection(?\wpdb $conn): void
+    {
+        if (null === $conn) {
+            return;
+        }
+        try {
+            $conn->close();
+        } catch (\Throwable $ignored) {
+            unset($ignored);
         }
     }
 
     // ================= forked workers =================
 
-    /** Coordinator competitor: holds the Slot row lock, then confirms a hold for user A. */
+    /**
+     * Coordinator competitor: pre-locks the tenant prefix (Organization ->
+     * Clinic) and the Slot row in the canonical production order
+     * (lock_booking_tenant_prefix: Organization -> Clinic -> Slot), so the
+     * forked competitor cannot form a two-transaction lock-order inversion.
+     */
     private function childCompetitorHold(string $readyFile, string $goFile, string $holdDoneFile, string $commitFile, string $outcomeFile, int $slotId, string $date, int $userId, array $session): void
     {
         $conn = null;
@@ -586,6 +680,14 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
             $conn = $this->newDisposableConnection();
             $connectionId = (int) $conn->get_var('SELECT CONNECTION_ID()');
             $conn->query('START TRANSACTION');
+            $orgLocked = (int) $conn->get_var($conn->prepare('SELECT id FROM ' . $conn->prefix . 'cpms_organizations WHERE id = %d FOR UPDATE', $this->organizationId));
+            if ($orgLocked !== $this->organizationId) {
+                throw new \RuntimeException('coordinator could not lock the Organization row');
+            }
+            $clinicLocked = (int) $conn->get_var($conn->prepare('SELECT id FROM ' . $conn->prefix . 'cpms_clinics WHERE id = %d FOR UPDATE', $this->clinicId));
+            if ($clinicLocked !== $this->clinicId) {
+                throw new \RuntimeException('coordinator could not lock the Clinic row');
+            }
             $locked = $conn->get_var($conn->prepare('SELECT id FROM ' . $conn->prefix . 'cpms_schedule_slots WHERE id = %d FOR UPDATE', $slotId));
             if ((int) $locked !== $slotId) {
                 throw new \RuntimeException('coordinator could not lock the Slot row');
@@ -711,6 +813,73 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
             posix_kill(getmypid(), SIGKILL);
         }
         exit(0);
+    }
+
+    /**
+     * Reap forked competitors (best-effort, bounded) and delete every
+     * coordination file this test created. Safe on any exit path: already-reaped
+     * pids are skipped, missing files are ignored. On the failure path the
+     * callers first dump describeRaceFiles() output to STDERR so the children's
+     * result/error codes remain visible — assertions are never weakened for
+     * the sake of cleanup.
+     *
+     * @param array<int, int> $pids
+     * @param array<int, string> $files
+     */
+    private function reapRaceChildren(array $pids, array $files): void
+    {
+        if (!function_exists('pcntl_waitpid')) {
+            foreach ($files as $file) {
+                @unlink($file);
+            }
+            return;
+        }
+        $deadline  = microtime(true) + 5.0;
+        $remaining = $pids;
+        while ($remaining !== [] && microtime(true) < $deadline) {
+            foreach ($remaining as $i => $pid) {
+                if ($pid <= 0) {
+                    unset($remaining[$i]);
+                    continue;
+                }
+                $res = @pcntl_waitpid($pid, $status, WNOHANG);
+                if ($res === $pid || -1 === $res) {
+                    unset($remaining[$i]);
+                }
+            }
+            if ($remaining !== []) {
+                usleep(50000);
+            }
+        }
+        foreach ($remaining as $pid) {
+            if ($pid > 0 && function_exists('posix_kill')) {
+                @posix_kill($pid, SIGKILL);
+                @pcntl_waitpid($pid, $status);
+            }
+        }
+        foreach ($files as $file) {
+            @unlink($file);
+        }
+    }
+
+    /**
+     * Concatenate any child outcome files for stderr diagnostics. The workers
+     * only ever write result/error-code/class-name JSON — no session tokens,
+     * OTP codes, mobile numbers or message bodies — and the parent embeds the
+     * same data in the primary assertion message.
+     *
+     * @param array<int, string> $files
+     */
+    private function describeRaceFiles(array $files): string
+    {
+        $parts = [];
+        foreach ($files as $file) {
+            $content = @file_get_contents($file);
+            if (false !== $content) {
+                $parts[] = basename($file) . '=' . trim($content);
+            }
+        }
+        return $parts === [] ? '(none)' : implode(' ', $parts);
     }
 
     /** InnoDB lock-wait edge with a known worker connection id. */

@@ -1,7 +1,7 @@
 <?php
 
 /**
- * DisposableSchema — shared infrastructure for tests that need an ISOLATED,
+ * IsolatedSchema — shared infrastructure for tests that need an ISOLATED,
  * DISPOSABLE database with real migrations (CI-only).
  *
  * Why: tests that fork independent connections and commit transactions cannot
@@ -38,16 +38,22 @@
  *
  * Migration mechanics (why the mirror exists):
  *  - The production MigrationRunner `require()`s each migration file by
- *    design (migration files return fresh arrays so rollback re-runs see new
- *    arrays). src/Migrations/2026_09_05_0002_*.php additionally declares a
- *    top-level named function, so a second plain `require` in the same
- *    process dies with an uncatchable "Cannot redeclare ..." fatal that also
- *    skips tearDown — that is how a leaked disposable schema is born. The
- *    mirror is a per-process shadow directory of one-line wrapper files;
- *    each wrapper compiles the real file only once per process and returns a
- *    cached array afterwards. The migration code itself is loaded and
- *    executed unchanged; the runner, ledger semantics, order and
- *    transactionality are untouched.
+ *    design (migration files must return fresh arrays so rollback() re-runs
+ *    in the same process see new arrays; plain require is contractual).
+ *    src/Migrations/2026_09_05_0002_duration_and_buffers.php additionally
+ *    declares a top-level named function, so a second plain `require` of it
+ *    in the same process dies with an uncatchable "Cannot redeclare ..."
+ *    fatal that also skips tearDown. A per-process shadow directory of
+ *    one-line wrapper files is therefore used as MigrationRunner's
+ *    constructor directory: each wrapper delegates to a namespaced static
+ *    class cache (TestMigrationArrays) that compiles the real migration
+ *    exactly once per process — no process global, no $GLOBALS entry, no
+ *    file-scope static (those do not survive re-includes; measured). The
+ *    migration code itself is loaded and executed unchanged; the runner,
+ *    ledger semantics, order and transactionality are untouched. No
+ *    product file is changed to accommodate the harness; the mirror
+ *    directory lives in sys_get_temp_dir() with 0700 permissions, is wiped
+ *    by a shutdown hook, and never enters the repository, the ZIP, or git.
  *  - Migration 2026_09_09_0012_memberships reads the WP `usermeta` table on
  *    the migration connection itself; a bare disposable schema has no such
  *    table and the migration died with "Table ... usermeta doesn't exist"
@@ -83,7 +89,7 @@ use ClinicCore\Settings\SettingsFactory;
 
 require_once __DIR__ . '/RealTableMigrations.php';
 
-trait DisposableSchema
+trait IsolatedSchema
 {
     private string $disposableDb = '';
     private ?\wpdb $fixtureWpdb = null;
@@ -498,13 +504,12 @@ trait DisposableSchema
 
     /**
      * Per-process shadow directory of one-line wrapper files for the plugin's
-     * migrations. See the header note for why this exists: it stops the
-     * production runner's plain `require()` from re-declaring top-level
-     * symbols (2026_09_05_0002_*.php declares cpms_m0002_column_exists())
-     * on every fresh disposable schema in the same process — the fatal that
-     * used to abort the suite and leak the schema. The real migration files
-     * are compiled once per process and their returned arrays are cached;
-     * the migration code executes unchanged.
+     * migrations. See the header note for why this exists: the runner's plain
+     * `require()` would re-declare cpms_m0002_column_exists() (top-level
+     * function in 2026_09_05_0002_duration_and_buffers.php) on every fresh
+     * schema of this process. Each wrapper delegates to the namespaced
+     * static class cache TestMigrationArrays; the real migration code is
+     * compiled once per process and executed unchanged.
      */
     private static function migrationMirrorDir(): string
     {
@@ -517,19 +522,23 @@ trait DisposableSchema
         if ([] === $files) {
             throw new \RuntimeException('migration mirror: no migration files found in ' . $real);
         }
-        $dir = sys_get_temp_dir() . '/cpms-disposable-migrations-' . bin2hex(random_bytes(6));
+        // Runner-compatibility cache directory, required by the runner's
+        // plain-require contract (see header). Not part of the product,
+        // ships in no artifact, wiped by the shutdown hook; 0700 perms.
+        $dir = sys_get_temp_dir() . '/cpms-migration-mirror-' . bin2hex(random_bytes(6));
         if (!mkdir($dir, 0700, true) && !is_dir($dir)) {
             throw new \RuntimeException('migration mirror: cannot create ' . $dir);
         }
         foreach ($files as $file) {
             $base = basename($file);
+            // Each wrapper is a one-line include guard delegating to a namespaced
+            // static class cache (TestMigrationArrays, declared at the bottom of
+            // this file). No global variable is used, and file-scope statics are
+            // NOT used: they do NOT persist across includes of the same file
+            // (verified empirically: first include returned 1, second also 1).
             $wrapper = "<?php\n"
-                . "// Test-harness include guard (disposable schema only); see DisposableSchema.php.\n"
-                . "global \$__cpms_disposable_migration_arrays;\n"
-                . 'if (!array_key_exists(' . var_export($base, true) . ", (array) \$__cpms_disposable_migration_arrays)) {\n"
-                . '    $__cpms_disposable_migration_arrays[' . var_export($base, true) . '] = require ' . var_export($file, true) . ";\n"
-                . "}\n"
-                . 'return $__cpms_disposable_migration_arrays[' . var_export($base, true) . "];\n";
+                . "// Migration include guard for the ISOLATED test schema (see IsolatedSchema.php).\n"
+                . 'return \ClinicCore\Tests\Integration\TestMigrationArrays::load(' . var_export($base, true) . ', ' . var_export($file, true) . ");\n";
             if (false === file_put_contents($dir . '/' . $base, $wrapper)) {
                 throw new \RuntimeException('migration mirror: cannot write wrapper for ' . $base);
             }
@@ -658,12 +667,40 @@ trait DisposableSchema
         }
     }
 
-    /** @param array<int, string> $files */
-    protected function cleanupRaceFiles(array $files): void
+}
+
+/**
+ * Process-wide cache for migration arrays, used by the migration include
+ * guards (the wrapper files described above). Static class state is used
+ * deliberately: the runner re-includes each wrapper on every migrate() call
+ * and every include must return the identical array instance without
+ * re-executing the migration (whose top-level symbols would then be
+ * redeclared). Static class properties persist across includes; file-scope
+ * static variables do not.
+ *
+ * @internal Test infrastructure only; never referenced by production code.
+ */
+final class TestMigrationArrays
+{
+    /**
+     * @var array<string, array<string, mixed>>
+     */
+    private static array $cache = [];
+
+    /**
+     * @return array<string, mixed>
+     */
+    public static function load(string $base, string $file): array
     {
-        foreach ($files as $file) {
-            @unlink($file);
+        if (!array_key_exists($base, self::$cache)) {
+            $migration = require $file;
+            if (!is_array($migration)) {
+                throw new \RuntimeException('migration did not return an array: ' . $file);
+            }
+            self::$cache[$base] = $migration;
         }
+
+        return self::$cache[$base];
     }
 }
 

@@ -18,7 +18,7 @@
  *  - Every fixture (org/clinic/location/clinician/slot/appointment) lives in
  *    a per-test DISPOSABLE schema (`cpms_zg_<hex>`), migrated for real and
  *    dropped in tearDown's finally — never the shared WP test DB. See
- *    DisposableSchema.php.
+ *    IsolatedSchema.php.
  *  - The appointment is produced by the PRODUCTION booking flow on this
  *    disposable schema (hold -> confirm, both committed), so the guard is
  *    tested against a real confirmed appointment, not a hand-built row.
@@ -52,13 +52,13 @@ use ClinicCore\Rest\BookingController;
 use WP_Error;
 use WP_UnitTestCase;
 
-require_once __DIR__ . '/DisposableSchema.php';
+require_once __DIR__ . '/IsolatedSchema.php';
 require_once __DIR__ . '/RealTableMigrations.php';
 
 final class CancelZeroRowGuardTest extends WP_UnitTestCase
 {
     use RealTableMigrations;
-    use DisposableSchema;
+    use IsolatedSchema;
 
     private const GO_DEADLINE_SEC = 20.0; // unused, kept for symmetry with sibling suites
 
