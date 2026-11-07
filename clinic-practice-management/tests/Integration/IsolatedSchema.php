@@ -17,7 +17,8 @@
  *    only schemas with NO unconfirmed forked child of this process (and no
  *    block marker) — otherwise the schema is RETAINED loudly (fail-closed);
  *    forked children never run shutdown cleanup at all. The per-process
- *    migration mirror directory is wiped at process end.
+ *    migration mirror directory is wiped at process end (retained, loudly, when
+ *    forked children cannot be confirmed gone — see registerFatalCleanup()).
  *  - Production code runs unchanged; the WP test bootstrap rewrites CpmsDb's
  *    marked transaction-control statements to SAVEPOINTs (the marker exists
  *    so the rewriter knows to nest them in the outer transaction). Tests
@@ -741,8 +742,9 @@ trait IsolatedSchema
      * still registered and unblocked (e.g. after a fatal that bypassed
      * tearDown) and wipe the migration mirror. FAIL-CLOSED: a forked child
      * (cleanup disabled in its own process) performs no cleanup; a parent
-     * with any unconfirmed forked child RETAINS every open schema loudly.
-     * Loud on STDERR for every anomaly — a leaked schema is never hidden.
+     * with any unconfirmed forked child RETAINS every open schema AND the
+     * migration mirror loudly. Loud on STDERR for every anomaly — a leaked
+     * schema or mirror is never hidden.
      */
     private static function registerFatalCleanup(): void
     {
@@ -759,8 +761,29 @@ trait IsolatedSchema
                 fwrite(STDERR, 'disposable schema cleanup: shutdown cleanup disabled in this process (forked child, pid=' . getmypid() . '); the parent owns cleanup' . PHP_EOL);
                 return;
             }
+            // BOOTSTRAP ORDER (fail-closed): decide fork-retention BEFORE any
+            // cleanup side effect, not after. An unconfirmed forked child
+            // (or an interrupted fork site) cannot prove what the child
+            // still references — the migration mirror is spawn/consume state
+            // the child shares with this process, so retaining it under the
+            // same condition as open schemas is required for consistency.
+            $unconfirmed = self::pendingChildPids();
+            $intent = self::pendingForkIntent();
+            $retentionNote = null;
+            if ($unconfirmed !== [] || $intent > 0) {
+                $parts = [];
+                if ($unconfirmed !== []) {
+                    $parts[] = 'pids=' . implode(',', $unconfirmed);
+                }
+                if ($intent > 0) {
+                    $parts[] = 'fork intent in flight (intent=' . $intent . '): a fatal/exit before parent-side registration of a child cannot be ruled out';
+                }
+                $retentionNote = 'unconfirmed forked child process(es) may still be active; ' . implode('; ', $parts);
+            }
             try {
-                if (is_dir((string) self::$migrationMirror)) {
+                if (null !== $retentionNote && is_dir((string) self::$migrationMirror)) {
+                    fwrite(STDERR, 'disposable schema cleanup: backstop RETAINING migration mirror at ' . self::$migrationMirror . ' (fail-closed): ' . $retentionNote . PHP_EOL);
+                } elseif (is_dir((string) self::$migrationMirror)) {
                     $deleted = 0;
                     $failed  = 0;
                     foreach (glob(self::$migrationMirror . '/*.php') ?: [] as $wrapperFile) {
@@ -780,27 +803,12 @@ trait IsolatedSchema
                 // Never silent: a failed mirror wipe leaks (harmless) temp wrappers.
                 fwrite(STDERR, 'disposable schema cleanup: mirror wipe error: ' . $e->getMessage() . PHP_EOL);
             }
-            // FAIL CLOSED: if THIS process forked children that were never
-            // confirmed dead, or a fork site was interrupted between
-            // pcntl_fork() and the parent-side registration (fatal/exit), we
-            // cannot prove no child is mid-transaction on any open schema.
-            // Retain ALL of them loudly instead of issuing any DROP.
-            $unconfirmed = self::pendingChildPids();
-            $intent = self::pendingForkIntent();
-            $pendingNote = null;
-            if ($unconfirmed !== [] || $intent > 0) {
-                $parts = [];
-                if ($unconfirmed !== []) {
-                    $parts[] = 'pids=' . implode(',', $unconfirmed);
-                }
-                if ($intent > 0) {
-                    $parts[] = 'fork intent in flight (intent=' . $intent . '): a fatal/exit before parent-side registration of a child cannot be ruled out';
-                }
-                $pendingNote = 'unconfirmed forked child process(es) may still be active; ' . implode('; ', $parts);
-            }
+            // FAIL CLOSED: reuse the bootstrap decision computed before ANY
+            // cleanup side effect (see above). We cannot prove no child is
+            // mid-transaction on any open schema; retain ALL of them loudly.
             foreach (array_keys(self::$openSchemas) as $name) {
-                if (null !== $pendingNote) {
-                    fwrite(STDERR, 'disposable schema cleanup: backstop RETAINING ' . $name . ' (fail-closed): ' . $pendingNote . PHP_EOL);
+                if (null !== $retentionNote) {
+                    fwrite(STDERR, 'disposable schema cleanup: backstop RETAINING ' . $name . ' (fail-closed): ' . $retentionNote . PHP_EOL);
                     continue;
                 }
                 if (isset(self::$dropBlockedSchemas[$name])) {
