@@ -868,7 +868,7 @@ final class BookingService
                     }
                 );
             } catch ( \Throwable $expiry_transition_error ) {
-                throw $this->toBookingException($expiry_transition_error);
+                throw $this->toBookingException( $expiry_transition_error );
             }
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'مهلت رزرو تمام شده — دوباره Slot انتخاب کنید', 422);
         }
