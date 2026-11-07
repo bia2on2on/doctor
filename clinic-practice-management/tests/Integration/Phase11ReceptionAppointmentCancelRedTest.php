@@ -37,7 +37,7 @@
  *   (pending|confirmed → cancelled_by_staff for secretary/doctor); I-3
  *   assertNoActiveVisit (HAS_ACTIVE_VISIT / 409); optional reason stored as
  *   mb_substr(reason, 0, 255) (empty ⇒ NULL); APPOINTMENT_CANCELLED audit;
- *   SlotRepository::releaseBooking(slot_id) exactly once (guarded by
+ *   SlotRepository::release_booking(slot_id) exactly once (guarded by
  *   booked_count > 0); Notifications::cancelQueuedForAppointment(apt:{id});
  *   existing patient notification for a confirmed appointment; bounded
  *   {appointment_id, status} result. Slot release is NOT idempotent as a second

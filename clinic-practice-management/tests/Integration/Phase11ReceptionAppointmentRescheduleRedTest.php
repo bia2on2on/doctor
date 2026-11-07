@@ -50,7 +50,7 @@
  *   (CLINIC_INVALID_TRANSITION / 409 otherwise); I-3 assertNoActiveVisit
  *   (HAS_ACTIVE_VISIT / 409); duplicate + capacity guards
  *   (CLINIC_DUPLICATE_APPOINTMENT / CLINIC_SLOT_TAKEN / 409); ordered slot locks;
- *   releaseBooking(old) once + atomicBook(new) once; new appointment `confirmed`
+ *   release_booking(old) once + atomicBook(new) once; new appointment `confirmed`
  *   with rescheduled_from = old id (Location snapshotted from the destination
  *   slot); old appointment `rescheduled` with rescheduled_to = new id;
  *   APPOINTMENT_RESCHEDULED audit on the new appointment; queued internal
