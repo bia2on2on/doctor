@@ -1222,7 +1222,7 @@ final class BookingService
                     }
                 );
             } catch ( \Throwable $expiry_transition_error ) {
-                throw $this->toBookingException($expiry_transition_error);
+                throw $this->toBookingException( $expiry_transition_error );
             }
 
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی شده — دوباره Slot انتخاب کنید', 422);
