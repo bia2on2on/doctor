@@ -413,10 +413,12 @@ final class PatientService
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'بیماری با همین موبایل قبلاً ثبت شده است');
         }
 
+        // The validated (trimmed, invisible/bidi-rejected) names from
+        // validateForUpdate are the ONLY names written — raw copies of the
+        // input must never re-enter here. (`$data + …` on the union kept the
+        // left side anyway, but the misleading raw lines below are gone for good.)
         $data = $this->validateForUpdate($fields, self::CREATE_FIELDS, 0, true) + [
             'clinic_id' => $clinicId,
-            'first_name' => mb_substr($firstName, 0, 120),
-            'last_name' => mb_substr($lastName, 0, 120),
             'mobile' => $mobile,
             'mrn' => $this->generateMrn($clinicId),
             'status' => 'active',
@@ -634,6 +636,15 @@ final class PatientService
         $v = trim(preg_replace('/[\x00-\x1F]/u', '', $v) ?? '');
         if ($v === '' || mb_strlen($v) > 120) {
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'نام نامعتبر است');
+        }
+        // نویسه‌های کنترلِ دوجهتی (LRM/RLM/ALM و نشانه‌های جاسازی/ایزولهٔ جهت)
+        // هرگز در نامِ واقعی مشروع نیستند؛ نشانهٔ حملهٔ هم‌نگاره و خراب‌کردنِ نمایش‌اند.
+        // رد می‌شوند — هرگز سکوت‌کنان حذف. نیم‌فاصلهٔ U+200C از این فهرست خارج است.
+        if ( VisibleText::has_bidi_control( $v ) ) {
+            throw new BookingException(
+                'CLINIC_VALIDATION_FAILED',
+                'نام حاوی نویسه‌های کنترلِ جهت نوشتار است'
+            );
         }
         // نامِ فقط-نامرئی (نیم‌فاصلهٔ تنها، نویسههای صفر-عرض/جهت، BOM، فاصله)
         // محتوای خوانا ندارد؛ نیم‌فاصلهٔ داخلِ واژهٔ فارسی معتبر می‌ماند.
