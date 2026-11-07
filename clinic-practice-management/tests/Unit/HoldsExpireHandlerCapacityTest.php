@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Unit;
 
 use ClinicCore\Application\Jobs\HoldsExpireHandler;
+use ClinicCore\Infrastructure\Repository\SlotRepository;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Infrastructure\Db\CpmsDb;
 use PHPUnit\Framework\TestCase;
@@ -47,16 +48,14 @@ use PHPUnit\Framework\TestCase;
  * in-memory SQLite database holding the two tables involved, with the production
  * column definitions for the fields under test.
  *
- * A stub `wpdb` subclasses the WordPress base class (which the plain unit
- * bootstrap does not provide) and forwards statements to that mirror.
- * `query()` returns SQLite's changed-row count, which is the same contract
- * `$wpdb->query()` exposes for UPDATE (`$return_val = $this->rows_affected`).
- *
- * The stub is defined in the global namespace under the name `wpdb` because
- * `CpmsDb`'s constructor is typed against that class. That is a shared-process
- * side effect on the Unit suite; it is safe here because the only other unit
- * test that reaches for `$wpdb` (RequestProfilerTest) guards every read behind
- * `RequestProfiler::armed()`, which is false in this suite.
+ * A runtime subclass of the ambient global `wpdb` base forwards statements
+ * to that mirror. The subclass is uniquely named (`CpmsHoldsExpireFakeSqlite`);
+ * this file never declares a global class named `wpdb` — the base comes from
+ * tests/Unit/RefundLostUpdateTest.php (the suite's one remaining declaration),
+ * and it is missing only in a standalone run of this file, which then fails
+ * loudly at makeFake() instead of declaring one. `query()` returns SQLite's
+ * changed-row count, which is the same contract `$wpdb->query()` exposes for
+ * UPDATE (`$return_val = $this->rows_affected`).
  *
  * LIMITS, stated plainly: this proves the handler's counter logic, idempotency
  * and floor. It does NOT prove InnoDB row-lock behaviour, transaction isolation
@@ -146,14 +145,12 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
     {
         $this->db->setStrict(false);
 
-        // Restore exactly what was there before, including "nothing".
-        if (array_key_exists('wpdb', $this->saved)) {
-            if ($this->saved['wpdb'] === null) {
-                unset($GLOBALS['wpdb']);
-            } else {
-                $GLOBALS['wpdb'] = $this->saved['wpdb'];
-            }
-        }
+        // Restore exactly what was there before. A null global wpdb is
+        // restored as an explicitly null value, never as an absent key:
+        // other unit files probe `array_key_exists('wpdb', $GLOBALS)` and a
+        // silently missing key would read as "not set at all" instead of
+        // "deliberately null".
+        $GLOBALS['wpdb'] = $this->saved['wpdb'] ?? null;
         $this->restoreAppDb($this->saved['app_db'] ?? null);
         $this->saved = [];
 
@@ -183,9 +180,9 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
     }
 
     /**
-     * Build the fake at runtime so it extends whichever `\wpdb` class is loaded
-     * (this repo's unit suite has more than one test file that declares one) and
-     * therefore satisfies `CpmsDb`'s `wpdb` constructor type hint either way.
+     * Build the fake at runtime as a uniquely named subclass of the ambient
+     * global `wpdb` base (declared once in the suite by RefundLostUpdateTest),
+     * so it satisfies `CpmsDb`'s `wpdb` constructor type hint.
      *
      * Every method `CpmsDb` and `HoldsExpireHandler` call is overridden:
      * prepare, query, get_row, get_results, get_var, insert, update, delete, and
@@ -196,7 +193,21 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
      */
     private function makeFake(\PDO $pdo): \wpdb
     {
-        $base = class_exists('wpdb', false) ? 'wpdb' : $this->declareMinimalBase();
+        // This file never declares a global class named wpdb. The unique
+        // runtime subclass below needs a base, and the only base available in
+        // a bare unit run is the global wpdb declared at file load by
+        // tests/Unit/RefundLostUpdateTest.php (the one legitimate declaration
+        // left in the suite). When the suite runs the full directory (CI unit
+        // job), every test file is loaded before any test runs, so the base
+        // is always present here. Standalone execution of THIS file without a
+        // wpdb in the process fails loudly instead of declaring one.
+        if (!class_exists('wpdb', false)) {
+            throw new \RuntimeException(
+                'HoldsExpireHandlerCapacityTest needs the global wpdb base class, '
+                . 'which the unit suite provides via RefundLostUpdateTest; run the full unit suite'
+            );
+        }
+        $base = 'wpdb';
 
         $class = 'CpmsHoldsExpireFakeSqlite';
         if (class_exists($class, false)) {
@@ -206,42 +217,6 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
         eval($this->fakeClassSource($class, $base));
 
         return new $class($pdo);
-    }
-
-    /**
-     * Only used when no `\wpdb` exists at all. Minimal, untyped members so a
-     * subclass can narrow or widen them freely on PHP 8.1 through 8.5.
-     */
-    private function declareMinimalBase(): string
-    {
-        if (!class_exists('wpdb', false)) {
-            eval($this->baseClassSource());
-        }
-
-        return 'wpdb';
-    }
-
-    private function baseClassSource(): string
-    {
-        return <<<'PHP'
-namespace {
-    class wpdb
-    {
-        public $prefix = 'wp_';
-        public $last_error = '';
-        public $insert_id = 0;
-
-        public function prepare($query, ...$args) { return $query; }
-        public function query($query) { return 0; }
-        public function get_row($query = null, $output = null, $y = 0) { return null; }
-        public function get_results($query = null, $output = null) { return []; }
-        public function get_var($query = null, $x = 0, $y = 0) { return null; }
-        public function insert($table, $data, $format = null) { return 1; }
-        public function update($table, $data, $where, $format = null, $where_format = null) { return 1; }
-        public function delete($table, $where, $format = null) { return 1; }
-    }
-}
-PHP;
     }
 
     /**
@@ -621,6 +596,77 @@ PHP;
         }
 
         self::fail('a real DB error must abort the run, not be treated as zero affected rows');
+    }
+
+    // ================= SlotRepository::release_hold =================
+
+    /**
+     * The repository release reports affected rows and keeps the floor: one
+     * real release returns 1, a second (already-at-zero) release returns 0 —
+     * and never goes below zero or throws. The anti-double-release guarantee
+     * lives in the hold-transition guard (covered by the tests above and the
+     * Integration suite); the floor is defense in depth, not a license to
+     * release twice.
+     */
+    public function testReleaseHoldReturnsAffectedRowsAndFloorsAtZero(): void
+    {
+        $this->seedSlot(1, 1, 0, 1);
+        $slots = new SlotRepository($this->db);
+
+        self::assertSame(1, $slots->release_hold(1), 'the real release decrements and reports one row');
+        self::assertSame(0, $this->heldCount(1));
+
+        self::assertSame(0, $slots->release_hold(1), 'the floor holds: already-zero is a zero-row UPDATE, not an error');
+        self::assertSame(0, $this->heldCount(1), 'the counter never goes below zero');
+    }
+
+    /**
+     * Zero affected rows (counter already at the floor of zero) is a legal
+     * outcome and must come back as int 0, not as an exception and not as
+     * false-like ambiguity.
+     */
+    public function testReleaseHoldOnZeroCounterReturnsZeroWithoutError(): void
+    {
+        $this->seedSlot(1, 1, 0, 0);
+        $slots = new SlotRepository($this->db);
+
+        self::assertSame(0, $slots->release_hold(1));
+        self::assertSame(0, $this->heldCount(1));
+    }
+
+    /**
+     * A driver-level failure on the slot release write (wpdb returns false,
+     * last_error set) is a real DB error: it throws and the counter is left
+     * exactly as it was. It must never be mistaken for "zero rows changed".
+     */
+    public function testReleaseHoldDriverErrorThrowsAndKeepsCounter(): void
+    {
+        $this->seedSlot(1, 1, 0, 1);
+        $this->wpdb->writeFault = static function (string $sql): ?string {
+            return strpos($sql, 'cpms_schedule_slots') !== false ? 'injected driver failure' : null;
+        };
+        $slots = new SlotRepository($this->db);
+
+        try {
+            $slots->release_hold(1);
+            self::fail('a driver failure must throw, not look like zero affected rows');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('slot hold release failed', $e->getMessage());
+        }
+        self::assertSame(1, $this->heldCount(1), 'the counter is exactly what it was');
+
+        // and the same with a silent driver (false without an error message)
+        $this->wpdb->writeFault = static function (string $sql): ?string {
+            return strpos($sql, 'cpms_schedule_slots') !== false ? 'FALSE_WITHOUT_ERROR' : null;
+        };
+
+        try {
+            $slots->release_hold(1);
+            self::fail('a silent driver failure must throw, not look like zero affected rows');
+        } catch (\RuntimeException $e) {
+            self::assertStringContainsString('slot hold release failed', $e->getMessage());
+        }
+        self::assertSame(1, $this->heldCount(1));
     }
 
     // ================= stub =================

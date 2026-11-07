@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Infrastructure\Repository;
 
 use ClinicCore\Infrastructure\Db\CpmsDb;
+use RuntimeException;
 
 /**
  * Repository اسلات — ADR-0021 + تضمین Concurrency ADR-0004.
@@ -216,15 +217,27 @@ final class SlotRepository
 
     /**
      * آزادسازی Hold (انقضا/لغو/تغییر Slot).
+     *
+     * قرارداد affected-rows: ۱ = دقیقاً یک واحد آزاد شد؛ ۰ = شمارنده از قبل روی
+     * کفِ صفر بود (موجه) — یعنی هیچ ظرفیتی تغییر نکرد؛ «خطای واقعیِ درایور» هرگز
+     * به ۰ تبدیل نمی‌شود، بلکه RuntimeException می‌دهد تا تراکنشِ پیرامون
+     * ROLLBACK شود. این محافظ آخرین خطِ دفاعی نیست: ضامن اصلیِ «آزادسازیِ دوباره
+     * ممنوع»، گذارِ شرطیِ ردیف Hold در همان تراکنش است (affected rows مرجع).
+     * GREATEST(...) و predicate `held_count > 0` کفِ شمارنده را حفظ می‌کنند اما
+     * انتخاب‌کننده نیستند — به‌تنهایی double-release را پنهان می‌کنند.
+     *
+     * @return int تعداد ردیف‌های اثرگرفته (۰ یا ۱)
      */
-    public function releaseHold(int $slotId): void
+    public function release_hold( int $slot_id ): int
     {
-        $this->db->query(
-            'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
+        $prepared = $this->db->prepare(
+            'UPDATE ' . $this->db->table( 'cpms_schedule_slots' ) . '
              SET held_count = GREATEST(held_count - 1, 0), updated_at = %s
              WHERE id = %d AND held_count > 0',
-            [$this->nowSql(), $slotId]
+            [ $this->nowSql(), $slot_id ]
         );
+
+        return $this->guarded_counter_write( $prepared, 'slot hold release failed' );
     }
 
     /**
@@ -255,16 +268,53 @@ final class SlotRepository
     }
 
     /**
-     * آزادسازی ظرفیت هنگام لغو نوبت.
+     * آزادسازی ظرفیت هنگام لغو/جابه‌جایی نوبت.
+     *
+     * همان قرارداد release_hold: خطای واقعیِ درایور → RuntimeException (تراکنش
+     * پیرامون ROLLBACK می‌کند)؛ ۰ = شمارنده از قبل روی کف صفر بوده (موجه).
+     *
+     * @return int تعداد ردیف‌های اثرگرفته (۰ یا ۱)
      */
-    public function releaseBooking(int $slotId): void
+    public function release_booking( int $slot_id ): int
     {
-        $this->db->query(
-            'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
+        $prepared = $this->db->prepare(
+            'UPDATE ' . $this->db->table( 'cpms_schedule_slots' ) . '
              SET booked_count = GREATEST(booked_count - 1, 0), updated_at = %s
              WHERE id = %d AND booked_count > 0',
-            [$this->nowSql(), $slotId]
+            [ $this->nowSql(), $slot_id ]
         );
+
+        return $this->guarded_counter_write( $prepared, 'slot booking release failed' );
+    }
+
+    /**
+     * نوشتنِ محافظت‌شدهٔ شمارندهٔ اسلات: شمارهٔ ردیف‌های اثرگرفته را برمی‌گرداند،
+     * بدون آنکه «خطای واقعی DB» را با «صفر ردیفِ اثرگرفته» اشتباه بگیرد.
+     *
+     * چرا لازم است: `CpmsDb::execute()` در حالت soft هر خطای SQL را به ۰
+     * تبدیل می‌کند و `CpmsDb::query()` فقط bool می‌دهد. اینجا هیچ‌کدام از این
+     * دو برای تصمیم‌گیری کافی نیستند (همان الگوی HoldsExpireHandler):
+     * `$wpdb->query()` روی نوشتن موفق عدد می‌دهد و روی شکست `false`؛ بنابراین
+     * `false` به‌تنهایی یعنی خطا — حتی اگر درایور پیامی ثبت نکرده باشد — و
+     * غیرخالی بودن `last_error` هم خطا محسوب می‌شود. صفرِ صحیح (ردیفی مطابق
+     * شرایط نبود، شمارنده از قبل روی کف صفر بود) عددی معتبر است و Exception
+     * تولید نمی‌کند.
+     */
+    private function guarded_counter_write( string $prepared, string $context ): int {
+        $result = $this->db->wpdb()->query( $prepared ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- prepared by the caller.
+        $error  = $this->db->wpdb()->last_error;
+
+        if ( $result === false ) {
+            throw new RuntimeException( $context . ': ' . ( $error === '' ? 'wpdb returned false without an error message' : $error ) );
+        }
+        if ( ! is_int( $result ) ) {
+            throw new RuntimeException( $context . ': wpdb returned a non-int result for a write statement' );
+        }
+        if ( $error !== '' ) {
+            throw new RuntimeException( $context . ': ' . $error );
+        }
+
+        return $result;
     }
 
     private function nowSql(): string
