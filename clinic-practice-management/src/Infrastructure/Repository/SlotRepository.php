@@ -228,16 +228,16 @@ final class SlotRepository
      *
      * @return int تعداد ردیف‌های اثرگرفته (۰ یا ۱)
      */
-    public function releaseHold(int $slotId): int
+    public function release_hold( int $slot_id ): int
     {
         $prepared = $this->db->prepare(
-            'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
+            'UPDATE ' . $this->db->table( 'cpms_schedule_slots' ) . '
              SET held_count = GREATEST(held_count - 1, 0), updated_at = %s
              WHERE id = %d AND held_count > 0',
-            [$this->nowSql(), $slotId]
+            [ $this->nowSql(), $slot_id ]
         );
 
-        return $this->guardedCounterWrite($prepared, 'slot hold release failed');
+        return $this->guarded_counter_write( $prepared, 'slot hold release failed' );
     }
 
     /**
@@ -270,21 +270,21 @@ final class SlotRepository
     /**
      * آزادسازی ظرفیت هنگام لغو/جابه‌جایی نوبت.
      *
-     * همان قرارداد releaseHold: خطای واقعیِ درایور → RuntimeException (تراکنش
+     * همان قرارداد release_hold: خطای واقعیِ درایور → RuntimeException (تراکنش
      * پیرامون ROLLBACK می‌کند)؛ ۰ = شمارنده از قبل روی کف صفر بوده (موجه).
      *
      * @return int تعداد ردیف‌های اثرگرفته (۰ یا ۱)
      */
-    public function releaseBooking(int $slotId): int
+    public function release_booking( int $slot_id ): int
     {
         $prepared = $this->db->prepare(
-            'UPDATE ' . $this->db->table('cpms_schedule_slots') . '
+            'UPDATE ' . $this->db->table( 'cpms_schedule_slots' ) . '
              SET booked_count = GREATEST(booked_count - 1, 0), updated_at = %s
              WHERE id = %d AND booked_count > 0',
-            [$this->nowSql(), $slotId]
+            [ $this->nowSql(), $slot_id ]
         );
 
-        return $this->guardedCounterWrite($prepared, 'slot booking release failed');
+        return $this->guarded_counter_write( $prepared, 'slot booking release failed' );
     }
 
     /**
@@ -300,19 +300,18 @@ final class SlotRepository
      * شرایط نبود، شمارنده از قبل روی کف صفر بود) عددی معتبر است و Exception
      * تولید نمی‌کند.
      */
-    private function guardedCounterWrite(string $prepared, string $context): int
-    {
-        $result = $this->db->wpdb()->query($prepared); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- prepared by the caller.
+    private function guarded_counter_write( string $prepared, string $context ): int {
+        $result = $this->db->wpdb()->query( $prepared ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- prepared by the caller.
         $error  = $this->db->wpdb()->last_error;
 
-        if ($result === false) {
-            throw new RuntimeException($context . ': ' . ($error === '' ? 'wpdb returned false without an error message' : $error));
+        if ( $result === false ) {
+            throw new RuntimeException( $context . ': ' . ( $error === '' ? 'wpdb returned false without an error message' : $error ) );
         }
-        if (!is_int($result)) {
-            throw new RuntimeException($context . ': wpdb returned a non-int result for a write statement');
+        if ( ! is_int( $result ) ) {
+            throw new RuntimeException( $context . ': wpdb returned a non-int result for a write statement' );
         }
-        if ($error !== '') {
-            throw new RuntimeException($context . ': ' . $error);
+        if ( $error !== '' ) {
+            throw new RuntimeException( $context . ': ' . $error );
         }
 
         return $result;

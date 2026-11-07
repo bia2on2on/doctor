@@ -598,7 +598,7 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
         self::fail('a real DB error must abort the run, not be treated as zero affected rows');
     }
 
-    // ================= SlotRepository::releaseHold =================
+    // ================= SlotRepository::release_hold =================
 
     /**
      * The repository release reports affected rows and keeps the floor: one
@@ -613,10 +613,10 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
         $this->seedSlot(1, 1, 0, 1);
         $slots = new SlotRepository($this->db);
 
-        self::assertSame(1, $slots->releaseHold(1), 'the real release decrements and reports one row');
+        self::assertSame(1, $slots->release_hold(1), 'the real release decrements and reports one row');
         self::assertSame(0, $this->heldCount(1));
 
-        self::assertSame(0, $slots->releaseHold(1), 'the floor holds: already-zero is a zero-row UPDATE, not an error');
+        self::assertSame(0, $slots->release_hold(1), 'the floor holds: already-zero is a zero-row UPDATE, not an error');
         self::assertSame(0, $this->heldCount(1), 'the counter never goes below zero');
     }
 
@@ -630,7 +630,7 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
         $this->seedSlot(1, 1, 0, 0);
         $slots = new SlotRepository($this->db);
 
-        self::assertSame(0, $slots->releaseHold(1));
+        self::assertSame(0, $slots->release_hold(1));
         self::assertSame(0, $this->heldCount(1));
     }
 
@@ -648,7 +648,7 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
         $slots = new SlotRepository($this->db);
 
         try {
-            $slots->releaseHold(1);
+            $slots->release_hold(1);
             self::fail('a driver failure must throw, not look like zero affected rows');
         } catch (\RuntimeException $e) {
             self::assertStringContainsString('slot hold release failed', $e->getMessage());
@@ -661,7 +661,7 @@ final class HoldsExpireHandlerCapacityTest extends TestCase
         };
 
         try {
-            $slots->releaseHold(1);
+            $slots->release_hold(1);
             self::fail('a silent driver failure must throw, not look like zero affected rows');
         } catch (\RuntimeException $e) {
             self::assertStringContainsString('slot hold release failed', $e->getMessage());

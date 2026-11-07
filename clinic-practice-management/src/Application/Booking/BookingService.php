@@ -824,7 +824,7 @@ final class BookingService
         $holdPatientId = $hasPatientCol && array_key_exists('patient_id', $hold) && $hold['patient_id'] !== null && (string) $hold['patient_id'] !== '' ? (int) $hold['patient_id'] : null;
 
         $now = $this->now();
-        $nowSql = $this->db->nowUtcSql();
+        $now_sql = $this->db->nowUtcSql();
         if ((int) $hold['holder_wp_user_id'] !== $wpUserId) {
             // phpcs:disable PEAR.Functions.FunctionCallSignature.MultipleArguments,PEAR.Functions.FunctionCallSignature.CloseBracketLine -- PSR compact multi-line call, established file style; security, SQL, i18n and escaping sniffs stay active.
             $this->audit('FORBIDDEN_ACCESS_ATTEMPT', $wpUserId, 'patient', 'slot_hold', (int) $hold['id'], null, null, null, [
@@ -854,18 +854,20 @@ final class BookingService
             // اگر worker انقضا (یا confirmِ همزمان) پیش از این اجرا شده باشد،
             // UPDATE صفر ردیف اثر می‌دهد و ظرفیت دوباره آزاد نمی‌شود.
             try {
-                $this->db->transactional(function () use ($hold, $nowSql): void {
-                    $changed = $this->guardedCapacityWrite(
-                        'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'expired' WHERE id = %d AND status = 'active' AND expires_at <= %s",
-                        [(int) $hold['id'], $nowSql]
-                    );
-                    if ($changed < 1) {
-                        // انتقال را دیگری برده؛ ظرفیت قبلاً آزاد شده است.
-                        return;
+                $this->db->transactional(
+                    function () use ( $hold, $now_sql ): void {
+                        $changed = $this->guardedCapacityWrite(
+                            'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'expired' WHERE id = %d AND status = 'active' AND expires_at <= %s",
+                            [ (int) $hold['id'], $now_sql ]
+                        );
+                        if ( $changed < 1 ) {
+                            // انتقال را دیگری برده؛ ظرفیت قبلاً آزاد شده است.
+                            return;
+                        }
+                        $this->slots->release_hold( (int) $hold['slot_id'] );
                     }
-                    $this->slots->releaseHold((int) $hold['slot_id']);
-                });
-            } catch (\Throwable $expiry_transition_error) {
+                );
+            } catch ( \Throwable $expiry_transition_error ) {
                 throw $this->toBookingException($expiry_transition_error);
             }
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'مهلت رزرو تمام شده — دوباره Slot انتخاب کنید', 422);
@@ -1136,7 +1138,7 @@ final class BookingService
                 // the active Hold. An expiry worker may already have released it.
                 if ( $released_hold >= 1 ) {
                     try {
-                        $this->slots->releaseHold( $slot_id );
+                        $this->slots->release_hold( $slot_id );
                     } catch ( \Throwable $compensation_release_error ) {
                         $this->op->error(
                             'booking.hold_capacity_release_failed',
@@ -1205,19 +1207,21 @@ final class BookingService
             // در یک تراکنش. اگر worker انقضا (یا confirmِ همزمان) پیش از این
             // اجرا شده باشد، UPDATE چیزی را تغییر نمی‌دهد و ظرفیت آزاد نمی‌شود.
             try {
-                $this->db->transactional(function () use ($hold): void {
-                    $changed = $this->guardedCapacityWrite(
-                        'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'expired' WHERE id = %d AND status = 'active'",
-                        [(int) $hold['id']]
-                    );
-                    if ($changed < 1) {
-                        // هیچ ردیفی تغییر نکرد ⇒ transition را دیگری برده؛
-                        // ظرفیت قبلاً آزاد شده است.
-                        return;
+                $this->db->transactional(
+                    function () use ( $hold ): void {
+                        $changed = $this->guardedCapacityWrite(
+                            'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'expired' WHERE id = %d AND status = 'active'",
+                            [ (int) $hold['id'] ]
+                        );
+                        if ( $changed < 1 ) {
+                            // هیچ ردیفی تغییر نکرد ⇒ transition را دیگری برده؛
+                            // ظرفیت قبلاً آزاد شده است.
+                            return;
+                        }
+                        $this->slots->release_hold( (int) $hold['slot_id'] );
                     }
-                    $this->slots->releaseHold((int) $hold['slot_id']);
-                });
-            } catch (\Throwable $expiry_transition_error) {
+                );
+            } catch ( \Throwable $expiry_transition_error ) {
                 throw $this->toBookingException($expiry_transition_error);
             }
 
@@ -1720,7 +1724,7 @@ final class BookingService
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مقصد پر شد — اسلات دیگری انتخاب کنید', 409 );
                     }
 
-                    $this->slots->releaseBooking( $old_slot_id );
+                    $this->slots->release_booking( $old_slot_id );
                     if ( ! $this->slots->atomicBook( $new_slot_id ) ) {
                         throw BookingException::of( 'CLINIC_SLOT_TAKEN', 'اسلات مقصد در لحظه نهایی پر شد', 409 );
                     }
@@ -2195,7 +2199,7 @@ final class BookingService
                 'cancelled_by_wp_user_id' => $wpUserId,
                 'updated_at' => $nowSql,
             ]);
-            $this->slots->releaseBooking($slotId);
+            $this->slots->release_booking( (int) $appt['slot_id'] );
 
             // D6 audit atomicity: the cancellation, slot release and mandatory
             // audit commit/roll back together (staff and patient paths share it).

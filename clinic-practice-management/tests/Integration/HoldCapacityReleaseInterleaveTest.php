@@ -396,7 +396,7 @@ final class HoldCapacityReleaseInterleaveTest extends WP_UnitTestCase
      * (Hold A هنوز active و منقضی‌شده دیده می‌شود؛ worker آن را expired
      * می‌کند پیش از آنکه UPDATE انتقال confirm اجرا شود).
      *
-     * روی main قرمز است: UPDATE انتقال صفر ردیف اثر می‌دهد ولی releaseHold
+     * روی main قرمز است: UPDATE انتقال صفر ردیف اثر می‌دهد ولی release_hold
      * بدون قید اجرا می‌شود — held از ۱ به ۰ می‌رود (ظرفیت B دزدیده می‌شود).
      */
     public function testConfirmInterleavedWithExpiryWorkerKeepsOtherActiveHoldCapacity(): void
