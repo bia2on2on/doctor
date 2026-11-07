@@ -119,11 +119,14 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
     protected function tearDown(): void
     {
         try {
-            if ($this->reapFailures !== []) {
-                // FAIL CLOSED: never DROP while forked children are
-                // known/potentially still active — refuse loudly, retain the
-                // schema; the shutdown backstop honors the same refusal.
-                $this->blockDisposableSchemaDrop('forked children unconfirmed reaped; pids=' . implode(',', $this->reapFailures));
+            // FAIL CLOSED: any fork that cannot be confirmed dead — via
+            // reapFailures (Known/SIGKILL-unconfirmed) or via the fork
+            // registry (exception/fatal path) — blocks the drop; the schema
+            // is retained loudly and the shutdown backstop honors it.
+            $pending = array_unique(array_merge($this->reapFailures, self::pendingChildPids()));
+            sort($pending);
+            if ($pending !== []) {
+                $this->blockDisposableSchemaDrop('forked children unconfirmed reaped; pids=' . implode(',', $pending));
             }
             $this->dropDisposableSchema();
         } finally {
@@ -180,10 +183,22 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         // same order removes the inversion; the assertion strength is unchanged
         // (B must still be observed blocked behind A before GO, still blocked
         // after hold(), and must still lose with CLINIC_SLOT_TAKEN).
+        // Fail-closed pre-registration guard: intent begins BEFORE the fork
+        // and resolves only after the child is registered (or confirmed not
+        // forked). A fatal/exit in between keeps the intent nonzero, so the
+        // tearDown drop and the shutdown backstop both refuse.
+        self::noteForkIntentBegin();
         $pidA = pcntl_fork();
         if (0 === $pidA) {
+            // Forked child: never run the inherited shutdown cleanup (kills
+            // the schema under the parent/sibling). Disable at birth.
+            self::disableFatalCleanupForThisProcess();
             $this->childCompetitorHold($readyA, $goA, $holdDoneA, $commitA, $outcomeA, $slotId, $date, $this->userAId, $this->capturedSessions[$this->userAId]);
         }
+        if (is_int($pidA) && $pidA > 0) {
+            self::noteForkedChild($pidA);
+        }
+        self::noteForkIntentResolved();
         $pids[] = is_int($pidA) ? $pidA : 0;
         self::assertNotFalse($pidA);
         self::assertGreaterThan(0, $pidA, 'competitor A fork');
@@ -193,10 +208,16 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
 
         // Competitor B (fork): runs the same production hold() on its own
         // connection; it must block behind A.
+        self::noteForkIntentBegin();
         $pidB = pcntl_fork();
         if (0 === $pidB) {
+            self::disableFatalCleanupForThisProcess();
             $this->childCompetingHoldLoser($readyB, $outcomeB, $slotId, $date, $this->userBId, $this->capturedSessions[$this->userBId]);
         }
+        if (is_int($pidB) && $pidB > 0) {
+            self::noteForkedChild($pidB);
+        }
+        self::noteForkIntentResolved();
         $pids[] = is_int($pidB) ? $pidB : 0;
         self::assertNotFalse($pidB);
         self::assertGreaterThan(0, $pidB, 'competitor B fork');
@@ -283,10 +304,20 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         try {
         // Coordinator A (fork): holds the Hold row's record lock exactly where
         // confirm() takes it (HOLD before SLOT), signals readiness, waits for GO.
+        // Fail-closed pre-registration guard: intent begins BEFORE the fork
+        // and resolves only after the child is registered (or confirmed not
+        // forked). A fatal/exit in between keeps the intent nonzero, so the
+        // tearDown drop and the shutdown backstop both refuse.
+        self::noteForkIntentBegin();
         $pidA = pcntl_fork();
         if (0 === $pidA) {
+            self::disableFatalCleanupForThisProcess();
             $this->childHoldLockHolder($readyA, $goA, $holdId);
         }
+        if (is_int($pidA) && $pidA > 0) {
+            self::noteForkedChild($pidA);
+        }
+        self::noteForkIntentResolved();
         $pids[] = is_int($pidA) ? $pidA : 0;
         self::assertNotFalse($pidA);
         self::assertGreaterThan(0, $pidA);
@@ -296,10 +327,16 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
 
         // Worker B (fork): the production HoldsExpireHandler on its own
         // connection; it must block on the Hold row until A releases it.
+        self::noteForkIntentBegin();
         $pidB = pcntl_fork();
         if (0 === $pidB) {
+            self::disableFatalCleanupForThisProcess();
             $this->childExpiryWorker($readyB, $outcomeB);
         }
+        if (is_int($pidB) && $pidB > 0) {
+            self::noteForkedChild($pidB);
+        }
+        self::noteForkIntentResolved();
         $pids[] = is_int($pidB) ? $pidB : 0;
         self::assertNotFalse($pidB);
         self::assertGreaterThan(0, $pidB);
@@ -861,12 +898,58 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
     /** Confirm with optional fault injection on its own connection (failure scenarios). */
     private function childExit(): void
     {
-        // Forked children must not run PHP shutdown: destructors could close
-        // the inherited sockets of the parent's WP sessions.
-        if (function_exists('posix_kill')) {
-            posix_kill(getmypid(), SIGKILL);
+        // A forked child must NEVER run the inherited shutdown cleanup (the
+        // IsolatedSchema backstop would DROP the shared disposable schema
+        // while the parent or a sibling is still active, or wipe the mirror
+        // dir out from under the parent). Disable shutdown cleanup in THIS
+        // process before anything else; then try SIGKILL; whether or not
+        // posix_kill exists or succeeds, exit(0) is fail-closed.
+        self::disableFatalCleanupForThisProcess();
+        if (!function_exists('posix_kill')) {
+            fwrite(STDERR, '[hold-race] child pid=' . getmypid() . ' posix_kill unavailable; exiting with shutdown cleanup disabled' . PHP_EOL);
+            exit(0);
+        }
+        if (!@posix_kill(getmypid(), SIGKILL)) {
+            fwrite(STDERR, '[hold-race] child pid=' . getmypid() . ' SIGKILL failed; exiting with shutdown cleanup disabled' . PHP_EOL);
         }
         exit(0);
+    }
+
+    /**
+     * Confirms one forked child is gone. TRUE only when (a) waitpid returned
+     * this child's pid (reaped by us), or (b) waitpid failed with errno
+     * ECHILD (the child no longer exists — already reaped here). WNOHANG
+     * "still running" (0) returns false. ANY other error — EINTR, unexpected
+     * errno we cannot interpret, or pcntl_waitpid missing — returns false:
+     * silence or interruption is never accepted as proof of death. On a
+     * TRUE result the child is removed from the fork registry; on false it
+     * stays registered, so tearDown / the shutdown backstop refuse to DROP.
+     */
+    private function pollChildConfirmedGone(int $pid): bool
+    {
+        if ($pid <= 0) {
+            return true; // nothing to wait for, nothing registered
+        }
+        if (!function_exists('pcntl_waitpid')) {
+            return false;
+        }
+        $status = 0;
+        $res = @pcntl_waitpid($pid, $status, WNOHANG);
+        if ($res === $pid) {
+            self::noteChildConfirmedReaped($pid);
+            return true;
+        }
+        if ($res === 0) {
+            return false; // still running
+        }
+        $errno = function_exists('pcntl_get_last_error') ? pcntl_get_last_error() : -1;
+        $echild = defined('PCNTL_ECHILD') ? PCNTL_ECHILD : 10; // Linux ECHILD
+        if ($errno === $echild) {
+            self::noteChildConfirmedReaped($pid);
+            return true;
+        }
+        $this->markRace('reap', sprintf('waitpid errno=%d for pid=%d treated as UNCONFIRMED (fail-closed)', $errno, $pid));
+        return false;
     }
 
     /**
@@ -890,7 +973,10 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
             foreach ($files as $file) {
                 @unlink($file);
             }
-            $this->markRace($tag, 'pcntl_unavailable: no forked children on this backend; coordination files unlinked');
+            // NOTE: pcntl_fork may exist while pcntl_waitpid does not — any
+            // fork made by this test remains in the IsolatedSchema registry,
+            // so tearDown/backstop refuse to DROP. Loud, never silent.
+            $this->markRace($tag, 'pcntl_waitpid unavailable: fork confirmations impossible; forked children (if any) remain registered; schema drop is blocked; coordination files unlinked');
             return;
         }
         $deadline  = microtime(true) + 5.0;
@@ -901,8 +987,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
                     unset($remaining[$i]);
                     continue;
                 }
-                $res = @pcntl_waitpid($pid, $status, WNOHANG);
-                if ($res === $pid || -1 === $res) {
+                if ($this->pollChildConfirmedGone((int) $pid)) {
                     unset($remaining[$i]);
                 }
             }
@@ -926,8 +1011,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
             $killDeadline = microtime(true) + 3.0;
             $gone = false;
             while (microtime(true) < $killDeadline) {
-                $res = @pcntl_waitpid($pid, $status, WNOHANG);
-                if ($res === $pid || -1 === $res) {
+                if ($this->pollChildConfirmedGone((int) $pid)) {
                     $gone = true;
                     break;
                 }
@@ -964,8 +1048,7 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         }
         $deadline = microtime(true) + $timeoutSec;
         while (microtime(true) < $deadline) {
-            $res = @pcntl_waitpid($pid, $status, WNOHANG);
-            if ($res === $pid || -1 === $res) {
+            if ($this->pollChildConfirmedGone($pid)) {
                 return true;
             }
             usleep(20000);
@@ -973,11 +1056,12 @@ final class HoldCapacityTwoConnectionTest extends WP_UnitTestCase
         $this->markRace($tag, sprintf('child pid=%d still running after %.1fs; escalating to SIGKILL', $pid, $timeoutSec));
         if (function_exists('posix_kill')) {
             @posix_kill($pid, SIGKILL);
+        } else {
+            $this->markRace($tag, sprintf('child pid=%d SIGKILL unavailable (posix_kill missing)', $pid));
         }
         $killDeadline = microtime(true) + 3.0;
         while (microtime(true) < $killDeadline) {
-            $res = @pcntl_waitpid($pid, $status, WNOHANG);
-            if ($res === $pid || -1 === $res) {
+            if ($this->pollChildConfirmedGone($pid)) {
                 return true;
             }
             usleep(50000);
