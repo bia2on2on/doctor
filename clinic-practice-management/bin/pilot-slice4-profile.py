@@ -952,7 +952,7 @@ def run_visits_readonly(browser, run):
         expect(context).to_contain_text(clinic_name(MULTI["clinic_b"]))
         expect(context).to_contain_text("SynB")
         opener = section.locator(f'[data-role="visit-open"][data-visit-id="{visit_b}"]')
-        expect(opener).to_contain_text(os.environ["VISITS_JALALI"])
+        expect(opener).to_contain_text(fa_digits(os.environ["VISITS_JALALI"]))
         assert os.environ["VISITS_DATE"] not in opener.inner_text()
         assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", opener.inner_text())
         with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/visits/{visit_b}") as detail:
@@ -961,7 +961,7 @@ def run_visits_readonly(browser, run):
         pane = section.locator('[data-role="visits-detail"]')
         pane.get_by_text("SYN-VISIBLE-B", exact=False).wait_for(state="visible")
         heading = pane.locator("h2")
-        expect(heading).to_contain_text(os.environ["VISITS_JALALI"])
+        expect(heading).to_contain_text(fa_digits(os.environ["VISITS_JALALI"]))
         assert os.environ["VISITS_DATE"] not in heading.inner_text()
         assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", heading.inner_text())
         ok("visits-jalali-" + run["vp"], "JS list/detail show PHP Jalali display field; raw Gregorian absent",
