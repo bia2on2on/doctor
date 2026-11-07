@@ -850,11 +850,24 @@ final class BookingService
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی/بسته شده — دوباره Slot انتخاب کنید', 422);
         }
         if ($this->toDateTime((string) $hold['expires_at']) <= $now) {
-            $this->db->query(
-                'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'expired' WHERE id = %d AND status = 'active' AND expires_at <= %s",
-                [(int) $hold['id'], $nowSql]
-            );
-            $this->slots->releaseHold((int) $hold['slot_id']);
+            // گارد affected-rows + اتمی — همان الگوی resume/HoldsExpireHandler:
+            // اگر worker انقضا (یا confirmِ همزمان) پیش از این اجرا شده باشد،
+            // UPDATE صفر ردیف اثر می‌دهد و ظرفیت دوباره آزاد نمی‌شود.
+            try {
+                $this->db->transactional(function () use ($hold, $nowSql): void {
+                    $changed = $this->guardedCapacityWrite(
+                        'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'expired' WHERE id = %d AND status = 'active' AND expires_at <= %s",
+                        [(int) $hold['id'], $nowSql]
+                    );
+                    if ($changed < 1) {
+                        // انتقال را دیگری برده؛ ظرفیت قبلاً آزاد شده است.
+                        return;
+                    }
+                    $this->slots->releaseHold((int) $hold['slot_id']);
+                });
+            } catch (\Throwable $expiry_transition_error) {
+                throw $this->toBookingException($expiry_transition_error);
+            }
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'مهلت رزرو تمام شده — دوباره Slot انتخاب کنید', 422);
         }
 
@@ -1028,10 +1041,18 @@ final class BookingService
 
                     $this->machineCheck( 'new', 'book_final', 'patient' );
 
-                    $this->db->query(
+                    // گارد affected-rows: این UPDATE داخل همان تراکنشِ booking
+                    // اجرا می‌شود و Hold ردیفِ FOR UPDATE-قفل‌شدهٔ خود این تراکنش
+                    // است؛ پس صفر ردیف فقط زیر خطای پنهان‌شده در حالت soft رخ
+                    // می‌دهد. هر شکست اینجا تراکنش را ROLLBACK می‌کند تا
+                    // appointment با Holdِ همچنان active commit نشود.
+                    $conversion_changed = $this->guardedCapacityWrite(
                         'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'converted' WHERE id = %d AND status = 'active'",
                         [ $hold_id ]
                     );
+                    if ( $conversion_changed < 1 ) {
+                        throw new \RuntimeException( 'confirm hold conversion write affected zero rows' );
+                    }
 
                     // D6 audit atomicity: appointment (and any auto-created
                     // patient), slot claim, hold conversion and the mandatory
@@ -1090,14 +1111,42 @@ final class BookingService
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase
             $denial_code = $denial->errorCode;
             if ( 'CLINIC_SUSPENDED' !== $denial_code && self::LOCK_BUSY_CODE !== $denial_code && 'CLINIC_SCOPE_REQUIRED' !== $denial_code ) {
-                $released_hold = $this->db->execute(
-                    'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
-                    [ $hold_id ]
-                );
-                // Decrement capacity only if this compensation changed the active
-                // Hold. An expiry worker may already have released it.
-                if ( $released_hold > 0 ) {
-                    $this->slots->releaseHold( $slot_id );
+                // گارد affected-rows + تمایز خطا از صفر: اگر worker انقضا
+                // پیش‌تر Hold را released/expired کرده باشد، این UPDATE صفر
+                // ردیف است و ظرفیت دوباره آزاد نمی‌شود. اگر خودِ نوشتن با خطای
+                // واقعی شکست بخورد، Hold دست‌نخورده می‌ماند و خطا فقط لاگ
+                // می‌شود (جبران خارج از تراکنش است؛ نمی‌تواند ROLLBACK شود) —
+                // ظرفیت هرگز «کورکورانه» آزاد نمی‌شود.
+                try {
+                    $released_hold = $this->guardedCapacityWrite(
+                        'UPDATE ' . $this->db->table( 'cpms_slot_holds' ) . " SET status = 'released' WHERE id = %d AND status = 'active'",
+                        [ $hold_id ]
+                    );
+                } catch ( \Throwable $compensation_transition_error ) {
+                    $released_hold = -1;
+                    $this->op->error(
+                        'booking.hold_release_compensation_failed',
+                        [
+                            'hold_id' => $hold_id,
+                            'error'   => mb_substr( $compensation_transition_error->getMessage(), 0, 200 ),
+                        ]
+                    );
+                }
+                // Decrement capacity only if this compensation actually changed
+                // the active Hold. An expiry worker may already have released it.
+                if ( $released_hold >= 1 ) {
+                    try {
+                        $this->slots->releaseHold( $slot_id );
+                    } catch ( \Throwable $compensation_release_error ) {
+                        $this->op->error(
+                            'booking.hold_capacity_release_failed',
+                            [
+                                'hold_id' => $hold_id,
+                                'slot_id' => $slot_id,
+                                'error'   => mb_substr( $compensation_release_error->getMessage(), 0, 200 ),
+                            ]
+                        );
+                    }
                 }
             }
             // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
@@ -1152,11 +1201,25 @@ final class BookingService
             return ['hold_token' => $holdToken, 'status' => 'converted'];
         }
         if ((string) $hold['status'] !== 'active' || $this->toDateTime((string) $hold['expires_at']) <= $this->now()) {
-            $this->db->query(
-                'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'expired' WHERE id = %d AND status = 'active'",
-                [(int) $hold['id']]
-            );
-            $this->slots->releaseHold((int) $hold['slot_id']);
+            // گارد affected-rows + اتمی: انتقال وضعیت Hold و کاهش شمارندهٔ اسلات
+            // در یک تراکنش. اگر worker انقضا (یا confirmِ همزمان) پیش از این
+            // اجرا شده باشد، UPDATE چیزی را تغییر نمی‌دهد و ظرفیت آزاد نمی‌شود.
+            try {
+                $this->db->transactional(function () use ($hold): void {
+                    $changed = $this->guardedCapacityWrite(
+                        'UPDATE ' . $this->db->table('cpms_slot_holds') . " SET status = 'expired' WHERE id = %d AND status = 'active'",
+                        [(int) $hold['id']]
+                    );
+                    if ($changed < 1) {
+                        // هیچ ردیفی تغییر نکرد ⇒ transition را دیگری برده؛
+                        // ظرفیت قبلاً آزاد شده است.
+                        return;
+                    }
+                    $this->slots->releaseHold((int) $hold['slot_id']);
+                });
+            } catch (\Throwable $expiry_transition_error) {
+                throw $this->toBookingException($expiry_transition_error);
+            }
 
             throw BookingException::of('CLINIC_HOLD_EXPIRED', 'جلسه رزرو منقضی شده — دوباره Slot انتخاب کنید', 422);
         }
@@ -2319,6 +2382,45 @@ final class BookingService
         $dbh = $this->db->wpdb()->dbh ?? null;
 
         return $dbh instanceof \mysqli ? (int) $dbh->errno : 0;
+    }
+
+    /**
+     * Transition guard shared by every hold-state transition this service
+     * performs (resume, confirm pre-transaction expiry, confirm conversion,
+     * compensation release). It returns the number of affected rows and never
+     * confuses "real DB error" with "zero rows matched":
+     *
+     *   1) raw `$wpdb->query()` result: `false` = the write failed (even when
+     *      the driver recorded no message); an int = affected rows;
+     *   2) `$wpdb->last_error`: non-empty = the driver reported an error.
+     *
+     * Zero affected rows is a legitimate outcome (a concurrent transition won,
+     * or the slot counter was already at its floor of zero) and is returned as
+     * int 0. A real error throws RuntimeException, so the surrounding
+     * transaction rolls back and the caller maps it with the existing error
+     * contracts (CLINIC_INTERNAL_ERROR via toBookingException) — no new codes.
+     * This mirrors HoldsExpireHandler::guardedWrite; keep the two in sync.
+     *
+     * @param array<int, mixed> $params
+     */
+    private function guardedCapacityWrite( string $sql, array $params ): int { // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- camelCase matches the PSR-4 class convention used across this file.
+        $prepared = $this->db->prepare( $sql, $params );
+        $result   = $this->db->wpdb()->query( $prepared ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared -- prepared immediately above.
+        $error    = $this->db->wpdb()->last_error;
+
+        if ( $result === false ) {
+            throw new \RuntimeException(
+                'booking hold transition write failed: ' . ( $error === '' ? 'wpdb returned false without an error message' : $error )
+            );
+        }
+        if ( ! is_int( $result ) ) {
+            throw new \RuntimeException( 'booking hold transition write returned a non-int result for a write statement' );
+        }
+        if ( $error !== '' ) {
+            throw new \RuntimeException( 'booking hold transition write failed: ' . $error );
+        }
+
+        return $result;
     }
 
     /**
