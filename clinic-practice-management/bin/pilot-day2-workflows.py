@@ -40,8 +40,8 @@ strictly isolated BrowserContexts per persona:
 Evidence lines contain only booleans, counts, HTTP statuses, and non-sensitive
 numeric IDs — never passwords, OTP codes, mobile numbers, patient names, nonces,
 or cookies. One bounded exception, on a `CLINIC_BOOKING_BUSY` failure only: the
-allow-listed, sanitized `booking.lock_read_failed` cause (read label, integer
-errno, truncated/digit-redacted sql_error, numeric IDs) is read back from the
+fail-closed `booking.lock_read_failed` projection (fixed read label, integer
+errno, errno-derived category, numeric IDs; never driver text) is read back from the
 operational-log table — see `day2_booking_busy`.
 """
 
@@ -705,7 +705,7 @@ def run_journey_a_public_booking(browser, cfg):
     except Exception as exc:  # noqa: BLE001 - enrichment only; original failure wins
         # A 503 CLINIC_BOOKING_BUSY hides the real database cause, which the
         # server already stored as `booking.lock_read_failed` in the
-        # operational log. Append its allow-listed excerpt (plus the viewport
+        # operational log. Append its allow-listed projection (plus the viewport
         # in effect) so the FAIL line — the text CI republishes as an
         # annotation — names the cause instead of only the busy code.
         try:
