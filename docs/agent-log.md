@@ -4838,3 +4838,8 @@ Local code commit: `1ae8699f` on `arena/0f2e4530-doctor`; it is not pushed. Fina
 ### Commits and repository state
 
 Code commits, in order: `0cce432df985fd221003f64a308cefb2f377ea60` (authorization and regressions), `5cfa1c88205d1ae0f28c5d36f24ffab0b5797932` (guard progress writes), and `9676dc5100eb041fdbea8e62ec43af82f64757e8` (WPCS naming correction). All remain on `arena/0f2e4530-doctor`; no push, PR, or merge was made. `docs/status/ledger.md` was not changed.
+
+
+### Operational note — edit-tool path ambiguity
+
+Two repository-relative `edit_file` calls (for progress-write guards) reported success but did not change the corresponding file in `/home/user/doctor-ops`. Because those calls had no explicit worktree argument and the tool's default checkout is separate from this requested worktree, they may have modified `/home/user/doctor/clinic-practice-management/src/Admin/CpmsSetupWizard.php`. This is unverified. After noticing the mismatch, no further file operations were made against that checkout; it was not inspected or reverted, in keeping with the instruction not to access it. The intended guards were applied and verified in `/home/user/doctor-ops` using commands with an explicit working directory. Owner review of the other checkout is needed if its state matters.
