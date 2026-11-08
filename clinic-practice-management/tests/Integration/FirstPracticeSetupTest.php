@@ -710,10 +710,9 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         $service = App::first_practice_setup_service();
         self::assertNull($service->first_setup_candidate());
         $candidate = $service->recovery_candidate($actor);
-        $diagnostic = $candidate === null ? $this->recoveryFailureDiagnostics($service, $clinic_id, $actor) : '';
         self::assertIsArray(
             $candidate,
-            'The same historical administrator must be eligible to continue this interrupted setup.' . $diagnostic
+            'The same historical administrator must be eligible to continue this interrupted setup.'
         );
         self::assertSame($clinic_id, (int) $candidate['clinic_id']);
 
@@ -1321,133 +1320,6 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             || str_contains($wizardHtml, 'data-cpms-scope-required="1"')
             || str_contains($noticeHtml, 'data-cpms-scope-required="1"'),
             $scenario . ' must present actionable authorization feedback rather than crash'
-        );
-    }
-
-    /**
-     * TEMPORARY PR #334 diagnostic: failure-only, read-only and test-local.
-     * Emits only fixed reason codes, sanitized row counts and booleans.
-     */
-    private function recoveryFailureDiagnostics(FirstPracticeSetupService $service, int $clinicId, int $actorId): string
-    {
-        $reasonCodes = [
-            'multiple_clinics',
-            'clinic_missing',
-            'not_claimed',
-            'organization_inactive',
-            'membership_exists',
-            'prior_bootstrap',
-            'unknown_audit_history',
-            'mixed_historical_actors',
-            'no_setup_evidence',
-            'historical_actor_invalid',
-            'actor_continuity',
-            'unknown_setting_history',
-            'setting_actor_contradiction',
-            'prior_activity',
-        ];
-        $reason = 'probe_error';
-        try {
-            $method = new \ReflectionMethod($service, 'evaluate_recovery');
-            $method->setAccessible(true);
-            $evaluated = (string) $method->invoke($service, $clinicId, $actorId);
-            $reason = $evaluated === '' ? 'eligible' : (in_array($evaluated, $reasonCodes, true) ? $evaluated : 'unknown');
-        } catch (\Throwable) {
-            // Keep the original assertion as the only test outcome.
-        }
-
-        $displayRow = 'u';
-        try {
-            $method = new \ReflectionMethod($service, 'single_clinic_display_row');
-            $method->setAccessible(true);
-            $displayRow = $method->invoke($service, true) === null ? '0' : '1';
-        } catch (\Throwable) {
-            // No exception detail or database contents are emitted.
-        }
-
-        $count = static function (callable $probe): string {
-            try {
-                $value = $probe();
-                if ($value === null || $value === false) {
-                    return 'u';
-                }
-
-                return (string) max(0, (int) $value);
-            } catch (\Throwable) {
-                return 'u';
-            }
-        };
-        $db = App::db();
-        $clinicCount = $count(static fn () => $db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $db->table('cpms_clinics')
-        ));
-        $activeClinicCount = $count(static fn () => $db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $db->table('cpms_clinics') . ' c INNER JOIN '
-            . $db->table('cpms_organizations') . ' o ON o.id = c.organization_id WHERE o.status = %s',
-            ['active']
-        ));
-        $claimedCount = $count(static fn () => $db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $db->table('cpms_clinics')
-            . ' WHERE id = %d AND first_setup_claimed_at IS NOT NULL',
-            [$clinicId]
-        ));
-        $membershipCount = $count(static fn () => $db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $db->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
-            [$clinicId]
-        ));
-        $auditCount = $count(static fn () => $db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $db->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
-            [$clinicId]
-        ));
-        $settingsCount = $count(static fn () => $db->fetchValue(
-            'SELECT COUNT(*) FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d',
-            [$clinicId]
-        ));
-        $activityCounts = [];
-        foreach (
-            [
-                'patients'         => 'cpms_patients',
-                'clinicians'       => 'cpms_clinicians',
-                'appointments'     => 'cpms_appointments',
-                'visits'           => 'cpms_visits',
-                'invoices'         => 'cpms_invoices',
-                'payments'         => 'cpms_payments',
-                'services'         => 'cpms_services',
-                'custom_role_defs' => 'cpms_custom_role_defs',
-            ] as $label => $table
-        ) {
-            $activityCounts[$label] = $count(static fn () => $db->fetchValue(
-                'SELECT COUNT(*) FROM ' . $db->table($table) . ' WHERE clinic_id = %d',
-                [$clinicId]
-            ));
-        }
-        $actorCurrent = (int) get_current_user_id() === $actorId ? '1' : '0';
-        try {
-            $actorAdmin = user_can($actorId, 'manage_options') ? '1' : '0';
-        } catch (\Throwable) {
-            $actorAdmin = 'u';
-        }
-
-        return sprintf(
-            ' [diagnostic reason=%s display_row=%s clinics=%s active_clinics=%s claimed=%s memberships=%s audits=%s settings=%s actor_current=%s actor_admin=%s activity_patients=%s activity_clinicians=%s activity_appointments=%s activity_visits=%s activity_invoices=%s activity_payments=%s activity_services=%s activity_custom_role_defs=%s]',
-            $reason,
-            $displayRow,
-            $clinicCount,
-            $activeClinicCount,
-            $claimedCount,
-            $membershipCount,
-            $auditCount,
-            $settingsCount,
-            $actorCurrent,
-            $actorAdmin,
-            $activityCounts['patients'],
-            $activityCounts['clinicians'],
-            $activityCounts['appointments'],
-            $activityCounts['visits'],
-            $activityCounts['invoices'],
-            $activityCounts['payments'],
-            $activityCounts['services'],
-            $activityCounts['custom_role_defs']
         );
     }
 

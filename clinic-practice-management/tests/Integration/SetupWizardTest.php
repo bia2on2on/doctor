@@ -369,11 +369,10 @@ final class SetupWizardTest extends WP_UnitTestCase
 
         $html = $this->renderWizardStep('booking', $clinic_b);
         $form = $this->findFormWithHiddenValue($html, 'action', 'cpms_wizard_save');
-        $diagnostic = $form === null ? $this->explicitSelectorFailureDiagnostics($user_id, $clinic_b, $html) : '';
 
         self::assertNotNull(
             $form,
-            'An explicitly selected, authorized Clinic must render its ordinary wizard form.' . $diagnostic
+            'An explicitly selected, authorized Clinic must render its ordinary wizard form.'
         );
         self::assertStringContainsString('name="duration"', (string) $form);
         self::assertStringContainsString('value="47"', (string) $form, 'The form must render Clinic B settings, not Clinic A settings.');
@@ -1017,94 +1016,6 @@ final class SetupWizardTest extends WP_UnitTestCase
         }
 
         return null;
-    }
-
-    /**
-     * TEMPORARY PR #334 diagnostic: failure-only, read-only and test-local.
-     * Emits only fixed branch codes, sanitized counts and booleans.
-     */
-    private function explicitSelectorFailureDiagnostics(int $actorId, int $clinicId, string $html): string
-    {
-        $boolean = static function (callable $probe): string {
-            try {
-                return $probe() ? '1' : '0';
-            } catch (\Throwable) {
-                return 'u';
-            }
-        };
-        $requested = $boolean(static fn () => AdminClinicSelector::requested_clinic_id([
-            'clinic_id' => (string) $clinicId,
-        ]) === $clinicId);
-        $selectorEstablished = $boolean(static fn () => AdminClinicSelector::establish(
-            $actorId,
-            $clinicId,
-            RolesAndCapabilities::CONFIG
-        ) !== null);
-        $membershipActive = $boolean(static fn () => App::membership_service()->active_membership_for(
-            $clinicId,
-            $actorId
-        ) !== null);
-        $clinicConfig = $boolean(static fn () => App::authorization_service()->can(
-            $actorId,
-            $clinicId,
-            RolesAndCapabilities::CONFIG
-        ));
-        $onboarding = $boolean(static fn () => CpmsSetupWizard::onboarding_panel_applies());
-        $actorCurrent = $boolean(static fn () => (int) get_current_user_id() === $actorId);
-        $wpConfig = $boolean(static fn () => current_user_can(RolesAndCapabilities::CONFIG));
-        $manageOptions = $boolean(static fn () => user_can($actorId, 'manage_options'));
-        $scopeMatches = $boolean(static fn () => (int) App::scope()->clinicId === $clinicId);
-        $settingsMatches = $boolean(static fn () => App::settings()->clinicId() === $clinicId);
-        $explicitBound = $boolean(static function () use ($clinicId): bool {
-            $property = new \ReflectionProperty(CpmsSetupWizard::class, 'explicit_clinic_id');
-            $property->setAccessible(true);
-
-            return (int) $property->getValue() === $clinicId;
-        });
-        $selectorDenied = str_contains($html, 'data-cpms-clinic-scope="denied"') ? '1' : '0';
-        $scopeRequired = str_contains($html, 'data-cpms-scope-required="1"') ? '1' : '0';
-        $wizardDenied = str_contains($html, 'data-cpms-wizard-access="denied"') ? '1' : '0';
-        $saveAction = str_contains($html, 'name="action" value="cpms_wizard_save"') ? '1' : '0';
-        $formCount = preg_match_all('/<form\b/i', $html, $formMatches) === false
-            ? 'u'
-            : (string) count($formMatches[0]);
-
-        if ($onboarding === '1') {
-            $branch = 'onboarding';
-        } elseif ($selectorDenied === '1') {
-            $branch = 'selector_denied';
-        } elseif ($scopeRequired === '1') {
-            $branch = 'scope_required';
-        } elseif ($wizardDenied === '1') {
-            $branch = 'wizard_denied';
-        } elseif ($formCount === '0') {
-            $branch = 'no_form';
-        } elseif ($saveAction === '0') {
-            $branch = 'save_action_missing';
-        } else {
-            $branch = 'form_present_match_failed';
-        }
-
-        return sprintf(
-            ' [diagnostic branch=%s requested=%s selector=%s membership=%s clinic_config=%s onboarding=%s actor_current=%s wp_config=%s manage_options=%s scope_clinic=%s settings_clinic=%s explicit_bound=%s selector_denied=%s scope_required=%s wizard_denied=%s save_action=%s forms=%s]',
-            $branch,
-            $requested,
-            $selectorEstablished,
-            $membershipActive,
-            $clinicConfig,
-            $onboarding,
-            $actorCurrent,
-            $wpConfig,
-            $manageOptions,
-            $scopeMatches,
-            $settingsMatches,
-            $explicitBound,
-            $selectorDenied,
-            $scopeRequired,
-            $wizardDenied,
-            $saveAction,
-            $formCount
-        );
     }
 
     private function createAdditionalClinic(string $label): int

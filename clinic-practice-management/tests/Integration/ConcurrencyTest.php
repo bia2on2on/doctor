@@ -20,8 +20,8 @@ use WP_UnitTestCase;
  *
  * نکته محیط: WP Test Suite هر تست را داخل Transaction والد اجرا می‌کند؛ اتصال‌های
  * مستقل نمی‌توانند ردیف‌های uncommitted را ببینند/قفل کنند. به همین دلیل این تست
- * Fixture را قبل از fork/اتصال commit می‌کند و Cleanup دستی انجام می‌دهد
- * (tearDown ROLLBACK بعد از commit بی‌اثر است).
+ * Fixture را قبل از fork/اتصال commit می‌کند و Cleanup دستی را نیز commit می‌کند،
+ * چون ROLLBACK والد پس از commit نمی‌تواند آن را برگرداند.
  *
  * لایه‌بندی پوشش: نتیجه در سطح Service/REST (تلاش دوم → CLINIC_SLOT_TAKEN/409)
  * در BookingFlowTest/RestBookingTest پوشش داده شده است.
@@ -42,17 +42,26 @@ final class ConcurrencyTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
-        // Cleanup دستی — این Fixtureها commit شده‌اند و ROLLBACK tearDown اثری ندارد
+        global $wpdb;
+
+        // The committed worker fixtures need durable cleanup before the parent rollback.
         foreach ($this->slotIds as $slotId) {
             App::db()->query('DELETE FROM ' . App::db()->table('cpms_schedule_slots') . ' WHERE id = %d', [$slotId]);
         }
         if ($this->createdClinician && $this->clinicianId > 0) {
             App::db()->query('DELETE FROM ' . App::db()->table('cpms_clinicians') . ' WHERE id = %d', [$this->clinicianId]);
         }
+        $cleanupCommit = null;
+        if ($this->slotIds !== []) {
+            $cleanupCommit = $wpdb->query('COMMIT');
+        }
         $this->slotIds = [];
         $this->createdClinician = false;
 
         parent::tearDown();
+        if ($cleanupCommit !== null) {
+            self::assertNotFalse($cleanupCommit, 'Manual cleanup of committed concurrency fixtures must persist.');
+        }
     }
 
     /**
