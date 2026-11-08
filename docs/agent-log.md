@@ -4816,3 +4816,25 @@ The four reported symptoms were treated as unverified. No private ZIP, host cred
 Native `php`, Composer, PHPUnit, WP-CLI, MySQL, and MariaDB are unavailable. The native `php -l` and `vendor/bin/phpunit` invocations could not run; the one bounded apt provisioning attempt failed because packages were not available. WordPress/MySQL integration tests are therefore **NOT RUN**. `bash clinic-practice-management/bin/build-release.sh` is blocked by `composer: command not found` (exit 127); no release ZIP or server upload was produced or tested.
 
 Local code commit: `1ae8699f` on `arena/0f2e4530-doctor`; it is not pushed. Final live check: `main` remains `24ffd01ee98825edf30a170aeadcc2c129ccc623`; the task branch has no remote ref; the only open PR is draft #333 on `arena/591dacd6-doctor`. No PR was opened and no push was made. `docs/status/ledger.md` was not changed. The open draft PR is separate; this local evidence append touches the shared `docs/agent-log.md` only, so preserve both appended entries if a future integration encounters an append conflict.
+
+
+## 2026-11-08 — Setup wizard exact-Clinic authorization follow-up
+
+### Changes
+
+- Bound ordinary wizard rendering and persistence to the Clinic ID on the exact `Settings` instance: the live `App::scope()` must match; the actor must be the current WordPress user; and authorization must come from that actor's active membership plus Clinic-local CONFIG. Explicit selectors are revalidated for that same Clinic; implicit resolution must establish the same uniquely authorized Clinic. Scope/resolution failures deny or redirect without rendering settings/forms or writing elsewhere.
+- Applied the same guard to direct profile/step saves, completion/progress helpers, current-step writes, and restart. Kept the dedicated first-practice bootstrap and interrupted-setup recovery paths separate.
+- Added rendered-output and persistence regression assertions for matching scope, authorized/unauthorized explicit selectors, Clinic-A authority with ambient Clinic-B scope (no B settings/form, no writes to A or B), direct profile/progress writes, zero/multiple Clinics, ordinary administrator denial, and first-practice/recovery eligibility. Reset the wizard's static selector state between relevant tests.
+- Re-reviewed status-count logic, CLI backup error handling, and upload-limit guidance for compatibility; no further edits were needed.
+
+### Verification
+
+- Workflow contract tests: **75 run, 1 skipped; OK**. Workflow YAML: **17 files valid**.
+- Tenant tripwire: **59 self-tests passed, 0 failed**; full scan **282 files, 0 hardcodes, 3 existing suspects**.
+- WPCS collector self-tests: **6/6 passed**. Against baseline `08644958e3e9860dfa09114b9bf74cc87cb208b4`, it collected **1 production PHP file / 87 added lines**. PHPCS **3.13.6** (WordPress standards) ran through PHP-WASM **8.5.12**; parsed JSON had **0 diagnostics on added lines**. The whole-file report has 434 errors and 21 warnings on lines outside this change; it is not the changed-line result.
+- PHP-WASM syntax checks: **4/4 changed PHP files clean**. Companion isolation: **PASS**, four production files only; companion untouched. `git diff --check`: clean.
+- Native PHP lint exited 127 (`php` unavailable); PHPUnit executable is absent. Composer, WP-CLI, MySQL, and MariaDB are also unavailable. **Native PHPUnit/WordPress/MySQL integration tests were not run.**
+
+### Commits and repository state
+
+Code commits, in order: `0cce432df985fd221003f64a308cefb2f377ea60` (authorization and regressions), `5cfa1c88205d1ae0f28c5d36f24ffab0b5797932` (guard progress writes), and `9676dc5100eb041fdbea8e62ec43af82f64757e8` (WPCS naming correction). All remain on `arena/0f2e4530-doctor`; no push, PR, or merge was made. `docs/status/ledger.md` was not changed.
