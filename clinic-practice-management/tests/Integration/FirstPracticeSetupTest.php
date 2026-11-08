@@ -1367,7 +1367,12 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
 
         $count = static function (callable $probe): string {
             try {
-                return (string) max(0, (int) $probe());
+                $value = $probe();
+                if ($value === null || $value === false) {
+                    return 'u';
+                }
+
+                return (string) max(0, (int) $value);
             } catch (\Throwable) {
                 return 'u';
             }
@@ -1398,6 +1403,24 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             'SELECT COUNT(*) FROM ' . $db->table('cpms_settings') . ' WHERE clinic_id = %d',
             [$clinicId]
         ));
+        $activityCounts = [];
+        foreach (
+            [
+                'patients'         => 'cpms_patients',
+                'clinicians'       => 'cpms_clinicians',
+                'appointments'     => 'cpms_appointments',
+                'visits'           => 'cpms_visits',
+                'invoices'         => 'cpms_invoices',
+                'payments'         => 'cpms_payments',
+                'services'         => 'cpms_services',
+                'custom_role_defs' => 'cpms_custom_role_defs',
+            ] as $label => $table
+        ) {
+            $activityCounts[$label] = $count(static fn () => $db->fetchValue(
+                'SELECT COUNT(*) FROM ' . $db->table($table) . ' WHERE clinic_id = %d',
+                [$clinicId]
+            ));
+        }
         $actorCurrent = (int) get_current_user_id() === $actorId ? '1' : '0';
         try {
             $actorAdmin = user_can($actorId, 'manage_options') ? '1' : '0';
@@ -1406,7 +1429,7 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         }
 
         return sprintf(
-            ' [diagnostic reason=%s display_row=%s clinics=%s active_clinics=%s claimed=%s memberships=%s audits=%s settings=%s actor_current=%s actor_admin=%s]',
+            ' [diagnostic reason=%s display_row=%s clinics=%s active_clinics=%s claimed=%s memberships=%s audits=%s settings=%s actor_current=%s actor_admin=%s activity_patients=%s activity_clinicians=%s activity_appointments=%s activity_visits=%s activity_invoices=%s activity_payments=%s activity_services=%s activity_custom_role_defs=%s]',
             $reason,
             $displayRow,
             $clinicCount,
@@ -1416,7 +1439,15 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             $auditCount,
             $settingsCount,
             $actorCurrent,
-            $actorAdmin
+            $actorAdmin,
+            $activityCounts['patients'],
+            $activityCounts['clinicians'],
+            $activityCounts['appointments'],
+            $activityCounts['visits'],
+            $activityCounts['invoices'],
+            $activityCounts['payments'],
+            $activityCounts['services'],
+            $activityCounts['custom_role_defs']
         );
     }
 
