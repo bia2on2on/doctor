@@ -4315,3 +4315,89 @@ U+200E/200F/061C/202A-E/2066-9/FDFA anywhere in changed files) ;
 PatientNameValidationTest.php fixture+two-links). NO PHPCS executed
 locally (unavailable) — CI is the operative gate. Append-only preserved
 (no previous entry was edited; this entry appended only).
+
+## Round 34 — CI executed ff16ec8 (2026-11-08; repair commit + single push + body PATCH)
+
+Push (single, mandated): d319d0ca -> ff16ec8 on `arena/9015e529-doctor`
+(fast-forward; live main unchanged 9aee8f7a; pre-push ancestry gate: PASS).
+PR body PATCHED via REST and read back BYTE-IDENTICAL (markers verified).
+
+**CI on ff16ec8 — ALL 13 workflows completed; ALL 45 checks final:**
+43 SUCCESS, 2 FAILURE. NOTHING IS SKIPPED/CANCELLED/PENDING.
+
+- **WPCS (changed code): PASS** (46s; run 42457709458). The two-space repair
+  of the CI-flagged line (PatientService.php:646) cleared both violations.
+- **Integration (WP 7.1 + MySQL 8): FAIL** (7m6s; run 42457709458;
+  job 128660287002). Annotated summary: `Tests: 2729, Assertions: 75510,
+  Errors: 1, Failures: 5. skipped=0`. Failing methods (6 — down
+  from 16 on d319d0ca; 10 fixed by the fixture repair — all ZWNJ/bidi/
+  omission/400-200 acceptance paths through the authorized fixture now
+  pass):
+  1. testExplicitEmptyNameWithOtherFieldAppliesNothing — assertSame('اصلی', …) got '' (fixture no longer seeds address)
+  2. testExplicitNullNameWithOtherFieldAppliesNothing — same root
+  3. testSelfUpdateWithTwoActiveLinksRequiresExplicitSelection — the authorized pil binding alone doesn't create a `cpms_patient_user_links` row for the first user↔second patient, so `active_linked_patients_for_user()` still sees ONE candidate; updateMe succeeded; `$this->fail('ambiguous...')` fired (test asserts pre-existing behavior on an unauthorized candidate shape)
+  4. testSelfRestUpdateRejectsEmptyStringFirstName — same address-seed root (L893)
+  5. testSelfRestUpdateRejectsNullFirstName — same address-seed root (L912)
+  6. testSelfRestUpdateWithoutPortalRoleIsDenied — 1 ERROR:
+     `BookingException: دسترسی ندارید` at PatientService.php:286 —
+     `enroll_current_patient()` requires the cpms_patient WP role; the
+     fixture (linkedSelfWithoutPortalRole) calls it without the role and
+     therefore throws before producing the patient. Diagnostic comment
+     (`Full Integration suite - sanitized diagnostics`, id 6718663898):
+     error_categories=BookingException=1, AssertionFailedError=1,
+     ExpectationFailedException=4.
+  Proven, bounded root causes for ALL SIX (no unproven cause claimed):
+  - #1/#2/#4/#5: fixture must seed base address='اصلی' through a staff-context
+    update after enrollment — WITHOUT touching assertions.
+  - #3: the authorized multi-record shape is a SECOND CLINIC in the same
+    Organization; enrolling the same user again reuses the verified identity
+    and writes a second bound clinical row + link (all through production
+    boundaries) — no hand-rolled rows.
+  - #6: fixture must enroll WITH the cpms_patient role, then switch the role
+    off (set_role) before returning, preserving the denial scenario for a
+    linked-but-roleless user.
+  NOTHING else was weakened; no assertions changed; no skips added.
+  These three defects were introduced by the round-34 repair itself; they are
+  the honest cost of an authored-unverified fixture (no local PHP runtime).
+- **Disposable external tool (prefix clinic_): FAIL** (1m13s; run
+  42457709519; job 128660167660). Annotations: exit 1 at step line 63, exit 1
+  at step line 161 (the latter directly after a `packages=9
+  mod_php_enabled=php8.5.load` notice), Playwright missing-system-deps notice
+  with bounded install, and an artifact warning listing
+  /tmp/acc/{screenshots,logs,disposable-browser.log,package-proof*.json,evidence-scan.json}
+  absent — the lane did not reach the acceptance/evidence stage. The twin
+  prefix `wp_` lane PASSED (12m+, full provenance:
+  candidate_head=ff16ec8cc1ad1180350274b48bb7440c0ab522d7,
+  baseline_main=9aee8f7a, byte-identical product tree, secrets excluded).
+  CAUSE NOT ESTABLISHED from reachable diagnostics (raw job logs are out of
+  the sandbox's network allow-list — blob storage EOF). This lane PASSED on
+  d319d0ca (1m53s) and on base 6bf0738d; the failure trigger has NOT been
+  classified and must not be asserted to be ordering, flake, or content.
+  NOT re-run, NOT investigated beyond annotations + stickies, NOT
+  classified — awaiting the owner's explicit instruction.
+- Everything else (43 check-runs): PASS incl. Unit×5, PHPStan, Tenant
+  Tripwire, Static gates/companion ZIP, Real WP Acceptance ×2, Real WordPress
+  integration ×2, Facility matrix ×2, Persian five-plugin ×5 (all prefixes),
+  First-Practice Browser ×2, Standalone ×2, A–J teardown data safety ×2,
+  Closure Gate ×4, Compatibility gate, WPCS collector self-tests 6/6, Staging
+  Gate (15m39s), Responsive smoke (11m52s), Release Artifact, Upgrade path.
+- Pilot/Staging Readiness Gate: PASS (15m39s) — the two base-head failures
+  of that lane and Responsive smoke are now pass on this head (their
+  disposition vs base is noted but NOT classified).
+- Attempts: every run attempt=1; no reruns were executed by anyone in this
+  round.
+
+**Environment**: a 4TH destructive re-provision occurred mid-round (HEAD at
+9aee8f7a; all local objects evicted; m4tools/backups wiped). Recovery used
+ONLY: read-only fetch; byte-verified `git checkout <commit> -- <paths>`
+(lossless by hash audit), two untracked-file out-of-tree moves (restored
+after), and `git merge --ff-only` along published history. HEAD was
+restored to the published d319d0ca SHAs before new commits; NO
+update-ref/read-tree/reset/clean/rebase/force-push was used at any point;
+conflict-free by construction; `diff d319d0ca..ff16ec8` = WPCS fix + fixture
+repair + this log entry.
+
+**Honesty**: PHP local runtime never existed — the repair is UNVERIFIED
+locally; CI executed it as the gate. The repair is PARTIAL for the
+Integration check (2 of 3 introduced fixture defects remain for the owner's
+next decision; see below). No merge, no CI rerun, no further push performed.
