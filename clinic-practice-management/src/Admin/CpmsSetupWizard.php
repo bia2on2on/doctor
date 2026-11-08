@@ -287,9 +287,14 @@ final class CpmsSetupWizard
         );
     }
 
-    private static function setCurrentStep(string $id): void
+    private static function setCurrentStep( Settings $settings, string $id ): void
     {
-        App::settings()->set('setup.current_step', $id, (int) get_current_user_id());
+        $actor_user_id = (int) get_current_user_id();
+        if ( ! self::has_clinic_local_config( $actor_user_id, $settings->clinicId() ) ) {
+            return;
+        }
+
+        $settings->set( 'setup.current_step', $id, $actor_user_id );
     }
 
     /**
@@ -1095,6 +1100,9 @@ final class CpmsSetupWizard
     }
 
     public static function mark_step_completed( Settings $settings, string $step_id, int $updated_by ): void {
+        if ( ! self::has_clinic_local_config( $updated_by, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return;
+        }
         if ( ! in_array( $step_id, array_column( self::steps(), 'id' ), true ) ) {
             return;
         }
@@ -1558,7 +1566,7 @@ final class CpmsSetupWizard
             exit;
         }
         self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
-        self::setCurrentStep(self::nextStepId($step));
+        self::setCurrentStep( $settings, self::nextStepId( $step ) );
         set_transient(self::NOTICE_KEY, 'ذخیره شد.', 60);
         wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
         exit;
@@ -1573,6 +1581,10 @@ final class CpmsSetupWizard
      * are written.
      */
     public static function reset_progress( Settings $settings, int $uid ): void {
+        if ( ! self::has_clinic_local_config( $uid, $settings->clinicId() ) ) {
+            return;
+        }
+
         $settings->set( 'setup.current_step', 'welcome', $uid );
         $settings->set( self::COMPLETE_KEY, false, $uid );
         $settings->set( 'setup.outpatient_only_ack', false, $uid );

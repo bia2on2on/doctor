@@ -434,6 +434,31 @@ final class SetupWizardTest extends WP_UnitTestCase
         self::assertNotSame('', $clinic_profile_error, 'Direct wizard profile saves must enforce the same exact-scope boundary.');
         self::assertSame($clinic_b_name_before, (string) App::clinicRepository()->find($clinic_b)['name']);
 
+        $settings_b = App::settings();
+        $settings_b->set( 'setup.current_step', 'finish', $user_id );
+        $settings_b->set( CpmsSetupWizard::COMPLETE_KEY, true, $user_id );
+        $settings_b->set( 'setup.outpatient_only_ack', true, $user_id );
+        $settings_b->set( 'setup.completed_steps', 'clinic', $user_id );
+        $progress_keys = [
+            'setup.current_step',
+            CpmsSetupWizard::COMPLETE_KEY,
+            'setup.outpatient_only_ack',
+            'setup.completed_steps',
+        ];
+        $before_b_progress = [];
+        foreach ( $progress_keys as $key ) {
+            $before_b_progress[ $key ] = $settings_b->get( $key );
+        }
+        CpmsSetupWizard::mark_step_completed( $settings_b, 'booking', $user_id );
+        CpmsSetupWizard::reset_progress( $settings_b, $user_id );
+        foreach ( $progress_keys as $key ) {
+            self::assertSame(
+                $before_b_progress[ $key ],
+                $settings_b->get( $key ),
+                'Direct progress helpers must reject Clinic B Settings under Clinic A authority.'
+            );
+        }
+
         $before_b = $this->clinicSettingValues($clinic_b, [
             'booking.duration_default_min',
             'booking.slot_capacity_default',
