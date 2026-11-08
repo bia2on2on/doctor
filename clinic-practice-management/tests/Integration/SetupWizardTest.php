@@ -431,7 +431,11 @@ final class SetupWizardTest extends WP_UnitTestCase
         $clinic_profile_error = CpmsSetupWizard::saveClinic(App::settings(), [
             'clinic_name' => 'Unauthorized Clinic B write',
         ], $user_id);
-        self::assertNotSame('', $clinic_profile_error, 'Direct wizard profile saves must enforce the same exact-scope boundary.');
+        self::assertSame(
+            'دسترسی لازم را ندارید',
+            $clinic_profile_error,
+            'Direct profile-save denials stay generic when the actor lacks authorization for the Settings Clinic.'
+        );
         self::assertSame($clinic_b_name_before, (string) App::clinicRepository()->find($clinic_b)['name']);
 
         $settings_b = App::settings();
@@ -599,6 +603,29 @@ final class SetupWizardTest extends WP_UnitTestCase
         self::assertStringNotContainsString('cpms_first_practice_setup', $html);
     }
 
+    public function testSaveClinicKeepsDenialGenericWhenSuppliedActorIsNotCurrentUser(): void
+    {
+        $current_user_id = $this->authorizeConfigUser();
+        $clinic_id       = (int) App::scope()->clinicId;
+        $other_user_id   = self::factory()->user->create(['role' => 'administrator']);
+
+        self::assertSame($current_user_id, (int) get_current_user_id());
+        self::assertTrue(App::authorization_service()->can($current_user_id, $clinic_id, RolesAndCapabilities::CONFIG));
+        self::assertNotNull(App::membership_service()->active_membership_for($clinic_id, $current_user_id));
+        self::assertNull(App::membership_service()->active_membership_for($clinic_id, $other_user_id));
+        $before = App::clinicRepository()->find($clinic_id);
+        self::assertIsArray($before);
+
+        $error = CpmsSetupWizard::saveClinic(App::settings(), [
+            'clinic_name' => 'Mismatched actor must not write',
+        ], $other_user_id);
+
+        self::assertSame('دسترسی لازم را ندارید', $error, 'A caller/current-user mismatch is not a membership-state diagnosis.');
+        $after = App::clinicRepository()->find($clinic_id);
+        self::assertIsArray($after);
+        self::assertSame($before['name'], $after['name'], 'The mismatched actor must not mutate the Clinic profile.');
+    }
+
     public function testGlobalConfigWithoutClinicLocalConfigSeesDenialAndNoWizardForm(): void
     {
         $user_id    = $this->authorizeConfigUser();
@@ -639,6 +666,14 @@ final class SetupWizardTest extends WP_UnitTestCase
 
         self::assertStringContainsString('عضویت فعال', $error);
         self::assertSame($before, $settings->get('booking.duration_default_min'), 'A Clinic-local denial must leave settings unchanged.');
+
+        $clinic_before = App::clinicRepository()->find($clinic_id);
+        self::assertIsArray($clinic_before);
+        $profile_error = CpmsSetupWizard::saveClinic($settings, [
+            'clinic_name' => 'Denied Clinic-local CONFIG profile write',
+        ], $user_id);
+        self::assertSame('دسترسی لازم را ندارید', $profile_error, 'A Clinic-local CONFIG denial uses the existing generic profile-save contract.');
+        self::assertSame($clinic_before['name'], App::clinicRepository()->find($clinic_id)['name']);
     }
 
     public function testValidStepSelectorRendersRequestedStepWithoutChangingProgress(): void

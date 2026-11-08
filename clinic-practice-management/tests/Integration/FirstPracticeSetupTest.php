@@ -973,6 +973,10 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             'clinic_name' => 'تغییر غیرمجاز',
         ], $secondAdmin);
         self::assertSame('دسترسی لازم را ندارید', $saveErr);
+        self::assertSame('مطب اولیه', (string) App::db()->fetchValue(
+            'SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$clinicId]
+        ), 'A denied wizard profile save must not change the initialized Clinic.');
 
         // 13. Suspended membership (even with marker NULL) prevents fresh bootstrap and discovery.
         $this->resetMarkerAndMemberships($clinicId);

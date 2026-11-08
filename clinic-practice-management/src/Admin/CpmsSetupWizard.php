@@ -1635,7 +1635,9 @@ final class CpmsSetupWizard
     public static function saveClinic(Settings $settings, array $post, int $updatedBy): string
     {
         if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
-            return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+            // Keep profile-save denials generic: this guard also rejects actor,
+            // Settings, and scope mismatches, not only missing membership or CONFIG.
+            return 'دسترسی لازم را ندارید';
         }
 
         // Input normalization (same as service validation but early check for UX)
