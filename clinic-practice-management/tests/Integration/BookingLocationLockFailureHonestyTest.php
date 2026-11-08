@@ -22,6 +22,7 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
     private const NS = '/clinic/v1';
     private const LOG_MESSAGE = 'booking.lock_read_failed';
     private const BUSY_CODE = 'CLINIC_BOOKING_BUSY';
+    private const BUSY_TEXT = 'سامانه موقتاً مشغول است؛ لطفاً دوباره تلاش کنید.';
     private const LEGACY_TEXT = 'Location یافت نشد';
     private const IDEM_ENDPOINT = 'booking/confirm';
 
@@ -152,7 +153,11 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
 
         $response = $this->dispatch($this->holdBody($slot));
         self::assertSame(503, $response->get_status());
-        self::assertSame(self::BUSY_CODE, (string) ($response->get_data()['code'] ?? ''));
+        self::assertSame([
+            'code' => self::BUSY_CODE,
+            'message' => self::BUSY_TEXT,
+            'data' => ['status' => 503],
+        ], $response->get_data());
         self::assertSame(0, $this->activeHolds($slot['id']), 'transaction must roll back');
         self::assertSame(0, $this->heldCount($slot['id']), 'capacity must be untouched');
 
@@ -164,7 +169,8 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
         self::assertSame('location', $context['read'] ?? null);
         foreach (self::syntheticValues() as $value) {
             self::assertStringNotContainsString($value, (string) $rows[count($rows) - 1]['context_json']);
-            self::assertStringNotContainsString($value, (string) wp_json_encode($response->get_data()));
+            // Unescaped Unicode avoids false positives from \u0642 containing "42".
+            self::assertStringNotContainsString($value, (string) wp_json_encode($response->get_data(), JSON_UNESCAPED_UNICODE));
         }
     }
 
@@ -175,13 +181,17 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
 
         $response = $this->dispatchQuote($this->holdBody($slot));
         self::assertSame(503, $response->get_status());
-        self::assertSame(self::BUSY_CODE, (string) ($response->get_data()['code'] ?? ''));
+        self::assertSame([
+            'code' => self::BUSY_CODE,
+            'message' => self::BUSY_TEXT,
+            'data' => ['status' => 503],
+        ], $response->get_data());
         $context = $this->lastDiagnostic();
         $this->assertBoundedContext($context);
         self::assertSame('location_active', $context['read'] ?? null);
         foreach (self::syntheticValues() as $value) {
-            self::assertStringNotContainsString($value, (string) wp_json_encode($context));
-            self::assertStringNotContainsString($value, (string) wp_json_encode($response->get_data()));
+            self::assertStringNotContainsString($value, (string) wp_json_encode($context, JSON_UNESCAPED_UNICODE));
+            self::assertStringNotContainsString($value, (string) wp_json_encode($response->get_data(), JSON_UNESCAPED_UNICODE));
         }
     }
 
