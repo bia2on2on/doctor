@@ -589,14 +589,35 @@ final class PatientService
      * @param array<string, mixed> $fields
      * @return array<string, mixed>
      */
-    private function validateForUpdate(array $fields, array $allowed, int $patientId, bool $isCreate = false): array
+    private function validateForUpdate(array $fields, array $allowed, int $patientId, bool $is_create = false): array
     {
         $out = [];
         foreach ($allowed as $field) {
-            if (!array_key_exists($field, $fields) || $fields[$field] === null || $fields[$field] === '') {
-                continue;
+            if ( ! array_key_exists( $field, $fields ) ) {
+                continue; // کلید غایب = فیلد اصلاً ارسال‌نشده — مقدارِ موجود دست‌نخورده می‌ماند.
             }
-            $value = $fields[$field];
+            $value = $fields[ $field ];
+            $is_name_field = 'first_name' === $field || 'last_name' === $field;
+            if ( ! $is_create && $is_name_field ) {
+                // دستور صریح مالک (2026-11-07 — گزینهٔ B، فقط ویرایش رکورد بیمار):
+                // نامِ ارسال‌شدهٔ خالی — '' یا null یا فقط-فاصله/کنترل/نامرئی —
+                // «فیلد ارسال‌نشده» نیست؛ خطای اعتبارسنجی روشن برمی‌گرداند و
+                // هیچ‌یک از تغییرات همان درخواست ذخیره نمی‌شود (validate-then-write).
+                // فقط در مسیر Update اعمال می‌شود؛ Create/Booking بدون تغییر می‌ماند.
+                if ( $value !== null && ! is_scalar( $value ) ) {
+                    throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'نام نامعتبر است' );
+                }
+                $probe = null === $value ? '' : (string) $value;
+                $probe = trim( (string) preg_replace( '/[\x00-\x1F]/u', '', $probe ) ?? '' );
+                if ( '' === $probe || ! VisibleText::has_visible_content( $probe ) ) {
+                    throw new BookingException(
+                        'CLINIC_VALIDATION_FAILED',
+                        'first_name' === $field ? 'نام نمی‌تواند خالی باشد' : 'نام خانوادگی نمی‌تواند خالی باشد'
+                    );
+                }
+            } elseif ( $value === null || $value === '' ) {
+                continue; // سایر فیلدها (و Create): قرارداد آپدیت جزئی — خالی = عدم ارسال.
+            }
             $out[$field] = match ($field) {
                 'first_name', 'last_name' => $this->cleanName((string) $value),
                 'mobile' => MobileValidator::normalize((string) $value) ?? throw new BookingException('CLINIC_VALIDATION_FAILED', 'شماره موبایل نامعتبر است'),
@@ -619,7 +640,7 @@ final class PatientService
         }
 
         // یکتایی Mobile/NationalId در Update (غیر از خود)
-        if (!$isCreate) {
+        if (!$is_create) {
             if (isset($out['mobile'])) {
                 $other = $this->patients->findByMobile(App::scope()->clinicId, $out['mobile']);
                 if ($other !== null && (int) $other['id'] !== $patientId) {
