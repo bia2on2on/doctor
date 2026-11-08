@@ -7,6 +7,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Admin\ClinicianAdminPage;
 use ClinicCore\Admin\CpmsAdminMenu;
 use ClinicCore\Admin\CpmsSetupWizard;
+use ClinicCore\Application\Scope\ClinicScope;
 use ClinicCore\Application\Scope\ScopeContext;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -30,6 +31,7 @@ final class SetupWizardTest extends WP_UnitTestCase
         Settings::flushCache();
         App::resetScope();
         ScopeContext::clear();
+        $this->resetWizardRequestScope();
     }
 
     protected function tearDown(): void
@@ -37,6 +39,7 @@ final class SetupWizardTest extends WP_UnitTestCase
         Settings::flushCache();
         ScopeContext::clear();
         App::resetScope();
+        $this->resetWizardRequestScope();
         wp_set_current_user(0);
         parent::tearDown();
     }
@@ -338,9 +341,10 @@ final class SetupWizardTest extends WP_UnitTestCase
         $this->assertTrue(str_contains((string) $form, '<button type="submit"'), 'دکمهٔ ارسال باید داخل همان فرم باشد');
     }
 
-    public function testAuthorizedClinicConfigUserSeesWizardStepForm(): void
+    public function testAuthorizedClinicConfigUserSeesWizardStepFormForMatchingSettingsScope(): void
     {
         $this->authorizeConfigUser();
+        $clinic_id = (int) App::scope()->clinicId;
 
         $html = $this->renderWizardStep('locations');
         $form = $this->findFormWithHiddenValue($html, 'action', 'cpms_wizard_save');
@@ -348,6 +352,226 @@ final class SetupWizardTest extends WP_UnitTestCase
         self::assertNotNull($form, 'کاربرِ مجازِ Clinic باید فرم گام را ببیند.');
         self::assertStringContainsString('name="step" value="locations"', (string) $form);
         self::assertStringNotContainsString('data-cpms-wizard-access="denied"', $html);
+        self::assertSame($clinic_id, (int) App::scope()->clinicId, 'The active scope must remain the Clinic authorized for the request.');
+        self::assertSame($clinic_id, App::settings()->clinicId(), 'The rendered Settings instance must use the authorized Clinic scope.');
+    }
+
+    public function testExplicitAuthorizedClinicSelectorBindsTheRenderedSettingsClinic(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('authorized-selector');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+        $this->setClinicSetting($clinic_a, 'booking.duration_default_min', 31, $user_id);
+        $this->setClinicSetting($clinic_b, 'booking.duration_default_min', 47, $user_id);
+        Settings::flushCache();
+
+        $html = $this->renderWizardStep('booking', $clinic_b);
+        $form = $this->findFormWithHiddenValue($html, 'action', 'cpms_wizard_save');
+
+        self::assertNotNull($form, 'An explicitly selected, authorized Clinic must render its ordinary wizard form.');
+        self::assertStringContainsString('name="duration"', (string) $form);
+        self::assertStringContainsString('value="47"', (string) $form, 'The form must render Clinic B settings, not Clinic A settings.');
+        self::assertStringNotContainsString('value="31"', (string) $form);
+        self::assertStringContainsString('data-cpms-wizard-clinic="' . $clinic_b . '"', $html);
+        self::assertSame($clinic_b, (int) App::scope()->clinicId);
+        self::assertSame($clinic_b, App::settings()->clinicId());
+        self::assertTrue(App::authorization_service()->can($user_id, $clinic_b, RolesAndCapabilities::CONFIG));
+    }
+
+    public function testUnauthorizedExplicitClinicSelectorShowsOnlyAuthorizedChoices(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('unauthorized-selector');
+        $this->setClinicSetting($clinic_b, 'booking.duration_default_min', 193, $user_id);
+        Settings::flushCache();
+
+        $html = $this->renderWizardStep('booking', $clinic_b);
+
+        self::assertStringContainsString('data-cpms-clinic-scope="denied"', $html);
+        self::assertStringContainsString('class="cpms-clinic-selector"', $html, 'The selector may offer only Clinics the actor can configure.');
+        self::assertStringContainsString('value="' . $clinic_a . '"', $html);
+        self::assertStringNotContainsString('value="' . $clinic_b . '"', $html);
+        self::assertStringNotContainsString('value="193"', $html, 'The unauthorized Clinic setting must not be displayed.');
+        self::assertStringNotContainsString('name="duration"', $html);
+        self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $html);
+        $scope = ScopeContext::tryGet();
+        self::assertNotNull($scope, 'A rejected selector must not replace the pre-existing authorized scope.');
+        self::assertSame($clinic_a, (int) $scope->clinicId);
+        self::assertSame($clinic_a, App::settings()->clinicId());
+        self::assertFalse(App::authorization_service()->can($user_id, $clinic_b, RolesAndCapabilities::CONFIG));
+    }
+
+    public function testAuthorizedClinicAWithAmbientClinicBScopeCannotReadOrWriteClinicB(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('ambient-mismatch');
+        $this->setClinicSetting($clinic_a, 'booking.duration_default_min', 31, $user_id);
+        $this->setClinicSetting($clinic_b, 'booking.duration_default_min', 137, $user_id);
+        Settings::flushCache();
+
+        $organization_id = (int) App::clinicRepository()->find($clinic_a)['organization_id'];
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic_b)->withOrganization($organization_id));
+        self::assertSame($clinic_b, (int) App::scope()->clinicId, 'Fixture must model an ambient B scope without granting B membership.');
+        self::assertSame($clinic_b, App::settings()->clinicId());
+        self::assertTrue(App::authorization_service()->can($user_id, $clinic_a, RolesAndCapabilities::CONFIG));
+        self::assertFalse(App::authorization_service()->can($user_id, $clinic_b, RolesAndCapabilities::CONFIG));
+
+        $html = $this->renderWizardStep('booking');
+        self::assertStringContainsString('data-cpms-wizard-access="denied"', $html);
+        self::assertStringNotContainsString('name="duration"', $html);
+        self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $html);
+        self::assertStringNotContainsString('value="137"', $html, 'Clinic B settings must not be displayed under Clinic A authority.');
+
+        $clinic_b_before = App::clinicRepository()->find($clinic_b);
+        self::assertIsArray($clinic_b_before);
+        $clinic_b_name_before = (string) $clinic_b_before['name'];
+        $clinic_profile_error = CpmsSetupWizard::saveClinic(App::settings(), [
+            'clinic_name' => 'Unauthorized Clinic B write',
+        ], $user_id);
+        self::assertNotSame('', $clinic_profile_error, 'Direct wizard profile saves must enforce the same exact-scope boundary.');
+        self::assertSame($clinic_b_name_before, (string) App::clinicRepository()->find($clinic_b)['name']);
+
+        $before_b = $this->clinicSettingValues($clinic_b, [
+            'booking.duration_default_min',
+            'booking.slot_capacity_default',
+            'booking.min_lead_hours',
+            'booking.max_future_days',
+            'booking.cancel_deadline_hours',
+        ]);
+        $before_a = $this->clinicSettingValues($clinic_a, [
+            'booking.duration_default_min',
+            'booking.slot_capacity_default',
+            'booking.min_lead_hours',
+            'booking.max_future_days',
+            'booking.cancel_deadline_hours',
+        ]);
+        $before_audit_count = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        );
+        $previous_post = $_POST;
+        $_POST = [
+            '_wpnonce' => wp_create_nonce('cpms_wizard_save'),
+            'action'   => 'cpms_wizard_save',
+            'step'     => 'booking',
+            'duration' => '60',
+            'capacity' => '2',
+            'lead'     => '3',
+            'future'   => '30',
+            'cancel'   => '24',
+        ];
+        try {
+            try {
+                $this->captureWpDie(static function (): void {
+                    CpmsSetupWizard::save();
+                });
+                self::fail('The ordinary save handler must reject the ambient Clinic B scope.');
+            } catch (\RuntimeException $error) {
+                self::assertStringContainsString('عضویت فعال', $error->getMessage());
+            }
+        } finally {
+            $_POST = $previous_post;
+        }
+
+        self::assertSame($clinic_b, App::settings()->clinicId());
+        self::assertSame($before_b, $this->clinicSettingValues($clinic_b, [
+            'booking.duration_default_min',
+            'booking.slot_capacity_default',
+            'booking.min_lead_hours',
+            'booking.max_future_days',
+            'booking.cancel_deadline_hours',
+        ]), 'A denied request must not write any Clinic B booking settings.');
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, [
+            'booking.duration_default_min',
+            'booking.slot_capacity_default',
+            'booking.min_lead_hours',
+            'booking.max_future_days',
+            'booking.cancel_deadline_hours',
+        ]), 'A denied Clinic B request must not redirect writes to Clinic A either.');
+        self::assertSame($before_audit_count, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        ));
+    }
+
+    public function testMultipleClinicsWithoutSelectorRenderChoiceInsteadOfWizardSettings(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('ambiguous-scope');
+        App::resetScope();
+        Settings::flushCache();
+
+        $html = $this->renderWizardStep('booking');
+
+        self::assertStringContainsString('data-cpms-scope-required="1"', $html);
+        self::assertStringContainsString('class="cpms-clinic-selector"', $html);
+        self::assertStringContainsString('value="' . $clinic_a . '"', $html);
+        self::assertStringNotContainsString('value="' . $clinic_b . '"', $html);
+        self::assertStringNotContainsString('name="duration"', $html);
+        self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $html);
+        self::assertTrue(ScopeContext::tryGet() === null, 'An ambiguous no-selector request must not choose a Clinic.');
+        self::assertSame(2, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics')));
+        self::assertTrue(App::membership_service()->membership_for($clinic_a, $user_id) !== null);
+        self::assertNull(App::membership_service()->membership_for($clinic_b, $user_id));
+    }
+
+    public function testZeroClinicsFailClosedWithoutRenderingWizardSettings(): void
+    {
+        global $wpdb;
+        $user_id = self::factory()->user->create(['role' => 'administrator']);
+        wp_set_current_user($user_id);
+        $table = $wpdb->prefix . 'cpms_clinics';
+        $wpdb->query('SET FOREIGN_KEY_CHECKS=0');
+        try {
+            $wpdb->query('DELETE FROM ' . $table);
+        } finally {
+            $wpdb->query('SET FOREIGN_KEY_CHECKS=1');
+        }
+        App::resetScope();
+
+        $html = $this->renderWizardStep('booking');
+
+        self::assertSame(0, (int) App::db()->fetchValue('SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinics')));
+        self::assertStringContainsString('data-cpms-scope-required="1"', $html);
+        self::assertStringNotContainsString('name="duration"', $html);
+        self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $html);
+        self::assertStringNotContainsString('cpms_first_practice_setup', $html, 'Zero-Clinic installations do not get a guessed first-practice Clinic form.');
+    }
+
+    public function testOrdinaryWordPressAdministratorWithoutClinicMembershipIsDeniedAfterBootstrapEligibilityEnds(): void
+    {
+        $clinic_id = (int) App::scope()->clinicId;
+        $established_manager = self::factory()->user->create(['role' => 'subscriber']);
+        cpms_test_seed_membership($established_manager, $clinic_id, RolesAndCapabilities::ROLE_MANAGER);
+        $admin_id = self::factory()->user->create(['role' => 'administrator']);
+        wp_set_current_user($admin_id);
+        App::replaceExplicitScope(App::scope());
+
+        self::assertTrue(current_user_can(RolesAndCapabilities::CONFIG));
+        self::assertNull(App::membership_service()->membership_for($clinic_id, $admin_id));
+        self::assertNull(App::first_practice_setup_service()->first_setup_candidate(), 'Another membership makes the fresh first-practice path ineligible.');
+        $settings = App::settings();
+        $before_duration = $settings->get('booking.duration_default_min');
+        $borrowed_actor_error = CpmsSetupWizard::saveBooking($settings, [
+            'duration' => 60,
+            'capacity' => 2,
+            'lead'     => 3,
+            'future'   => 30,
+            'cancel'   => 24,
+        ], $established_manager);
+        self::assertNotSame('', $borrowed_actor_error, 'A global administrator may not borrow another user’s Clinic membership.');
+        self::assertSame($before_duration, $settings->get('booking.duration_default_min'));
+
+        $html = $this->renderWizardStep('booking');
+
+        self::assertStringContainsString('data-cpms-wizard-access="denied"', $html);
+        self::assertStringNotContainsString('name="duration"', $html);
+        self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $html);
+        self::assertStringNotContainsString('cpms_first_practice_setup', $html);
     }
 
     public function testGlobalConfigWithoutClinicLocalConfigSeesDenialAndNoWizardForm(): void
@@ -695,11 +919,15 @@ final class SetupWizardTest extends WP_UnitTestCase
 
     // ================= helpers =================
 
-    private function renderWizardStep(string $step): string
+    private function renderWizardStep(string $step, ?int $clinicId = null): string
     {
         $previousGet = $_GET;
         $bufferLevel = ob_get_level();
         $_GET['step'] = $step;
+        unset($_GET['clinic_id']);
+        if ($clinicId !== null) {
+            $_GET['clinic_id'] = (string) $clinicId;
+        }
         ob_start();
         try {
             CpmsSetupWizard::render();
@@ -724,6 +952,78 @@ final class SetupWizardTest extends WP_UnitTestCase
         }
 
         return null;
+    }
+
+    private function createAdditionalClinic(string $label): int
+    {
+        global $wpdb;
+        $current_clinic = App::clinicRepository()->find((int) App::scope()->clinicId);
+        self::assertIsArray($current_clinic);
+        $organization_id = (int) ($current_clinic['organization_id'] ?? 0);
+        self::assertGreaterThan(0, $organization_id);
+
+        $suffix = bin2hex(random_bytes(4));
+        $now    = App::db()->nowUtcSql();
+        $result = $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_clinics
+                (organization_id, name, slug, timezone, created_at, updated_at)
+             VALUES (%d, %s, %s, %s, %s, %s)',
+            $organization_id,
+            'Wizard ' . $label . ' ' . $suffix,
+            'wizard-' . sanitize_key($label) . '-' . $suffix,
+            'Asia/Tehran',
+            $now,
+            $now
+        ));
+        self::assertNotFalse($result);
+        $clinic_id = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $clinic_id);
+
+        return $clinic_id;
+    }
+
+    private function setClinicSetting(int $clinicId, string $key, int $value, int $updatedBy): void
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $json = (string) wp_json_encode($value);
+        $result = $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_settings
+                (clinic_id, `key`, value_json, updated_by_wp_user_id, updated_at)
+             VALUES (%d, %s, %s, %d, %s)
+             ON DUPLICATE KEY UPDATE value_json = VALUES(value_json),
+                updated_by_wp_user_id = VALUES(updated_by_wp_user_id), updated_at = VALUES(updated_at)',
+            $clinicId,
+            $key,
+            $json,
+            $updatedBy,
+            $now
+        ));
+        self::assertNotFalse($result);
+        Settings::flushCache();
+    }
+
+    /** @param list<string> $keys
+     *  @return array<string, mixed>
+     */
+    private function clinicSettingValues(int $clinicId, array $keys): array
+    {
+        $values = [];
+        foreach ($keys as $key) {
+            $json = App::db()->fetchValue(
+                'SELECT value_json FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
+                [$clinicId, $key]
+            );
+            $values[$key] = $json === null ? null : json_decode((string) $json, true);
+        }
+
+        return $values;
+    }
+
+    private function resetWizardRequestScope(): void
+    {
+        $property = new \ReflectionProperty(CpmsSetupWizard::class, 'explicit_clinic_id');
+        $property->setValue(null, 0);
     }
 
     private function authorizeConfigUser(): int

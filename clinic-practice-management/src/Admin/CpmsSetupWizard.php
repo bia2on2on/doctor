@@ -8,7 +8,6 @@ use ClinicCore\Application\Clinic\ClinicProfileException;
 use ClinicCore\Application\Onboarding\FacilitySetupService;
 use ClinicCore\Application\Onboarding\FacilityTypeCatalog;
 use ClinicCore\Application\Scope\ScopeContext;
-use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -143,7 +142,9 @@ final class CpmsSetupWizard
 
         try {
             $settings = App::settings();
-        } catch ( ScopeRequiredException ) {
+        } catch ( \Throwable ) {
+            // Scope ambiguity and any other failure to establish the Clinic
+            // must leave ordinary wizard settings and forms undisclosed.
             $guidance = CpmsAdminMenu::ambiguous_clinic_guidance();
             echo '<div class="wrap" dir="rtl">';
             echo '<h1>' . esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ) . '</h1>';
@@ -154,7 +155,7 @@ final class CpmsSetupWizard
             echo '</div>';
             return;
         }
-        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id(), $settings->clinicId() ) ) {
             echo '<div class="wrap" dir="rtl"><h1>راه‌اندازی</h1>';
             echo '<div class="notice notice-error" data-cpms-wizard-access="denied"><p>';
             echo esc_html( 'دسترسی ندارید. برای مشاهده و ویرایش راه‌اندازی، عضویت فعال و مجوز پیکربندی در همین Clinic لازم است.' );
@@ -739,7 +740,7 @@ final class CpmsSetupWizard
     public static function save_health( Settings $settings, array $post, int $updated_by ): string {
         // Defense in depth: same Clinic-local CONFIG gate as every other
         // wizard write, before any flow or payload inspection.
-        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updated_by, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
         if ( self::current_flow() !== 'hospital_network' ) {
@@ -1209,7 +1210,7 @@ final class CpmsSetupWizard
     public static function save_doctors( Settings $settings, array $post, int $updated_by ): string {
         // Defense in depth: the same Clinic-local CONFIG gate every other
         // wizard write enforces, even when this method is called directly.
-        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updated_by, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
         $flow_min   = self::flow_min_clinicians();
@@ -1400,7 +1401,7 @@ final class CpmsSetupWizard
         // Defense in depth: the same Clinic-local CONFIG gate every other
         // wizard write enforces (the pre-bootstrap entry point is the
         // separate manage_options + nonce handler save_facility_selection).
-        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updated_by, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
         $facility = isset( $post['facility_type'] ) && is_string( $post['facility_type'] ) ? sanitize_key( $post['facility_type'] ) : '';
@@ -1484,8 +1485,9 @@ final class CpmsSetupWizard
 
         try {
             $settings = App::settings();
-        } catch ( ScopeRequiredException ) {
-            // Multi-Clinic install without an explicit selector: never infer a Clinic.
+        } catch ( \Throwable ) {
+            // Any failure to establish the Settings Clinic is a hard denial.
+            // Never infer or write to another Clinic.
             set_transient( self::NOTICE_KEY, 'خطا: Clinic را صریحاً انتخاب کنید؛ هیچ Clinic پیش‌فرضی حدس زده نمی‌شود.', 60 );
             wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
             exit;
@@ -1498,7 +1500,7 @@ final class CpmsSetupWizard
 
         // Every wizard write (including mere progress) requires effective
         // Clinic-local CONFIG — a generic capability is never enough.
-        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id(), $settings->clinicId() ) ) {
             wp_die( 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
@@ -1589,11 +1591,15 @@ final class CpmsSetupWizard
             wp_die( 'Clinic انتخاب‌شده معتبر نیست یا عضویت فعال و مجوز پیکربندی آن را ندارید.', 403 );
         }
 
-        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
+        try {
+            $settings = App::settings();
+        } catch ( \Throwable ) {
+            wp_die( 'Clinic معتبر برای راه‌اندازی یافت نشد.', 403 );
+        }
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id(), $settings->clinicId() ) ) {
             wp_die( 'برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
-        $settings = App::settings();
         self::reset_progress( $settings, (int) get_current_user_id() );
         set_transient(self::NOTICE_KEY, 'راه‌اندازی از نو شروع شد.', 60);
         wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
@@ -1616,6 +1622,10 @@ final class CpmsSetupWizard
      */
     public static function saveClinic(Settings $settings, array $post, int $updatedBy): string
     {
+        if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
+        }
+
         // Input normalization (same as service validation but early check for UX)
         $name                = trim( (string) ( $post['clinic_name'] ?? '' ) );
         $address             = trim( (string) ( $post['clinic_address'] ?? '' ) );
@@ -1794,32 +1804,60 @@ final class CpmsSetupWizard
     }
 
     /**
-     * Effective Clinic-local CONFIG authorization for wizard writes.
+     * Effective Clinic-local CONFIG authorization for the exact Settings scope.
      *
-     * The generic WordPress capability alone is NOT Clinic authority: the
-     * actor must hold an active membership in exactly one trusted Clinic
-     * and pass AuthorizationService for CONFIG in that Clinic (the same
-     * engine every other Clinic write path uses). No clinic_id is ever
-     * taken from the request.
+     * The generic WordPress capability alone is NOT Clinic authority. The
+     * passed actor must be the current WordPress user (no membership borrowing),
+     * and the settings Clinic must match the live App scope and the Clinic
+     * established by that actor's active membership. An explicit selector is
+     * re-checked against that same Clinic; ambiguous or stale scope fails closed.
      */
-    private static function has_clinic_local_config( int $actor_user_id ): bool {
-        if ( $actor_user_id <= 0 || ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
+    private static function has_clinic_local_config( int $actor_user_id, int $settings_clinic_id ): bool {
+        if (
+            $actor_user_id <= 0
+            || $actor_user_id !== (int) get_current_user_id()
+            || $settings_clinic_id <= 0
+            || ! current_user_can( RolesAndCapabilities::CONFIG )
+        ) {
             return false;
         }
 
-        // Multi-Clinic: a Clinic explicitly selected and verified in this request
-        // (bind_requested_clinic) is re-checked here: ACTIVE membership + CONFIG.
-        $explicit_clinic_id = self::explicit_clinic_bound();
-        if ( $explicit_clinic_id > 0 ) {
-            return null !== App::membership_service()->active_membership_for( $explicit_clinic_id, $actor_user_id )
-                && App::authorization_service()->can( $actor_user_id, $explicit_clinic_id, RolesAndCapabilities::CONFIG );
-        }
-
         try {
-            $establisher = new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) );
-            $scope       = $establisher->establish( $actor_user_id, null );
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext exposes the public domain property as clinicId.
-            App::authorization_service()->authorize( $actor_user_id, (int) $scope->clinicId, RolesAndCapabilities::CONFIG );
+            $scope = App::scope();
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope exposes the public domain property as clinicId.
+            $scope_clinic_id = (int) $scope->clinicId;
+            if ( $scope_clinic_id <= 0 || $scope_clinic_id !== $settings_clinic_id ) {
+                return false;
+            }
+
+            // Preserve the selector decision made at the request boundary. If
+            // the live ScopeContext no longer matches it, do not fall back to
+            // implicit membership resolution for a different Clinic.
+            $explicit_clinic_id = self::$explicit_clinic_id;
+            if ( $explicit_clinic_id > 0 ) {
+                if (
+                    $explicit_clinic_id !== $settings_clinic_id
+                    || self::explicit_clinic_bound() !== $explicit_clinic_id
+                ) {
+                    return false;
+                }
+
+                return null !== App::membership_service()->active_membership_for( $explicit_clinic_id, $actor_user_id )
+                    && App::authorization_service()->can( $actor_user_id, $explicit_clinic_id, RolesAndCapabilities::CONFIG );
+            }
+
+            // No selector: preserve the existing unique-active-membership
+            // requirement, but require it to be exactly the Clinic whose
+            // Settings instance is being rendered or written.
+            $trusted_scope = ( new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) ) )
+                ->establish( $actor_user_id, null );
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope exposes the public domain property as clinicId.
+            $trusted_clinic_id = (int) $trusted_scope->clinicId;
+            if ( $trusted_clinic_id !== $settings_clinic_id ) {
+                return false;
+            }
+
+            App::authorization_service()->authorize( $actor_user_id, $trusted_clinic_id, RolesAndCapabilities::CONFIG );
 
             return true;
         } catch ( \Throwable ) {
@@ -1851,7 +1889,7 @@ final class CpmsSetupWizard
 
     public static function saveBooking(Settings $settings, array $post, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیرهٔ تنظیمات رزرو، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
@@ -1888,7 +1926,7 @@ final class CpmsSetupWizard
      */
     public static function saveSms(Settings $settings, array $post, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیرهٔ تنظیمات پیامک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
@@ -1910,7 +1948,7 @@ final class CpmsSetupWizard
      */
     private static function saveFinish(Settings $settings, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای تکمیل راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
