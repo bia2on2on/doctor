@@ -4790,3 +4790,29 @@ the operative gate; local checks remain indicative; the Scoped demo
 mysql-8 failure and the round-34/35 clinic_ episode remain
 unclassified by this round; raw logs remained unreachable throughout.
 No merge; no CI rerun; STOP for independent review.
+
+## 2026-11-08 — Four CPMS boundary reports (source review, not reproduction)
+
+The four reported symptoms were treated as unverified. No private ZIP, host credentials, browser session, or live upload was available; no runtime upload or WordPress installation reproduction was performed. Work stayed within the four requested defects.
+
+### Changes
+
+- Replaced the CLI status query's hard-coded `cpms_%` pattern with `CpmsDb::count_cpms_tables()`, based on the active `$wpdb->prefix`, `wpdb::esc_like()`, and a prepared `LIKE %s`. Added an integration regression using a synthetic non-default prefix containing literal `_` and `%`, plus a wildcard-lookalike table.
+- Wrapped the CLI backup dispatch in catches for `BackupException` and `StorageConfigurationException` only. The new reporter emits a bounded, validated error code (or generic fallback), no exception message/path, to STDERR and returns exit status 1. Added subprocess tests for both exception types and an invalid code.
+- Added a Clinic-local CONFIG check in normal setup-wizard rendering after settings/scope resolution and before step/form content. First-practice onboarding and existing save-side checks remain in place. Added allowed-render, global-CONFIG/local-DENY render, and denied-save/no-write regression coverage.
+- Reworked ZIP-install guidance to distinguish `post_max_size` request overflow from an individual `upload_max_filesize` failure. Documentation now states that CPMS health reporting is available only after activation and cannot recover a request rejected or truncated by PHP/the host before plugin code runs. No ZIP build or upload was claimed.
+
+### Verification
+
+- Workflow contract suite: **75 passed, 0 skipped**. Workflow YAML: **17 files valid**.
+- Tenant tripwire: **59 self-tests passed**; scan **282 files, 0 hardcodes, 3 existing suspects**.
+- WPCS collector self-tests: **6/6 passed**. Against baseline `2263ed673a8fdf4ab91e6a7fffae6d82252e4324`, the collector inspected **244 changed PHP files / 86,179 added lines**. PHPCS 3.13.6 + WPCS 3.4.1 ran under PHP-WASM 8.5.12; parsed JSON produced **0 added-line findings**. The full-file report contains inherited findings and is not the changed-lines result.
+- Companion isolation: **PASS** — 8 production files, no companion/compatibility/lane files.
+- PHP-WASM syntax checks: **7/7 changed PHP files clean**. Direct helper probes returned status 1 for both typed exception cases and showed safe output; these are not PHPUnit or end-to-end CLI runs.
+- `git diff --check`: clean.
+
+### Limits and repository state
+
+Native `php`, Composer, PHPUnit, WP-CLI, MySQL, and MariaDB are unavailable. The native `php -l` and `vendor/bin/phpunit` invocations could not run; the one bounded apt provisioning attempt failed because packages were not available. WordPress/MySQL integration tests are therefore **NOT RUN**. `bash clinic-practice-management/bin/build-release.sh` is blocked by `composer: command not found` (exit 127); no release ZIP or server upload was produced or tested.
+
+Local code commit: `1ae8699f` on `arena/0f2e4530-doctor`; it is not pushed. Final live check: `main` remains `24ffd01ee98825edf30a170aeadcc2c129ccc623`; the task branch has no remote ref; the only open PR is draft #333 on `arena/591dacd6-doctor`. No PR was opened and no push was made. `docs/status/ledger.md` was not changed. The open draft PR is separate; this local evidence append touches the shared `docs/agent-log.md` only, so preserve both appended entries if a future integration encounters an append conflict.
