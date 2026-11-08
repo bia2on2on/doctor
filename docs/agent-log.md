@@ -4655,3 +4655,106 @@ require an explicit owner decision; nothing was changed.
   job fresh. NO CI outcome is claimed in this entry; the CI-outcome entry
   is appended after-the-fact as a separate local commit (pattern
   established round 34) rather than predicted here.
+
+## Round 35 — CI executed ba57de4 (2026-11-08; single push ff16ec8→ba57de4 + body PATCH)
+
+Push (single, mandated): `ff16ec8..ba57de4` on `arena/9015e529-doctor`
+(fast-forward at ~08:52Z; live main unchanged at push time `9aee8f7a`;
+pre-push ancestry/ls-remote/tree gate PASS; the round-34 local-only docs
+commit `e3b69e2` rode along as mandated and is now published).
+PR body PATCHED via REST (pre-CI content incl. repairs,
+owner-approved semantics, repairs/limitations, clinic_ investigation)
+and read back BYTE-IDENTICAL except a server-appended trailing newline
+(cmp: readback == body + \n; diff shows exactly one added blank line at EOF).
+
+**CI on ba57de4 — 13/13 workflows completed, ALL `run_attempt=1`,
+45/45 check runs FINAL: 44 SUCCESS, 1 FAILURE. Nothing pending, nothing
+in_progress, zero cancelled.** (Verified rollup 09:14Z.)
+
+- **Integration (WP 7.1 + MySQL 8): SUCCESS.** Sanitized diagnostics
+  comment (id 6719619522): `phpunit_exit=0 tests=2729 assertions=75517
+  failures=0 errors=0 skipped=0 error_categories=none`. Sticky
+  `ci-integration-evidence` (6712569230, updated 09:07:12Z): `OK (2729
+  tests, 75517 assertions)`. The `ci-integration-failures` sticky was NOT
+  updated (no failure to publish); the job's failure-only steps
+  (`Post failures to PR` / `Surface test failures`) were SKIPPED BY DESIGN
+  (gate = job failure). Assertion delta 75510→75517 (+7) consistent with
+  the repaired fixtures. The six round-34 residual failures are GONE.
+- **Disposable external tool (prefix clinic_): SUCCESS** (job
+  128682582677, 08:57:11Z→08:59:22Z) — the round-34 red lane. Cause of
+  the round-34 failure STILL UNCLASSIFIED by this entry; two greens
+  (wp_ on ff16ec8, both lanes now) vs one red (clinic_ on ff16ec8)
+  without logs = NO basis to name a cause; UNPROVEN either way.
+- **Disposable external tool (prefix wp_): SUCCESS** (job 128682582865).
+- **WPCS (changed code): SUCCESS.** PHPStan: SUCCESS. Unit Tests
+  8.1/8.2/8.3/8.4/8.5: SUCCESS. Tenant Tripwire: SUCCESS.
+  Staging Gate: SUCCESS. Responsive smoke: SUCCESS. Real WP Acceptance ×2:
+  SUCCESS (prefix wp_, prefix clinic_). Facility matrix ×2, Closure ×4,
+  Compatibility gate, Companion gate, WordPress Compatibility, Classic V1,
+  Release Artifact: SUCCESS.
+- **FAILED — `Real WordPress integration (mysql-8)`** (workflow `Scoped
+  demo (static + real WordPress integration)`, run 42465078767, job
+  128682701696, 08:58:36Z→09:05:28Z): step 21 `Chromium: one Persian
+  action reaches the eight real portals (repair phase)` FAILED after
+  1.0s. Annotation (job annotations API, verbatim): `SCOPED_BROWSER
+  repair: AssertionError: admin login: http://localhost:8080/wp-login.php`
+  and `SCOPED_BROWSER admin login — http://localhost:8080/wp-login.php`;
+  plus `Process completed with exit code 1.` Consequent skipped steps: 22
+  (sessions phase), 23 (aggregate evidence), 24 (finish/park the fixture).
+  The failure-only step 25 (`Surface PHP diagnostics … annotations only`)
+  ran and produced NO CPSD_PHPLOG annotations — but its `report()`
+  silently no-ops when a log file is missing, so clean logs and missing
+  logs are indistinguishable from here. The sibling mariadb-11.4.13 lane
+  (job 128682701697) passed the identical step in the same window.
+  History: the lane was GREEN on ff16ec8 and d319d0ca (both engines).
+  The candidate delta (docs + one integration-test fixture file) cannot
+  influence WordPress admin authentication; raw logs and the uploaded
+  artifact are INACCESSIBLE from this sandbox (log blob host blocked —
+  curl exit 35, same limitation as rounds 34-35). **Cause UNPROVEN; no
+  classification offered; no gate/workflow/test modified; no rerun
+  performed.** The `repair` phase's FIRST browser action is
+  `admin_login()`; a land-on-wp-login post-submit means the login was
+  rejected or the page never authenticated, per the annotation. Requires
+  the owner's artifact access or independent review (and possibly an
+  explicit rerun authorization after the base-merge decision below).
+- Non-success steps across all 45 jobs: 142, of which exactly ONE is a
+  failure (above). Everything else is conditional/by-design skips
+  (`if: failure()`, `if: always()` guards, x86-only/version-gated
+  evidence steps, coexistence-gate skipped stages) or consequential
+  (steps 22-24). Zero cancelled; zero pending.
+- Issue comments: 40 stickies updated in-place by this run + ONE NEW
+  comment (6719619522, Integration sanitized diagnostics — verbatim above).
+  Nothing requested mid-run; no comment posted by this round beyond what
+  workflows/publishers emit themselves.
+
+**CRITICAL — live main moved DURING this CI run.** At 2026-11-08T09:01:22Z
+PR #332 (`arena/dc401708-doctor`) merged into `main`:
+`9aee8f7a` → `04330aee7a6adb9eb8e173be8204a84aa25e209a` ("Merge pull
+request #332 from bia2on2on/arena/dc401708-doctor"). Its changed files:
+assets/js/cpms-patient-portal.js, bin/pilot-slice4-profile.py,
+src/Admin/PatientPortalPage.php, tests/Integration/Phase9Slice5PatientVisitsRedTest.php,
+tests/Unit/Frontend/PatientVisitsDisplayJsTest.php,
+tests/js/patient-visits-display.spec.js, docs/agent-log.md (+32 lines).
+**ZERO code-file overlap with this PR; the ONLY shared file is
+docs/agent-log.md (both sides appended).** PR #331's mergeability, checked
+pre-push as MERGEABLE/BLOCKED against 9aee8f7a, is now recomputed by
+GitHub to `mergeable=CONFLICTING`, `mergeStateStatus=DIRTY` (verified
+09:2xZ). The CONFLICTING file is docs/agent-log.md (append/append). CI on
+ba57de4 executed against the merge ref built from PR#331 head + main@
+9aee8f7a (sticky header shows merge ref `51aaf845...`) — **the ba57de4
+CI outcome does NOT cover the 04330ae tree.** Resolving this requires
+merging origin/main into the branch and keeping BOTH appended agent-log
+blocks — a second push, which this round's mandate did NOT authorize
+(single push, used; no rebase/force/update-ref ever). This round
+performed NO merge, NO rebase, NO second push; the conflict is reported
+verbatim for the owner's decision.
+
+Local-only commit after the mandated push contains this CI-outcome
+entry ONLY (docs/agent-log.md); it is NOT pushed; publishing it is part
+of the owner decision on the main-merge round.
+
+**Honesty**: nothing in this entry upgrades the evidence class. CI is
+the operative gate; local checks remain indicative; the Scoped demo
+mysql-8 failure and the round-34/35 clinic_ episode remain
+unclassified by this round; raw logs remained unreachable throughout.
+No merge; no CI rerun; STOP for independent review.
