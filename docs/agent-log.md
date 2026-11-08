@@ -4843,3 +4843,36 @@ Code commits, in order: `0cce432df985fd221003f64a308cefb2f377ea60` (authorizatio
 ### Operational note — edit-tool path ambiguity
 
 Two repository-relative `edit_file` calls (for progress-write guards) reported success but did not change the corresponding file in `/home/user/doctor-ops`. Because those calls had no explicit worktree argument and the tool's default checkout is separate from this requested worktree, they may have modified `/home/user/doctor/clinic-practice-management/src/Admin/CpmsSetupWizard.php`. This is unverified. After noticing the mismatch, no further file operations were made against that checkout; it was not inspected or reverted, in keeping with the instruction not to access it. The intended guards were applied and verified in `/home/user/doctor-ops` using commands with an explicit working directory. Owner review of the other checkout is needed if its state matters.
+
+## 2026-11-08 — PR #334 saveClinic denial-contract follow-up
+
+### Investigation and contract evidence
+
+- Re-read the complete failing route-level test and its bootstrap/replay/recovery cases. The successful one-shot claim is handled by `FirstPracticeSetupPage`; the failing case is a second administrator's direct `CpmsSetupWizard::saveClinic()` call after replay was rejected and no membership was created. It does not exercise the normal `CpmsSetupWizard::save()` handler's earlier POST gate.
+- The existing `ClinicProfileService` permission-denial mapping and `saveClinic()`'s `ClinicProfileException::PERMISSION_DENIED` mapping both use `دسترسی لازم را ندارید`; `FirstPracticeSetupTest` explicitly asserts that contract. The Clinic-local CONFIG guard was intentionally added for authorization, but the `0cce432d` authorization commit did not document or test a user-message policy change.
+- `has_clinic_local_config()` returns only a boolean. It can fail closed for a supplied actor/current-user mismatch, invalid Settings Clinic, absent global CONFIG, live-scope/Settings mismatch, rejected explicit selector or membership/Clinic-local CONFIG, failed trusted-scope establishment, and caught `Throwable`. The detailed membership/CONFIG sentence is therefore not a reliable diagnosis for every direct `saveClinic()` denial.
+
+### Correction and regression coverage
+
+- Kept the Clinic-local authorization guard unchanged and restored its generic denial text to `دسترسی لازم را ندارید`. No authorization rule, route preflight, first-practice bootstrap, or interrupted-setup recovery behavior changed; the route-level prerequisite message remains separate and unchanged.
+- Kept the failing test's exact expectation and added a no-mutation assertion for the rejected profile write. Added exact generic-message/no-write coverage for a mismatched actor, ambient Clinic/Settings-scope mismatch, and active membership with Clinic-local CONFIG denied.
+- The first PHP-WASM lint caught a quote typo in a new assertion; it was corrected before the clean full changed-PHP syntax run.
+
+### Pre-push verification
+
+- Workflow contract suite: **75 passed, 0 skipped**. Workflow YAML: **17 valid**.
+- Tenant tripwire: **59 self-tests passed**; full scan: **282 files, 0 hardcodes, 3 existing suspects**.
+- Companion isolation: **PASS** (10 production files; no companion, compatibility, or lane files). `git diff --check`: clean.
+- PHP-WASM **8.5.12** syntax: **8/8 changed PHP files clean**. Native PHP/PHPUnit/WordPress/MySQL/MariaDB were unavailable; no native integration tests ran. The earlier bounded apt provisioning attempt had failed; it was not retried.
+- WPCS collector self-tests: **6/6**. With the CI ratchet baseline `2263ed673a8fdf4ab91e6a7fffae6d82252e4324`, PHPCS **3.13.6** / WPCS **3.4.1** inspected **244 files / 86,235 added lines**; parsed added-line diagnostics: **0**. The whole-file report contains inherited findings and is not the changed-line gate. An initial run while code edits were still uncommitted compared committed line metadata with the modified worktree and produced shifted-line false positives; the committed-tree rerun above is the applicable result.
+
+### Existing CI evidence and classification
+
+- At prior head `dd2fbe2cca975da9ae6052688cd06c2cb7af84fd` against base `24ffd01ee98825edf30a170aeadcc2c129ccc623`, all checks had reached terminal status: **12/13 workflow runs succeeded; 44/45 check runs succeeded; all were attempt 1**. The sole failure was run `42485742185`, check `128747221631` (`Integration (WP 7.1 + MySQL 8)`, whose step reported MariaDB 11.4.13).
+- PHPUnit reported **23 tests / 362 assertions / 1 failure** in `FirstPracticeSetupTest::testRouteLevelReplayAndExistingOrSuspendedMembershipsAndMultiClinicAreDenied`: expected `دسترسی لازم را ندارید`, received `برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.` The bot evidence is https://github.com/bia2on2on/doctor/pull/334#issuecomment-6722189013. This is an actionable response-contract regression, not an infrastructure diagnosis; the guard itself must remain.
+- The Classic V1 comparator reports candidate suites at **124 tests, 0 failures/errors/skips** on MySQL and MariaDB, while its separately labelled baseline reports **12 tests, 3 failures and 4 errors**. Those baseline-only failures are not attributed to this change. Other CI diagnostics include non-fatal environment/setup warnings (Node/Playwright dependency setup and the staging cron fallback) and unresolved coexistence diagnostics (including PHP warnings/redirect observations); the jobs completed successfully and their underlying causes are not upgraded beyond the evidence. The failed job's JUnit artifact was missing and `gh run view ... --log` returned EOF, so no further log attribution is claimed.
+- All 310 annotations and the PR's 30 bot issue comments were inspected in the preceding review; no inline review comments or submitted human reviews were present. No manual CI rerun was initiated.
+
+### Review gate and state
+
+No new product/access-policy decision was needed for this narrow contract restoration. Existing PR questions about implicit/multi-Clinic selection, zero-Clinic bootstrap, bootstrap/recovery eligibility, broad `Throwable` handling, and silent no-op progress helpers remain open for owner/independent security review. Strix was not run. At append time the code/test commit was `1f6b2533` on `arena/0f2e4530-doctor`; the corrected head had not yet been pushed, so its automatic new-head checks were still pending. No merge or rerun was performed.
