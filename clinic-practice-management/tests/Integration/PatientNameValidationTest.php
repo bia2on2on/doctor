@@ -95,51 +95,103 @@ final class PatientNameValidationTest extends WP_UnitTestCase
     }
 
     /**
-     * Deterministic linked-patient fixture for the C2 (self-update) boundary:
-     * a staff-created patient row, a fresh WP user, and a direct link row
-     * (the same shape the OTP flow produces). No WP role is involved — the
-     * self-service boundary is authorized by the link itself.
+     * Deterministic linked-patient fixture for the C2 (self-update) boundary,
+     * built through the PRODUCTION-authorized path — the same shape the OTP
+     * confirm + patient self-enrollment flow produces in production:
+     *
+     *   1. a fresh WP user with the `cpms_patient` role;
+     *   2. an Organization Patient Identity for that user, explicitly linked
+     *      (link_user) — the counterpart of OTP-verified identity in prod;
+     *   3. `enroll_current_patient()` executed as that user, which mints the
+     *      clinical row BOUND to the same identity (create_record reuses the
+     *      verified identity and writes the patient↔user link + audit atomically).
+     *
+     * This satisfies `PatientRepository::clinical_access_identity_predicate()`
+     * authentically (pil row with `pil.wp_user_id = l.wp_user_id`) instead of
+     * bypassing it — an unbound, non-NULL `identity_id` patient can never pass
+     * the predicate (that was the round-33 integration failure).
      *
      * @return array{patient_id: int, user_id: int, link_id: int, clinic_id: int, mobile: string}
      */
-    private function makeLinkedSelfFixture(string $mobile): array
+    private function makeLinkedSelfFixture(string $mobile, bool $withPortalRole = true): array
     {
         $clinicId = $this->defaultClinicId();
+        global $wpdb;
 
-        $created = $this->service()->create([
-            'first_name' => 'خودی',
-            'last_name' => 'تستی',
-            'mobile' => $mobile,
-            'address' => 'اصلی',
-        ], $this->secretaryUserId);
-        $patientId = (int) $created['id'];
+        $orgId = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $clinicId
+            )
+        );
+        if ($orgId <= 0) {
+            $this->fail('the default clinic has no organization');
+        }
 
         $userId = (int) wp_create_user(
             'self_' . str_replace(' ', '_', $mobile),
             'pass-12345',
             $mobile . '@self.test.local'
         );
+        if ($userId <= 0) {
+            $this->fail('self fixture user was not created');
+        }
+        if ($withPortalRole) {
+            $user = get_userdata($userId);
+            if ($user === false) {
+                $this->fail('fresh self fixture user not found');
+            }
+            $user->set_role('cpms_patient');
+        }
 
-        global $wpdb;
-        $link_id = null;
-        $wpdb->query(
+        $identityService = App::patient_identity_service();
+        $identityId = (int) $identityService->create_identity($orgId, $mobile);
+        $this->assertGreaterThan(0, $identityId, 'identity mint must succeed');
+        $identityService->link_user($orgId, $identityId, $userId, $mobile);
+
+        // The authorized self-enrollment boundary: creates the patient BOUND to
+        // the same identity and writes the patient↔user link + audit atomically.
+        wp_set_current_user($userId);
+        try {
+            $enrolled = $this->service()->enroll_current_patient($clinicId, [
+                'first_name' => 'خودی',
+                'last_name' => 'تستی',
+                'mobile' => $mobile,
+            ]);
+        } finally {
+            wp_set_current_user(0);
+        }
+        $patientId = (int) $enrolled['patient_id'];
+
+        $linkId = (int) $wpdb->get_var(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
-                     (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
-                 VALUES (%d, %d, %d, %s, 1, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $clinicId,
+                'SELECT id FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d AND wp_user_id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 $patientId,
-                $userId,
-                $mobile,
-                App::db()->nowUtcSql()
+                $userId
             )
         );
-        $link_id = (int) $wpdb->insert_id;
+        if ($linkId <= 0) {
+            $this->fail('the authorized enrollment did not write the patient↔user link');
+        }
+
+        // Defense-in-depth: the identity edge the predicate requires exists.
+        $edge = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . $wpdb->prefix . "cpms_patient_identity_links pil
+                   INNER JOIN " . $wpdb->prefix . "cpms_patient_identities pi
+                      ON pi.id = pil.identity_id AND pi.organization_id = pil.organization_id
+                  WHERE pil.identity_id = %d AND pil.wp_user_id = %d AND pil.organization_id = %d",
+                $identityId,
+                $userId,
+                $orgId
+            )
+        );
+        $this->assertGreaterThan(0, $edge, 'the patient identity must be bound to the self user');
 
         return [
             'patient_id' => $patientId,
             'user_id' => $userId,
-            'link_id' => $link_id,
+            'link_id' => $linkId,
             'clinic_id' => $clinicId,
             'mobile' => $mobile,
         ];
@@ -583,20 +635,24 @@ final class PatientNameValidationTest extends WP_UnitTestCase
     {
         $first = $this->makeLinkedSelfFixture('09120001010');
         $second = $this->makeLinkedSelfFixture('09120002020');
-        // همان کاربر اول — یک پروندهٔ دوم هم به او لینک می‌دهیم (مخزن وابستهٔ کلینیک).
+        // همان کاربر اول — پروندهٔ دوم را نیز از مسیرِ مجاز به او وصل می‌کنیم:
+        // هویتِ سازمانیِ همان دفترخانهٔ تستی را به دستِ کاربر اول می‌بندیم
+        // (link_user — همان مرزی که OTP برای وصل‌کردنِ هویتِ کاربر تأیید می‌کند).
         global $wpdb;
-        $wpdb->query(
+        $orgId = (int) $wpdb->get_var(
             $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
-                     (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
-                 VALUES (%d, %d, %d, %s, 0, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $second['clinic_id'],
-                $second['patient_id'],
-                $first['user_id'],
-                $second['mobile'],
-                App::db()->nowUtcSql()
+                'SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $first['clinic_id']
             )
         );
+        $secondIdentityId = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT identity_id FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $second['patient_id']
+            )
+        );
+        $this->assertGreaterThan(0, $secondIdentityId, 'each factory-made patient carries an organization identity');
+        App::patient_identity_service()->link_user($orgId, $secondIdentityId, $first['user_id'], '09120002020');
 
         try {
             $this->service()->updateMe($first['user_id'], [ 'birth_date' => '1990-01-01' ], null);
@@ -605,6 +661,16 @@ final class PatientNameValidationTest extends WP_UnitTestCase
             $this->assertSame('CLINIC_SELECTION_REQUIRED', $e->errorCode);
             $this->assertSame(422, $e->httpStatus);
         }
+
+        // nothing persisted for either record
+        $this->assertNull(App::db()->fetchRow(
+            'SELECT birth_date FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [$first['patient_id']]
+        )['birth_date'] ?? null);
+        $this->assertNull(App::db()->fetchRow(
+            'SELECT birth_date FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [$second['patient_id']]
+        )['birth_date'] ?? null);
     }
 
     // =================== REST-dispatch coverage (round-32) ===================
@@ -659,7 +725,7 @@ final class PatientNameValidationTest extends WP_UnitTestCase
 
     private function linkedSelfWithoutPortalRole(string $mobile): array
     {
-        $fixture = $this->makeLinkedSelfFixture($mobile);
+        $fixture = $this->makeLinkedSelfFixture($mobile, false);
         $user = get_userdata((int) $fixture['user_id']);
         $this->assertNotFalse($user);
         $this->assertNotContains('cpms_patient', (array) $user->roles);

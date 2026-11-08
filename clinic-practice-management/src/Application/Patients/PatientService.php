@@ -643,7 +643,7 @@ final class PatientService
         if ( ! $is_create ) {
             if (isset($out['mobile'])) {
                 $other = $this->patients->findByMobile(App::scope()->clinicId, $out['mobile']);
-                if ($other !== null && (int) $other['id'] !== $patient_id) {
+                if ( $other !== null && (int) $other['id'] !== $patient_id ) {
                     throw new BookingException('CLINIC_VALIDATION_FAILED', 'این موبایل متعلق به بیمار دیگری است');
                 }
             }

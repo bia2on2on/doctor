@@ -4205,3 +4205,113 @@ remains draft with CI at its last recorded state.
 **Honesty note.** The round-31 log entry records `6cb5504` / branch state as-of-then; this
 entry records the post-re-provision truth — SHAs in old entries are historical observations,
 not current refs. Append-only rule preserved: no prior entry was edited.
+
+## Round 34 — owner's repair mandate (2026-11-09; commit + one push after gate)
+
+Mandate (owner, round 34): repair the two failed checks on PR #331 — (1) WPCS
+added-line violation in PatientService.php:646; (2) the 16 integration
+failures (all self-service/C2 tests; every other lane green). Constraints
+carried: no merge; no manual CI rerun; commit allowed; BEFORE PUSH: live
+main + PR head + ancestry + clean tree must re-verify; no reset/clean/rebase/
+force-push/update-ref/read-tree/history-rewrite; append-only log; STOP
+independent review at the end.
+
+**Environment re-provision #4 (and recovery without forbidden operations).**
+This turn's tool calls began with the sandbox re-cloned at `main`
+(`9aee8f7a`): `HEAD == arena/9015e529-doctor` pointing at MAIN, reflog shows
+clone + checkout; ALL local branch objects (`7b0f5843`, `85435531`, `d319d0ca`)
+were evicted (`git cat-file` fails); `/home/user/m4tools` and the external
+backup tarballs under `/home/user/` were wiped. WORKING TREE SURVIVED again:
+a full hash-by-hash audit (all 1173 paths of d319d0ca vs worktree) found
+exactly the 2 files edited this round differing (PatientService +
+PatientNameValidationTest) and ZERO other drift — recovery performed with
+read-only fetches, byte-verified `git checkout <commit> -- <paths>` (lossless
+because byte-identical), two out-of-tree path moves of untracked files
+(restored after), and a **`git merge --ff-only origin/arena/9015e529-doctor`**
+(pure fast-forward along the PUBLISHED history — no commits created, no
+rewrites, nothing replaced): HEAD restored to `d319d0ca0047ace3ea696a8598d5fd81de8df193`
+== wire value (ls-remote). NO update-ref/read-tree/reset/clean/rebase/force-push
+was used, per the mandate. Consequence disclosed: the local-then-republished
+head `d319d0ca` was already on origin when this turn began (verified
+2026-11-08T03:0x UTC): the mechanism remains unprovable from inside the
+sandbox; CI had ALREADY executed it (see below).
+
+**Fix 1 — WPCS (`src/Application/Patients/PatientService.php:646`).**
+CI's "2 WPCS violations on added lines" (annotation text verbatim; sticky
+comment `ci-wpcs-violations evidence`, run 42440956246) located exactly two:
+`WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis` and
+`NoSpaceBeforeCloseParenthesis` on `if ($other !== null && (int) $other['id'] !== $patient_id) {` —
+the PR-local line renamed by this branch (`patientId`→`patient_id`) so it
+became an "added line" vs baseline `2263ed…`. FIX: whitespace only
+`if ( $other !== null && (int) $other['id'] !== $patient_id ) {` — byte-level,
+zero behavior change. Root-cause of the local round-32 "0/0" dishonest
+verdict remains UNRESOLVED honestly: CI's toolchain (PHP 8.2, ephemeral
+composer install resolving `wp-coding-standards/wpcs:^3.1` /
+`phpcsstandards/php_codesniffer:^3.13` to the freshest advisory-filtered
+versions, unpinned minors) is not bit-identical to the local WASM snapshot
+(phpcs 3.13.6 + WPCS 3.4.1); the CI gate is the operative verdict.
+NO PHPCS execution was possible this round (`/home/user/m4tools` wiped; no
+vendor/bin/PHPCS in tree). The repair is verified ONLY by inspection
+(byte diff) — CI must re-execute.
+
+**Fix 2 — C2/self-service fixture rebuilt through the authorized path.**
+Published CI diagnostics (comments `ci-integration-failures evidence` +
+`Full Integration suite - sanitized diagnostics`, run 42440956246):
+`tests=2729 failures=13 errors=3 skipped=0`, all in
+`PatientNameValidationTest`, all C2/self paths: 3 errors
+(`BookingException: بیماری به این حساب متصل نیست` = `linked_patient_not_found`
+thrown at PatientService.php:550 ← require_selected_patient:223 ← updateMe:140)
+and 13 expectation-vs-actual mismatches (`CLINIC_VALIDATION_FAILED`→`CLINIC_NOT_FOUND`,
+`CLINIC_SELECTION_REQUIRED`→`CLINIC_NOT_FOUND`, HTTP 400/200→404).
+Code-verified root cause (no runtime needed): every C2 test built its
+fixture patient via the secretary path `service()->create()`, which — per
+PatientService create — ALWAYS activates an Organization Patient Identity
+inside the same transaction (`activate_identity(...)`); the resulting
+`cpms_patients.identity_id` is NOT NULL. `PatientRepository::clinical_access_identity_predicate()`
+then requires an EXISTS over
+`cpms_patient_identity_links pil JOIN cpms_patient_identities pi
+WHERE pil.identity_id = p.identity_id AND pil.wp_user_id = l.wp_user_id
+AND pil.organization_id = c.organization_id`.
+The fixture never bound the identity to the self user (spurious pil could not
+exist), so the EXISTS is false → the repository returns NULL →
+`updateMe` throws CLINIC_NOT_FOUND for every C2 test. Staff (D5) tests and
+all other suites are unaffected by this predicate; RestPatientTest passes
+because its patients are inserted directly with identity_id NULL
+(predates the identity subsystem; predicate trivially true).
+REPAIR: fixture mirrors the PRODUCTION-authorized path exactly:
+(1) fresh WP user + `cpms_patient` role; (2) `App::patient_identity_service()
+->create_identity( $orgId, $mobile )`; (3) `link_user( $orgId, $identityId,
+$userId, $mobile )` — the OTP-verified-identity edge; (4)
+`wp_set_current_user( $userId )` and `enroll_current_patient( $clinicId,
+['first_name','last_name','mobile'] )` which mints the clinical row BOUND to
+the same identity (create_record reuses it) and writes the patient↔user link
+is_primary=0 + audit atomically; (5) defense-in-depth asserts on the pil
+edge and the link row. NO assertion was weakened, no test deleted or
+skipped, production authorization untouched, the predicate NOT bypassed —
+every self-path test now exercises the identity-bound authorized path.
+`testSelfUpdateWithTwoActiveLinksRequiresExplicitSelection` rewritten the
+same way: a second factory patient (its own identity) gets that identity
+explicitly bound (`link_user`) to the FIRST user — the authorized shape of
+"two verified identities in one org" — and the test now also asserts
+nothing was persisted for EITHER record (birth_date both NULL).
+`linkedSelfWithoutPortalRole` passes `withPortalRole=false`.
+`makeRestLinkedSelfFixture` unchanged semantics (role assert included);
+`linkedSelfWithoutPortalRole` semantics preserved.
+
+**NOT verified here (no PHP runtime; the WASM tooling was wiped):**
+PHPUnit has NOT been executed anywhere locally for rounds 30–34; the
+corrected fixtures COMPILE by construction analysis only (braces balanced
+139/139; no bidi bytes; one U+FDFA ligature typo found and removed — it
+which is exactly the invisible-byte class this project bans — audits exist for this reason). The
+repair is UNPROVEN until CI executes it; the previous CI failures were
+CIE-evidenced verbatim and are the baseline this commit responds to.
+
+**Pre-push checks re-run this round:** unittest workflow contracts 75/75 OK
+(rebuilt pyyaml venv at /tmp/m4venv) ; WORKFLOW_YAML_OK files=17 ;
+tenant tripwire files_scanned=281 / hardcodes=0 / suspects=3 (pre-existing);
+companion-isolation rc=0 ; git diff --check clean ; byte audit (no
+U+200E/200F/061C/202A-E/2066-9/FDFA anywhere in changed files) ;
+`git diff` for the commit = exactly 2 files (PatientService.php 1 line,
+PatientNameValidationTest.php fixture+two-links). NO PHPCS executed
+locally (unavailable) — CI is the operative gate. Append-only preserved
+(no previous entry was edited; this entry appended only).
