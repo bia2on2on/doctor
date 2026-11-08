@@ -39,7 +39,7 @@
 | `04330ae…` (#332) | 64 | 64 | none |
 | `24ffd01e…` (#331) | 64 | 64 | none |
 
-**Event=schedule run (NOT a push-run census):** Pilot/Staging Readiness Gate, run `42471845022`, `event=schedule`, actor `arena-ai-coding-agent[bot]`, attempt 1, created 2026-11-08T10:32:19Z. At preparation time (last poll ~11:10Z) `Upgrade path` and `Release Artifact` were `completed`/`success` while `Staging GATE` and `Responsive smoke (Chromium ×4 viewport)` were **`in_progress`**, so the run was **not** final and is **not** recorded as a pass anywhere in this ledger. It was not re-run and not modified by this task.
+**Event=schedule run (NOT a push-run census):** Pilot/Staging Readiness Gate, run `42471845022`, `event=schedule`, actor `arena-ai-coding-agent[bot]`, attempt 1, created 2026-11-08T10:32:19Z. At preparation time (~10:54Z) `Upgrade path` and `Release Artifact` were `completed`/`success` while `Staging Gate` and `Responsive smoke (Chromium ×4 viewport)` were **`in_progress`**, so it was **not** final then. A final read-back at report time (2026-11-08T10:56Z) shows `status=completed, conclusion=success, updated_at=2026-11-08T10:48:10Z`. It is a scheduled cron run: recorded here for completeness, **not** push-run evidence, **not** acceptance, and never counted in any census above. It was not re-run and not modified by this task.
 
 **Annotations census on `24ffd01e…` (fresh):** 459 = 302 notice + 157 warning · **zero `error`-level**. Warning classes: Node 20 forced to Node 24 (65); Playwright bounded-apt system-deps (41); coexistence `php_warnings_after_activation … class candidate: product-behavior` ×27; Baseline **`STATE=PARTIAL`** subjects ×22 (incl. `litespeed-cache` → `FEATURE UNAVAILABLE`; semantics quoted from `.github/third-party-baseline/report.py`: measured, no material check failed, ≥1 finding recorded; **"It is not a PASS"**); `fa_no_unexpected_redirect … class candidate: environment` ×2 (Persian locale admin 302 → `wp-admin/admin.php?page=persian-wc-about`, front/login chains `[]`); crontab personal-fallback notice ×1.
 
@@ -214,7 +214,7 @@ A PR that changes an item's status, or resolves/introduces debt, **amends this l
 - Binding decisions 2.1–2.6 are relayed, not repository-original; the refund idempotency and patient-edit relays refine but do not displace the repository-verified originals (§3.2/§3.3).
 - Raw CI job logs (blob host) unreachable (TLS); evidence class is annotations/step-lists/sticky comments — sufficient for accounting by-design skips, never sufficient to attribute transient reds to a cause (hence §5 `RESP-1`, `CI-HIST-1/2` remain open).
 - No native PHP/MySQL/SQLite/Chromium tooling is available in this environment for the ledger's changed set (no PHP/executable code changed); applied checks are listed in the report; PHPCS/php -l NOT re-run (not applicable to the changed files; they were green on the reviewed heads).
-- The scheduled run (§1) may finalize while this file is reviewed; its final state is deliberately unclaimed and must be read live.
+- The scheduled run (§1) finalized after preparation (`completed`/`success`, read at 10:56Z); it remains a scheduled cron run — not push-run evidence, not acceptance — and was never re-run or modified.
 - This ledger records CI and in-repo evidence only; it does not assert production fitness for any item herein.
 - Repository has no markdown/link checker; docs checks applied: see report.
 
