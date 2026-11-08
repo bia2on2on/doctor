@@ -71,7 +71,7 @@
 
 | C0 | `GET /patient/my-records` | انتخاب‌گر پرونده‌های خود: در `data` فقط آرایه‌ای از `{link_id, clinic_id, clinic_name, patient_id, patient_display_name, mrn, is_primary}` برای پیوند پایدارِ کاربرِ احرازشده با Patient فعال و Clinicِ هم‌خوان برمی‌گردد؛ هیچ فیلد پروفایل/PHI دیگری ندارد. برای Patient دارای Organization Identity، لینک صریح همان کاربر به همان Identity و Organization نیز الزامی است؛ بنابراین لینکِ subject برای رزرو فرد وابسته به‌تنهایی دسترسی profile/clinical نمی‌سازد. فقط رکوردهای legacy با `identity_id IS NULL` پیوند بالینی صریح قدیمی را حفظ می‌کنند. |
 | C1 | `GET /patient/me?link_id?` | پروفایل خود (فیلدهای مجاز). `link_id` فقط selector است؛ `0` پیوند فعال → `404 CLINIC_NOT_FOUND`، `1` → رفتار خودکار سازگار، `N>1` بدون selector → `422 CLINIC_SELECTION_REQUIRED` (بدون fallback primary/اولین). selector خارجی/غیرفعال/ناموجود همگی `404 CLINIC_NOT_FOUND` غیرقابل‌شمارش‌اند. |
-| C2 | `PUT /patient/me` | ویرایش فیلدهای مجاز Policy (فرآیند تغییر → Audit) روی همان انتخاب C1؛ `link_id?` selector است و شناسهٔ Clinic/Patient کلاینت authority نیست. تعارض valid national ID فقط در Clinicِ ذخیره‌شدهٔ همان Patient → `400 CLINIC_VALIDATION_FAILED` پیش از mutation/audit. |
+| C2 | `PUT /patient/me` | ویرایش فیلدهای مجاز Policy (فرآیند تغییر → Audit) روی همان انتخاب C1؛ `link_id?` selector است و شناسهٔ Clinic/Patient کلاینت authority نیست. تعارض valid national ID فقط در Clinicِ ذخیره‌شدهٔ همان Patient → `400 CLINIC_VALIDATION_FAILED` پیش از mutation/audit. برای نام: سمنتیک **Option B** — «نام در ویرایش مشخصات بیمار» (پایین همین سند): خالی صریح ⇒ خطای اعتبارسنجی روشن؛ کلید غایب ⇒ حفظ؛ آرگومانهای `first_name`/`last_name` نال‌پذیر شده است. |
 | C3 | `POST /patients/{patient_id}/files` | آپلود (multipart) — Validation: MIME/Extension/Size؛ شاخهٔ بیمار همان selector و مالکیت identity-aware در C0/C1 را اعمال می‌کند. |
 | C4 | `GET /patients/{patient_id}/files` | فایل‌های مجاز؛ `patient_id` فقط selector است و لینکِ booking-only فرد وابسته مجوز فهرست یا stream بالینی نیست. |
 | C5 | `GET /visits?from&to&link_id?` | تاریخچه ویزیت — **فقط فیلدهای patient_visible** |
@@ -87,7 +87,7 @@
 | D2 | `GET /patients/search?q=&fields=` | `cpms_patient_read` | جستجو (نام/موبایل/کدملی/MRN) |
 | D3 | `GET /patients/{id}` | `cpms_patient_read` + Data-Access | پروفایل کامل |
 | D4 | `POST /patients` | `cpms_patient_create` | Patient جدید (MRN خودکار) |
-| D5 | `PUT /patients/{id}` | `cpms_patient_update` | فرآیند مجاز |
+| D5 | `PUT /patients/{id}` | `cpms_patient_update` | ویرایش فیلدهای مجاز ویرایشی منشی (`STAFF_EDITABLE`) با all-or-nothing. برای نام: سمنتیک **Option B** — «نام در ویرایش مشخصات بیمار» (پایین همین سند): خالی صریح ⇒ خطای اعتبارسنجی روشن؛ کلید غایب ⇒ حفظ. |
 | D6 | `POST /visits/checkin` | `cpms_queue_checkin` | `{patient_id, appointment_id?}` → Visit + history |
 | D7 | `POST /visits/walk-in` | `cpms_queue_checkin` | `{patient_id}` |
 | D8 | `POST /visits/{id}/status` | `cpms_queue_advance` | `{to_status, note?}` — Transitionهای مجاز منشی (enqueue, cancel, ...) |
@@ -319,3 +319,43 @@ printing, or pharmacy integration.
 | Method/Path | Existing authority | Contract |
 |---|---|---|
 | `GET /doctor/portal/visits/{id}/prescriptions/{prescription_id}/print` | Existing Doctor Portal nonce/session + doctor-role + `cpms_rx_read` guard; server-derived active clinician; trusted Clinic and existing trusted-Location 0/1/N policy | Read-only projection for one **finalized** structured prescription whose persisted Visit, Clinic, patient, clinician and trusted active Location all match. Path IDs are selectors only. Missing, draft, voided, cross-Visit, cross-doctor, foreign-Clinic or otherwise mismatched prescription returns the established non-enumerating `404 CLINIC_NOT_FOUND`; unavailable trusted Location/timezone fails closed. `finalized_at` is stored UTC; convert through the persisted Visit Location's valid IANA timezone before returning the local Gregorian datetime and `Jalali::formatYmd(local_date)`. Response contains only `prescription_number`, patient display name, clinician name/specialty, trusted Location name, local finalized date/time, Jalali finalized date, and the structured item display fields (generic/brand/strength/form/dose/frequency/route/duration/instructions). No patient MRN, mobile, national ID, internal IDs, notes, files, audit metadata, or correction fields. No mutation and no audit side effect. The Doctor Portal invokes the browser's `window.print()` with a temporary RTL print surface isolated from portal/theme chrome; no server PDF or wp-admin/theme dependency. |
+
+## نام در ویرایش مشخصات بیمار — سمنتیک مصوب (Option B؛ به‌روزرسانی 2026-11-07)
+
+دامنه: **فقط** فیلدهای `first_name`/`last_name` و **فقط** مسیرهای ویرایش رکورد بیمار —
+خودخدمتی (`C2  PUT /patient/me`) و منشی (`D5  PUT|PATCH /patients/{id}`). سایر فرم‌ها
+(ایجاد D4، پیش‌نویس ساختِ رزرو «ثبت بیمار جدید»، فرم‌های دیگر) دست‌نخورده‌اند.
+
+قواعد (validate-then-write؛ هیچ تغییری پیش از عبور از اعتبارسنجی نوشته نمی‌شود و
+کل درخواست all-or-nothing است — یعنی در شکست اعتبارسنجی **هیچ فیلد دیگری از همان
+درخواست** ذخیره نمی‌شود):
+
+- کلید **ارسال‌نشده** ⇒ مقدار ذخیره‌شده حفظ می‌شود؛ بقیهٔ ویرایش‌های همان درخواست اعمال می‌شوند.
+- **خالی صریح** (`''`)، **`null`**، متن فقط‌فاصله/فقط‌کنترل، یا فقط کاراکترهای نامرئی
+  (شامل whitespace به‌نام، ZWNJ و فواصل به‌عنوان تنها محتوا) ⇒
+  `400 CLINIC_VALIDATION_FAILED` با پیام روشن «نام نمی‌تواند خالی باشد» /
+  «نام خانوادگی نمی‌تواند خالی باشد» (مانع از ثبت/ویرایش به‌صورت «خالی‌کردن نام»).
+- محتوای دارای **نویسهٔ کنترل جهت نوشتار** (U+061C و U+200E/U+200F و U+202A–U+202E و
+  U+2066–U+2069) ⇒ همان خطای `400 CLINIC_VALIDATION_FAILED` با پیام «نام حاوی نویسه‌های
+  کنترلِ جهت نوشتار است» (رفتار قبلی این قاعده تغییر نکرده است).
+- **ZWNJ (U+200C)** و ZWJ (U+200D) در نام‌های فارسی/عربی معتبرند و حفظ می‌شوند؛ بعنوان
+  نامرئیِ محتوا‌نداشته تلقی نمی‌شوند مگر بدون هیچ محتوای قابل‌نمایش دیگر.
+- غیر-scalar برای فیلد نام ⇒ `400 CLINIC_VALIDATION_FAILED` با پیام «نام نامعتبر است».
+- Envelope پاسخ تغییر نکرده است — همان مجموعهٔ ثابت بالای‌{code, message, data.status}
+  که همهٔ `CLINIC_VALIDATION_FAILED`ها دارند (§۱۰ کدهای خطا)؛ **هیچ envelope جدید،
+  هیچ کلید جدیدی افزوده نشده است**.
+
+سازگاری (compatibility change — مستند و آگاهانه):
+
+- **C2:** نوع آرگومان‌های `first_name`/`last_name` از `['string']` به `['string','null']`
+  تغییر کرد؛ JSON `null` صریح اکنون به `updateMe()` می‌رسد و به همان 400 روشن تبدیل می‌شود.
+  پیش‌تر، همین درخواست `400 rest_invalid_param` (خطای عمومیِ اعتبارسنجی REST) می‌گرفت.
+  ارسال‌نکردن کلید یا ارسال `string` رفتاری یکسان با قبل دارد. مقدار `''` پیش‌تر برای
+  این مسیرها «فیلد ارسال‌نشده» تلقی و سکوت می‌شد؛ اکنون `400` روشن است (گزینهٔ B).
+- **D5:** آرگومان‌های نام هرگز در schema ثبت نشده‌اند (body آزادانه به سرویس می‌رسد)؛
+  گذار `''`/`null` از «ساکت نادیده‌گرفته/Skip» به خطای 400 روشن است.
+- **Response contract دست‌نخورده است:** form فیلدها و مسیر خطا همان است؛ کلاینتی که
+  از ارسال مقدار خالی خودداری می‌کرد هیچ تغییری تجربه نمی‌کند؛ فقط درخواست‌های حاوی
+  `''`/`null` برای این دو فیلد اکنون به خطای اعتبارسنجی روشن تبدیل شده‌اند.
+- پیاده‌سازی: اعتبارسنجی در `PatientService::validate_for_update()` (هر دو مسیر)؛
+  تست‌های سرویس و REST-dispatch: `tests/Integration/PatientNameValidationTest.php`.

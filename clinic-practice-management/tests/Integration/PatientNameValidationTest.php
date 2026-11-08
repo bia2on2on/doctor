@@ -6,17 +6,24 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Booking\BookingException;
+use WP_REST_Request;
+use WP_REST_Response;
 use WP_UnitTestCase;
 
 /**
  * M4 — Patient name entrances must reject empty, invisible-only and
  * bidi-control names, and must preserve valid Persian names with ZWNJ.
  *
- * Through-service coverage of the shared first_name/last_name validator
- * (PatientService::cleanName via validateForUpdate), on the secretary
- * create (D4) and update (D5) paths. Note: on update, `''` means "field not
- * supplied" by contract and is skipped — `' '` (whitespace/invisible) is the
- * "empty name" probe there.
+ * M4 + owner option B (update paths only) — Through-service and
+ * REST-dispatch coverage of the shared first_name/last_name validator
+ * (PatientService::validate_for_update -> cleanName): the secretary create
+ * (D4) path, staff record edits (D5, PUT /patients/{id}) and self-service
+ * edits (C2, PUT /patient/me). Option B (approved 2026-11-07, update paths
+ * only): an explicitly submitted empty / null / whitespace- or
+ * invisible-only name is a hard validation error (400
+ * CLINIC_VALIDATION_FAILED) which never partially persists — the whole
+ * request is rejected. Omitting the key preserves the stored value while
+ * other edits apply normally. Create (D4/new-patient booking) is UNCHANGED.
  */
 final class PatientNameValidationTest extends WP_UnitTestCase
 {
@@ -28,15 +35,21 @@ final class PatientNameValidationTest extends WP_UnitTestCase
         App::migrations()->migrate();
         \ClinicCore\Settings\Settings::flushCache();
 
-        // Note (round-29 independent review): wp_create_user accepts only
+        // Note (rounds-29/32): wp_create_user accepts only
         // (username, password, email) — a fourth array argument is silently
-        // ignored and does NOT grant cpms_secretary. It was never needed
-        // here: on the D4/D5 service paths authorization lives in the REST
-        // layer (membership/capability checks), not in the service, so these
-        // tests do not depend on any WordPress role. The self-service (C2)
-        // boundary below is instead authorized by the explicit patient↔user
-        // link, which is the layer it actually enforces.
+        // ignored and does NOT grant cpms_secretary. Service-level tests
+        // below need no WordPress role (authorization for D4/D5/C2 at the
+        // service layer lives in membership/capability checks and the
+        // patient↔user link respectively). The REST-dispatch fixtures at
+        // the bottom DO set the actual roles and seed clinic-scoped
+        // MembershipService rows via makeRestStaff()/makeRestLinkedSelfFixture().
         $this->secretaryUserId = (int) wp_create_user('secretary_name_tests', 'pass-12345', 'secname@test.local');
+    }
+
+    protected function tearDown(): void
+    {
+        wp_set_current_user( 0 );
+        parent::tearDown();
     }
 
     private function service()
@@ -592,5 +605,306 @@ final class PatientNameValidationTest extends WP_UnitTestCase
             $this->assertSame('CLINIC_SELECTION_REQUIRED', $e->errorCode);
             $this->assertSame(422, $e->httpStatus);
         }
+    }
+
+    // =================== REST-dispatch coverage (round-32) ===================
+
+    private const NS = '/clinic/v1';
+
+    /**
+     * Staff fixture: real WP user with the given CPMS role, an ACTIVE
+     * clinic-scoped membership seeded via MembershipService (the same write
+     * path the admin UI uses), and the membership row re-read and asserted.
+     */
+    private function makeRestStaff(string $login, string $roleKey): int
+    {
+        $userId = (int) wp_create_user($login, 'pass-12345', $login . '@rest-staff.test.local');
+        $user = get_userdata($userId);
+        if ($user !== false) {
+            $user->set_role($roleKey);
+        }
+        $clinicId = $this->defaultClinicId();
+        $service = App::membership_service();
+        if ($service->membership_for($clinicId, $userId) === null) {
+            $service->create_membership($clinicId, $userId, $roleKey);
+        }
+        $membership = $service->membership_for($clinicId, $userId);
+        $this->assertNotNull($membership, 'staff fixture must have a membership row');
+        $this->assertSame('active', (string) ($membership['status'] ?? ''));
+        $this->assertSame($roleKey, (string) ($membership['role_key'] ?? ''));
+
+        return $userId;
+    }
+
+    /**
+     * REST-dispatch fixture for the self-service (C2) boundary: staff-created
+     * patient row + fresh WP user + explicit patient_user_links row (the OTP
+     * flow shape). The CPMS portal role is granted explicitly — the REST
+     * layer (requirePatient) enforces it, unlike the service boundary.
+     *
+     * @return array{patient_id: int, user_id: int, link_id: int, clinic_id: int, mobile: string}
+     */
+    private function makeRestLinkedSelfFixture(string $mobile): array
+    {
+        $fixture = $this->makeLinkedSelfFixture($mobile);
+        $user = get_userdata((int) $fixture['user_id']);
+        $this->assertNotFalse($user);
+        $user->set_role('cpms_patient');
+        $user = get_userdata((int) $fixture['user_id']);
+        $this->assertNotFalse($user);
+        $this->assertContains('cpms_patient', (array) $user->roles);
+
+        return $fixture;
+    }
+
+    private function linkedSelfWithoutPortalRole(string $mobile): array
+    {
+        $fixture = $this->makeLinkedSelfFixture($mobile);
+        $user = get_userdata((int) $fixture['user_id']);
+        $this->assertNotFalse($user);
+        $this->assertNotContains('cpms_patient', (array) $user->roles);
+
+        return $fixture;
+    }
+
+    private function dispatch(string $method, string $route, array $body = []): WP_REST_Response
+    {
+        $request = new WP_REST_Request($method, $route);
+        foreach ($body as $key => $value) {
+            $request->set_param($key, $value);
+        }
+        $request->set_header('X-WP-Nonce', wp_create_nonce('wp_rest'));
+
+        return rest_do_request($request);
+    }
+
+    private function assertClinicError(WP_REST_Response $response, string $code): void
+    {
+        $data = $response->get_data();
+        $this->assertIsArray($data, 'Error envelope must be an array');
+        $this->assertSame($code, $data['code'] ?? null, 'Top-level code must be the stable CLINIC_* token');
+        $this->assertArrayHasKey('message', $data);
+        $this->assertSame($response->get_status(), $data['data']['status'] ?? null);
+    }
+
+    private function patientRow(int $patientId): array
+    {
+        $row = App::db()->fetchRow(
+            'SELECT first_name, last_name, birth_date, address FROM ' . App::db()->table('cpms_patients') . ' WHERE id = %d',
+            [$patientId]
+        );
+
+        return is_array($row) ? $row : [];
+    }
+
+    // ---------- D5 staff edits (PUT /patients/{id}) ----------
+
+    public function testStaffRestUpdateRejectsEmptyStringFirstName(): void
+    {
+        $patient = $this->createPatient(['first_name' => 'علی', 'last_name' => 'تست', 'address' => 'اصلی']);
+        $patientId = (int) $patient['id'];
+        $staffId = $this->makeRestStaff('rest_secretary_d5_empty', 'cpms_secretary');
+
+        wp_set_current_user($staffId);
+        $response = $this->dispatch('PUT', self::NS . '/patients/' . $patientId, [
+            'first_name' => '',
+        ]);
+
+        $this->assertSame(400, $response->get_status());
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED');
+        $this->assertSame('نام نمی‌تواند خالی باشد', $response->get_data()['message'] ?? null);
+        $row = $this->patientRow($patientId);
+        $this->assertSame('علی', $row['first_name']);
+        $this->assertSame('اصلی', $row['address']);
+    }
+
+    public function testStaffRestUpdateRejectsNullFirstName(): void
+    {
+        $patient = $this->createPatient(['first_name' => 'علی', 'last_name' => 'تست', 'address' => 'اصلی']);
+        $patientId = (int) $patient['id'];
+        $staffId = $this->makeRestStaff('rest_secretary_d5_null', 'cpms_secretary');
+
+        wp_set_current_user($staffId);
+        $response = $this->dispatch('PUT', self::NS . '/patients/' . $patientId, [
+            'first_name' => null,
+        ]);
+
+        $this->assertSame(400, $response->get_status());
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED');
+        $this->assertSame('نام نمی‌تواند خالی باشد', $response->get_data()['message'] ?? null);
+        $row = $this->patientRow($patientId);
+        $this->assertSame('علی', $row['first_name']);
+        $this->assertSame('اصلی', $row['address']);
+    }
+
+    public function testStaffRestUpdateInvalidNameRejectsWholeRequest(): void
+    {
+        $patient = $this->createPatient(['first_name' => 'علی', 'last_name' => 'تست', 'address' => 'اصلی']);
+        $patientId = (int) $patient['id'];
+        $staffId = $this->makeRestStaff('rest_secretary_d5_atomic', 'cpms_secretary');
+
+        wp_set_current_user($staffId);
+        $response = $this->dispatch('PUT', self::NS . '/patients/' . $patientId, [
+            'first_name' => "علی\u{061C}رضا", // ARABIC LETTER MARK — bidi control
+            'address'    => 'آدرس جدید',
+        ]);
+
+        $this->assertSame(400, $response->get_status());
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED');
+        $this->assertSame('نام حاوی نویسه‌های کنترلِ جهت نوشتار است', $response->get_data()['message'] ?? null);
+        $row = $this->patientRow($patientId);
+        $this->assertSame('علی', $row['first_name'], 'invalid name must not be stored');
+        $this->assertSame('اصلی', $row['address'], 'unrelated field of the SAME request must not be persisted either');
+    }
+
+    public function testStaffRestUpdateOmitsNamePreservesStoredName(): void
+    {
+        $patient = $this->createPatient(['first_name' => 'علی', 'last_name' => 'تست', 'address' => 'اصلی']);
+        $patientId = (int) $patient['id'];
+        $staffId = $this->makeRestStaff('rest_secretary_d5_omit', 'cpms_secretary');
+
+        wp_set_current_user($staffId);
+        $response = $this->dispatch('PUT', self::NS . '/patients/' . $patientId, [
+            'address' => 'آدرس جدید',
+        ]);
+
+        $this->assertSame(200, $response->get_status());
+        $row = $this->patientRow($patientId);
+        $this->assertSame('علی', $row['first_name']);
+        $this->assertSame('آدرس جدید', $row['address']);
+    }
+
+    public function testStaffRestUpdateZwnjNameRoundTrips(): void
+    {
+        $patient = $this->createPatient(['first_name' => 'علی', 'last_name' => 'تست', 'address' => 'اصلی']);
+        $patientId = (int) $patient['id'];
+        $staffId = $this->makeRestStaff('rest_secretary_d5_zwnj', 'cpms_secretary');
+
+        wp_set_current_user($staffId);
+        $response = $this->dispatch('PUT', self::NS . '/patients/' . $patientId, [
+            'first_name' => "علی\u{200C}رضا",
+        ]);
+
+        $this->assertSame(200, $response->get_status());
+        $row = $this->patientRow($patientId);
+        $this->assertSame("علی\u{200C}رضا", $row['first_name']);
+    }
+
+    public function testStaffRestUpdateAccountantMembershipIsDenied(): void
+    {
+        $patient = $this->createPatient(['first_name' => 'علی', 'last_name' => 'تست', 'address' => 'اصلی']);
+        $patientId = (int) $patient['id'];
+        // ACTIVE clinic-scoped accountant membership (preset denies the cap)
+        $staffId = $this->makeRestStaff('rest_accountant_d5_deny', 'cpms_accountant');
+
+        wp_set_current_user($staffId);
+        $response = $this->dispatch('PUT', self::NS . '/patients/' . $patientId, [
+            'first_name' => 'تغییر',
+        ]);
+
+        $this->assertSame(403, $response->get_status());
+        $this->assertClinicError($response, 'CLINIC_PERMISSION_DENIED');
+        $row = $this->patientRow($patientId);
+        $this->assertSame('علی', $row['first_name']);
+    }
+
+    // ---------- C2 self-service edits (PUT /patient/me) ----------
+
+    public function testSelfRestUpdateRejectsEmptyStringFirstName(): void
+    {
+        $fixture = $this->makeRestLinkedSelfFixture('09120100021');
+        wp_set_current_user((int) $fixture['user_id']);
+
+        $response = $this->dispatch('PUT', self::NS . '/patient/me', [
+            'first_name' => '',
+        ]);
+
+        $this->assertSame(400, $response->get_status());
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED');
+        $this->assertSame('نام نمی‌تواند خالی باشد', $response->get_data()['message'] ?? null);
+        $row = $this->patientRow((int) $fixture['patient_id']);
+        $this->assertSame('خودی', $row['first_name']);
+        $this->assertSame('اصلی', $row['address']);
+    }
+
+    public function testSelfRestUpdateRejectsNullFirstName(): void
+    {
+        $fixture = $this->makeRestLinkedSelfFixture('09120100022');
+        wp_set_current_user((int) $fixture['user_id']);
+
+        $response = $this->dispatch('PUT', self::NS . '/patient/me', [
+            'first_name' => null,
+        ]);
+
+        // Widened C2 arg type ['string','null'] lets explicit null reach
+        // updateMe(); the validator must reject it with the clear message.
+        $this->assertSame(400, $response->get_status());
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED');
+        $this->assertSame('نام نمی‌تواند خالی باشد', $response->get_data()['message'] ?? null);
+        $row = $this->patientRow((int) $fixture['patient_id']);
+        $this->assertSame('خودی', $row['first_name']);
+        $this->assertSame('اصلی', $row['address']);
+    }
+
+    public function testSelfRestUpdateInvalidNameRejectsWholeRequest(): void
+    {
+        $fixture = $this->makeRestLinkedSelfFixture('09120100023');
+        wp_set_current_user((int) $fixture['user_id']);
+
+        $response = $this->dispatch('PUT', self::NS . '/patient/me', [
+            'first_name' => "عل\u{061C}ی", // ARABIC LETTER MARK — bidi control
+            'birth_date' => '1991-04-05',
+        ]);
+
+        $this->assertSame(400, $response->get_status());
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED');
+        $this->assertSame('نام حاوی نویسه‌های کنترلِ جهت نوشتار است', $response->get_data()['message'] ?? null);
+        $row = $this->patientRow((int) $fixture['patient_id']);
+        $this->assertSame('خودی', $row['first_name'], 'invalid name must not be stored');
+        $this->assertNull($row['birth_date'], 'unrelated field of the SAME request must not be persisted either');
+    }
+
+    public function testSelfRestUpdateOmitsNamePreservesStoredName(): void
+    {
+        $fixture = $this->makeRestLinkedSelfFixture('09120100024');
+        wp_set_current_user((int) $fixture['user_id']);
+
+        $response = $this->dispatch('PUT', self::NS . '/patient/me', [
+            'address' => 'خانه‌ی جدید',
+        ]);
+
+        $this->assertSame(200, $response->get_status());
+        $row = $this->patientRow((int) $fixture['patient_id']);
+        $this->assertSame('خودی', $row['first_name']);
+        $this->assertSame('خانه‌ی جدید', $row['address']);
+    }
+
+    public function testSelfRestUpdateZwnjNameRoundTrips(): void
+    {
+        $fixture = $this->makeRestLinkedSelfFixture('09120100025');
+        wp_set_current_user((int) $fixture['user_id']);
+
+        $response = $this->dispatch('PUT', self::NS . '/patient/me', [
+            'first_name' => "علی\u{200C}رضا",
+        ]);
+
+        $this->assertSame(200, $response->get_status());
+        $row = $this->patientRow((int) $fixture['patient_id']);
+        $this->assertSame("علی\u{200C}رضا", $row['first_name']);
+    }
+
+    public function testSelfRestUpdateWithoutPortalRoleIsDenied(): void
+    {
+        $fixture = $this->linkedSelfWithoutPortalRole('09120100026');
+        wp_set_current_user((int) $fixture['user_id']);
+
+        $response = $this->dispatch('PUT', self::NS . '/patient/me', [
+            'first_name' => 'تغییر',
+        ]);
+
+        $this->assertSame(403, $response->get_status());
+        $this->assertClinicError($response, 'CLINIC_PERMISSION_DENIED');
+        $row = $this->patientRow((int) $fixture['patient_id']);
+        $this->assertSame('خودی', $row['first_name']);
     }
 }

@@ -4077,3 +4077,131 @@ Applied the five approved corrections on top:
 - **NOT executed / limitations.** NO PHPUnit anywhere (no PHP runtime, MariaDB/MySQL, or WP test install in this sandbox). The integration suite compiles (braces 101/101, WASM PHP 8.2 micro syntax lint rc=0 on the three changed PHP files) and every asserted behavior is smoke-verified against the real source classes (15/15) — but the actual PHPUnit run, including the REST-boundary dispatch layer, is UNPROVEN until an authorized CI run. WP 7.1.3 REST semantics were verified by source inspection (tag `7.1.3`, codeload tarball), not execution. No REST-dispatch integration tests were added deliberately — the authorized D5 API envelope is already exercised on CI by `PatientAdminTest::testRestUpdateRequiresPatientUpdate`, and duplicating the nonce/dispatch harness here added risk without adding a new boundary. `git diff --check` clean; contracts 75/75 OK; `WORKFLOW_YAML_OK files=17`; tenant tripwire 281 files / 0 hardcodes / 3 suspects (pre-existing) rc=0; companion-isolation PASS (production-only); WASM ≠ CI.
 - **Regression risks for existing clients.** A client that submitted `''` for an EDIT name as a de-facto "leave unchanged" sentinel now gets 400 `CLINIC_VALIDATION_FAILED` with a clear message — intended contract change for patient-record editing ONLY; every in-repo client checked (portal JS submits actual values; Reception has no edit path; acceptance fixtures unaffected). Staff D5 callers relying on the same silent skip would observe the same change. Other forms keep old semantics.
 - **Append-only preserved.** Rounds ≤ 30 untouched; entry appended only. **Honesty hysteresis.** Nothing pushed/readied/merged; CI NOT rerun; the 11 unexplained Reception-lane PHP fatals remain unclassified and untouched; no workflow/baseline/allowlist/migration/version changes; no test assertions weakened (three were strengthened/rewritten for the new contract); option B is NOT extended beyond patient-record editing; **STOP for the owner's next decision.**
+
+## Round 32 — owner's pre-push mandate (2026-11-07/08; commit on branch only)
+
+Mandate (owner, pre-recital for PR #331 remaining): (1) focused REST-dispatch
+tests for staff `D5 PUT/PATCH /patients/{id}` and self-service `C2 PUT /patient/me`:
+explicit `''` AND explicit JSON null, omitted name, invalid name + unrelated edit in the
+same request (assert HTTP status, `code`/`message`, AND nothing else persisted), role +
+clinic-scope + patient link set up and verified, and at least one relevant DENIAL test —
+permission-only tests are not a substitute; (2) recheck every caller of the shared
+validator (`validate_for_update()`) and demonstrate option B did not leak beyond the two
+record-edit paths; stop and report on any ambiguity; (3) update `docs/api/api-contract.md`
+to document the approved edit semantics + the clear `CLINIC_VALIDATION_FAILED` error for
+both endpoints incl. the compatibility change; do NOT invent a new response contract;
+(4) run the applicable pre-push checks INCLUDING actual PHPCS on changed production lines
+vs the mandated baseline; report exact commands + limitations; never claim unexecuted
+checks passed. Constraints: no push/CI rerun/merge/ready-for-review/extra commit leaves;
+commits on own branch authorized; append-only log; English report; STOP.
+
+**Environment sabotage #3 (and recovery).** At ~02:19 the sandbox re-cloned the
+repository tracking `origin/main` (`9aee8f7a`) and the local branch was re-created there;
+all unpushed local commits (`6cb5504`, and its successor recreation `9dc330c6`) vanished
+from object storage — `git cat-file -t` fails for both, reflog shows `clone … → checkout
+arena/9015e529-doctor` at 02:19. The WORKING TREE SURVIVED BYTE-FOR-BYTE (every modified
+and untracked file intact). Recovery, before any ref surgery: full working-tree tar
+snapshot (`.m4snap-round32.tar.gz`, plus a copy outside the repository; both wiped/re-created
+by the provisioner — noted as non-durable form of backup). Branch pointer restored with a
+compare-and-swap `git update-ref … 6bf0738d131664d1b7822f5193c3fa2a65115c12 9aee8f7a…`
+(CAS against the wrongly-created value; origin was at `6bf0738d` throughout — nothing
+origin-side was touched), `git read-tree HEAD` to fix the index, then a consolidating
+recreate commit (`7b0f5843`) re-committing the working tree byte-identically; plus a
+separate WPCS-gate commit (`85435531`) after the mandated PHPCS run found added-line
+violations on my own recreated lines. /tmp wiped twice more during this round (harness
+rebuilt under `/home/user/m4tools`, outside the repository).
+
+**Witness commands (all this round unless noted):**
+- WPCS baseline collector: `python3 bin/wpcs-changed-lines.py --test` → 6/6 PASS;
+  `python3 bin/wpcs-changed-lines.py --baseline 2263ed673a8fdf4ab91e6a7fffae6d82252e4324`
+  → collector rc=0 (required full unshallow of origin/main + a depth-1 object fetch of the
+  baseline — read-only GitHub fetches; NO branch refs moved; 2833 commits now present;
+  merge-base = baseline; collection: 243 in-scope files / 86,040 added lines).
+- ACTUAL PHPCS (never executed before this session): in embedded WASM PHP 8.3 with
+  PHP_CodeSniffer 3.13.6 + WordPress-Coding-Standards 3.4.1 (matches CI's `^3.13` /
+  `^3.1` resolution), ruleset `clinic-practice-management/phpcs.xml.dist` from repo root,
+  `--basepath=.`, report=json, then the CI-equivalent Python filter keeping only
+  `(file, added-line)` matches. `Generic.PHP.Syntax` required a spawn handler: the per-file
+  `php -l` child is executed by a REAL embedded wasm PHP subprocess (exit codes propagate —
+  no output is stubbed anywhere; `stty size` gets the documented canned non-tty answer of the
+  library's own sandboxed handler). Results on the four in-scope production files at
+  `7b0f5843`:
+  - `src/Domain/Validators/VisibleText.php` — 0 errors / 0 warnings on added lines.
+  - `src/Rest/PatientController.php` — 2 added-line WARNINGS found on the two name-arg
+    lines this PR adds vs baseline (DoubleArrowNotAligned) and FIXED in `7b0f5843`
+    (formatting only; no behavior change); 0 remain. (198 legacy out-of-baseline-scope
+    findings untouched.)
+  - `src/Application/Patients/PatientService.php` — the recreated option-B block had 4
+    added-line violations → snake_case locals in `7b0f5843`; then the gate re-run at commit
+    `85435531` fixed `validate_for_update` naming/parameter spacing/alignment; **0
+    added-line violations**. (387 legacy out-of-scope findings untouched.)
+  - `src/Application/Booking/BookingService.php` — **0** added-line violations
+    (1,250 legacy out-of-scope findings untouched).
+  Caveats: the CI job (`ci.yml`, repository-root cwd, `clinic-practice-management/vendor/bin/phpcs`,
+  baseline `2263ed67…`) re-resolves phpcs/wpcs at push time (`^3.13`/`^3.1`), so a
+  byte-identical toolset cannot be guaranteed here; algorithm identical; WASM-execution, not
+  the CI job, is what was run.
+- `tests/Integration/PatientNameValidationTest.php` — **12 new REST-dispatch tests** added
+  (39 methods now): staff D5 — empty string, JSON null, invalid(+bidi) name with an
+  unrelated `address` edit asserting all-or-nothing persistence, omitted-name preservation
+  with another edit applied, ZWNJ round-trip 200, accountant ACTIVE membership 403 denial
+  (`CLINIC_PERMISSION_DENIED`, row unchanged); self-service C2 — same five shapes
+  (invalid-name atomicity proven via `birth_date`) plus non-patient-role 403 denial.
+  Envelope asserted at `{code, message, data.status}` with the exact Persian dedicated
+  messages for the name cases. Fixtures: real WP users with the CPMS role set;
+  clinic-scoped membership seeded through `MembershipService::create_membership()` (the
+  write path, idempotent) and re-read + asserted (`role_key`, `status=active`) for every
+  staff fixture; C2 fixtures link patient↔WP-user through `cpms_patient_user_links` and
+  verify the `cpms_patient` role, so `requirePatient()` is genuinely satisfied, not
+  bypassed. Explicit JSON null is verified to travel `set_param` →
+  `get_params()` → (C2) the widened `['string','null']` arg schema → `updateMe()` →
+  dedicated 400 (and for D5 — which declares no name arg schema — straight to the service).
+  NOT EXECUTED: PHPUnit/WP runtime is unavailable in this sandbox (no native PHP) — the
+  new suite MUST be executed by CI; the REST-dispatch semantics were source-verified
+  against WP 7.1.3 (`rest_parse_request_arg`, `rest_validate_value_from_schema`,
+  `WL_REST_Request::set_param`, multi-type null handling, `dispatch()` preflight) —
+  source reading, NOT execution.
+- Caller sweep (full `src/` grep; see also Round-31 entry): `validate_for_update` has
+  exactly three call sites — `updateMe()` (ME_EDITABLE, is_create default false → C2
+  update semantics), `update()` (STAFF_EDITABLE, is_create default false → D5 update
+  semantics), `create()` (CREATE_FIELDS, `true` → create semantics, byte-identical).
+  NO call sites from BookingService, onboarding, or any other form — option B did NOT
+  extend beyond the two edit paths; `BookingService`'s name gating is an independent
+  `cleanBookingName()` copy (create-time new-patient boundary, out of option-B scope,
+  guarded separately by `BookingNewPatientBoundaryTest`); `PatientService` still has ZERO
+  new callers of `VisibleText::has_visible_content` beyond the option-B probe and the
+  pre-existing `cleanName()`; hidden references found in unapproved surfaces: none.
+- Docs: `docs/api/api-contract.md` — both the C2 row and the D5 row gained terse
+  pointers, and a new appendix «نام در ویرایش مشخصات بیمار — سمنتیک مصوب (Option B؛
+  به‌روزرسانی 2026-11-07)» documents the update-path semantics (omitted ⇒ preserved;
+  explicit empty/null/whitespace/invisible-only ⇒ 400 `CLINIC_VALIDATION_FAILED` with the
+  dedicated Persian message; bidi-control names unchanged; ZWNJ/ZWJ preserved; all-or-nothing;
+  non-scalar ⇒ «نام نامعتبر است») and the COMPATIBILITY CHANGE honestly: C2
+  `first_name`/`last_name` args widened `['string']` → `['string','null']`; D5 unchanged in
+  schema; previously-`rest_invalid_param` nulls now yield the dedicated CLINIC_VALIDATION_FAILED
+  400 (or, D5, the deliberate 400); the response ENVELOPE IS UNCHANGED (same
+  `{code, message, data.status}` of §10; no new keys/codes/envelope).
+- Pre-push battery (this round; pyyaml venv used, 0 skips): contracts 75/75 OK;
+  `python3 bin/check-workflow-yaml.py` → WORKFLOW_YAML_OK files=17;
+  `python3 bin/tenant-tripwire.py` → files_scanned=281, hardcodes=0, suspects=3
+  (pre-existing), rc=0; `python3 .github/scripts/companion-isolation.py` → rc=0;
+  `git diff --check` → clean (one trailing-newline fix applied);
+  WASM `php -l` clean on every changed/added PHP file (PatientNameValidationTest.php
+  included, after a literal-\n splice defect was found by that lint and fixed); byte audit
+  (no U+200E/U+200F/U+061C/U+202A..E/U+2066..9 bytes) clean on all changed files; braces
+  132/132 balanced; 39 test methods present (expected names all found exactly once).
+- Branch state at report time: `arena/9015e529-doctor` ahead of origin (origin `6bf0738d`);
+  local commits `7b0f5843` + `85435531` + this round's commit; tree clean; NO push, NO CI
+  rerun, NO merge, NO ready-for-review — honored.
+
+**NOT executed / limitations (honest):** NO PHPUnit anywhere in this sandbox (no native PHP
+runtime, no MariaDB, no WP test install) — the whole integration suite MUST be executed by
+CI; the 12 new REST tests compile-pass (WASM lint) but have NOT run; REST dispatch behavior
+was verified by reading WP 7.1.3 sources, not by execution; PHPCS was executed under embedded
+WASM PHP 8.3 (not the CI's ephemeral composer toolchain, not identical resolution); the 11
+unexplained Reception-lane PHP fatal errors remain unclassified and untouched; PR #331
+remains draft with CI at its last recorded state.
+
+**Honesty note.** The round-31 log entry records `6cb5504` / branch state as-of-then; this
+entry records the post-re-provision truth — SHAs in old entries are historical observations,
+not current refs. Append-only rule preserved: no prior entry was edited.
