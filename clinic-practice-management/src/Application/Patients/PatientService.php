@@ -138,7 +138,7 @@ final class PatientService
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Established public service API; renaming would break callers.
     public function updateMe( int $wp_user_id, array $fields, ?int $link_id = null ): array {
         $current = $this->require_selected_patient( $wp_user_id, $link_id );
-        $data    = $this->validateForUpdate( $fields, self::ME_EDITABLE, (int) $current['id'] );
+        $data    = $this->validate_for_update( $fields, self::ME_EDITABLE, (int) $current['id'] );
 
         if ( $data === [] ) {
             throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است' );
@@ -414,10 +414,10 @@ final class PatientService
         }
 
         // The validated (trimmed, invisible/bidi-rejected) names from
-        // validateForUpdate are the ONLY names written — raw copies of the
+        // validate_for_update are the ONLY names written — raw copies of the
         // input must never re-enter here. (`$data + …` on the union kept the
         // left side anyway, but the misleading raw lines below are gone for good.)
-        $data = $this->validateForUpdate($fields, self::CREATE_FIELDS, 0, true) + [
+        $data = $this->validate_for_update( $fields, self::CREATE_FIELDS, 0, true ) + [
             'clinic_id' => $clinicId,
             'mobile' => $mobile,
             'mrn' => $this->generateMrn($clinicId),
@@ -507,7 +507,7 @@ final class PatientService
             throw new BookingException( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
         }
 
-        $data = $this->validateForUpdate( $fields, self::STAFF_EDITABLE, $patient_id );
+        $data = $this->validate_for_update( $fields, self::STAFF_EDITABLE, $patient_id );
         if ( $data === [] ) {
             throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است' );
         }
@@ -589,14 +589,14 @@ final class PatientService
      * @param array<string, mixed> $fields
      * @return array<string, mixed>
      */
-    private function validateForUpdate(array $fields, array $allowed, int $patientId, bool $is_create = false): array
+    private function validate_for_update( array $fields, array $allowed, int $patient_id, bool $is_create = false ): array
     {
         $out = [];
         foreach ($allowed as $field) {
             if ( ! array_key_exists( $field, $fields ) ) {
                 continue; // کلید غایب = فیلد اصلاً ارسال‌نشده — مقدارِ موجود دست‌نخورده می‌ماند.
             }
-            $value = $fields[ $field ];
+            $value         = $fields[ $field ];
             $is_name_field = 'first_name' === $field || 'last_name' === $field;
             if ( ! $is_create && $is_name_field ) {
                 // دستور صریح مالک (2026-11-07 — گزینهٔ B، فقط ویرایش رکورد بیمار):
@@ -640,10 +640,10 @@ final class PatientService
         }
 
         // یکتایی Mobile/NationalId در Update (غیر از خود)
-        if (!$is_create) {
+        if ( ! $is_create ) {
             if (isset($out['mobile'])) {
                 $other = $this->patients->findByMobile(App::scope()->clinicId, $out['mobile']);
-                if ($other !== null && (int) $other['id'] !== $patientId) {
+                if ($other !== null && (int) $other['id'] !== $patient_id) {
                     throw new BookingException('CLINIC_VALIDATION_FAILED', 'این موبایل متعلق به بیمار دیگری است');
                 }
             }
