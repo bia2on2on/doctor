@@ -228,7 +228,14 @@ final class Phase9Slice5PatientVisitsRedTest extends WP_UnitTestCase
         $buttons = (new \DOMXPath($dom))->query('//*[@data-role="visits-list"]//*[@data-role="visit-open"]');
         self::assertSame(1, $buttons->length);
         $text = $buttons->item(0)->textContent;
-        self::assertStringContainsString($expected, $text, 'Sole-record server-rendered list uses the paired display field.');
+        $expectedDisplay = str_replace(
+            str_split('0123456789'),
+            ['۰', '۱', '۲', '۳', '۴', '۵', '۶', '۷', '۸', '۹'],
+            $expected
+        );
+        self::assertStringContainsString($expectedDisplay, $text, 'Sole-record server-rendered list displays the paired date in Persian digits.');
+        self::assertStringNotContainsString($expected, $text, 'The Latin-digit Jalali API value is not the display label.');
+        self::assertSame((string) $this->other['visit'], $buttons->item(0)->getAttribute('data-visit-id'), 'The visit selector remains ASCII.');
         self::assertStringNotContainsString($this->today, $text);
         self::assertDoesNotMatchRegularExpression('/\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b/', $text);
     }
