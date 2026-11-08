@@ -952,7 +952,7 @@ def run_visits_readonly(browser, run):
         expect(context).to_contain_text(clinic_name(MULTI["clinic_b"]))
         expect(context).to_contain_text("SynB")
         opener = section.locator(f'[data-role="visit-open"][data-visit-id="{visit_b}"]')
-        expect(opener).to_contain_text(os.environ["VISITS_JALALI"])
+        expect(opener).to_contain_text(fa_digits(os.environ["VISITS_JALALI"]))
         assert os.environ["VISITS_DATE"] not in opener.inner_text()
         assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", opener.inner_text())
         with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/visits/{visit_b}") as detail:
@@ -961,7 +961,7 @@ def run_visits_readonly(browser, run):
         pane = section.locator('[data-role="visits-detail"]')
         pane.get_by_text("SYN-VISIBLE-B", exact=False).wait_for(state="visible")
         heading = pane.locator("h2")
-        expect(heading).to_contain_text(os.environ["VISITS_JALALI"])
+        expect(heading).to_contain_text(fa_digits(os.environ["VISITS_JALALI"]))
         assert os.environ["VISITS_DATE"] not in heading.inner_text()
         assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", heading.inner_text())
         ok("visits-jalali-" + run["vp"], "JS list/detail show PHP Jalali display field; raw Gregorian absent",
@@ -1023,7 +1023,8 @@ def run_visits_one(browser, run):
         assert section.locator('[data-role="visits-record-select"]').count() == 0
         expect(section.locator('[data-role="visits-context"]')).to_contain_text(clinic_name(ONE["clinic_id"]))
         sole_list = section.locator('[data-role="visits-list"]')
-        expect(sole_list).to_contain_text(os.environ["VISITS_JALALI"])
+        expect(sole_list).to_contain_text(fa_digits(os.environ["VISITS_JALALI"]))
+        assert os.environ["VISITS_JALALI"] not in sole_list.inner_text()
         assert os.environ["VISITS_DATE"] not in sole_list.inner_text()
         assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", sole_list.inner_text())
         ok("visits-jalali-sole-" + run["vp"], "sole-record SSR list shows PHP Jalali display field; raw Gregorian absent",
@@ -1031,12 +1032,20 @@ def run_visits_one(browser, run):
         with page.expect_response(lambda r: wp_route(r.url) == f"/clinic/v1/visits/{visit}") as response:
             section.locator(f'[data-role="visit-open"][data-visit-id="{visit}"]').click()
         assert response.value.status == 200
+        visit_data = response.value.json()["data"]["visit"]
+        assert visit_data["visit_jalali"] == os.environ["VISITS_JALALI"]
+        assert visit_data["visit_date"] == os.environ["VISITS_DATE"]
         request = response.value.request
         params = parse_qs(urlparse(request.url).query)
         assert params.get("link_id") == [str(ONE["link_id"])]
         assert not (set(params) & {"clinic_id", "patient_id", "organization_id", "role"})
         assert request.method == "GET" and request.headers.get("x-wp-nonce") and not request.post_data
         section.get_by_text("SYN-VISIBLE-ONE", exact=False).wait_for(state="visible")
+        heading = section.locator('[data-role="visits-detail"] h2')
+        expect(heading).to_contain_text(fa_digits(os.environ["VISITS_JALALI"]))
+        assert os.environ["VISITS_JALALI"] not in heading.inner_text()
+        assert os.environ["VISITS_DATE"] not in heading.inner_text()
+        assert not re.search(r"\b[0-9]{4}-[0-9]{2}-[0-9]{2}\b", heading.inner_text())
         assert "SYN-PRIVATE" not in section.inner_text()
         assert not state["console"] and not state["pageerrors"] and not state["failed"], f"console/page/network hygiene broken: console={state['console']} pageerrors={state['pageerrors']} failed={state['failed']}"
         overflow(page)
