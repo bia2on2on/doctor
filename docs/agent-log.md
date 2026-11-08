@@ -4401,3 +4401,257 @@ repair + this log entry.
 locally; CI executed it as the gate. The repair is PARTIAL for the
 Integration check (2 of 3 introduced fixture defects remain for the owner's
 next decision; see below). No merge, no CI rerun, no further push performed.
+
+## Round 35 — Integration G-repair + Disposable clinic_ lane investigation (2026-11-08)
+
+Owner mandate (round 35): (1) verify the reported causes of the six
+PatientNameValidationTest failures and repair the fixtures via valid,
+authorized identity/clinic relationships — seed the expected address through
+an authorized path; construct the two-link scenario so two genuinely
+authorized candidates are enumerated; construct the role-denial scenario with
+a valid linked patient and remove the required role before dispatch; preserve
+atomicity/denial/foreign-link assertions; no test weakening, no authorization
+bypass, no skips, no production access-rule changes. (2) Investigate the
+failed Disposable external tool clinic_ job using annotations, workflow source
+and published diagnostics (incl. sibling wp_ comparison and prior runs);
+state exactly what is known and unknown; do NOT classify the failure; do NOT
+modify a gate without evidence; raw logs if inaccessible must be said so.
+(3) Run relevant tests and applicable pre-push checks; record failures,
+repairs, evidence and limitations here. Commit allowed; BEFORE PUSH: live
+main + remote PR head + ancestry + working tree (incl. the existing
+local-only round-34 log commit) must be re-verified; no
+reset/clean/rebase/force-push/update-ref/read-tree/history rewrite; push
+branch ONCE; PATCH the PR body and read back; wait for CI final states;
+inspect every check page/attempt/annotation; no second push; no CI rerun; no
+merge; English report; STOP for independent review.
+
+**Environment re-provision #5 (fifth overall; second mid-work).** This
+round's tool calls began with the sandbox re-cloned at `main` (`9aee8f7a`)
+again: HEAD == arena/9015e529-doctor pointing at MAIN; the round-34 local
+objects were evicted (`git cat-file 01c9f5e...` fails); `/home/user` external
+artifacts (ci-round34-diagnostics.txt, pr331-body-round34.md,
+m4tools/backups) wiped. WORKING TREE SURVIVED again: a hash-by-hash audit of
+all paths found 8/9 files byte-identical to `ff16ec8` (the service/tool/
+controller/test/doc files) and `docs/agent-log.md` = ff16ec8's version PLUS
+the 86-line round-34 CI-outcome entry. Recovery performed with read-only
+fetches and lossless `git checkout <sha> -- <paths>` (byte-identical), a
+`git merge --ff-only ff16ec8` (pure fast-forward of the PUBLISHED history),
+re-append of the round-34 log tail (verified byte-identical to the saved
+worktree copy), and a local-only docs commit `e3b69e2` restoring the round-34
+CI-outcome entry. NO update-ref/read-tree/reset/clean/rebase/force-push was
+used, per the mandate. Live main unchanged at `9aee8f7a`; remote PR head
+still `ff16ec8` (ls-remote verified).
+
+### Task 1 — the six PatientNameValidationTest failures: cause verification
+
+Evidence re-verified this round (NOT assumed): sticky comment
+`ci-integration-failures evidence` (issue comment 6716555566, run
+42457709458, attempt 1) and the check-runs/annotations APIs. Verbatim: 5
+expectation/assertion failures + 1 error, all in PatientNameValidationTest;
+summary line `Tests: 2729, Assertions: 75510, Errors: 1, Failures: 5.
+skipped=0`. Note the sticky's head is the ephemeral merge ref `5d1ed006`
+(= "Merge ff16ec8 into 9aee8f7a") — the CI integration job merges base+head;
+content == ff16ec8 + main.
+
+Code-verified root causes (read paths cited, not assumed):
+
+1. **Address never seeded** (4 of 6). `enroll_current_patient()` accepts
+   ONLY first_name/last_name/mobile for local demographics
+   (PatientService.php:350-354 intersection), so the fixture never stored an
+   address; `assertSame('اصلی', ...)` saw NULL (REST tests; `patientRow`
+   returns raw row) / '' ((string)-cast in the service tests). The four
+   AFFECTED tests: testExplicitEmptyNameWithOtherFieldAppliesNothing
+   (:542), testExplicitNullNameWithOtherFieldAppliesNothing (:562),
+   testSelfRestUpdateRejectsEmptyStringFirstName (:893),
+   testSelfRestUpdateRejectsNullFirstName (:912).
+2. **Two-link scenario enumerated only one candidate** (1 of 6).
+   `active_linked_patients_for_user()` (PatientRepository.php:164) enumerates
+   via `cpms_patient_user_links` joined to patients+clinics with the
+   `clinical_access_identity_predicate()` pil edge — it NEVER reads the
+   identity-links table for candidacy. The round-34 fixture added a SECOND
+   pil binding (`link_user` for user1 ↔ patient2's identity) but wrote NO
+   `cpms_patient_user_links` row for (user1, patient2), so `updateMe()`
+   resolved exactly ONE candidate (patient1) and the test hit
+   `$this->fail('ambiguous patient selection must not silently pick one')`
+   at :659 — CLINIC_SELECTION_REQUIRED was never thrown.
+3. **Role-denial fixture threw before dispatch** (1 of 6, the ERROR).
+   `linkedSelfWithoutPortalRole()` built the fixture with
+   `withPortalRole=false`, so the authorized enrollment itself hit the
+   role gate at PatientService.php:286 (enroll requires ROLE_PATIENT) and
+   threw `BookingException: دسترسی ندارید` (403) INSIDE fixture construction
+   (PatientNameValidationTest.php:156 ← :728 ← :964). The REST
+   `requirePatient` 403 denial path the test exists to assert was never
+   reached. Fixture order was wrong.
+
+### Task 1 — repairs applied (fixture-only; ZERO production-code edits)
+
+File changed: `clinic-practice-management/tests/Integration/PatientNameValidationTest.php`.
+No assertions weakened, no predicates touched, no skips added, authorization
+unchanged, production code untouched.
+
+A. `seedLinkedAddress()` helper added — seeds the durable address through the
+   AUTHORIZED self-service boundary
+   (`service()->updateMe($user_id, ['address' => 'اصلی'], $link_id)`;
+   `address ∈ ME_EDITABLE`). Called in exactly the four address-asserting
+   tests. The enroll boundary can never seed an address, so this is the
+   authorized path for a pre-existing non-empty address.
+B. `createClinicInOrganization()` helper added — provisions a second ACTIVE
+   clinic in the SAME Organization (fixture-level INSERT, the established
+   slice-5 `createClinic` pattern; `cpms_clinics.status` is
+   `ENUM('active','suspended') NOT NULL DEFAULT 'active'` per migration
+   0029; `organization_id` NOT NULL + FK per migration 0010). The two-link
+   test then performs a SECOND authorized `enroll_current_patient()` as the
+   SAME user (cpms_patient) into clinic 2. The production path mints patient2
+   bound to the SAME verified Organization identity and writes the second
+   patient↔user link + audit atomically — no hand-built link rows, no pil-
+   only binding. `updateMe(user1, ['birth_date' => ...], null)` then
+   enumerates exactly two authorized candidates → CLINIC_SELECTION_REQUIRED
+   / 422; both records asserted unchanged (birth_date NULL). Precondition
+   asserts added: second patient id > 0 and different from patient1; second
+   clinic asserted bound to the same Organization.
+C. `linkedSelfWithoutPortalRole()` rewritten in the mandated order: build the
+   VALID linked patient WITH the cpms_patient role (enrollment succeeds,
+   link asserted present), THEN `set_role('subscriber')` before dispatch.
+   The REST boundary (requirePatient, PatientController.php:223) denies with
+   403 CLINIC_PERMISSION_DENIED; stored first_name asserted unchanged.
+D. Dead code removed: the now-unused `$withPortalRole` fixture parameter
+   (all fixtures enroll WITH the portal role); `makeRestLinkedSelfFixture()`
+   simplified to assert the role instead of re-granting it.
+E. Stale fixture docblock for the C2 fixture updated to match (role + removal
+   order in the role-denial helper).
+
+Foreign-link assertion (`testSelfUpdateCannotUseAnotherUsersLink`),
+atomicity assertions, and denial assertions are UNCHANGED and still
+load-bearing.
+
+### Task 1 — local verification (and what remains unverifiable)
+
+- Native PHP runtime: UNAVAILABLE (no php binary; apt lists contain no
+  php-cli). Native PHPUnit / PHPCS / PHPStan: UNAVAILABLE. NOTHING below is
+  native evidence.
+- Node `php-parser` strict parse of the repaired test file: PARSE-OK.
+- Python byte audit of the repaired file: no U+FDFA; `اصلی` =
+  U+0627 U+0635 U+0644 U+06CC (exact bytes match the pre-existing
+  expectations); zero raw bidi controls; U+200C appears only inside Persian
+  words; no stray characters outside the file's established inventory.
+- `.github/workflows/test_workflow_contracts.py`: Ran 75 tests — OK (skipped=1,
+  same skip as the standing baseline).
+- WPCS collector self-tests: 6/6 PASS; collector over the ff16ec8..worktree
+  diff reports 4 in-scope src files / 88 added lines (the test file is NOT
+  in the WPCS gate scope). Local PHPCS: NOT available → the repair carries
+  NO local phpcs evidence; CI's WPCS job is the operative gate.
+- `git diff --check` for the repair commit range: clean.
+- The Integration job (WP 7.1 + MySQL 8) is the ONLY way to execute the
+  repaired integration tests. The six-test verdict is UNVERIFIED until CI
+  runs; per-test risk read: A/C are deterministic by construction (authorized
+  seed write; role membership flip), B rests on `verified_identity_for_clinic`
+  resolving the org-scoped identity for clinic 2 (code-read verified:
+  PatientIdentityActivator.php:110-112 + require_organization 118-130) and on
+  the new clinic's ACTIVE default status (migration 0029, verified) and on
+  both links passing the UNCHANGED pil-bound predicate (the same edge the
+  single-link fixture already satisfies).
+
+### Task 2 — Disposable external tool (clinic_) lane: investigation
+
+Evidence (run 42457709519, job 128660167660, `run_attempt=1`, head ff16ec8,
+event pull_request; wp_ sibling job 128660167542):
+
+KNOWN (from the REST/check APIs and the workflow source, byte-verified at
+ff16ec8):
+
+- Step 7 "Offline gates and live-main production-tree comparison"
+  (workflow lines 79-166) FAILED after **2.0s**. Steps 8-18 (clean WP,
+  Apache, ZIP build, install, provisioning, Chromium, teardown, post-browser)
+  were all SKIPPED. Step 19 (upload-artifact, `if: always()`) SUCCEEDED and
+  its annotation reports NO files found at /tmp/acc/** — i.e. /tmp/acc
+  contained nothing; the lane died before any packaging or browser stage.
+- Step 20 "Publish non-secret exact-head evidence" (`if: always()`,
+  `set -u`) FAILED after **0.0s**. Derivation (high-confidence, NOT directly
+  observed): the step interpolates `$HEAD_SHA` and `$BASE_SHA`, which are
+  written to `$GITHUB_ENV` ONLY inside step 7 AFTER `git fetch --no-tags
+  --depth=1 origin main`; had step 7 died before those exports, bash with
+  `set -u` aborts instantly on the first unbound reference — matching the
+  0.0s duration and the annotation "Process completed with exit code 1."
+  (the step never reaches pr-evidence-comment.sh). Alternative (equally
+  consistent with set -u): an unbound reference to any later-set var
+  (CPMS_DISPOSABLE_STATE etc. are NOT referenced by step 20 — checked).
+  Either way the failure is a CONSEQUENCE of the step-7 death, not an
+  independent gate verdict. This is a latent workflow fragility; it was NOT
+  modified (no gate/workflow change without an owner decision).
+- The wp_ sibling lane passed the IDENTICAL step-7 script on the SAME
+  commit at the SAME wall-clock minute (07:11) in 2.0s and its step 20
+  passed in 2.0s (it had $HEAD_SHA/$BASE_SHA available). Its annotations are
+  the same informational notices (apt phase seconds=11 packages=9
+  mod_php_enabled=php8.5.load; WP-CLI cache_hit=true; Playwright cache_hit;
+  ubuntu-latest deprecation; Node.js 20 deprecation).
+- Same-lane history: clinic_ PASSED on d319d0ca (run 42440956254, job
+  128609874101), 97e6b6f (42442637123), b63ae06 (42415755836), 6bf0738
+  (42410131989) and on live-main push (9aee8f7a, run 42399308171). The
+  failure is first observed on ff16ec8; the lane's step-7 script has NO
+  dependence on matrix.prefix (only steps 8+ substitute it).
+- Sticky `external-site-acceptance` (issue comment 6712501627, updated
+  07:12:59Z) contains the wp_ lane's success evidence ONLY; no clinic_
+  evidence was ever published (consistent with the step-20 death).
+- Annotations for the clinic_ job (check-runs/128660167660/annotations):
+  two `failure` annotations, both literally "Process completed with exit
+  code 1." (pins at workflow lines 63 and 161 — the pins are NOT
+  location-reliable in this workflow: the apt-phase `notice` pins at line
+  159, a comment line, identically in the passing lanes; the artifact
+  `warning` pins at line 33; line 63 is the Tooling step's `apt-packages:`
+  input, a step that SUCCEEDED). Plus the Node.js-20 deprecation warning
+  (shared) and the missing-artifact warning (unique to this lane).
+- Raw job logs: INACCESSIBLE. The log blob host
+  (productionresultssa9.blob.core.windows.net) is unreachable from this
+  sandbox (curl exit 35, TLS connect error; the API 302 redirects there and
+  no other retrieval path exists). Same limitation as round 34. All
+  line-pinned "where" statements are derived, never observed.
+- Local reproduction of EVERY offline command in step 7 against ff16ec8:
+  `git diff --check` clean; `git diff --name-only 9aee8f7a..ff16ec8 --
+  clinic-practice-management` = the 7 expected product files, none matching
+  demo/disposable paths; marker grep (DemoService|DemoAccessGuard|
+  DemoSmsProvider|DemoSetupPage|cpms_disposable|cpms-disposable|
+  CPMS_DISPOSABLE|tests/disposable-site|rwp-demo-acceptance|
+  DISPOSABLE_SITE_PROVISIONED) over those files: ZERO hits; tree
+  materialization via `git archive` + `test -f`/`test -d`: OK;
+  `python3 -m py_compile` (4 files): OK; `python3 -m unittest discover -s
+  tests/disposable-site`: 33 tests OK (1.3s); `bash -n` on teardown.sh: OK.
+  The per-file php -l loop (5 files) is the only offline step not locally
+  executable (no php). The ONLY network-dependent command in step 7 is
+  `git fetch --no-tags --depth=1 origin main`.
+- `run_attempt=1`; nothing skipped except the forced step 8-18 cascade and
+  their successors' guards; no cancelled steps; no manual rerun performed
+  (not authorized).
+
+UNKNOWN (explicitly): the exact command inside step 7 that exited 1 (the
+`git fetch --no-tags --depth=1 origin main` network operation is the only
+environment-dependent candidate; nothing in the candidate source can affect
+any offline step-7 command, as proven by the local reproduction and by the
+wp_ lane on the same commit/minute); whether the death was transient
+runner-side I/O/network, a runner-image anomaly, or anything else; the
+exact stderr/annotations GitHub logged for step 7 and step 20.
+
+NO classification of the clinic_ failure is offered. NO gate, workflow or
+tooling was modified. The failure is consistent with a transient/early
+step-7 death (possibly the network fetch), but that is an UNPROVEN
+hypothesis, not a finding; the owner must decide between (a) an explicit
+rerun authorization for the disposable workflow, and (b) a dedicated
+investigation round with log access (e.g. artifacts/summary published
+elsewhere). Modification of the step-20 `set -u` fragility would also
+require an explicit owner decision; nothing was changed.
+
+### Limitations (carried)
+
+- No native PHP/PHPUnit/PHPCS/PHPStan locally; CI is the operative gate.
+  Everything above marked PASS-locally is indicative only.
+- Raw CI logs unreachable from this sandbox (host blocked); annotations,
+  check-run step listings with timings, and sticky comments are the
+  evidence sources.
+- Environment re-provisioned five times; every local-only object is
+  volatile; anything not pushed is lost when it re-happens.
+- The round-34 log commit (e3b69e2, docs/agent-log.md only) rides along
+  with this round's push — it was local-only by the round-34 mandate and
+  is included per the round-35 pre-push verification mandate.
+- The push carries the repaired fixture only; CI executes the Integration
+  job fresh. NO CI outcome is claimed in this entry; the CI-outcome entry
+  is appended after-the-fact as a separate local commit (pattern
+  established round 34) rather than predicted here.

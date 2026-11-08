@@ -113,7 +113,7 @@ final class PatientNameValidationTest extends WP_UnitTestCase
      *
      * @return array{patient_id: int, user_id: int, link_id: int, clinic_id: int, mobile: string}
      */
-    private function makeLinkedSelfFixture(string $mobile, bool $withPortalRole = true): array
+    private function makeLinkedSelfFixture(string $mobile): array
     {
         $clinicId = $this->defaultClinicId();
         global $wpdb;
@@ -136,13 +136,11 @@ final class PatientNameValidationTest extends WP_UnitTestCase
         if ($userId <= 0) {
             $this->fail('self fixture user was not created');
         }
-        if ($withPortalRole) {
-            $user = get_userdata($userId);
-            if ($user === false) {
-                $this->fail('fresh self fixture user not found');
-            }
-            $user->set_role('cpms_patient');
+        $user = get_userdata($userId);
+        if ($user === false) {
+            $this->fail('fresh self fixture user not found');
         }
+        $user->set_role('cpms_patient');
 
         $identityService = App::patient_identity_service();
         $identityId = (int) $identityService->create_identity($orgId, $mobile);
@@ -195,6 +193,69 @@ final class PatientNameValidationTest extends WP_UnitTestCase
             'clinic_id' => $clinicId,
             'mobile' => $mobile,
         ];
+    }
+
+    /**
+     * Seeds the durable address of a linked-self fixture through the authorized
+     * self-service boundary (the service-level equivalent of PUT /patient/me).
+     * The enroll boundary accepts only first/last/mobile, so the address can
+     * never be seeded there — and the atomicity assertions need a pre-existing
+     * non-empty address to prove a rejected edit persisted nothing.
+     */
+    private function seedLinkedAddress( array $fixture, string $address = 'اصلی' ): void
+    {
+        $this->service()->updateMe( (int) $fixture['user_id'], [ 'address' => $address ], (int) $fixture['link_id'] );
+    }
+
+    /**
+     * Provisions a second active Clinic in the SAME Organization as an
+     * existing Clinic. Fixture-level INSERT, the established test pattern
+     * (e.g. ClinicalFilesScopedAuthorizationTest::createClinic): enrollment
+     * authorization runs against the Organization + Clinic rows, never
+     * against a hand-built patient↔user link.
+     */
+    private function createClinicInOrganization( int $referenceClinicId, string $tag ): int
+    {
+        global $wpdb;
+        $orgId = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $referenceClinicId
+            )
+        );
+        if ( $orgId <= 0 ) {
+            $this->fail( 'the reference clinic has no organization' );
+        }
+        $now = App::db()->nowUtcSql();
+        $unique = bin2hex( random_bytes( 4 ) );
+        $inserted = $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . "cpms_clinics (organization_id, name, slug, timezone, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, %s)", // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $orgId,
+                'SelfLink Clinic ' . $tag . ' ' . $unique,
+                'selflink-' . strtolower( $tag ) . '-' . $unique,
+                'Asia/Tehran',
+                $now,
+                $now
+            )
+        );
+        if ( $inserted === false ) {
+            $this->fail( 'second clinic fixture insert failed: ' . $wpdb->last_error );
+        }
+        $clinicId = (int) $wpdb->insert_id;
+        $this->assertGreaterThan( 1, $clinicId, 'precondition: dynamic Clinic id (never Clinic 1)' );
+        $this->assertSame(
+            $orgId,
+            (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $clinicId
+                )
+            ),
+            'precondition: the second clinic is linked to the same Organization'
+        );
+
+        return $clinicId;
     }
 
     public function testCreateStoresValidPersianZwnjNameExactly(): void
@@ -524,6 +585,7 @@ final class PatientNameValidationTest extends WP_UnitTestCase
     public function testExplicitEmptyNameWithOtherFieldAppliesNothing(): void
     {
         $fx = $this->makeLinkedSelfFixture('09120007777');
+        $this->seedLinkedAddress( $fx ); // seed a pre-existing address through the authorized self path so atomicity covers it
 
         // گزینهٔ B: خطای نامِ خالی یعنی هیچ‌یک از تغییرات همان درخواست ذخیره نمی‌شود.
         try {
@@ -545,6 +607,7 @@ final class PatientNameValidationTest extends WP_UnitTestCase
     public function testExplicitNullNameWithOtherFieldAppliesNothing(): void
     {
         $fx = $this->makeLinkedSelfFixture('09120008888');
+        $this->seedLinkedAddress( $fx ); // seed a pre-existing address through the authorized self path so atomicity covers it
 
         try {
             $this->service()->updateMe($fx['user_id'], [
@@ -634,25 +697,31 @@ final class PatientNameValidationTest extends WP_UnitTestCase
     public function testSelfUpdateWithTwoActiveLinksRequiresExplicitSelection(): void
     {
         $first = $this->makeLinkedSelfFixture('09120001010');
-        $second = $this->makeLinkedSelfFixture('09120002020');
-        // همان کاربر اول — پروندهٔ دوم را نیز از مسیرِ مجاز به او وصل می‌کنیم:
-        // هویتِ سازمانیِ همان دفترخانهٔ تستی را به دستِ کاربر اول می‌بندیم
-        // (link_user — همان مرزی که OTP برای وصل‌کردنِ هویتِ کاربر تأیید می‌کند).
-        global $wpdb;
-        $orgId = (int) $wpdb->get_var(
-            $wpdb->prepare(
-                'SELECT organization_id FROM ' . $wpdb->prefix . 'cpms_clinics WHERE id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $first['clinic_id']
-            )
-        );
-        $secondIdentityId = (int) $wpdb->get_var(
-            $wpdb->prepare(
-                'SELECT identity_id FROM ' . $wpdb->prefix . 'cpms_patients WHERE id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $second['patient_id']
-            )
-        );
-        $this->assertGreaterThan(0, $secondIdentityId, 'each factory-made patient carries an organization identity');
-        App::patient_identity_service()->link_user($orgId, $secondIdentityId, $first['user_id'], '09120002020');
+        // پروندهٔ دومِ همان کاربر، باز هم فقط از مسیرِ مجاز ساخته می‌شود:
+        // یک کلینیکِ دوم در همان سازمان (fixture-level INSERT — همان الگوی
+        // createClinic در تست‌های Slice 5) و سپس همان ارائهٔ خود-سرویس
+        // (enroll_current_patient) برای کاربر اول. رکوردِ جدید به هویتِ
+        // تصدیق‌شدهٔ همان سازمان بسته می‌شود و پیوندِ بیمار↔کاربرِ دوم در همان
+        // تراکنش نوشته می‌شود؛ هیچ ردیفِ دستی در cpms_patient_user_links ساخته
+        // نمی‌شود. نتیجه: active_linked_patients_for_user(user1) دو کاندیدای
+        // واقعاً مجاز را برمی‌گرداند.
+        $secondClinicId = $this->createClinicInOrganization( (int) $first['clinic_id'], 'second' );
+        wp_set_current_user( (int) $first['user_id'] );
+        try {
+            $enrolled = $this->service()->enroll_current_patient( $secondClinicId, [
+                'first_name' => 'خودی',
+                'last_name' => 'تستی',
+                'mobile' => '09120001010',
+            ] );
+        } finally {
+            wp_set_current_user( 0 );
+        }
+        $second = [
+            'patient_id' => (int) $enrolled['patient_id'],
+            'clinic_id' => $secondClinicId,
+        ];
+        $this->assertGreaterThan( 0, $second['patient_id'], 'the authorized second enrollment must mint the second record' );
+        $this->assertNotSame( (int) $first['patient_id'], $second['patient_id'], 'the second record must be a different patient row' );
 
         try {
             $this->service()->updateMe($first['user_id'], [ 'birth_date' => '1990-01-01' ], null);
@@ -715,20 +784,29 @@ final class PatientNameValidationTest extends WP_UnitTestCase
         $fixture = $this->makeLinkedSelfFixture($mobile);
         $user = get_userdata((int) $fixture['user_id']);
         $this->assertNotFalse($user);
-        $user->set_role('cpms_patient');
-        $user = get_userdata((int) $fixture['user_id']);
-        $this->assertNotFalse($user);
         $this->assertContains('cpms_patient', (array) $user->roles);
 
         return $fixture;
     }
 
+    /**
+     * Role-denial fixture, constructed in the mandated order: first a VALID
+     * linked patient (enrolled through the authorized path with the
+     * cpms_patient role, exactly like makeLinkedSelfFixture), THEN the
+     * required role is removed before dispatch. The REST boundary
+     * (requirePatient) must deny with 403 CLINIC_PERMISSION_DENIED — never a
+     * link/ownership error — and the stored row must remain untouched.
+     */
     private function linkedSelfWithoutPortalRole(string $mobile): array
     {
-        $fixture = $this->makeLinkedSelfFixture($mobile, false);
+        $fixture = $this->makeLinkedSelfFixture($mobile);
         $user = get_userdata((int) $fixture['user_id']);
         $this->assertNotFalse($user);
-        $this->assertNotContains('cpms_patient', (array) $user->roles);
+        $this->assertContains('cpms_patient', (array) $user->roles, 'precondition: the linked patient was made with the portal role');
+        $user->set_role('subscriber');
+        $user = get_userdata((int) $fixture['user_id']);
+        $this->assertNotFalse($user);
+        $this->assertNotContains('cpms_patient', (array) $user->roles, 'the portal role must be removed before dispatch');
 
         return $fixture;
     }
@@ -879,6 +957,7 @@ final class PatientNameValidationTest extends WP_UnitTestCase
     public function testSelfRestUpdateRejectsEmptyStringFirstName(): void
     {
         $fixture = $this->makeRestLinkedSelfFixture('09120100021');
+        $this->seedLinkedAddress( $fixture ); // seed a pre-existing address so the assertion covers the whole stored row
         wp_set_current_user((int) $fixture['user_id']);
 
         $response = $this->dispatch('PUT', self::NS . '/patient/me', [
@@ -896,6 +975,7 @@ final class PatientNameValidationTest extends WP_UnitTestCase
     public function testSelfRestUpdateRejectsNullFirstName(): void
     {
         $fixture = $this->makeRestLinkedSelfFixture('09120100022');
+        $this->seedLinkedAddress( $fixture ); // seed a pre-existing address so the assertion covers the whole stored row
         wp_set_current_user((int) $fixture['user_id']);
 
         $response = $this->dispatch('PUT', self::NS . '/patient/me', [
