@@ -338,6 +338,60 @@ final class SetupWizardTest extends WP_UnitTestCase
         $this->assertTrue(str_contains((string) $form, '<button type="submit"'), 'دکمهٔ ارسال باید داخل همان فرم باشد');
     }
 
+    public function testAuthorizedClinicConfigUserSeesWizardStepForm(): void
+    {
+        $this->authorizeConfigUser();
+
+        $html = $this->renderWizardStep('locations');
+        $form = $this->findFormWithHiddenValue($html, 'action', 'cpms_wizard_save');
+
+        self::assertNotNull($form, 'کاربرِ مجازِ Clinic باید فرم گام را ببیند.');
+        self::assertStringContainsString('name="step" value="locations"', (string) $form);
+        self::assertStringNotContainsString('data-cpms-wizard-access="denied"', $html);
+    }
+
+    public function testGlobalConfigWithoutClinicLocalConfigSeesDenialAndNoWizardForm(): void
+    {
+        $user_id    = $this->authorizeConfigUser();
+        $clinic_id  = (int) App::scope()->clinicId;
+        $membership = App::membership_service()->membership_for($clinic_id, $user_id);
+
+        self::assertNotNull($membership, 'Fixture must have a real Clinic membership.');
+        self::assertTrue(current_user_can(RolesAndCapabilities::CONFIG), 'The WordPress Administrator keeps its technical CONFIG capability.');
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::CONFIG, 'deny');
+        self::assertTrue(current_user_can(RolesAndCapabilities::CONFIG), 'A Clinic-local DENY must not remove the global WordPress capability.');
+
+        $html = $this->renderWizardStep('locations');
+
+        self::assertStringContainsString('data-cpms-wizard-access="denied"', $html);
+        self::assertStringContainsString('دسترسی ندارید', $html);
+        self::assertSame(0, preg_match('/<form\\b/i', $html), 'A denied user must not receive an active wizard form.');
+        self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $html);
+    }
+
+    public function testSaveBookingRejectsGlobalConfigWithoutClinicLocalConfigAndDoesNotWrite(): void
+    {
+        $user_id    = $this->authorizeConfigUser();
+        $clinic_id  = (int) App::scope()->clinicId;
+        $membership = App::membership_service()->membership_for($clinic_id, $user_id);
+
+        self::assertNotNull($membership);
+        App::membership_service()->set_capability((int) $membership['id'], RolesAndCapabilities::CONFIG, 'deny');
+        $settings = App::settings();
+        $before   = $settings->get('booking.duration_default_min');
+
+        $error = CpmsSetupWizard::saveBooking($settings, [
+            'duration' => 60,
+            'capacity' => 2,
+            'lead'     => 3,
+            'future'   => 30,
+            'cancel'   => 24,
+        ], $user_id);
+
+        self::assertStringContainsString('عضویت فعال', $error);
+        self::assertSame($before, $settings->get('booking.duration_default_min'), 'A Clinic-local denial must leave settings unchanged.');
+    }
+
     public function testValidStepSelectorRendersRequestedStepWithoutChangingProgress(): void
     {
         $this->authorizeConfigUser();

@@ -154,6 +154,13 @@ final class CpmsSetupWizard
             echo '</div>';
             return;
         }
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
+            echo '<div class="wrap" dir="rtl"><h1>راه‌اندازی</h1>';
+            echo '<div class="notice notice-error" data-cpms-wizard-access="denied"><p>';
+            echo esc_html( 'دسترسی ندارید. برای مشاهده و ویرایش راه‌اندازی، عضویت فعال و مجوز پیکربندی در همین Clinic لازم است.' );
+            echo '</p></div></div>';
+            return;
+        }
         $steps = self::active_steps();
         $index = self::currentStepIndex();
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only selector; values are restricted to registered steps.

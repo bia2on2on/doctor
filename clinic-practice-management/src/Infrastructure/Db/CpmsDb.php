@@ -69,6 +69,16 @@ final class CpmsDb
         return $this->wpdb->prefix;
     }
 
+    /** Count CPMS tables using the active WordPress database prefix. */
+    public function count_cpms_tables(): int {
+        $prefix_pattern = $this->wpdb->esc_like( $this->wpdb->prefix . $this->prefix ) . '%';
+
+        return (int) $this->fetchValue(
+            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE %s',
+            [ $prefix_pattern ]
+        );
+    }
+
     public function prepare(string $sql, array $params): string
     {
         if ($params === []) {
