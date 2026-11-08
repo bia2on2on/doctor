@@ -287,7 +287,7 @@ final class CpmsSetupWizard
         );
     }
 
-    private static function setCurrentStep( Settings $settings, string $id ): void
+    private static function set_current_step( Settings $settings, string $id ): void
     {
         $actor_user_id = (int) get_current_user_id();
         if ( ! self::has_clinic_local_config( $actor_user_id, $settings->clinicId() ) ) {
@@ -1566,7 +1566,7 @@ final class CpmsSetupWizard
             exit;
         }
         self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
-        self::setCurrentStep( $settings, self::nextStepId( $step ) );
+        self::set_current_step( $settings, self::nextStepId( $step ) );
         set_transient(self::NOTICE_KEY, 'ذخیره شد.', 60);
         wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
         exit;
