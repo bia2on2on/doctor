@@ -3272,6 +3272,14 @@ final class BookingService
                 400
             );
         }
+        // قاعدهٔ PatientService: کنترل‌کنترلِ دوجهتی رد می‌شود — هرگز حذفی سکوت‌کنان.
+        if ( VisibleText::has_bidi_control( $clean ) ) {
+            throw BookingException::of(
+                'CLINIC_VALIDATION_FAILED',
+                'نام حاوی نویسه‌های کنترلِ جهت نوشتار است',
+                400
+            );
+        }
         // همان قاعدهٔ واحدِ PatientService: نامِ فقط-نامرئی (نیم‌فاصلهٔ تنها
         // و مانندِ آن) رد می‌شود؛ نیم‌فاصلهٔ داخلِ واژهٔ فارسی معتبر است.
         if ( ! VisibleText::has_visible_content( $clean ) ) {

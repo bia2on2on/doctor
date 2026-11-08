@@ -138,7 +138,7 @@ final class PatientService
     // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- Established public service API; renaming would break callers.
     public function updateMe( int $wp_user_id, array $fields, ?int $link_id = null ): array {
         $current = $this->require_selected_patient( $wp_user_id, $link_id );
-        $data    = $this->validateForUpdate( $fields, self::ME_EDITABLE, (int) $current['id'] );
+        $data    = $this->validate_for_update( $fields, self::ME_EDITABLE, (int) $current['id'] );
 
         if ( $data === [] ) {
             throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است' );
@@ -413,10 +413,12 @@ final class PatientService
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'بیماری با همین موبایل قبلاً ثبت شده است');
         }
 
-        $data = $this->validateForUpdate($fields, self::CREATE_FIELDS, 0, true) + [
+        // The validated (trimmed, invisible/bidi-rejected) names from
+        // validate_for_update are the ONLY names written — raw copies of the
+        // input must never re-enter here. (`$data + …` on the union kept the
+        // left side anyway, but the misleading raw lines below are gone for good.)
+        $data = $this->validate_for_update( $fields, self::CREATE_FIELDS, 0, true ) + [
             'clinic_id' => $clinicId,
-            'first_name' => mb_substr($firstName, 0, 120),
-            'last_name' => mb_substr($lastName, 0, 120),
             'mobile' => $mobile,
             'mrn' => $this->generateMrn($clinicId),
             'status' => 'active',
@@ -505,7 +507,7 @@ final class PatientService
             throw new BookingException( 'CLINIC_NOT_FOUND', 'بیمار یافت نشد', 404 );
         }
 
-        $data = $this->validateForUpdate( $fields, self::STAFF_EDITABLE, $patient_id );
+        $data = $this->validate_for_update( $fields, self::STAFF_EDITABLE, $patient_id );
         if ( $data === [] ) {
             throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'فیلدی برای ویرایش ارسال نشده است' );
         }
@@ -587,14 +589,35 @@ final class PatientService
      * @param array<string, mixed> $fields
      * @return array<string, mixed>
      */
-    private function validateForUpdate(array $fields, array $allowed, int $patientId, bool $isCreate = false): array
+    private function validate_for_update( array $fields, array $allowed, int $patient_id, bool $is_create = false ): array
     {
         $out = [];
         foreach ($allowed as $field) {
-            if (!array_key_exists($field, $fields) || $fields[$field] === null || $fields[$field] === '') {
-                continue;
+            if ( ! array_key_exists( $field, $fields ) ) {
+                continue; // کلید غایب = فیلد اصلاً ارسال‌نشده — مقدارِ موجود دست‌نخورده می‌ماند.
             }
-            $value = $fields[$field];
+            $value         = $fields[ $field ];
+            $is_name_field = 'first_name' === $field || 'last_name' === $field;
+            if ( ! $is_create && $is_name_field ) {
+                // دستور صریح مالک (2026-11-07 — گزینهٔ B، فقط ویرایش رکورد بیمار):
+                // نامِ ارسال‌شدهٔ خالی — '' یا null یا فقط-فاصله/کنترل/نامرئی —
+                // «فیلد ارسال‌نشده» نیست؛ خطای اعتبارسنجی روشن برمی‌گرداند و
+                // هیچ‌یک از تغییرات همان درخواست ذخیره نمی‌شود (validate-then-write).
+                // فقط در مسیر Update اعمال می‌شود؛ Create/Booking بدون تغییر می‌ماند.
+                if ( $value !== null && ! is_scalar( $value ) ) {
+                    throw new BookingException( 'CLINIC_VALIDATION_FAILED', 'نام نامعتبر است' );
+                }
+                $probe = null === $value ? '' : (string) $value;
+                $probe = trim( (string) preg_replace( '/[\x00-\x1F]/u', '', $probe ) ?? '' );
+                if ( '' === $probe || ! VisibleText::has_visible_content( $probe ) ) {
+                    throw new BookingException(
+                        'CLINIC_VALIDATION_FAILED',
+                        'first_name' === $field ? 'نام نمی‌تواند خالی باشد' : 'نام خانوادگی نمی‌تواند خالی باشد'
+                    );
+                }
+            } elseif ( $value === null || $value === '' ) {
+                continue; // سایر فیلدها (و Create): قرارداد آپدیت جزئی — خالی = عدم ارسال.
+            }
             $out[$field] = match ($field) {
                 'first_name', 'last_name' => $this->cleanName((string) $value),
                 'mobile' => MobileValidator::normalize((string) $value) ?? throw new BookingException('CLINIC_VALIDATION_FAILED', 'شماره موبایل نامعتبر است'),
@@ -617,10 +640,10 @@ final class PatientService
         }
 
         // یکتایی Mobile/NationalId در Update (غیر از خود)
-        if (!$isCreate) {
+        if ( ! $is_create ) {
             if (isset($out['mobile'])) {
                 $other = $this->patients->findByMobile(App::scope()->clinicId, $out['mobile']);
-                if ($other !== null && (int) $other['id'] !== $patientId) {
+                if ( $other !== null && (int) $other['id'] !== $patient_id ) {
                     throw new BookingException('CLINIC_VALIDATION_FAILED', 'این موبایل متعلق به بیمار دیگری است');
                 }
             }
@@ -634,6 +657,15 @@ final class PatientService
         $v = trim(preg_replace('/[\x00-\x1F]/u', '', $v) ?? '');
         if ($v === '' || mb_strlen($v) > 120) {
             throw new BookingException('CLINIC_VALIDATION_FAILED', 'نام نامعتبر است');
+        }
+        // نویسه‌های کنترلِ دوجهتی (LRM/RLM/ALM و نشانه‌های جاسازی/ایزولهٔ جهت)
+        // هرگز در نامِ واقعی مشروع نیستند؛ نشانهٔ حملهٔ هم‌نگاره و خراب‌کردنِ نمایش‌اند.
+        // رد می‌شوند — هرگز سکوت‌کنان حذف. نیم‌فاصلهٔ U+200C از این فهرست خارج است.
+        if ( VisibleText::has_bidi_control( $v ) ) {
+            throw new BookingException(
+                'CLINIC_VALIDATION_FAILED',
+                'نام حاوی نویسه‌های کنترلِ جهت نوشتار است'
+            );
         }
         // نامِ فقط-نامرئی (نیم‌فاصلهٔ تنها، نویسههای صفر-عرض/جهت، BOM، فاصله)
         // محتوای خوانا ندارد؛ نیم‌فاصلهٔ داخلِ واژهٔ فارسی معتبر می‌ماند.

@@ -4008,3 +4008,785 @@ Applied the five approved corrections on top:
 - Valid red-to-green isolated PHP-WASM 8.5 probe invoked the actual private `visits_section` method via reflection with synthetic ClinicalService and escaping stubs: before the fix it reported two date failures; afterward eight checks passed (Persian date, existing Persian input, ASCII selectors, original scope arguments, unchanged data, escaping and no implicit request for multiple records). The WASM CLI returned zero even on red, so the printed result was inspected; this is neither native PHP nor WordPress integration. npm warned that its Node 22 runtime is below the WASM package's declared Node 24 requirement. A separate synthetic Python probe executed the actual browser test function with fakes: the good case passed and seven negative controls were rejected; it is not a real browser run.
 - Local checks: all 20 JS specs, JS syntax and Python AST parse passed; PHP-WASM lint reported no syntax errors for the changed PHP files (not native lint); workflow contracts 75/75 with no skips, workflow YAML 17 files, tenant tripwire 59/59 and 281 files / 0 hardcodes / 3 suspects, companion isolation, and WPCS collector self-test 6/6 passed. Native PHP syntax, PHPUnit/WordPress integration, real browser and actual PHPCS were NOT RUN: PHP, Composer, PHPUnit, PHPCS, MySQL and Chromium are unavailable; no baseline, lock or gate was altered. PyYAML and PHP-WASM were installed outside the checkout.
 - No CI rerun, push, merge or visual acceptance was performed. The earlier MariaDB timeout remains unclassified; prior CI pertains to the previous PR head, not this follow-up.
+
+## Round 28 — 2026-11-07 — M4: patient-name validation — D4/D5/C2/booking entrances (uncommitted; merge NOT authorized)
+
+- **Authorization.** Owner: fix M4 patient-name validation in plugin `clinic-practice-management`. Earlier analysis claimed (i) creation only rejects empty string, (ii) the create path may overwrite a sanitized name with the raw input, (iii) bidirectional control characters are not rejected. Owner required: surgical fix for empty/invisible-only names; rejection of bidi control characters in a name; preservation of valid Persian names incl. ZWNJ; consistent server-side validation on the relevant create/update paths without changing unrelated fields or API contracts; no silent overwrite of a sanitized name with raw input; unchanged authorization/tenant-isolation/history; if a product decision were needed, STOP as BLOCKED. Required: focused tests (empty, whitespace-only, invisible-only, bidi, valid Persian+ZWNJ, create/update behavior); regression test failing against old behavior where feasible; no test weakening; pre-push checks where applicable; append-only log; report in English; NO commit/push/PR/merge without authorization.
+- **Live state at round start (verified):** main unmoved `9aee8f7a67bd0b0c29f63f67b8bb66b73e7a9252` (== local HEAD == `git merge-base`; merge of PR #330); no open PRs (`gh pr list --state open` empty); branch `arena/9015e529-doctor` created from current main (own session branch); clean tree. Live API re-read before push proposal (see report).
+- **Verification of the three reported defects against current main (all three were partially wrong; reported as corrected findings, never silently):**
+  1. "Creation only rejects empty string" — **partially true.** D4 had a literal `=== ''` gate, but the validator ran afterwards anyway: `cleanName()` (PatientService.php:634) already rejected empty (`نام نامعتبر است`), over-120, and invisible-only names (`VisibleText::has_visible_content` — ZWNJ/ALM/ZWSP/BOM-only strings, all U+2000–U+200A incl. THIN SPACE, NBSP, U+2028/29, \p{Z}, \p{Cf}, ASCII controls) with a dedicated message. WHITESPACE-only was already covered (trim + \s). So the true gap was narrower than reported.
+  2. "Raw input overwrites sanitized name" — **does NOT reproduce on current main.** `$data = validateForUpdate(...) + [first_name => mb_substr($firstName,0,120), ...]` — PHP's `+` union keeps the LEFT (validated) side; the raw right-hand duplicates were dead code (misleading, fragile — removed surgically; NOT a live overwrite). Left side validated values always won.
+  3. "Bidi control characters not rejected" — **confirmed and fixed.** A Persian name with trailing U+202E/U+2066 etc. stored fine (visible letters made `has_visible_content` true). That is the real, exploitable gap (homograph/display-spoofing) and is what the fix closes.
+- **Fix (surgical; 3 src files, +53/-2):**
+  - `src/Domain/Validators/VisibleText.php`: new public `has_bidi_control()` + private `BIDI_CONTROL_CLASS` (U+061C ALM, U+200E LRM, U+200F RLM, U+202A–U+202E, U+2066–U+2069 — the Unicode `Bidi_Control=Yes` set; explicitly NOT U+200C ZWNJ / U+200D ZWJ, which stay valid inside Persian words). UTF-8-invalid input fails closed (preg_match returns bool(false) on error — checked with a focused probe; the pre-existing `preg_replace`/null pattern in `has_visible_content` is correct as-is and was NOT changed).
+  - `src/Application/Patients/PatientService.php` (`cleanName`, shared by create/D4, staff update/D5, patient self update/C2, and enrollment): REJECTS bidi-control names with `BookingException('CLINIC_VALIDATION_FAILED', 'نام حاوی نویسه‌های کنترلِ جهت نوشتار است')` BEFORE the invisible-content check; Persian+ZWNJ names unchanged; nothing silently stripped. Also removed the two raw `first_name`/`last_name` lines from the create union literal (validated values are now the ONLY source), and left the early `=== ''` presence guard untouched.
+  - `src/Application/Booking/BookingService.php` (`cleanBookingName`, OTP/booking new-patient entrance — the other patient-name entrance): same bidi rejection, same ordering, identical message; mirrors the documented patient entrance symmetry.
+  - `emergency_contact_name` (free text via `cleanText`) intentionally untouched; clinician display names (`FacilitySetupService`, `ClinicianAdminPage`) out of M4 scope — same gap exists there, flagged in report, NOT fixed (scope discipline; owner decision required for scope extension).
+- **Tests.** New `tests/Unit/VisibleTextBidiControlTest.php` (6 tests/64 asserts: detection table for all 12 bidi controls, suffix/prefix placement, normal/ZWNJ names negative, invalid-UTF8 fail-closed, `cleanName` + `cleanBookingName` reflection rejections + valid-name pass-through). New `tests/Integration/PatientNameValidationTest.php` (11 asserts paths through the real service: create stores Persian+ZWNJ exactly; stored name is the validated/trimmed one; empty/whitespace-only/invisible-only/bidi first+last rejected with exact messages; staff update bidi rejected AND stored row unchanged; staff update persists ZWNJ exactly; whitespace-only update rejected).
+- **RED → GREEN, demonstrated.** Against UNMODIFIED HEAD sources (test file only): `ERRORS (4) + FAILURES (2)` — incl. `cleanName` storing a U+061C-bearing name and booking entrance accepting U+2066. After the fix: **OK (6 tests, 64 assertions)**. Pre-existing suites re-run green: `VisibleTextTest` OK(5/31), `VisibleTextControlCharsTest` OK(5/13), `VisibleTextUnicodeSeparatorsTest` OK(8/46), `CancelZeroRowGuardErrorMappingTest` OK(2/8). `PkgP2bPersianDisplayRemainderTest` cannot run here (`shell_exec`/Node spawn unsupported under wasm PHP — sandbox limitation, not a regression; unrelated to name paths).
+- **Checks on this candidate (all local; nothing committed/pushed):** companion isolation `--changed-files` → **PASS** (5 production, 0 companion/lane); workflow contracts → **75 tests OK (1 skip)**; `bin/check-workflow-yaml.py` (isolated venv pyyaml) → **WORKFLOW_YAML_OK files=17**; tenant tripwire `--test` → **59/59 PASS**, production scan → `{"files_scanned": 281, "hardcodes": 0, "suspects": 3}` (3 suspects all pre-existing, none in changed files); WPCS collector `--test` → **6/6 PASS**; collector vs mandated baseline `2263ed673a8fdf4ab91e6a7fffae6d82252e4324` → **rc=0** (243 in-scope files, 86,040 HEAD-side added lines), and working-tree-aligned (86,093 keys) intersected with an actual `phpcs 3.13.6` (WPCS 3.4.1/PHPCSUtils 1.2.3/PHPCSExtra 1.5.1, run under wasm PHP 8.2 with the CI job's own `phpcs.xml.dist` semantics) → **0 violations on added lines**; re-run of the 43 files the first pass could not lint (entry/templates exit() at top level — fixed in the wasm lint stand-in via a shutdown-function marker; all 43 now fully analyzed) → still **0**; additionally **0 violations on the 53 added lines of this change**. WPCS environment caveats (unchanged vs prior rounds): wasm PHP ≠ CI PHP; tool versions resolved locally may differ from CI's floating `^3.13`/`^3.1`; **not CI evidence**.
+- **Not executed / limitations.** Integration suite NOT run (no native PHP, no MySQL/MariaDB, no WP test library in this sandbox; CI runs it on push). `tests/Integration/PatientNameValidationTest.php` syntax verified (wasm parse, reaches class-resolution), behavior unverified here — it follows `PatientFlowTest` patterns against the real service and WILL run under the CI integration lanes. Full `tests/Unit` directory NOT runnable here (a separate suite hangs under wasm; only validator/name-adjacent files verified). PHPCS under wasm PHP: `Generic.PHP.Syntax` sniff requires a `php -l` stand-in (`/tmp/m4harness/wasm_lint.js`), implemented and verified against an adversarial broken probe (Parse error detected correctly) — environment caveat, not a gate.
+- **Honesty hysteresis.** NOTHING committed/pushed/readied/merged; CI NOT rerun; PR nothing; `main` unmoved; branch carries 3 modified src files + 2 new test files + this log entry, UNCOMMITTED; M4 fix verified only as far as this sandbox permits (integration behavior pending CI); report delivered; **STOP for the owner's explicit decision.**
+
+## Round 29 — 2026-11-07 — M4 evidence consolidation: follow-up findings (observed vs inferred), skip verdict, php -l inventory, CI integration-lane confirmation (uncommitted; merge NOT authorized)
+
+- **Authorization.** Owner: keep clinician display names and emergency_contact_name OUT of this change; record them as separate potential follow-up findings, distinguishing observed evidence from inference; report the exact skipped workflow-contract test (name/reason/command/output) and check whether it can be run legitimately without changing the test/workflow/baseline/network policy — if yes run it, if not report the limitation; list the exact php -l commands and results per changed PHP file (native vs WASM); confirm whether the integration test is configured to run on the proposed PR CI, with evidence from the workflow configuration; do NOT claim it passed; preserve all evidence; report in English; NO commit/push/PR/merge; STOP.
+- **Live state re-verified (this round):** branch `arena/9015e529-doctor` @ `9aee8f7a67bd0b0c29f63f67b8bb66b73e7a9252` (== main); open PRs: none; tree unchanged apart from the M4 candidate files + this log.
+- **Follow-up findings (NOT fixed, by instruction; scope stays patient names only) — observed evidence:**
+  - **Clinician display name (`cpms_clinicians.full_name`, create/update):** `ClinicianAdminPage.php:584-591` enforces ONLY `VisibleText::has_visible_content()` (invisible-only rejected) + a 190 code-point cap; `:1099` sanitizes with `sanitize_text_field` (WP strips tags/entities/CR-LF — no Unicode bidi filtering; verified: zero references to bidi handling in the page). `ClinicianRepository.php:139` (create), `:177` (update), `:212` (updateForClinic) then write `full_name` **verbatim** — the repository layer contains no validator. The auto-provisioned WP account path inherits it: `ClinicianAdminPage.php:1128` passes the same `$fields['full_name']` as account `display_name` into `StaffManagementPage::upsertUser` (`StaffManagementPage.php:529`), which only trims + requires non-empty (~line 550-572: `$display_name === ''` rejected) and then `wp_insert_user` with it — no invisible/bidi validation there either. **Observed consequence class:** a clinician name containing U+202E/U+2066 etc. would round-trip into `cpms_clinicians` and be rendered wherever `full_name` is printed (e.g. `ClinicalService.php:1116/1349/1390`, `BookingService.php:1480/3390/3521/3528`, `PrescriptionPaperContext.php:16`). Persian names incl. ZWNJ were never rejected anywhere here (nothing to preserve beyond existing behavior). Whether clinician names are product-wise "names" under the same policy is a **product decision / inference**, not settled here.
+  - **`emergency_contact_name`:** allowed field (`PatientService.php:36,44,54` create/update/C2 field maps) → written via `cleanText($value, 190)` at `PatientService.php:608` — i.e. `trim( preg_replace('/[\x00-\x1F]/u','', $v) )` + truncate (`:699-705`). No visible-content check, no bidi check, no ZWNJ special-casing. Column `VARCHAR(190)` (`2026_09_05_0001_initial_schema.php:66`), REST arg `PatientController.php:86`, UI `PatientPortalPage.php:926`. **Observed:** bidi/invisible-only/homograph content in the field passes create/update. **Inference (untraced):** where this name is displayed (portal/PDF/print/SMS) it may carry the same spoofing risk class as patient names; the required product treatment (free-text vs name validation) is NOT decided here. By explicit instruction it stays out of this change.
+  - **Adjacent same-family instances (also out of scope; bonus observations):** organization/facility display name — `FacilitySetupService.php:189/206-207` (validated only non-empty + ≤190 at `:207`; persisted at `:221/240`; rendered raw-escaped at `FacilitySetupPage.php:428/181`) and clinician role display name — `CustomRoleDefinitionsPage.php:148/185` (sanitize_text_field + `DISPLAY_NAME_MAX_CODE_POINTS` cap only). Neither has invisible/bidi handling.
+  - Common shape: these entrances got **partial** name hygiene at best (length/tag stripping/visible-content in the clinician case) with **no** bidi policy; M4 fixed only the patient entrances. A follow-up decision is required per field before changing them.
+- **Workflow-contract test that was skipped — verdict: RESOLVED LEGITIMATELY (not bypassed).**
+  - Exact test: `CompanionCompatibilityGateContractTests.test_the_workflow_yaml_checker_rejects_a_colon_in_a_step_name` (`.github/workflows/test_workflow_contracts.py:1404`).
+  - Command (bare, as run in prior rounds): `python3 .github/workflows/test_workflow_contracts.py -v` → output line: `test_the_workflow_yaml_checker_rejects_a_colon_in_a_step_name ... skipped 'no YAML library in this interpreter; CI installs pyyaml'`; suite: `Ran 75 tests ... OK (skipped=1)`.
+  - Skip reason (source): the test's PyYAML branch does `self.skipTest('no YAML library in this interpreter; CI installs pyyaml')` at `test_workflow_contracts.py:1420`; bare `python3` here has no `yaml` module (ImportError traceback — harmless).
+  - **Legitimate resolution:** PyYAML is a normal dependency other lanes install (`.github/workflows/scoped-demo.yml:107`, `standalone-demo.yml:96`: `python3 -m pip install --quiet --disable-pip-version-check pyyaml` before running the same discover command). Installing it into a **throwaway venv** `/tmp/m4-venv` (`python3 -m venv` + `pip install pyyaml` → 6.0.3, from pypi.org — allowlisted host; no change to any test/workflow/baseline/network policy) mirrors those lanes. Result under that interpreter: `/tmp/m4-venv/bin/python3 .github/workflows/test_workflow_contracts.py -v CompanionCompatibilityGateContractTests.test_the_workflow_yaml_checker_rejects_a_colon_in_a_step_name` → **`Ran 1 test ... OK`**; full discover → **`Ran 75 tests ... OK` (0 skips)**. Nothing in the repository was edited to make this pass. Evidence basis: observed outputs above; the ruassertion-of-behavior of the test itself (PyYAML raises on the probed colon-in-name) executed green.
+  - Honesty note: `ci.yml:46` runs the same discover bare (no pyyaml install step in that file — observed); whether GitHub's ubuntu-latest toolcache Python ships PyYAML cannot be verified from this sandbox, so the ci.yml tripwire lane's in-CI skip status is UNVERIFIED here. Not claimed either way.
+- **Exact `php -l` commands + results for every changed PHP file (5):** native `php` is NOT present (`command -v php` → `php: command not found`). All five were checked under the WASM environment (wasm PHP 8.2, eval-based stand-in compatible with phpcs' `Generic.PHP.Syntax` sniff):
+  - `node /tmp/m4harness/wasm_lint.js clinic-practice-management/src/Domain/Validators/VisibleText.php` → `No syntax errors detected in …VisibleText.php`, **rc=0** — WASM (no native PHP)
+  - `node /tmp/m4harness/wasm_lint.js clinic-practice-management/src/Application/Patients/PatientService.php` → `No syntax errors detected in …PatientService.php`, **rc=0** — WASM (no native PHP)
+  - `node /tmp/m4harness/wasm_lint.js clinic-practice-management/src/Application/Booking/BookingService.php` → `No syntax errors detected in …BookingService.php`, **rc=0** — WASM (no native PHP)
+  - `node /tmp/m4harness/wasm_lint.js clinic-practice-management/tests/Unit/VisibleTextBidiControlTest.php` → `No syntax errors detected in …VisibleTextBidiControlTest.php`, **rc=0** — WASM (no native PHP)
+  - `node /tmp/m4harness/wasm_lint.js clinic-practice-management/tests/Integration/PatientNameValidationTest.php` → `No syntax errors detected in …PatientNameValidationTest.php`, **rc=0** — WASM (no native PHP)
+  - The stand-in was adversarially validated this round: a deliberately broken probe prints a proper php -l-compatible parse line (`PHP Parse error: … on line 2`, rc=255) instead of a false OK. It is an approximation, not a literal `php -l`; the wasm sandbox never executed the tests. WASM environment ≠ CI (PHP 8.2 native).
+- **Integration test on the proposed PR CI — CONFIGURATION CONFIRMED; RESULT NOT CLAIMED (contents below):**
+  - `.github/workflows/ci.yml:6-10` `on:` → `push: branches: [main]`, `pull_request:` (no branch or path filters), `workflow_dispatch:` ⇒ a PR opened from this branch triggers CI.
+  - Job: `integration` — name `Integration (WP 7.1 + MySQL 8)` (`ci.yml:199-200`); `needs: unit`; `timeout-minutes: 20`; comment marks it as REQUIRED status check (in-file comment, `ci.yml:~203-207`); services: `mysql:8` (`:209`) and `mariadb:11.4.13` (`:216`), both health-gated; `shivammathur/setup-php@v2` PHP `8.2` with `mbstring, xml, mysqli, pcntl, curl` (`:235-242`); `composer require --dev phpunit/phpunit:^9.6` (`:~257-263`); WP test library installed via `tests/bin/install-wp-tests.sh … 7.1.3`.
+  - The **full suite** step `Run integration tests` (`ci.yml:750`) executes: `php -d memory_limit=1G vendor/bin/phpunit --no-configuration --bootstrap tests/integration-bootstrap.php tests/Integration` (`ci.yml:~758-760`) — i.e., PHPUnit 9.6 scans the `tests/Integration` directory for `*Test.php`, so `PatientNameValidationTest.php` WILL be picked up (matching `PatientFlowTest.php` etc.); the bootstrap contains NO per-file registration list (read in full this round); no `expected test count` appears anywhere in ci.yml (verified by grep, no match); the step enforces the suite's completion (`pipefail` + PHPUnit exit code, `ci.yml:~836-841`, plus the false-green guard requiring a terminal OK/FAILURES/ERRORS/WARNINGS summary line, `:~843-849`).
+  - Caveats: (i) the MariaDB compatibility lanes enumerate specific files only — unaffected either way; (ii) whether branch-protection actually lists this job as required could not be verified from the sandbox (repo settings are outside the checkout); (iii) the suite has NOT run for this candidate anywhere; "configured, will be executed on the next PR run" is the only claim supported by evidence.
+- **Honesty hysteresis.** NOTHING committed/pushed/readied/merged; no workflow/baseline/allowlist/migration/test edits; `docs/agent-log.md` append-only (this entry adds lines only); CI untouched; `main` unmoved; both new tests added but never executed end-to-end (integration) — integration behavior pending CI; unit behavior RED→GREEN-proven locally as recorded in Round 28; **STOP for the owner's explicit decision.**
+
+## Round 30 — 2026-11-07 — Owner-mandated coverage for self-update + new-patient booking name boundaries; per-endpoint empty/null semantics (analyzed, NO product change; STOP)
+
+- **Authorization.** Owner relayed the independent review at head `6bf0738d…` (PR #331, OPEN/DRAFT, base `9aee8f7…`; NO push/CI-rerun/merge authorization; commit on own branch allowed): (1) add focused positive/negative tests at the self-update and new-patient booking boundaries incl. Persian ZWNJ and bidi controls, authorization tested ONLY where the boundary calls for it; never claim `wp_create_user`'s 4th arg assigns a role; (2) map precisely what EACH endpoint does when a name field is submitted empty or invisible-only, compare with the M4 requirement, and if a minimal in-scope correction is clearly feasible implement it WITH tests — otherwise STOP and report options, preserving existing names and failing safely; (3) do NOT change patient-name code for the Reception fixture failure; the 11 PHP fatal errors remain unexplained and unclassified; (4) run all applicable pre-push checks; report exact commands/results/limitations; append-only log; English report; then stop.
+- **Live state at round start (verified):** branch `arena/9015e529-doctor` @ `6bf0738d…` == `origin/arena/9015e529-doctor`; base `main` @ `9aee8f7…`; working tree clean apart from this round's edits; PR #331 unchanged (open/draft, 0 review comments, checks 44 ok/1 Reception-fixture fail, mergeable_state unstable; NO rerun).
+- **What was added (tests only; ZERO product code changes):**
+  - `tests/Integration/PatientNameValidationTest.php` — removed the IGNORED 4th argument `wp_create_user('secretary_name_tests','pass-12345','secname@test.local', ['role'=>'cpms_secretary'])` (WP ignores it for non-admins and this suite never depended on it; C2-patient-portal paths consult no WP role; staff D2–D5 authorization is controller-capability + clinic scope, not a secretary role) and replaced it with a comment recording the fact. Added helpers `defaultClinicId()` (seeds from the initial migration: slug `default`) and `makeLinkedSelfFixture(string $mobile)` (creates a real staff patient via `App::patientService()->create()`, a fresh WP user via a 3-arg `wp_create_user`, and links them via a direct `cpms_patient_user_links` INSERT with clinic_id/patient_id/wp_user_id/mobile_at_link/is_primary/linked_at — the same shape the OTP flow persists — because FK constraints require a real patient row). Appended **11 self-update (C2 `updateMe`) tests**: ZWNJ store byte-exact; Persian-ZWNJ edge-trim preserving internal ZWNJ; bidi rejection preserving the stored row; invisible-only rejection preserving the stored row; whitespace-only rejection preserving the stored row; explicit-empty-alone characterization (`''` → 400 `CLINIC_VALIDATION_FAILED` + `فیلدی برای ویرایش ارسال نشده است`); explicit-empty-with-other-field (applies other field, name preserved); explicit-null-with-other-field (same); no-link 404 `CLINIC_NOT_FOUND`; foreign link_id 404 (ownership is link-based, not identity-guess); two active links without explicit selection → 422 `CLINIC_SELECTION_REQUIRED`. File now carries **21 test methods** (10 prior + 11 new).
+  - NEW `tests/Unit/BookingNewPatientBoundaryTest.php` — **7 tests** for the new-patient booking gate via reflection on the private `BookingService::requireNewPatientNames()` (`newInstanceWithoutConstructor()`; no WP/MySQL deps; authorization deliberately NOT exercised here — the hold/session authorization lives upstream in the booking flow, covered by the booking integration suites): Persian+ZWNJ names accepted byte-exact; edge-trim; bidi in first name → 400 `نام حاوی نویسه‌های کنترلِ جهت نوشتار است`; bidi in last name → same; invisible-only last name → 400 `نام نمی‌تواند فقط از نویسه‌های نامرئی یا فاصله تشکیل شده باشد`; whitespace-only last name → 400 `برای ثبت بیمار جدید، نام و نام خانوادگی الزامی است`; null first name → same required-names 400. (Split into its own file to keep the one-class-per-file style; `phpunit.xml` scans `tests/Unit` + `tests/Integration`, suffix `*Test.php`.)
+- **Per-endpoint name-submission matrix (derived from source; compared with M4):**
+  - **CREATE (D4, `PatientService::create()`, staff):** `null`/missing/`''` first/last → 400 `نام و نام خانوادگی الزامی است` (names REQUIRED). `'   '` → passes the raw guard, `cleanName()` rejects → 400 `نام نامعتبر است` (whitespace trimmed to invisible). Invisible-only/BOM/ZWNJ sequences → bidi 400 `نام حاوی نویسه‌های کنترلِ جهت نوشتار است` when a mandated-set code point is present, else invisible-only 400 `نام نمی‌تواند فقط از نویسه‌های نامرئی یا فاصله تشکیل شده باشد`. Persian ZWNJ preserved. **Meets M4.**
+  - **Staff UPDATE (D5, `update()`) and C2 SELF UPDATE (`updateMe()`):** share `validateForUpdate(bool $isCreate=false)` with BY-KEY skip semantics — a name field whose key is absent, `null`, or `''` is **silently skipped (existing name preserved)**; if the submitted set is otherwise empty → 400 `CLINIC_VALIDATION_FAILED` + `فیلدی برای ویرایش ارسال نشده است`; otherwise other fields are applied and names persist. `'   '` → `cleanName()` → 400 `نام نامعتبر است`. Invisible-only → 400 (bidi-set message if a mandated-set code point is present, else the invisible-only message). Persian ZWNJ preserved. **M4 gap identified:** explicit `''`/null are treated as "field absent", not as "invalid name" — accepted 200-with-preserved-name by design of the partial-update contract, which is exactly what M4's wording ("reject empty names") does NOT obviously bless.
+  - **New-patient booking (`requireNewPatientNames()`):** names REQUIRED; `''`/null/`'   '` → 400 `برای ثبت بیمار جدید، نام و نام خانوادگی الزامی است`. **Meets M4.**
+  - **Decision — NO product-code correction (mandate honored strictly):** the only divergence is the intentional shared partial-update contract at D5/C2. Changing it is NOT a surgical M4 fix and would alter an important API contract for every patient-update client (forms that PUT all fields with untouched ones as `''` would start 400ing, or rows would need clearing — neither acceptable silently): options for the owner to decide:
+    (A) keep silent-preserve (recommended: fail-safe, existing names preserved, behavior unchanged);
+    (B) reject explicit `''` (not null) with a dedicated 400 (e.g. `فیلد نام نمی‌تواند خالی باشد`) while still allowing null-as-absent — scoped, additive error code, visible contract change;
+    (C) treat `''` as explicit name-clear → impossible for `first_name`/`last_name` NOT NULL semantics and privacy-unsafe — NOT recommended;
+    (D) keep silent-preserve but RETURN `ignored_fields: [first_name]` in the response envelope — additive schema change; design + client sign-off needed.
+    **No behavioral change is made in this round; existing names are never modified by any path; all failure modes are fail-safe.**
+- **Verification executed on this candidate (the environment was re-provisioned mid-task at ~21:23; native PHP/MariaDB/MySQL are unavailable; composer/packagist registry not allowlisted; allowed registries npm.js/pypi.org reachable — `/tmp` harness was wiped and was rebuilt minimum-viable).**
+  - Byte-audit of the UTF-8 fixtures: `U+200C ×19, U+200F ×0, U+202E ×0` (escapes elsewhere); a self-introduced U+200F (RLM) in `testSelfUpdatePreservesValidNameAndTrimsEdges` was caught and replaced with ZWNJ BEFORE this entry — never committed wrong.
+  - Structural: braces/methods re-inventoried (21 test methods in the integration file; 79/79 braces); `git diff --check` clean.
+  - **WASM PHP 8.2 syntax check** (eval-based micro stand-in for php -l; NOT the test suite; php-wasm rebuilt fresh at /tmp/m4wasm-check, `node lint.js <file>`): `No syntax errors detected` rc=0 for: `tests/Integration/PatientNameValidationTest.php`, `tests/Unit/BookingNewPatientBoundaryTest.php`, `tests/Unit/VisibleTextBidiControlTest.php`, `src/Domain/Validators/VisibleText.php`, `src/Application/Patients/PatientService.php`, `src/Application/Booking/BookingService.php`.
+  - **Reflection micro-smoke against the REAL committed source classes** (autoload shim `ClinicCore\` → `src/`; assertions printed PASS/FAIL): **15/15 PASS** — all 7 new new-patient boundary cases (incl. exact messages) and all 8 validator-level expectations underlying the new C2 tests (skip semantics for `''`/null, address passthrough, whitespace `نام نامعتبر است`, invisible-only message, bidi message, ZWNJ byte-exact store + trim). This is a SMOKE HARNESS, not PHPUnit and not a substitute for CI.
+  - **PHPUnit executed: NOTHING.** No PHP runtime, no MySQL/MariaDB, no WordPress test install exist in this sandbox; the integration suite needs CI. Any "integration passed" claim would be false. The 21 integration tests and the 7 unit tests have NOT run anywhere yet.
+  - Applicable pre-push python checks (all rc=0): workflow contracts `Ran 75 tests ... OK`; `WORKFLOW_YAML_OK files=17` (PyYAML 6.0.3 in throwaway venv, mirrors the scoped lanes; ci.yml runs bare discover — in-CI skip status unverified); tenant tripwire `files_scanned=281, hardcodes=0, suspects=3` (pre-existing, rc=0); companion-isolation (`git diff --name-only origin/main...HEAD` + untracked) `PASS — production-only change (6 file(s))`; third-party result-propagation self-tests `86/86 PASS`; `docs/agent-log.md` append-only (this entry appends lines only).
+- **Constraints honored.** No patient-name code was modified (the patient-name paths in `src/` are untouched this round); the Reception CI fixture is untouched — the 11 unexplained `PHP Fatal error` entries remain unclassified and unexplained; CI NOT rerun; PR NOT pushed/readied/merged; no workflow/baseline/allowlist/migration/version changes; no test assertions weakened; working tree contains ONLY the two test files + this log entry.
+- **Open items for the owner.** (i) Decision on the partial-update `''`/null contract (options A–D above). (ii) Any integration/unit execution proof for this exact candidate must come from an authorized CI run (NOT authorized here). (iii) The 11 Reception-lane PHP fatals remain beyond this round's reach by explicit instruction.
+- **Honesty hysteresis.** NOTHING pushed/readied/merged; CI NOT rerun; tests NOT executed under PHPUnit anywhere; WASM smoke ≠ CI; the Reception fixture failure is neither reclassified nor "explained"; the M4-contract question (rich-text empty-name submit) stops at this log for the owner's explicit call; **STOP.**
+
+## Round 31 — 2026-11-07 — Owner option B implemented for patient-record editing ONLY (staff D5 + self-service C2): explicit empty/null/invisible name => clear validation error, all-or-nothing; STOP
+
+- **Authorization (owner, verbatim intent).** "The owner has explicitly approved option B for patient-record editing only": an explicitly submitted empty string OR null for a name field must return a clear, understandable validation error; a name consisting only of whitespace or invisible characters is empty and must be rejected; an omitted name field must leave the existing name unchanged; if any name validation fails, none of the other changes in the same request may be saved; this decision is NOT to be extended to other forms or flows without investigation and explicit approval. Implementation constraints: smallest safe change; Persian ZWNJ preserved; existing bidi-control protections preserved; NO change to create, booking, other forms, authorization, schema, or unrelated policy. Tests at service and API boundaries for both staff and self-service where applicable. Demonstrate a valid red test before the fix where feasible. Run relevant tests; report exact commands/limitations; append-only log; record the owner decision accurately. Commit allowed; NO push/CI-rerun/merge.
+- **Owner decision (recorded accurately).** Option B adopted for the patient-record editing paths ONLY: (i) `PUT /patients/{id}` (D5, staff) and (ii) `PUT/PATCH /patient/me` (C2, self-service) — both funnel into `PatientService::validateForUpdate(..., $isCreate=false)`. "Empty" = `''`, `null`, or a string whose content after control-strip+trim is invisible-only/whitespace-only. Omission = key absent. Atomicity = any name validation failure ⇒ NOTHING else in the request is persisted (validate-then-write architecture already guarantees this; now locked by tests). NO other endpoint/form/flow changed: create (D4), both booking name gates, Reception (create-only, no patient-edit route), files, emergency_contact_name, clinician/facility/role display names — all untouched pending their own approvals.
+- **Traced paths (observations, verified this round):**
+  - Staff edit: `PatientController::update()` → `requireClinicPermission(PATIENT_UPDATE)` (scoped, anti-enumeration clinic binding) → `PatientService::update()` → scope-check 404 for foreign/missing patient → `validateForUpdate(..., STAFF_EDITABLE, patientId)` → single transactional write + `PATIENT_UPDATED` audit inside `db->transactional()` → `staffView()` response. Validation throws BEFORE any write (read-only pre-checks only) ⇒ validation failures persist nothing by construction; completion-write failure inside the boundary rolls back the profile write AND the audit together.
+  - Self-service edit: `PatientController::updateMe()` → `requirePatient()` (nonce + ROLE_PATIENT membership checks; NO WP-role authority) → `updateMe()` → `require_selected_patient()` link-scoped selector (0 links → 404 CLINIC_NOT_FOUND; N>1 without explicit link_id → 422 CLINIC_SELECTION_REQUIRED; foreign/inactive link → 404) → same `validateForUpdate(..., ME_EDITABLE, ...)` → transactional write + `PATIENT_PROFILE_UPDATED` audit.
+  - Validation/persistence order PROVEN: `validateForUpdate()` runs entirely before the `transactional()` block in both paths; `$data === []` gate ("فیلدی برای ویرایش ارسال نشده است") reached only when nothing else was submitted; no writes occur while building `$data`. Mobiles/national_id uniqueness probes are read-only SELECTs.
+  - REST argument handling (observations, source-verified): D5 declares no app args besides `id` — the body arrives untyped; C2 declares `first_name`/`last_name` (+ all other ME_EDITABLE fields) as `type: 'string'` — relevant behavior change for nulls:
+    - **Before this round**, explicit JSON `null` for a C2 name arg never reached the service: WordPress' default arg sanitize (`rest_parse_request_arg`, because `sanitize_callback` is absent) rejects it with `rest_invalid_type` → `sanitize_params()` returns `WP_Error('rest_invalid_param')` → `WP_REST_Server::dispatch()` converts it to HTTP 400 and **the endpoint callback never runs** (verified at source: `class-wp-rest-server.php` dispatch path `sanitize_params()`; `rest-api.php` `rest_validate_string_value_from_schema()` requires `is_string`; the default-arg assignment `if (!array_key_exists('sanitize_callback'...) && !empty($param_args['type'])) $param_args['sanitize_callback'] = 'rest_parse_request_arg'` in `WP_REST_Request::sanitize_params()`). Staff D5 `null`, by contrast, flowed straight into the service and was silently skipped.
+    - `''`, whitespace-only, invisible-only on both paths reached the service: name fields fell through cleanName (whitespace → `نام نامعتبر است`; invisible-only → the invisible-only message); non-name fields were silently skipped (partial-update contract — unchanged and deliberately out of this scope).
+    - `array_key_exists` distinguishes omission from null/'' — service-level fidelity confirmed; `body()` merges JSON params verbatim (no key materialization for absent keys).
+  - Existing callers: Patient Portal JS (`cpms-patient-portal.js`) ALWAYS sends every ME_EDITABLE key — clearing a field submits `''` (previously silently preserved; **now a clear 400 in the profile error region**, with the form retaining the entered values — mirrors the proven invalid-national_id flow in `bin/pilot-slice4-profile.py`, which asserts exactly this atomicity shape for a different field). Reception JS has no patient-edit path (create-only). No acceptance fixture in this repo submits `''`/null for an update name (grep hit list verified: only create-path payloads and this round's own tests use empty names).
+  - Documented contracts: `docs/api/api-contract.md` documents C2/D5 tersely (authority = link selector / scoped capability; national-unique pre-check `400`); no documented empty-name semantics existed anywhere — the old silent-skip was an implementation convention, which is why it required an explicit owner decision instead of being changed silently.
+- **RED first (feasible via WASM micro-harness against the REAL source classes; NOT PHPUnit).** A pre-fix option-B expectation harness (`/tmp/m4wasm-check/red_smoke.php`) executed against the pre-fix tree failed **12 of 15** expectations: all dedicated-message cases (B1–B10: `''`/`null`/whitespace/U+00A0/U+2007/invisible-only/BOM names on update paths, incl. the two atomicity cases B9/B10), B13 (non-scalar `array` name — shown as a LIVE PHP `Warning: Array to string conversion` at `PatientService.php` line ~601, i.e. the old cast could persist the literal string `Array`), and B15 (control-only name). B11 (bidi-only rejected), B12 (omitted key preserved), B14 (Persian ZWNJ round-trip) passed before AND after (expected — unchanged behavior). After the fix: **15/15 PASS** against the same real classes.
+- **Implementation (smallest safe; two src files + one test file):**
+  - `src/Application/Patients/PatientService.php` — `validateForUpdate()` now: (1) iterates with an explicit `array_key_exists` presence check — absent key ⇒ field untouched (preserve) on every path; (2) for update-context name fields ONLY (`!$isCreate`, `first_name`,`last_name`): a non-scalar value throws `CLINIC_VALIDATION_FAILED` + `نام نامعتبر است` (fail-safe; replaces the silent `'Array'` cast); `null`/`''`/whitespace/control-only/invisible-only throws `CLINIC_VALIDATION_FAILED` 400 with the dedicated Persian message `نام نمی‌تواند خالی باشد` (first) / `نام خانوادگی نمی‌تواند خالی باشد` (last); (3) all other fields — and ALL fields on the create path — keep the established partial-update skip contract unchanged. `cleanName()` and the bidi/property ordering (bidi-set error fires for names WITH visible content, dedicated empty error for names WITHOUT) are documented in the report. Create path (`isCreate=true`) behavior is byte-identical. No authz, tenant-scope, or schema changes.
+  - `src/Rest/PatientController.php` — C2 args for `first_name`/`last_name` only: `type: 'string'` → `['string','null']`, so explicit JSON `null` reaches `updateMe()` and yields the same clear Persian 400 instead of the WP-generic English `rest_invalid_param`. Additive for clients (nulls previously 400'd too, just less understandably); missing-key behavior unchanged; every other ME_EDITABLE arg unchanged.
+  - `tests/Integration/PatientNameValidationTest.php` — 3 contract-characterization tests rewritten to option B (atomicity semantics: invalid name blocks the whole update, `address` proves nothing else persisted), 1 invisible-only assertion updated to the dedicated message (update paths), whitespace-only assertion strengthened to the dedicated message, plus 6 new boundary tests: `testExplicitEmptyOrNullNameRejectedWithClearMessage` (first/last × `''`/`null`/whitespace, 400 + message + stored name untouched), staff mirror `testStaffUpdateRejectsExplicitEmptyOrNullNames`, `testSelfUpdateInvalidNameWithOtherChangesAppliesNothing` (bidi + address), staff mirror `testStaffUpdateInvalidNameWithOtherChangesAppliesNothing`, omitted-name variants for both paths, `testStaffUpdateRejectsNonScalarNameSafely`. File now carries **27 test methods**; Persian ZWNJ round-trip tests (`testSelfUpdateStoresPersianZwnjNameExactly`, `testStaffUpdatePersistsValidZwnjNameExactly`) unchanged and still green in the smoke harness.
+- **Per-field uniform message taxonomy (update paths):** dedicated empty message for an explicitly submitted "empty" name (incl. bidi-only and invisible-only inputs, which are empty of readable content); `نام حاوی نویسه‌های کنترلِ جهت نوشتار است` for names with readable content carrying mandated-set bidi controls (unchanged M4); `نام نامعتبر است` for non-scalar names. Create/Booking keep their established messages; nothing there was touched.
+- **All-or-nothing (mandated) — implementation & proof.** Both update services throw from validation before any persistence; the write+audit commit inside one `transactional()`. Red-harness cases B9–B11 (invalid name + other field ⇒ exception, other field NOT in result) and integration tests `testExplicitEmptyNameWithOtherFieldAppliesNothing`, `testExplicitNullNameWithOtherFieldAppliesNothing`, `testInvalidNameWithOtherChangesAppliesNothing`, staff mirrors ⇒ name AND other field both verified unchanged and no partial row written. The pilot-slice4-profile.py acceptance envelope (400 ⇒ no persistence, audit unchanged) remains the established expectation for this class of failure.
+- **NOT executed / limitations.** NO PHPUnit anywhere (no PHP runtime, MariaDB/MySQL, or WP test install in this sandbox). The integration suite compiles (braces 101/101, WASM PHP 8.2 micro syntax lint rc=0 on the three changed PHP files) and every asserted behavior is smoke-verified against the real source classes (15/15) — but the actual PHPUnit run, including the REST-boundary dispatch layer, is UNPROVEN until an authorized CI run. WP 7.1.3 REST semantics were verified by source inspection (tag `7.1.3`, codeload tarball), not execution. No REST-dispatch integration tests were added deliberately — the authorized D5 API envelope is already exercised on CI by `PatientAdminTest::testRestUpdateRequiresPatientUpdate`, and duplicating the nonce/dispatch harness here added risk without adding a new boundary. `git diff --check` clean; contracts 75/75 OK; `WORKFLOW_YAML_OK files=17`; tenant tripwire 281 files / 0 hardcodes / 3 suspects (pre-existing) rc=0; companion-isolation PASS (production-only); WASM ≠ CI.
+- **Regression risks for existing clients.** A client that submitted `''` for an EDIT name as a de-facto "leave unchanged" sentinel now gets 400 `CLINIC_VALIDATION_FAILED` with a clear message — intended contract change for patient-record editing ONLY; every in-repo client checked (portal JS submits actual values; Reception has no edit path; acceptance fixtures unaffected). Staff D5 callers relying on the same silent skip would observe the same change. Other forms keep old semantics.
+- **Append-only preserved.** Rounds ≤ 30 untouched; entry appended only. **Honesty hysteresis.** Nothing pushed/readied/merged; CI NOT rerun; the 11 unexplained Reception-lane PHP fatals remain unclassified and untouched; no workflow/baseline/allowlist/migration/version changes; no test assertions weakened (three were strengthened/rewritten for the new contract); option B is NOT extended beyond patient-record editing; **STOP for the owner's next decision.**
+
+## Round 32 — owner's pre-push mandate (2026-11-07/08; commit on branch only)
+
+Mandate (owner, pre-recital for PR #331 remaining): (1) focused REST-dispatch
+tests for staff `D5 PUT/PATCH /patients/{id}` and self-service `C2 PUT /patient/me`:
+explicit `''` AND explicit JSON null, omitted name, invalid name + unrelated edit in the
+same request (assert HTTP status, `code`/`message`, AND nothing else persisted), role +
+clinic-scope + patient link set up and verified, and at least one relevant DENIAL test —
+permission-only tests are not a substitute; (2) recheck every caller of the shared
+validator (`validate_for_update()`) and demonstrate option B did not leak beyond the two
+record-edit paths; stop and report on any ambiguity; (3) update `docs/api/api-contract.md`
+to document the approved edit semantics + the clear `CLINIC_VALIDATION_FAILED` error for
+both endpoints incl. the compatibility change; do NOT invent a new response contract;
+(4) run the applicable pre-push checks INCLUDING actual PHPCS on changed production lines
+vs the mandated baseline; report exact commands + limitations; never claim unexecuted
+checks passed. Constraints: no push/CI rerun/merge/ready-for-review/extra commit leaves;
+commits on own branch authorized; append-only log; English report; STOP.
+
+**Environment sabotage #3 (and recovery).** At ~02:19 the sandbox re-cloned the
+repository tracking `origin/main` (`9aee8f7a`) and the local branch was re-created there;
+all unpushed local commits (`6cb5504`, and its successor recreation `9dc330c6`) vanished
+from object storage — `git cat-file -t` fails for both, reflog shows `clone … → checkout
+arena/9015e529-doctor` at 02:19. The WORKING TREE SURVIVED BYTE-FOR-BYTE (every modified
+and untracked file intact). Recovery, before any ref surgery: full working-tree tar
+snapshot (`.m4snap-round32.tar.gz`, plus a copy outside the repository; both wiped/re-created
+by the provisioner — noted as non-durable form of backup). Branch pointer restored with a
+compare-and-swap `git update-ref … 6bf0738d131664d1b7822f5193c3fa2a65115c12 9aee8f7a…`
+(CAS against the wrongly-created value; origin was at `6bf0738d` throughout — nothing
+origin-side was touched), `git read-tree HEAD` to fix the index, then a consolidating
+recreate commit (`7b0f5843`) re-committing the working tree byte-identically; plus a
+separate WPCS-gate commit (`85435531`) after the mandated PHPCS run found added-line
+violations on my own recreated lines. /tmp wiped twice more during this round (harness
+rebuilt under `/home/user/m4tools`, outside the repository).
+
+**Witness commands (all this round unless noted):**
+- WPCS baseline collector: `python3 bin/wpcs-changed-lines.py --test` → 6/6 PASS;
+  `python3 bin/wpcs-changed-lines.py --baseline 2263ed673a8fdf4ab91e6a7fffae6d82252e4324`
+  → collector rc=0 (required full unshallow of origin/main + a depth-1 object fetch of the
+  baseline — read-only GitHub fetches; NO branch refs moved; 2833 commits now present;
+  merge-base = baseline; collection: 243 in-scope files / 86,040 added lines).
+- ACTUAL PHPCS (never executed before this session): in embedded WASM PHP 8.3 with
+  PHP_CodeSniffer 3.13.6 + WordPress-Coding-Standards 3.4.1 (matches CI's `^3.13` /
+  `^3.1` resolution), ruleset `clinic-practice-management/phpcs.xml.dist` from repo root,
+  `--basepath=.`, report=json, then the CI-equivalent Python filter keeping only
+  `(file, added-line)` matches. `Generic.PHP.Syntax` required a spawn handler: the per-file
+  `php -l` child is executed by a REAL embedded wasm PHP subprocess (exit codes propagate —
+  no output is stubbed anywhere; `stty size` gets the documented canned non-tty answer of the
+  library's own sandboxed handler). Results on the four in-scope production files at
+  `7b0f5843`:
+  - `src/Domain/Validators/VisibleText.php` — 0 errors / 0 warnings on added lines.
+  - `src/Rest/PatientController.php` — 2 added-line WARNINGS found on the two name-arg
+    lines this PR adds vs baseline (DoubleArrowNotAligned) and FIXED in `7b0f5843`
+    (formatting only; no behavior change); 0 remain. (198 legacy out-of-baseline-scope
+    findings untouched.)
+  - `src/Application/Patients/PatientService.php` — the recreated option-B block had 4
+    added-line violations → snake_case locals in `7b0f5843`; then the gate re-run at commit
+    `85435531` fixed `validate_for_update` naming/parameter spacing/alignment; **0
+    added-line violations**. (387 legacy out-of-scope findings untouched.)
+  - `src/Application/Booking/BookingService.php` — **0** added-line violations
+    (1,250 legacy out-of-scope findings untouched).
+  Caveats: the CI job (`ci.yml`, repository-root cwd, `clinic-practice-management/vendor/bin/phpcs`,
+  baseline `2263ed67…`) re-resolves phpcs/wpcs at push time (`^3.13`/`^3.1`), so a
+  byte-identical toolset cannot be guaranteed here; algorithm identical; WASM-execution, not
+  the CI job, is what was run.
+- `tests/Integration/PatientNameValidationTest.php` — **12 new REST-dispatch tests** added
+  (39 methods now): staff D5 — empty string, JSON null, invalid(+bidi) name with an
+  unrelated `address` edit asserting all-or-nothing persistence, omitted-name preservation
+  with another edit applied, ZWNJ round-trip 200, accountant ACTIVE membership 403 denial
+  (`CLINIC_PERMISSION_DENIED`, row unchanged); self-service C2 — same five shapes
+  (invalid-name atomicity proven via `birth_date`) plus non-patient-role 403 denial.
+  Envelope asserted at `{code, message, data.status}` with the exact Persian dedicated
+  messages for the name cases. Fixtures: real WP users with the CPMS role set;
+  clinic-scoped membership seeded through `MembershipService::create_membership()` (the
+  write path, idempotent) and re-read + asserted (`role_key`, `status=active`) for every
+  staff fixture; C2 fixtures link patient↔WP-user through `cpms_patient_user_links` and
+  verify the `cpms_patient` role, so `requirePatient()` is genuinely satisfied, not
+  bypassed. Explicit JSON null is verified to travel `set_param` →
+  `get_params()` → (C2) the widened `['string','null']` arg schema → `updateMe()` →
+  dedicated 400 (and for D5 — which declares no name arg schema — straight to the service).
+  NOT EXECUTED: PHPUnit/WP runtime is unavailable in this sandbox (no native PHP) — the
+  new suite MUST be executed by CI; the REST-dispatch semantics were source-verified
+  against WP 7.1.3 (`rest_parse_request_arg`, `rest_validate_value_from_schema`,
+  `WL_REST_Request::set_param`, multi-type null handling, `dispatch()` preflight) —
+  source reading, NOT execution.
+- Caller sweep (full `src/` grep; see also Round-31 entry): `validate_for_update` has
+  exactly three call sites — `updateMe()` (ME_EDITABLE, is_create default false → C2
+  update semantics), `update()` (STAFF_EDITABLE, is_create default false → D5 update
+  semantics), `create()` (CREATE_FIELDS, `true` → create semantics, byte-identical).
+  NO call sites from BookingService, onboarding, or any other form — option B did NOT
+  extend beyond the two edit paths; `BookingService`'s name gating is an independent
+  `cleanBookingName()` copy (create-time new-patient boundary, out of option-B scope,
+  guarded separately by `BookingNewPatientBoundaryTest`); `PatientService` still has ZERO
+  new callers of `VisibleText::has_visible_content` beyond the option-B probe and the
+  pre-existing `cleanName()`; hidden references found in unapproved surfaces: none.
+- Docs: `docs/api/api-contract.md` — both the C2 row and the D5 row gained terse
+  pointers, and a new appendix «نام در ویرایش مشخصات بیمار — سمنتیک مصوب (Option B؛
+  به‌روزرسانی 2026-11-07)» documents the update-path semantics (omitted ⇒ preserved;
+  explicit empty/null/whitespace/invisible-only ⇒ 400 `CLINIC_VALIDATION_FAILED` with the
+  dedicated Persian message; bidi-control names unchanged; ZWNJ/ZWJ preserved; all-or-nothing;
+  non-scalar ⇒ «نام نامعتبر است») and the COMPATIBILITY CHANGE honestly: C2
+  `first_name`/`last_name` args widened `['string']` → `['string','null']`; D5 unchanged in
+  schema; previously-`rest_invalid_param` nulls now yield the dedicated CLINIC_VALIDATION_FAILED
+  400 (or, D5, the deliberate 400); the response ENVELOPE IS UNCHANGED (same
+  `{code, message, data.status}` of §10; no new keys/codes/envelope).
+- Pre-push battery (this round; pyyaml venv used, 0 skips): contracts 75/75 OK;
+  `python3 bin/check-workflow-yaml.py` → WORKFLOW_YAML_OK files=17;
+  `python3 bin/tenant-tripwire.py` → files_scanned=281, hardcodes=0, suspects=3
+  (pre-existing), rc=0; `python3 .github/scripts/companion-isolation.py` → rc=0;
+  `git diff --check` → clean (one trailing-newline fix applied);
+  WASM `php -l` clean on every changed/added PHP file (PatientNameValidationTest.php
+  included, after a literal-\n splice defect was found by that lint and fixed); byte audit
+  (no U+200E/U+200F/U+061C/U+202A..E/U+2066..9 bytes) clean on all changed files; braces
+  132/132 balanced; 39 test methods present (expected names all found exactly once).
+- Branch state at report time: `arena/9015e529-doctor` ahead of origin (origin `6bf0738d`);
+  local commits `7b0f5843` + `85435531` + this round's commit; tree clean; NO push, NO CI
+  rerun, NO merge, NO ready-for-review — honored.
+
+**NOT executed / limitations (honest):** NO PHPUnit anywhere in this sandbox (no native PHP
+runtime, no MariaDB, no WP test install) — the whole integration suite MUST be executed by
+CI; the 12 new REST tests compile-pass (WASM lint) but have NOT run; REST dispatch behavior
+was verified by reading WP 7.1.3 sources, not by execution; PHPCS was executed under embedded
+WASM PHP 8.3 (not the CI's ephemeral composer toolchain, not identical resolution); the 11
+unexplained Reception-lane PHP fatal errors remain unclassified and untouched; PR #331
+remains draft with CI at its last recorded state.
+
+**Honesty note.** The round-31 log entry records `6cb5504` / branch state as-of-then; this
+entry records the post-re-provision truth — SHAs in old entries are historical observations,
+not current refs. Append-only rule preserved: no prior entry was edited.
+
+## Round 34 — owner's repair mandate (2026-11-09; commit + one push after gate)
+
+Mandate (owner, round 34): repair the two failed checks on PR #331 — (1) WPCS
+added-line violation in PatientService.php:646; (2) the 16 integration
+failures (all self-service/C2 tests; every other lane green). Constraints
+carried: no merge; no manual CI rerun; commit allowed; BEFORE PUSH: live
+main + PR head + ancestry + clean tree must re-verify; no reset/clean/rebase/
+force-push/update-ref/read-tree/history-rewrite; append-only log; STOP
+independent review at the end.
+
+**Environment re-provision #4 (and recovery without forbidden operations).**
+This turn's tool calls began with the sandbox re-cloned at `main`
+(`9aee8f7a`): `HEAD == arena/9015e529-doctor` pointing at MAIN, reflog shows
+clone + checkout; ALL local branch objects (`7b0f5843`, `85435531`, `d319d0ca`)
+were evicted (`git cat-file` fails); `/home/user/m4tools` and the external
+backup tarballs under `/home/user/` were wiped. WORKING TREE SURVIVED again:
+a full hash-by-hash audit (all 1173 paths of d319d0ca vs worktree) found
+exactly the 2 files edited this round differing (PatientService +
+PatientNameValidationTest) and ZERO other drift — recovery performed with
+read-only fetches, byte-verified `git checkout <commit> -- <paths>` (lossless
+because byte-identical), two out-of-tree path moves of untracked files
+(restored after), and a **`git merge --ff-only origin/arena/9015e529-doctor`**
+(pure fast-forward along the PUBLISHED history — no commits created, no
+rewrites, nothing replaced): HEAD restored to `d319d0ca0047ace3ea696a8598d5fd81de8df193`
+== wire value (ls-remote). NO update-ref/read-tree/reset/clean/rebase/force-push
+was used, per the mandate. Consequence disclosed: the local-then-republished
+head `d319d0ca` was already on origin when this turn began (verified
+2026-11-08T03:0x UTC): the mechanism remains unprovable from inside the
+sandbox; CI had ALREADY executed it (see below).
+
+**Fix 1 — WPCS (`src/Application/Patients/PatientService.php:646`).**
+CI's "2 WPCS violations on added lines" (annotation text verbatim; sticky
+comment `ci-wpcs-violations evidence`, run 42440956246) located exactly two:
+`WordPress.WhiteSpace.ControlStructureSpacing.NoSpaceAfterOpenParenthesis` and
+`NoSpaceBeforeCloseParenthesis` on `if ($other !== null && (int) $other['id'] !== $patient_id) {` —
+the PR-local line renamed by this branch (`patientId`→`patient_id`) so it
+became an "added line" vs baseline `2263ed…`. FIX: whitespace only
+`if ( $other !== null && (int) $other['id'] !== $patient_id ) {` — byte-level,
+zero behavior change. Root-cause of the local round-32 "0/0" dishonest
+verdict remains UNRESOLVED honestly: CI's toolchain (PHP 8.2, ephemeral
+composer install resolving `wp-coding-standards/wpcs:^3.1` /
+`phpcsstandards/php_codesniffer:^3.13` to the freshest advisory-filtered
+versions, unpinned minors) is not bit-identical to the local WASM snapshot
+(phpcs 3.13.6 + WPCS 3.4.1); the CI gate is the operative verdict.
+NO PHPCS execution was possible this round (`/home/user/m4tools` wiped; no
+vendor/bin/PHPCS in tree). The repair is verified ONLY by inspection
+(byte diff) — CI must re-execute.
+
+**Fix 2 — C2/self-service fixture rebuilt through the authorized path.**
+Published CI diagnostics (comments `ci-integration-failures evidence` +
+`Full Integration suite - sanitized diagnostics`, run 42440956246):
+`tests=2729 failures=13 errors=3 skipped=0`, all in
+`PatientNameValidationTest`, all C2/self paths: 3 errors
+(`BookingException: بیماری به این حساب متصل نیست` = `linked_patient_not_found`
+thrown at PatientService.php:550 ← require_selected_patient:223 ← updateMe:140)
+and 13 expectation-vs-actual mismatches (`CLINIC_VALIDATION_FAILED`→`CLINIC_NOT_FOUND`,
+`CLINIC_SELECTION_REQUIRED`→`CLINIC_NOT_FOUND`, HTTP 400/200→404).
+Code-verified root cause (no runtime needed): every C2 test built its
+fixture patient via the secretary path `service()->create()`, which — per
+PatientService create — ALWAYS activates an Organization Patient Identity
+inside the same transaction (`activate_identity(...)`); the resulting
+`cpms_patients.identity_id` is NOT NULL. `PatientRepository::clinical_access_identity_predicate()`
+then requires an EXISTS over
+`cpms_patient_identity_links pil JOIN cpms_patient_identities pi
+WHERE pil.identity_id = p.identity_id AND pil.wp_user_id = l.wp_user_id
+AND pil.organization_id = c.organization_id`.
+The fixture never bound the identity to the self user (spurious pil could not
+exist), so the EXISTS is false → the repository returns NULL →
+`updateMe` throws CLINIC_NOT_FOUND for every C2 test. Staff (D5) tests and
+all other suites are unaffected by this predicate; RestPatientTest passes
+because its patients are inserted directly with identity_id NULL
+(predates the identity subsystem; predicate trivially true).
+REPAIR: fixture mirrors the PRODUCTION-authorized path exactly:
+(1) fresh WP user + `cpms_patient` role; (2) `App::patient_identity_service()
+->create_identity( $orgId, $mobile )`; (3) `link_user( $orgId, $identityId,
+$userId, $mobile )` — the OTP-verified-identity edge; (4)
+`wp_set_current_user( $userId )` and `enroll_current_patient( $clinicId,
+['first_name','last_name','mobile'] )` which mints the clinical row BOUND to
+the same identity (create_record reuses it) and writes the patient↔user link
+is_primary=0 + audit atomically; (5) defense-in-depth asserts on the pil
+edge and the link row. NO assertion was weakened, no test deleted or
+skipped, production authorization untouched, the predicate NOT bypassed —
+every self-path test now exercises the identity-bound authorized path.
+`testSelfUpdateWithTwoActiveLinksRequiresExplicitSelection` rewritten the
+same way: a second factory patient (its own identity) gets that identity
+explicitly bound (`link_user`) to the FIRST user — the authorized shape of
+"two verified identities in one org" — and the test now also asserts
+nothing was persisted for EITHER record (birth_date both NULL).
+`linkedSelfWithoutPortalRole` passes `withPortalRole=false`.
+`makeRestLinkedSelfFixture` unchanged semantics (role assert included);
+`linkedSelfWithoutPortalRole` semantics preserved.
+
+**NOT verified here (no PHP runtime; the WASM tooling was wiped):**
+PHPUnit has NOT been executed anywhere locally for rounds 30–34; the
+corrected fixtures COMPILE by construction analysis only (braces balanced
+139/139; no bidi bytes; one U+FDFA ligature typo found and removed — it
+which is exactly the invisible-byte class this project bans — audits exist for this reason). The
+repair is UNPROVEN until CI executes it; the previous CI failures were
+CIE-evidenced verbatim and are the baseline this commit responds to.
+
+**Pre-push checks re-run this round:** unittest workflow contracts 75/75 OK
+(rebuilt pyyaml venv at /tmp/m4venv) ; WORKFLOW_YAML_OK files=17 ;
+tenant tripwire files_scanned=281 / hardcodes=0 / suspects=3 (pre-existing);
+companion-isolation rc=0 ; git diff --check clean ; byte audit (no
+U+200E/200F/061C/202A-E/2066-9/FDFA anywhere in changed files) ;
+`git diff` for the commit = exactly 2 files (PatientService.php 1 line,
+PatientNameValidationTest.php fixture+two-links). NO PHPCS executed
+locally (unavailable) — CI is the operative gate. Append-only preserved
+(no previous entry was edited; this entry appended only).
+
+## Round 34 — CI executed ff16ec8 (2026-11-08; repair commit + single push + body PATCH)
+
+Push (single, mandated): d319d0ca -> ff16ec8 on `arena/9015e529-doctor`
+(fast-forward; live main unchanged 9aee8f7a; pre-push ancestry gate: PASS).
+PR body PATCHED via REST and read back BYTE-IDENTICAL (markers verified).
+
+**CI on ff16ec8 — ALL 13 workflows completed; ALL 45 checks final:**
+43 SUCCESS, 2 FAILURE. NOTHING IS SKIPPED/CANCELLED/PENDING.
+
+- **WPCS (changed code): PASS** (46s; run 42457709458). The two-space repair
+  of the CI-flagged line (PatientService.php:646) cleared both violations.
+- **Integration (WP 7.1 + MySQL 8): FAIL** (7m6s; run 42457709458;
+  job 128660287002). Annotated summary: `Tests: 2729, Assertions: 75510,
+  Errors: 1, Failures: 5. skipped=0`. Failing methods (6 — down
+  from 16 on d319d0ca; 10 fixed by the fixture repair — all ZWNJ/bidi/
+  omission/400-200 acceptance paths through the authorized fixture now
+  pass):
+  1. testExplicitEmptyNameWithOtherFieldAppliesNothing — assertSame('اصلی', …) got '' (fixture no longer seeds address)
+  2. testExplicitNullNameWithOtherFieldAppliesNothing — same root
+  3. testSelfUpdateWithTwoActiveLinksRequiresExplicitSelection — the authorized pil binding alone doesn't create a `cpms_patient_user_links` row for the first user↔second patient, so `active_linked_patients_for_user()` still sees ONE candidate; updateMe succeeded; `$this->fail('ambiguous...')` fired (test asserts pre-existing behavior on an unauthorized candidate shape)
+  4. testSelfRestUpdateRejectsEmptyStringFirstName — same address-seed root (L893)
+  5. testSelfRestUpdateRejectsNullFirstName — same address-seed root (L912)
+  6. testSelfRestUpdateWithoutPortalRoleIsDenied — 1 ERROR:
+     `BookingException: دسترسی ندارید` at PatientService.php:286 —
+     `enroll_current_patient()` requires the cpms_patient WP role; the
+     fixture (linkedSelfWithoutPortalRole) calls it without the role and
+     therefore throws before producing the patient. Diagnostic comment
+     (`Full Integration suite - sanitized diagnostics`, id 6718663898):
+     error_categories=BookingException=1, AssertionFailedError=1,
+     ExpectationFailedException=4.
+  Proven, bounded root causes for ALL SIX (no unproven cause claimed):
+  - #1/#2/#4/#5: fixture must seed base address='اصلی' through a staff-context
+    update after enrollment — WITHOUT touching assertions.
+  - #3: the authorized multi-record shape is a SECOND CLINIC in the same
+    Organization; enrolling the same user again reuses the verified identity
+    and writes a second bound clinical row + link (all through production
+    boundaries) — no hand-rolled rows.
+  - #6: fixture must enroll WITH the cpms_patient role, then switch the role
+    off (set_role) before returning, preserving the denial scenario for a
+    linked-but-roleless user.
+  NOTHING else was weakened; no assertions changed; no skips added.
+  These three defects were introduced by the round-34 repair itself; they are
+  the honest cost of an authored-unverified fixture (no local PHP runtime).
+- **Disposable external tool (prefix clinic_): FAIL** (1m13s; run
+  42457709519; job 128660167660). Annotations: exit 1 at step line 63, exit 1
+  at step line 161 (the latter directly after a `packages=9
+  mod_php_enabled=php8.5.load` notice), Playwright missing-system-deps notice
+  with bounded install, and an artifact warning listing
+  /tmp/acc/{screenshots,logs,disposable-browser.log,package-proof*.json,evidence-scan.json}
+  absent — the lane did not reach the acceptance/evidence stage. The twin
+  prefix `wp_` lane PASSED (12m+, full provenance:
+  candidate_head=ff16ec8cc1ad1180350274b48bb7440c0ab522d7,
+  baseline_main=9aee8f7a, byte-identical product tree, secrets excluded).
+  CAUSE NOT ESTABLISHED from reachable diagnostics (raw job logs are out of
+  the sandbox's network allow-list — blob storage EOF). This lane PASSED on
+  d319d0ca (1m53s) and on base 6bf0738d; the failure trigger has NOT been
+  classified and must not be asserted to be ordering, flake, or content.
+  NOT re-run, NOT investigated beyond annotations + stickies, NOT
+  classified — awaiting the owner's explicit instruction.
+- Everything else (43 check-runs): PASS incl. Unit×5, PHPStan, Tenant
+  Tripwire, Static gates/companion ZIP, Real WP Acceptance ×2, Real WordPress
+  integration ×2, Facility matrix ×2, Persian five-plugin ×5 (all prefixes),
+  First-Practice Browser ×2, Standalone ×2, A–J teardown data safety ×2,
+  Closure Gate ×4, Compatibility gate, WPCS collector self-tests 6/6, Staging
+  Gate (15m39s), Responsive smoke (11m52s), Release Artifact, Upgrade path.
+- Pilot/Staging Readiness Gate: PASS (15m39s) — the two base-head failures
+  of that lane and Responsive smoke are now pass on this head (their
+  disposition vs base is noted but NOT classified).
+- Attempts: every run attempt=1; no reruns were executed by anyone in this
+  round.
+
+**Environment**: a 4TH destructive re-provision occurred mid-round (HEAD at
+9aee8f7a; all local objects evicted; m4tools/backups wiped). Recovery used
+ONLY: read-only fetch; byte-verified `git checkout <commit> -- <paths>`
+(lossless by hash audit), two untracked-file out-of-tree moves (restored
+after), and `git merge --ff-only` along published history. HEAD was
+restored to the published d319d0ca SHAs before new commits; NO
+update-ref/read-tree/reset/clean/rebase/force-push was used at any point;
+conflict-free by construction; `diff d319d0ca..ff16ec8` = WPCS fix + fixture
+repair + this log entry.
+
+**Honesty**: PHP local runtime never existed — the repair is UNVERIFIED
+locally; CI executed it as the gate. The repair is PARTIAL for the
+Integration check (2 of 3 introduced fixture defects remain for the owner's
+next decision; see below). No merge, no CI rerun, no further push performed.
+
+## Round 35 — Integration G-repair + Disposable clinic_ lane investigation (2026-11-08)
+
+Owner mandate (round 35): (1) verify the reported causes of the six
+PatientNameValidationTest failures and repair the fixtures via valid,
+authorized identity/clinic relationships — seed the expected address through
+an authorized path; construct the two-link scenario so two genuinely
+authorized candidates are enumerated; construct the role-denial scenario with
+a valid linked patient and remove the required role before dispatch; preserve
+atomicity/denial/foreign-link assertions; no test weakening, no authorization
+bypass, no skips, no production access-rule changes. (2) Investigate the
+failed Disposable external tool clinic_ job using annotations, workflow source
+and published diagnostics (incl. sibling wp_ comparison and prior runs);
+state exactly what is known and unknown; do NOT classify the failure; do NOT
+modify a gate without evidence; raw logs if inaccessible must be said so.
+(3) Run relevant tests and applicable pre-push checks; record failures,
+repairs, evidence and limitations here. Commit allowed; BEFORE PUSH: live
+main + remote PR head + ancestry + working tree (incl. the existing
+local-only round-34 log commit) must be re-verified; no
+reset/clean/rebase/force-push/update-ref/read-tree/history rewrite; push
+branch ONCE; PATCH the PR body and read back; wait for CI final states;
+inspect every check page/attempt/annotation; no second push; no CI rerun; no
+merge; English report; STOP for independent review.
+
+**Environment re-provision #5 (fifth overall; second mid-work).** This
+round's tool calls began with the sandbox re-cloned at `main` (`9aee8f7a`)
+again: HEAD == arena/9015e529-doctor pointing at MAIN; the round-34 local
+objects were evicted (`git cat-file 01c9f5e...` fails); `/home/user` external
+artifacts (ci-round34-diagnostics.txt, pr331-body-round34.md,
+m4tools/backups) wiped. WORKING TREE SURVIVED again: a hash-by-hash audit of
+all paths found 8/9 files byte-identical to `ff16ec8` (the service/tool/
+controller/test/doc files) and `docs/agent-log.md` = ff16ec8's version PLUS
+the 86-line round-34 CI-outcome entry. Recovery performed with read-only
+fetches and lossless `git checkout <sha> -- <paths>` (byte-identical), a
+`git merge --ff-only ff16ec8` (pure fast-forward of the PUBLISHED history),
+re-append of the round-34 log tail (verified byte-identical to the saved
+worktree copy), and a local-only docs commit `e3b69e2` restoring the round-34
+CI-outcome entry. NO update-ref/read-tree/reset/clean/rebase/force-push was
+used, per the mandate. Live main unchanged at `9aee8f7a`; remote PR head
+still `ff16ec8` (ls-remote verified).
+
+### Task 1 — the six PatientNameValidationTest failures: cause verification
+
+Evidence re-verified this round (NOT assumed): sticky comment
+`ci-integration-failures evidence` (issue comment 6716555566, run
+42457709458, attempt 1) and the check-runs/annotations APIs. Verbatim: 5
+expectation/assertion failures + 1 error, all in PatientNameValidationTest;
+summary line `Tests: 2729, Assertions: 75510, Errors: 1, Failures: 5.
+skipped=0`. Note the sticky's head is the ephemeral merge ref `5d1ed006`
+(= "Merge ff16ec8 into 9aee8f7a") — the CI integration job merges base+head;
+content == ff16ec8 + main.
+
+Code-verified root causes (read paths cited, not assumed):
+
+1. **Address never seeded** (4 of 6). `enroll_current_patient()` accepts
+   ONLY first_name/last_name/mobile for local demographics
+   (PatientService.php:350-354 intersection), so the fixture never stored an
+   address; `assertSame('اصلی', ...)` saw NULL (REST tests; `patientRow`
+   returns raw row) / '' ((string)-cast in the service tests). The four
+   AFFECTED tests: testExplicitEmptyNameWithOtherFieldAppliesNothing
+   (:542), testExplicitNullNameWithOtherFieldAppliesNothing (:562),
+   testSelfRestUpdateRejectsEmptyStringFirstName (:893),
+   testSelfRestUpdateRejectsNullFirstName (:912).
+2. **Two-link scenario enumerated only one candidate** (1 of 6).
+   `active_linked_patients_for_user()` (PatientRepository.php:164) enumerates
+   via `cpms_patient_user_links` joined to patients+clinics with the
+   `clinical_access_identity_predicate()` pil edge — it NEVER reads the
+   identity-links table for candidacy. The round-34 fixture added a SECOND
+   pil binding (`link_user` for user1 ↔ patient2's identity) but wrote NO
+   `cpms_patient_user_links` row for (user1, patient2), so `updateMe()`
+   resolved exactly ONE candidate (patient1) and the test hit
+   `$this->fail('ambiguous patient selection must not silently pick one')`
+   at :659 — CLINIC_SELECTION_REQUIRED was never thrown.
+3. **Role-denial fixture threw before dispatch** (1 of 6, the ERROR).
+   `linkedSelfWithoutPortalRole()` built the fixture with
+   `withPortalRole=false`, so the authorized enrollment itself hit the
+   role gate at PatientService.php:286 (enroll requires ROLE_PATIENT) and
+   threw `BookingException: دسترسی ندارید` (403) INSIDE fixture construction
+   (PatientNameValidationTest.php:156 ← :728 ← :964). The REST
+   `requirePatient` 403 denial path the test exists to assert was never
+   reached. Fixture order was wrong.
+
+### Task 1 — repairs applied (fixture-only; ZERO production-code edits)
+
+File changed: `clinic-practice-management/tests/Integration/PatientNameValidationTest.php`.
+No assertions weakened, no predicates touched, no skips added, authorization
+unchanged, production code untouched.
+
+A. `seedLinkedAddress()` helper added — seeds the durable address through the
+   AUTHORIZED self-service boundary
+   (`service()->updateMe($user_id, ['address' => 'اصلی'], $link_id)`;
+   `address ∈ ME_EDITABLE`). Called in exactly the four address-asserting
+   tests. The enroll boundary can never seed an address, so this is the
+   authorized path for a pre-existing non-empty address.
+B. `createClinicInOrganization()` helper added — provisions a second ACTIVE
+   clinic in the SAME Organization (fixture-level INSERT, the established
+   slice-5 `createClinic` pattern; `cpms_clinics.status` is
+   `ENUM('active','suspended') NOT NULL DEFAULT 'active'` per migration
+   0029; `organization_id` NOT NULL + FK per migration 0010). The two-link
+   test then performs a SECOND authorized `enroll_current_patient()` as the
+   SAME user (cpms_patient) into clinic 2. The production path mints patient2
+   bound to the SAME verified Organization identity and writes the second
+   patient↔user link + audit atomically — no hand-built link rows, no pil-
+   only binding. `updateMe(user1, ['birth_date' => ...], null)` then
+   enumerates exactly two authorized candidates → CLINIC_SELECTION_REQUIRED
+   / 422; both records asserted unchanged (birth_date NULL). Precondition
+   asserts added: second patient id > 0 and different from patient1; second
+   clinic asserted bound to the same Organization.
+C. `linkedSelfWithoutPortalRole()` rewritten in the mandated order: build the
+   VALID linked patient WITH the cpms_patient role (enrollment succeeds,
+   link asserted present), THEN `set_role('subscriber')` before dispatch.
+   The REST boundary (requirePatient, PatientController.php:223) denies with
+   403 CLINIC_PERMISSION_DENIED; stored first_name asserted unchanged.
+D. Dead code removed: the now-unused `$withPortalRole` fixture parameter
+   (all fixtures enroll WITH the portal role); `makeRestLinkedSelfFixture()`
+   simplified to assert the role instead of re-granting it.
+E. Stale fixture docblock for the C2 fixture updated to match (role + removal
+   order in the role-denial helper).
+
+Foreign-link assertion (`testSelfUpdateCannotUseAnotherUsersLink`),
+atomicity assertions, and denial assertions are UNCHANGED and still
+load-bearing.
+
+### Task 1 — local verification (and what remains unverifiable)
+
+- Native PHP runtime: UNAVAILABLE (no php binary; apt lists contain no
+  php-cli). Native PHPUnit / PHPCS / PHPStan: UNAVAILABLE. NOTHING below is
+  native evidence.
+- Node `php-parser` strict parse of the repaired test file: PARSE-OK.
+- Python byte audit of the repaired file: no U+FDFA; `اصلی` =
+  U+0627 U+0635 U+0644 U+06CC (exact bytes match the pre-existing
+  expectations); zero raw bidi controls; U+200C appears only inside Persian
+  words; no stray characters outside the file's established inventory.
+- `.github/workflows/test_workflow_contracts.py`: Ran 75 tests — OK (skipped=1,
+  same skip as the standing baseline).
+- WPCS collector self-tests: 6/6 PASS; collector over the ff16ec8..worktree
+  diff reports 4 in-scope src files / 88 added lines (the test file is NOT
+  in the WPCS gate scope). Local PHPCS: NOT available → the repair carries
+  NO local phpcs evidence; CI's WPCS job is the operative gate.
+- `git diff --check` for the repair commit range: clean.
+- The Integration job (WP 7.1 + MySQL 8) is the ONLY way to execute the
+  repaired integration tests. The six-test verdict is UNVERIFIED until CI
+  runs; per-test risk read: A/C are deterministic by construction (authorized
+  seed write; role membership flip), B rests on `verified_identity_for_clinic`
+  resolving the org-scoped identity for clinic 2 (code-read verified:
+  PatientIdentityActivator.php:110-112 + require_organization 118-130) and on
+  the new clinic's ACTIVE default status (migration 0029, verified) and on
+  both links passing the UNCHANGED pil-bound predicate (the same edge the
+  single-link fixture already satisfies).
+
+### Task 2 — Disposable external tool (clinic_) lane: investigation
+
+Evidence (run 42457709519, job 128660167660, `run_attempt=1`, head ff16ec8,
+event pull_request; wp_ sibling job 128660167542):
+
+KNOWN (from the REST/check APIs and the workflow source, byte-verified at
+ff16ec8):
+
+- Step 7 "Offline gates and live-main production-tree comparison"
+  (workflow lines 79-166) FAILED after **2.0s**. Steps 8-18 (clean WP,
+  Apache, ZIP build, install, provisioning, Chromium, teardown, post-browser)
+  were all SKIPPED. Step 19 (upload-artifact, `if: always()`) SUCCEEDED and
+  its annotation reports NO files found at /tmp/acc/** — i.e. /tmp/acc
+  contained nothing; the lane died before any packaging or browser stage.
+- Step 20 "Publish non-secret exact-head evidence" (`if: always()`,
+  `set -u`) FAILED after **0.0s**. Derivation (high-confidence, NOT directly
+  observed): the step interpolates `$HEAD_SHA` and `$BASE_SHA`, which are
+  written to `$GITHUB_ENV` ONLY inside step 7 AFTER `git fetch --no-tags
+  --depth=1 origin main`; had step 7 died before those exports, bash with
+  `set -u` aborts instantly on the first unbound reference — matching the
+  0.0s duration and the annotation "Process completed with exit code 1."
+  (the step never reaches pr-evidence-comment.sh). Alternative (equally
+  consistent with set -u): an unbound reference to any later-set var
+  (CPMS_DISPOSABLE_STATE etc. are NOT referenced by step 20 — checked).
+  Either way the failure is a CONSEQUENCE of the step-7 death, not an
+  independent gate verdict. This is a latent workflow fragility; it was NOT
+  modified (no gate/workflow change without an owner decision).
+- The wp_ sibling lane passed the IDENTICAL step-7 script on the SAME
+  commit at the SAME wall-clock minute (07:11) in 2.0s and its step 20
+  passed in 2.0s (it had $HEAD_SHA/$BASE_SHA available). Its annotations are
+  the same informational notices (apt phase seconds=11 packages=9
+  mod_php_enabled=php8.5.load; WP-CLI cache_hit=true; Playwright cache_hit;
+  ubuntu-latest deprecation; Node.js 20 deprecation).
+- Same-lane history: clinic_ PASSED on d319d0ca (run 42440956254, job
+  128609874101), 97e6b6f (42442637123), b63ae06 (42415755836), 6bf0738
+  (42410131989) and on live-main push (9aee8f7a, run 42399308171). The
+  failure is first observed on ff16ec8; the lane's step-7 script has NO
+  dependence on matrix.prefix (only steps 8+ substitute it).
+- Sticky `external-site-acceptance` (issue comment 6712501627, updated
+  07:12:59Z) contains the wp_ lane's success evidence ONLY; no clinic_
+  evidence was ever published (consistent with the step-20 death).
+- Annotations for the clinic_ job (check-runs/128660167660/annotations):
+  two `failure` annotations, both literally "Process completed with exit
+  code 1." (pins at workflow lines 63 and 161 — the pins are NOT
+  location-reliable in this workflow: the apt-phase `notice` pins at line
+  159, a comment line, identically in the passing lanes; the artifact
+  `warning` pins at line 33; line 63 is the Tooling step's `apt-packages:`
+  input, a step that SUCCEEDED). Plus the Node.js-20 deprecation warning
+  (shared) and the missing-artifact warning (unique to this lane).
+- Raw job logs: INACCESSIBLE. The log blob host
+  (productionresultssa9.blob.core.windows.net) is unreachable from this
+  sandbox (curl exit 35, TLS connect error; the API 302 redirects there and
+  no other retrieval path exists). Same limitation as round 34. All
+  line-pinned "where" statements are derived, never observed.
+- Local reproduction of EVERY offline command in step 7 against ff16ec8:
+  `git diff --check` clean; `git diff --name-only 9aee8f7a..ff16ec8 --
+  clinic-practice-management` = the 7 expected product files, none matching
+  demo/disposable paths; marker grep (DemoService|DemoAccessGuard|
+  DemoSmsProvider|DemoSetupPage|cpms_disposable|cpms-disposable|
+  CPMS_DISPOSABLE|tests/disposable-site|rwp-demo-acceptance|
+  DISPOSABLE_SITE_PROVISIONED) over those files: ZERO hits; tree
+  materialization via `git archive` + `test -f`/`test -d`: OK;
+  `python3 -m py_compile` (4 files): OK; `python3 -m unittest discover -s
+  tests/disposable-site`: 33 tests OK (1.3s); `bash -n` on teardown.sh: OK.
+  The per-file php -l loop (5 files) is the only offline step not locally
+  executable (no php). The ONLY network-dependent command in step 7 is
+  `git fetch --no-tags --depth=1 origin main`.
+- `run_attempt=1`; nothing skipped except the forced step 8-18 cascade and
+  their successors' guards; no cancelled steps; no manual rerun performed
+  (not authorized).
+
+UNKNOWN (explicitly): the exact command inside step 7 that exited 1 (the
+`git fetch --no-tags --depth=1 origin main` network operation is the only
+environment-dependent candidate; nothing in the candidate source can affect
+any offline step-7 command, as proven by the local reproduction and by the
+wp_ lane on the same commit/minute); whether the death was transient
+runner-side I/O/network, a runner-image anomaly, or anything else; the
+exact stderr/annotations GitHub logged for step 7 and step 20.
+
+NO classification of the clinic_ failure is offered. NO gate, workflow or
+tooling was modified. The failure is consistent with a transient/early
+step-7 death (possibly the network fetch), but that is an UNPROVEN
+hypothesis, not a finding; the owner must decide between (a) an explicit
+rerun authorization for the disposable workflow, and (b) a dedicated
+investigation round with log access (e.g. artifacts/summary published
+elsewhere). Modification of the step-20 `set -u` fragility would also
+require an explicit owner decision; nothing was changed.
+
+### Limitations (carried)
+
+- No native PHP/PHPUnit/PHPCS/PHPStan locally; CI is the operative gate.
+  Everything above marked PASS-locally is indicative only.
+- Raw CI logs unreachable from this sandbox (host blocked); annotations,
+  check-run step listings with timings, and sticky comments are the
+  evidence sources.
+- Environment re-provisioned five times; every local-only object is
+  volatile; anything not pushed is lost when it re-happens.
+- The round-34 log commit (e3b69e2, docs/agent-log.md only) rides along
+  with this round's push — it was local-only by the round-34 mandate and
+  is included per the round-35 pre-push verification mandate.
+- The push carries the repaired fixture only; CI executes the Integration
+  job fresh. NO CI outcome is claimed in this entry; the CI-outcome entry
+  is appended after-the-fact as a separate local commit (pattern
+  established round 34) rather than predicted here.
+
+## Round 35 — CI executed ba57de4 (2026-11-08; single push ff16ec8→ba57de4 + body PATCH)
+
+Push (single, mandated): `ff16ec8..ba57de4` on `arena/9015e529-doctor`
+(fast-forward at ~08:52Z; live main unchanged at push time `9aee8f7a`;
+pre-push ancestry/ls-remote/tree gate PASS; the round-34 local-only docs
+commit `e3b69e2` rode along as mandated and is now published).
+PR body PATCHED via REST (pre-CI content incl. repairs,
+owner-approved semantics, repairs/limitations, clinic_ investigation)
+and read back BYTE-IDENTICAL except a server-appended trailing newline
+(cmp: readback == body + \n; diff shows exactly one added blank line at EOF).
+
+**CI on ba57de4 — 13/13 workflows completed, ALL `run_attempt=1`,
+45/45 check runs FINAL: 44 SUCCESS, 1 FAILURE. Nothing pending, nothing
+in_progress, zero cancelled.** (Verified rollup 09:14Z.)
+
+- **Integration (WP 7.1 + MySQL 8): SUCCESS.** Sanitized diagnostics
+  comment (id 6719619522): `phpunit_exit=0 tests=2729 assertions=75517
+  failures=0 errors=0 skipped=0 error_categories=none`. Sticky
+  `ci-integration-evidence` (6712569230, updated 09:07:12Z): `OK (2729
+  tests, 75517 assertions)`. The `ci-integration-failures` sticky was NOT
+  updated (no failure to publish); the job's failure-only steps
+  (`Post failures to PR` / `Surface test failures`) were SKIPPED BY DESIGN
+  (gate = job failure). Assertion delta 75510→75517 (+7) consistent with
+  the repaired fixtures. The six round-34 residual failures are GONE.
+- **Disposable external tool (prefix clinic_): SUCCESS** (job
+  128682582677, 08:57:11Z→08:59:22Z) — the round-34 red lane. Cause of
+  the round-34 failure STILL UNCLASSIFIED by this entry; two greens
+  (wp_ on ff16ec8, both lanes now) vs one red (clinic_ on ff16ec8)
+  without logs = NO basis to name a cause; UNPROVEN either way.
+- **Disposable external tool (prefix wp_): SUCCESS** (job 128682582865).
+- **WPCS (changed code): SUCCESS.** PHPStan: SUCCESS. Unit Tests
+  8.1/8.2/8.3/8.4/8.5: SUCCESS. Tenant Tripwire: SUCCESS.
+  Staging Gate: SUCCESS. Responsive smoke: SUCCESS. Real WP Acceptance ×2:
+  SUCCESS (prefix wp_, prefix clinic_). Facility matrix ×2, Closure ×4,
+  Compatibility gate, Companion gate, WordPress Compatibility, Classic V1,
+  Release Artifact: SUCCESS.
+- **FAILED — `Real WordPress integration (mysql-8)`** (workflow `Scoped
+  demo (static + real WordPress integration)`, run 42465078767, job
+  128682701696, 08:58:36Z→09:05:28Z): step 21 `Chromium: one Persian
+  action reaches the eight real portals (repair phase)` FAILED after
+  1.0s. Annotation (job annotations API, verbatim): `SCOPED_BROWSER
+  repair: AssertionError: admin login: http://localhost:8080/wp-login.php`
+  and `SCOPED_BROWSER admin login — http://localhost:8080/wp-login.php`;
+  plus `Process completed with exit code 1.` Consequent skipped steps: 22
+  (sessions phase), 23 (aggregate evidence), 24 (finish/park the fixture).
+  The failure-only step 25 (`Surface PHP diagnostics … annotations only`)
+  ran and produced NO CPSD_PHPLOG annotations — but its `report()`
+  silently no-ops when a log file is missing, so clean logs and missing
+  logs are indistinguishable from here. The sibling mariadb-11.4.13 lane
+  (job 128682701697) passed the identical step in the same window.
+  History: the lane was GREEN on ff16ec8 and d319d0ca (both engines).
+  The candidate delta (docs + one integration-test fixture file) cannot
+  influence WordPress admin authentication; raw logs and the uploaded
+  artifact are INACCESSIBLE from this sandbox (log blob host blocked —
+  curl exit 35, same limitation as rounds 34-35). **Cause UNPROVEN; no
+  classification offered; no gate/workflow/test modified; no rerun
+  performed.** The `repair` phase's FIRST browser action is
+  `admin_login()`; a land-on-wp-login post-submit means the login was
+  rejected or the page never authenticated, per the annotation. Requires
+  the owner's artifact access or independent review (and possibly an
+  explicit rerun authorization after the base-merge decision below).
+- Non-success steps across all 45 jobs: 142, of which exactly ONE is a
+  failure (above). Everything else is conditional/by-design skips
+  (`if: failure()`, `if: always()` guards, x86-only/version-gated
+  evidence steps, coexistence-gate skipped stages) or consequential
+  (steps 22-24). Zero cancelled; zero pending.
+- Issue comments: 40 stickies updated in-place by this run + ONE NEW
+  comment (6719619522, Integration sanitized diagnostics — verbatim above).
+  Nothing requested mid-run; no comment posted by this round beyond what
+  workflows/publishers emit themselves.
+
+**CRITICAL — live main moved DURING this CI run.** At 2026-11-08T09:01:22Z
+PR #332 (`arena/dc401708-doctor`) merged into `main`:
+`9aee8f7a` → `04330aee7a6adb9eb8e173be8204a84aa25e209a` ("Merge pull
+request #332 from bia2on2on/arena/dc401708-doctor"). Its changed files:
+assets/js/cpms-patient-portal.js, bin/pilot-slice4-profile.py,
+src/Admin/PatientPortalPage.php, tests/Integration/Phase9Slice5PatientVisitsRedTest.php,
+tests/Unit/Frontend/PatientVisitsDisplayJsTest.php,
+tests/js/patient-visits-display.spec.js, docs/agent-log.md (+32 lines).
+**ZERO code-file overlap with this PR; the ONLY shared file is
+docs/agent-log.md (both sides appended).** PR #331's mergeability, checked
+pre-push as MERGEABLE/BLOCKED against 9aee8f7a, is now recomputed by
+GitHub to `mergeable=CONFLICTING`, `mergeStateStatus=DIRTY` (verified
+09:2xZ). The CONFLICTING file is docs/agent-log.md (append/append). CI on
+ba57de4 executed against the merge ref built from PR#331 head + main@
+9aee8f7a (sticky header shows merge ref `51aaf845...`) — **the ba57de4
+CI outcome does NOT cover the 04330ae tree.** Resolving this requires
+merging origin/main into the branch and keeping BOTH appended agent-log
+blocks — a second push, which this round's mandate did NOT authorize
+(single push, used; no rebase/force/update-ref ever). This round
+performed NO merge, NO rebase, NO second push; the conflict is reported
+verbatim for the owner's decision.
+
+Local-only commit after the mandated push contains this CI-outcome
+entry ONLY (docs/agent-log.md); it is NOT pushed; publishing it is part
+of the owner decision on the main-merge round.
+
+**Honesty**: nothing in this entry upgrades the evidence class. CI is
+the operative gate; local checks remain indicative; the Scoped demo
+mysql-8 failure and the round-34/35 clinic_ episode remain
+unclassified by this round; raw logs remained unreachable throughout.
+No merge; no CI rerun; STOP for independent review.

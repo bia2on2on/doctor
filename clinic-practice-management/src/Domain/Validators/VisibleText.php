@@ -41,6 +41,18 @@ final class VisibleText {
 		'\\s\\x{0000}-\\x{001F}\\p{Z}\\p{Cf}';
 
 	/**
+	 * نویسه‌های کنترلِ دوجهتیِ یونیکد (Bidi_Control=Yes): U+061C ARABIC LETTER
+	 * MARK (ALM)، U+200E (LRM)، U+200F (RLM)، U+202A–U+202E (LRE/RLE/PDF/LRO/
+	 * RLO) و U+2066–U+2069 (LRI/RLI/FSI/PDI). هیچ‌کدام در نامِ واقعیِ شخص
+	 * مشروع نیستند؛ فقط برای خراب/جاسوسیِ نمایشِ متن استفاده می‌شوند. حضورِ
+	 * هر کدام در نام **رد** می‌شود — هرگز سکوت‌کنان حذف یا جادو-تصحیح.
+	 * (نیم‌فاصلهٔ U+200C و پیوندِ صفر-عرض U+200D کنترلِ دوجهتی **نیستند** و
+	 * عضوِ این فهرست نیستند؛ در نام‌های فارسی معتبر باقی می‌مانند.)
+	 */
+	private const BIDI_CONTROL_CLASS =
+		'\x{061C}\x{200E}\x{200F}\x{202A}-\x{202E}\x{2066}-\x{2069}';
+
+	/**
 	 * @param string $value متنِ خام (پس از پاک‌سازیِ مرز، مثل حذفِ کنترل‌کاراکتر).
 	 */
 	public static function has_visible_content( string $value ): bool {
@@ -55,5 +67,25 @@ final class VisibleText {
 		}
 
 		return '' !== $stripped;
+	}
+
+	/**
+	 * @param string $value متنِ خام (پس از پاک‌سازیِ مرز). true یعنی حضورِ
+	 * کنترل‌کنترلِ دوجهتی؛ نام‌های تولیدشده توسط انسان معتبر حاویِ آن نیستند.
+	 * ورودیِ UTF-8 نامعتبر Fail-Closed (true) می‌گیرد.
+	 */
+	public static function has_bidi_control( string $value ): bool {
+		if ( '' === $value ) {
+			return false;
+		}
+
+		$found = preg_match( '/[' . self::BIDI_CONTROL_CLASS . ']/u', $value );
+		if ( ! is_int( $found ) ) {
+			// preg_match روی ورودیِ UTF-8 نامعتبر مقدارِ false می‌دهد (نه null) —
+			// Fail-Closed: عدمِ وجود کنترلِ جهت اثبات نشد.
+			return true;
+		}
+
+		return 1 === $found;
 	}
 }

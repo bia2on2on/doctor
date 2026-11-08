@@ -76,8 +76,11 @@ final class PatientController extends RestBase
                 'permission_callback' => fn (WP_REST_Request $request) => $this->requirePatient($request),
                 'args' => [
                     'link_id'                 => [ 'required' => false, 'type' => 'integer' ],
-                    'first_name' => ['required' => false, 'type' => 'string'],
-                    'last_name' => ['required' => false, 'type' => 'string'],
+                    // Owner decision (option B, 2026-11-07): explicit null for a name field is a name
+                    // submission, not an absent field — it must reach updateMe() and fail with the clear
+                    // CLINIC_VALIDATION_FAILED message. Widening to null is additive for API clients.
+                    'first_name'              => ['required' => false, 'type' => [ 'string', 'null' ]],
+                    'last_name'               => ['required' => false, 'type' => [ 'string', 'null' ]],
                     'birth_date' => ['required' => false, 'type' => 'string'],
                     'gender' => ['required' => false, 'type' => 'string'],
                     'address' => ['required' => false, 'type' => 'string'],
