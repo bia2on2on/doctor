@@ -43,7 +43,12 @@ jobs:
         working-directory: ${{ github.workspace }}
 
       - name: Workflow evidence and acceptance contract tests
-        run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
+        # The Integration raw-output guard parses this file with PyYAML
+        # (fail-closed if it is missing). Install it when the runner image
+        # does not ship it.
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+          python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
         working-directory: ${{ github.workspace }}
 
       - name: Pilot benchmark report safety self-tests

@@ -1015,5 +1015,196 @@ class TerminalSummaryTest(unittest.TestCase):
                 os.unlink(p)
 
 
+class IntegrationEvidenceTruncationMarkerTest(unittest.TestCase):
+    """Round-50 finding C: the 10-record cap must be visible, mirroring
+    cmd_suites' testsuites_truncated. Both subcommands that flow through
+    cmd_evidence (evidence and conn-diag) are covered here on the real code."""
+
+    def _write_records(self, prefix, count):
+        if prefix == 'HEARTBEAT_PERSISTENCE=':
+            body = '{"insert_writer": 7, "json_type": "INTEGER"}'
+        else:  # CPMS_CONN_DIAG
+            body = '{"thread_id": 4242, "ready": true}'
+        records = [prefix + body for _ in range(count)]
+        return write_tmp('\n'.join(records) + '\n', '.log')
+
+    def test_evidence_marker_when_records_exceed_ten(self):
+        path = self._write_records('HEARTBEAT_PERSISTENCE=', 12)
+        try:
+            code, out = run_cli('evidence', 'HEARTBEAT_PERSISTENCE', path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        record_lines = [l for l in out.splitlines() if l.startswith('HEARTBEAT_PERSISTENCE {')]
+        self.assertEqual(10, len(record_lines))
+        self.assertIn('HEARTBEAT_PERSISTENCE evidence_truncated=2', out)
+
+    def test_conn_diag_marker_when_records_exceed_ten(self):
+        path = self._write_records('CPMS_CONN_DIAG ', 11)
+        try:
+            code, out = run_cli('conn-diag', path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        self.assertIn('CPMS_CONN_DIAG evidence_truncated=1', out)
+
+    def test_no_marker_at_exactly_ten_records(self):
+        path = self._write_records('HEARTBEAT_PERSISTENCE=', 10)
+        try:
+            code, out = run_cli('evidence', 'HEARTBEAT_PERSISTENCE', path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        self.assertNotIn('evidence_truncated', out)
+
+    def test_dropped_records_beyond_cap_are_counted(self):
+        # invalid_json records count toward the cap exactly as valid ones do
+        records = ['HEARTBEAT_PERSISTENCE={not json'] * 11
+        path = write_tmp('\n'.join(records) + '\n', '.log')
+        try:
+            code, out = run_cli('evidence', 'HEARTBEAT_PERSISTENCE', path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        dropped = [l for l in out.splitlines() if 'record_dropped=invalid_json' in l]
+        self.assertEqual(10, len(dropped))
+        self.assertIn('HEARTBEAT_PERSISTENCE evidence_truncated=1', out)
+
+    def test_non_matching_lines_do_not_count_toward_cap(self):
+        lines = ['noise %d' % i for i in range(30)]
+        lines.insert(15, 'HEARTBEAT_PERSISTENCE={"insert_writer": 7, "json_type": "INTEGER"}')
+        path = write_tmp('\n'.join(lines) + '\n', '.log')
+        try:
+            code, out = run_cli('evidence', 'HEARTBEAT_PERSISTENCE', path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        self.assertNotIn('evidence_truncated', out)
+
+
+class CanonicalIntegerValidatorTest(unittest.TestCase):
+    """Round-50 findings D/E: one canonical bounded integer validator."""
+
+    def test_hostile_multi_kilobyte_digit_string(self):
+        self.assertIsNone(ie._canonical_int('9' * 4001))
+        self.assertIsNone(ie._canonical_int('-' + '9' * 4001))
+        self.assertIsNone(ie._attr_int('9' * 4001))
+        projected = ie.project_heartbeat({'insert_writer': '9' * 4001,
+                                          'update_writer': '9' * 4001,
+                                          'json_type': 'INTEGER'})
+        self.assertNotIn('insert_writer', projected)
+        self.assertNotIn('update_writer', projected)
+
+    def test_python_int_from_json_is_bounded(self):
+        self.assertIsNone(ie._canonical_int(10 ** 4001))
+        self.assertIsNone(ie._canonical_int(-10 ** 4001))
+        self.assertIsNone(ie._canonical_int(10 ** 15 + 1))
+        self.assertEqual(10 ** 15, ie._canonical_int(10 ** 15))
+        self.assertEqual(-10 ** 15, ie._canonical_int(-10 ** 15))
+        self.assertIsNone(ie._canonical_int(True))
+        self.assertIsNone(ie._canonical_int(False))
+
+    def test_hostile_python_int_from_json_heartbeat(self):
+        # A 4001-digit JSON number must not reach the projection output.
+        payload = ('HEARTBEAT_PERSISTENCE={"insert_writer": ' + '9' * 4001
+                   + ', "json_type": "INTEGER"}')
+        path = write_tmp(payload + '\n', '.log')
+        try:
+            code, out = run_cli('evidence', 'HEARTBEAT_PERSISTENCE', path)
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        self.assertNotIn('9' * 20, out)
+
+    def test_leading_zeros_rejected(self):
+        for raw in ('00', '01', '0007', '-00', '-007'):
+            self.assertIsNone(ie._canonical_int(raw), raw)
+        self.assertEqual(0, ie._canonical_int('0'))
+        self.assertEqual(7, ie._canonical_int('7'))
+
+    def test_minus_zero_rejected(self):
+        self.assertIsNone(ie._canonical_int('-0'))
+
+    def test_plus_sign_and_spaces_rejected(self):
+        for raw in ('+1', '+0', ' 1', '1 ', '1 000', '1_000', ''):
+            self.assertIsNone(ie._canonical_int(raw), repr(raw))
+
+    def test_boundary_values(self):
+        self.assertEqual('1000000000000000', str(ie._canonical_int('1000000000000000')))
+        self.assertEqual('1000000000000000', str(ie._canonical_int('1000000000000000', allow_negative=False)))
+        self.assertIsNone(ie._canonical_int('1000000000000001'))
+        self.assertEqual('-1000000000000000', str(ie._canonical_int('-1000000000000000')))
+        self.assertEqual('999999999999999', str(ie._canonical_int('999999999999999')))
+        self.assertIsNone(ie._canonical_int('-1000000000000001'))
+        self.assertIsNone(ie._attr_int('1000000000000001'))
+        self.assertEqual('1000000000000000', str(ie._attr_int('1000000000000000')))
+
+    def test_unsigned_rejects_negative(self):
+        self.assertIsNone(ie._attr_int('-1'))
+        self.assertIsNone(ie._canonical_int('-1', allow_negative=False))
+
+    def test_signed_accepts_negative(self):
+        self.assertEqual(-7, ie._int('-7'))
+        self.assertEqual('-7', str(ie._canonical_int('-7')))
+
+    def test_plain_int_zero_is_published(self):
+        projected = ie.project_heartbeat({'insert_writer': 0, 'update_writer': '0'})
+        self.assertEqual(0, projected['insert_writer'])
+        self.assertEqual(0, projected['update_writer'])
+
+    def test_bool_is_never_an_integer(self):
+        self.assertIs(ie._int(True), ie.DROP)
+        self.assertIsNone(ie._attr_int(True))
+        self.assertNotIn('insert_writer', ie.project_heartbeat({'insert_writer': True}))
+
+    def test_source_counters_fail_closed_on_strings(self):
+        payload = {'chain': ['10:closure#1'],
+                   'chain_dropped_shape': '2',
+                   'chain_dropped_unverified': '9'}
+        out = ie.project_connection_diag(payload)
+        self.assertNotIn('chain_dropped_shape', out)
+        self.assertNotIn('chain_dropped_unverified', out)
+
+    def test_source_counters_accept_bounded_json_ints(self):
+        payload = {'chain': ['10:closure#1'],
+                   'chain_dropped_shape': 10 ** 4001,
+                   'chain_dropped_unverified': 3}
+        out = ie.project_connection_diag(payload)
+        # huge source int is fail-closed to 0 (never printed), small int merges
+        self.assertEqual(3, out['chain_dropped_unverified'])
+        self.assertNotIn('chain_dropped_shape', out)
+
+    def test_junit_phpunit_exit_is_bounded(self):
+        path = write_tmp(JUNIT_BASIC, '.xml')
+        try:
+            code, out = run_cli('junit', path, '--phpunit-exit', '9' * 4001)
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        self.assertIn('phpunit_exit=unavailable', out)
+        self.assertNotIn('9' * 20, out)
+
+    def test_junit_phpunit_exit_normal_values(self):
+        path = write_tmp(JUNIT_BASIC, '.xml')
+        try:
+            code, out = run_cli('junit', path, '--phpunit-exit', '2')
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        self.assertIn('phpunit_exit=2', out)
+
+    def test_attr_int_counts_total_tests(self):
+        # junit assertions attribute flows through _attr_int (canonical)
+        xml = ('<testsuites><testsuite name="s" tests="0002" assertions="00007">'
+               '<testcase class="ClinicCore\\Tests\\Integration\\FooTest" '
+               'name="testDirect" assertions="00007"/>'
+               '</testsuite></testsuites>')
+        root = ie.ET.fromstring(xml)
+        totals = ie.junit_totals(root)
+        # canonical form rejects leading zeros → assertions contribute 0
+        self.assertEqual(0, totals['assertions'])
+        self.assertEqual(1, totals['cases'])
+
+
 if __name__ == '__main__':
     unittest.main()

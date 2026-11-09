@@ -63,59 +63,280 @@ def _logical_lines(text):
         yield start, buffer
 
 
-def integration_raw_output_violations(slice_text):
-    """Raw-log-write violations inside the ci.yml `integration` job slice.
+def _yaml_parser():
+    global _YAML_PARSER
+    parser = globals().get("_YAML_PARSER")
+    if parser is None:
+        try:
+            import yaml  # noqa: PLC0415 - optional dependency, imported lazily.
+        except ImportError as exc:
+            raise AssertionError(
+                "PyYAML is required for the Integration raw-output guard; "
+                "install it (`python3 -m pip install pyyaml`)."
+            ) from exc
+        _YAML_PARSER = yaml
+        return yaml
+    return parser
 
-    The Integration job's stdout/stderr is a publication surface: raw job logs
-    are mirrored into PR comments and artifacts, so only bounded projections
-    may be written there. Returns a list of (rule, line_no, text) tuples; an
-    empty list means the slice is clean.
+
+def _ci_document(text):
+    document = _yaml_parser().safe_load(text)
+    if not isinstance(document, dict):
+        raise AssertionError("ci.yml did not parse to a mapping")
+    return document
+
+
+def integration_job_document(text):
+    """Return the parsed `integration` job mapping from ci.yml text."""
+    jobs = _ci_document(text).get("jobs") or {}
+    job = jobs.get("integration")
+    if not isinstance(job, dict):
+        raise AssertionError("job not found in ci.yml: integration")
+    return job
+
+
+# --- Integration raw-output guard -------------------------------------------
+#
+# Scope: the ci.yml `integration` job ONLY. Unit/build/WPCS/release jobs are
+# known, pre-existing raw-output surfaces and are deliberately out of scope
+# for this guard (they are reported as open security debt, not fixed here).
+#
+# The guard parses ci.yml as YAML first: every `run` string — inline or
+# block scalar — is dedented by the parser, so block-scalar lines, bash -c /
+# sh -c bodies and python -c / heredoc bodies are all examined as real
+# command text (the previous line-oriented guard missed them whenever the
+# YAML key prefixing was absent).
+#
+# A static guard cannot prove absence of all leaks. Known limitations,
+# deliberately accepted and disclosed:
+#   * a variable holding raw content (`LOG=/tmp/x.log; cat "$LOG"`) — taint is
+#     not tracked across expansions or logical lines;
+#   * a python file read through a variable path (`open(path)`) — only raw
+#     literals are matched;
+#   * `ET.parse(...)`/counts-only gates cannot be distinguished from
+#     publishers by a regex and are allowed (they print fixed counts only, by
+#     construction and by review; this guard does not verify it);
+#   * a python expression without `print`/`write` emits nothing and is not a
+#     publication, so the rules key on read/print primitives;
+#   * quoted bodies cannot contain the enclosing quote character, so chunk
+#     boundaries are quote-bounded.
+#
+# Anything not enumerated below is not claimed to be checked. Violations are
+# (rule, step_name, excerpt); an empty list means the job is clean under the
+# enumerated rules only.
+
+_RAW_LITERAL_RE = re.compile(
+    r"/tmp/[^\s'\";|()]*(?:\.(?:log|out|err)\b|"
+    r"[^\s'\";|()]*junit[^\s'\";|()]*\.xml\b)")
+# Command position: line start, after a shell separator, after a reserved
+# word (then/do/else/if/!/while/until), after `$(`, after `-exec`, after
+# `xargs`. Deliberately does NOT treat every whitespace as command position
+# (that would flag `echo cat x` arguments).
+_CMD_POS = r"(?:^|[|;(&]\s*|\b(?:then|do|else|if|while|until)\s+!?\s*|!\s*|\$\(\s*|-exec\s+|xargs\s+)"
+_DUMP_UTIL_RE = re.compile(
+    _CMD_POS + r"(cat|tail|head|less|more|od|xxd|strings|nl|tac)(?:\s|$)")
+_GREP_RAW_RE = re.compile(_CMD_POS + r"grep\b")
+_SED_RAW_RE = re.compile(_CMD_POS + r"sed\b")
+_AWK_RAW_RE = re.compile(_CMD_POS + r"awk\b")
+_QUIET_RE = re.compile(r"(?:^|\s)(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=\s|$)")
+_REDIRECT_TMP_RE = re.compile(r'>\s*"?/tmp/')
+_PY_READ_PRIMITIVE_RE = re.compile(r"\.read\s*\(|read_text\s*\(|readlines\s*\(|writelines\s*\(")
+_PY_ITER_OPEN_RE = re.compile(r"(?m)^\s*for\s+\w+\s+in\s+open\s*\(")
+_PY_PRINT_RE = re.compile(r"print\s*\(|sys\.stdout\.write\s*\(|sys\.stderr\.write\s*\(")
+_BASH_C_RE = re.compile(
+    r"(?:bash|sh)\s+(?:-[A-Za-z0-9]+\s+)*-[A-Za-z0-9]*c[A-Za-z0-9]*\s*(['\"])(.*?)\1",
+    re.DOTALL)
+_PY_C_RE = re.compile(
+    r"python[0-9.]*\s+-c\s*(['\"])(.*?)\1",
+    re.DOTALL)
+_PY_HEREDOC_RE = re.compile(
+    r"python[0-9.]*\s+(?:-[A-Za-z]+\s+)*-\s*<<\s*(?:-\s*)?(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+def _python_chunks(run_text):
+    """Yield the bodies of python -c scripts and python heredocs in a run
+    string, as single multi-line chunks."""
+    for match in _PY_C_RE.finditer(run_text):
+        yield match.group(2)
+    for match in _PY_HEREDOC_RE.finditer(run_text):
+        tag = match.group(2)
+        closing = re.compile(r"(?m)^[ \t]*" + re.escape(tag) + r"[ \t]*$")
+        end = closing.search(run_text, match.end())
+        if end is not None:
+            yield run_text[match.end():end.start()]
+
+
+def _shell_chunks(run_text):
+    """Yield the bodies of bash -c / sh -c scripts as shell text."""
+    for match in _BASH_C_RE.finditer(run_text):
+        yield match.group(2)
+
+
+def _split_quote_aware(text, pipelines):
+    """Split shell text on top-level separators (outside quotes).
+
+    pipelines=True splits on `;`, `&&`, `||` and newlines (pipeline
+    boundaries). pipelines=False splits only on `|` (command boundaries
+    inside one pipeline).
+    """
+    parts, buf, quote = [], "", None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            buf += char
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            buf += char
+            index += 1
+            continue
+        two = text[index:index + 2]
+        if pipelines and two in ("&&", "||"):
+            parts.append(buf)
+            buf = ""
+            index += 2
+            continue
+        if pipelines and char in ";\n":
+            parts.append(buf)
+            buf = ""
+            index += 1
+            continue
+        if not pipelines and char == "|":
+            parts.append(buf)
+            buf = ""
+            index += 1
+            continue
+        buf += char
+        index += 1
+    parts.append(buf)
+    return [part for part in parts if part.strip()]
+
+
+def _cmd_violations(command_text, step_name):
+    """Apply every shell rule to one run string or subshell body.
+
+    Raw-capture content flows down a pipeline (`grep ... /tmp/x.log | tail`),
+    so tool rules are evaluated per pipeline: a raw literal anywhere in the
+    pipeline reaches every consumer in it. Redirection and quiet exemptions
+    are evaluated on the individual command, never on a neighbour.
     """
     violations = []
-    for line_no, line in _logical_lines(slice_text):
+    for line_no, line in _logical_lines(command_text):
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
-        # Unwrap an inline `run: <command>` step prefix so command-position
-        # rules see the command itself, not the YAML key.
-        line = re.sub(r"^\s*(- )?run:\s*", "", line)
-        stripped = line.strip()
-        # (A) `tee` (any command-position use) — raw stdout fan-out is the
-        # failure mode this contract exists to forbid.
-        if re.search(r"(^|[\s|;(])tee(\s|$)", line):
-            violations.append(("tee", line_no, stripped[:160]))
-        # (B) Dump utilities on raw capture paths (.log/.out/.err). Bounded
-        # projector outputs (/tmp/evidence/*.txt, *-pr.md, *-junit-summary.txt,
-        # summaries/*.md) are not matched because they do not end in those
-        # suffixes.
-        match = re.search(
-            r"(?:^|[|;(&]\s*)(cat|tail|head|less|more|od|xxd|strings)\s+([^;|]+)",
-            line,
-        )
-        if match and re.search(r"(^|\s)\S*\.(log|out|err)($|[^\w])", match.group(2)):
-            violations.append(("raw-log-dump", line_no, stripped[:160]))
-        # (C) Shell tracing — dumps every expanded command line (incl. env).
         if re.search(r"(^|\s)set\s+-[A-Za-z]*x(\s|$)", line):
-            violations.append(("set-x", line_no, stripped[:160]))
-        # (D) Raw writers whose output must be redirected to a /tmp capture
-        # file or piped into a boundary projector — never straight to stdout.
-        if re.search(r"^\s*php\b", line) and "vendor/bin/phpunit" in line \
-                and not re.search(r'>\s*"?/tmp/', line) and "| python3" not in line:
-            violations.append(("phpunit-raw", line_no, stripped[:160]))
-        if re.search(r"^\s*composer\b", line) and not re.search(r'>\s*"?/tmp/', line):
-            violations.append(("composer-raw", line_no, stripped[:160]))
-        if "install-wp-tests.sh" in line and not re.search(r'>\s*"?/tmp/', line) \
-                and not stripped.startswith("run: echo"):
-            violations.append(("install-wp-tests-raw", line_no, stripped[:160]))
-        if re.search(r"^\s*php\b", line) \
-                and "multi-clinic-rest-bootstrap-probe.php" in line \
-                and not re.search(r'>\s*"?/tmp/', line):
-            violations.append(("red1-probe-raw", line_no, stripped[:160]))
+            violations.append(("set-x", step_name, stripped[:160]))
         # (E) Piping stderr into another stdout producer without a file
         # (`2>&1 | cmd`). `2>&1 ||` (the boolean-OR idiom) is NOT flagged.
         if re.search(r"2>&1\s*\|(?!\|)", line):
-            violations.append(("stderr-pipe-to-stdout", line_no, stripped[:160]))
+            violations.append(("stderr-pipe-to-stdout", step_name, stripped[:160]))
+        for pipeline in _split_quote_aware(line, pipelines=True):
+            commands = _split_quote_aware(pipeline, pipelines=False)
+            pipe_raw = _RAW_LITERAL_RE.search(pipeline) is not None
+            for index, command in enumerate(commands):
+                cmd = command.strip()
+                excerpt = cmd[:160]
+                raw_in_cmd = _RAW_LITERAL_RE.search(cmd) is not None
+                redirect = _REDIRECT_TMP_RE.search(cmd) is not None
+                downstream = commands[index + 1:]
+                piped_to_python = any(
+                    re.match(r"python[0-9.]*\b", later.strip()) for later in downstream
+                )
+                # (A) `tee` (any use) — raw stdout fan-out is the failure
+                # mode this contract exists to forbid. No exceptions.
+                if re.search(r"(^|[\s|;(])tee(\s|$)", cmd):
+                    violations.append(("tee", step_name, excerpt))
+                # (B) Dump utilities on raw capture paths (.log/.out/.err or
+                # junit-named .xml). No exceptions.
+                if _DUMP_UTIL_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-log-dump", step_name, excerpt))
+                # (B2) grep/sed/awk reading a raw path. Allowed only when the
+                # output is suppressed (grep -q / --quiet) or redirected to a
+                # file — never when it reaches stdout.
+                if _GREP_RAW_RE.search(cmd) and pipe_raw:
+                    if not _QUIET_RE.search(cmd) and not redirect:
+                        violations.append(("grep-raw", step_name, excerpt))
+                if _SED_RAW_RE.search(cmd) and pipe_raw:
+                    if not redirect:
+                        violations.append(("sed-raw", step_name, excerpt))
+                if _AWK_RAW_RE.search(cmd) and pipe_raw:
+                    if not redirect:
+                        violations.append(("awk-raw", step_name, excerpt))
+                # (D) Raw writers that must be redirected to a /tmp capture
+                # file or piped into a boundary projector.
+                if re.match(r"php\b", cmd) and "vendor/bin/phpunit" in cmd \
+                        and not redirect and not piped_to_python:
+                    violations.append(("phpunit-raw", step_name, excerpt))
+                if re.match(r"composer\b", cmd) and not redirect:
+                    violations.append(("composer-raw", step_name, excerpt))
+                if "install-wp-tests.sh" in cmd and not redirect \
+                        and not cmd.startswith("echo"):
+                    violations.append(("install-wp-tests-raw", step_name, excerpt))
+                if re.match(r"php\b", cmd) \
+                        and "multi-clinic-rest-bootstrap-probe.php" in cmd \
+                        and not redirect:
+                    violations.append(("red1-probe-raw", step_name, excerpt))
+                # (D2) php -r scripts that open a raw capture path print
+                # captured output to stdout; no bounded-projection exception.
+                if re.match(r"php\s+-r\b", cmd) and raw_in_cmd:
+                    violations.append(("php-r-raw", step_name, excerpt))
     return violations
+
+
+def _python_violations(chunk, step_name):
+    """Python-specific rules: no printing captured raw content."""
+    violations = []
+    raw = _RAW_LITERAL_RE.search(chunk)
+    if raw is None:
+        return violations
+    excerpt = " ".join(chunk.split())[:160]
+    # (P1) Full-content read of a raw capture path (open(...).read(),
+    # read_text(), readlines(), writelines()) — never publishable.
+    if _PY_READ_PRIMITIVE_RE.search(chunk):
+        violations.append(("python-raw-read", step_name, excerpt))
+    # (P2) Line-iteration over an open() raw literal with a print of what was
+    # iterated — the classic full-dump shape.
+    if _PY_ITER_OPEN_RE.search(chunk) and _PY_PRINT_RE.search(chunk):
+        violations.append(("python-raw-iter-print", step_name, excerpt))
+    return violations
+
+
+def integration_raw_output_violations(ci_yml_text):
+    """Raw-log-write violations inside the ci.yml `integration` job.
+
+    Parses the workflow as YAML and examines every `run` script in every
+    step of the Integration job: block scalars and inline `run:` commands are
+    both dedented by the parser; bash -c / sh -c bodies are analyzed as
+    shell; python -c bodies and python heredocs are analyzed as python.
+    The Integration job is the only scope — Unit/build/WPCS/release jobs carry
+    known pre-existing debt that is deliberately out of scope here.
+
+    Returns a list of (rule, step_name, excerpt) tuples; an empty list means
+    the job is clean under the enumerated rules (not proof of no leaks).
+    """
+    job = integration_job_document(ci_yml_text)
+    violations = []
+    for step in job.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        step_name = str(step.get("name") or "<unnamed>")
+        violations.extend(_cmd_violations(run, step_name))
+        for chunk in _python_chunks(run):
+            violations.extend(_python_violations(chunk, step_name))
+        for sub in _shell_chunks(run):
+            violations.extend(_cmd_violations(sub, step_name))
+            for chunk in _python_chunks(sub):
+                violations.extend(_python_violations(chunk, step_name))
+    return violations
+
 
 _BOUNDED_PROJECTION_TOKENS = (
     'integration_evidence.py" junit',
@@ -1846,7 +2067,7 @@ class IntegrationJobLogHygieneContractTest(unittest.TestCase):
         return ci_job_block(workflow("ci.yml"), "integration")
 
     def test_integration_job_has_no_raw_log_writes(self):
-        violations = integration_raw_output_violations(self._integration_slice())
+        violations = integration_raw_output_violations(workflow("ci.yml"))
         self.assertEqual(
             [],
             violations,
@@ -1864,26 +2085,67 @@ class IntegrationJobLogHygieneContractTest(unittest.TestCase):
         )
 
     def test_contract_fails_on_deliberately_violating_fixtures(self):
-        violating = ci_job_block(
-            workflow("ci.yml"), "integration"
-        ) + "\n"
-        # Deliberate violations are injected into a COPY of the real slice —
-        # never into the real workflow file. Each class of violation must be
-        # detected, proving the contract is not vacuous.
+        # Deliberate violations are injected into a PARSED COPY of the real
+        # ci.yml — never into the real workflow file. Each class of violation
+        # must be detected, proving the contract is not vacuous. The injected
+        # steps exercise the shapes a line-oriented guard misses: indented
+        # block-scalar lines, bash -c bodies and python -c / heredoc bodies.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
         fixtures = {
-            "tee": ("tee", '      - name: Bad\n        run: php vendor/bin/phpunit > /tmp/x.log 2>&1 | tee /tmp/y.log\n'),
-            "raw-log-dump": ("raw-log-dump", '      - name: Bad\n        run: cat /tmp/x.log\n'),
-            "raw-log-dump-tail": ("raw-log-dump", '      - name: Bad\n        run: tail -n 50 /tmp/x.log\n'),
-            "set-x": ("set-x", '      - name: Bad\n        run: set -x\n'),
-            "phpunit-raw": ("phpunit-raw", '      - name: Bad\n        run: php vendor/bin/phpunit\n'),
-            "composer-raw": ("composer-raw", '      - name: Bad\n        run: composer install --prefer-dist\n'),
-            "install-wp-tests-raw": ("install-wp-tests-raw", '      - name: Bad\n        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3\n'),
-            "red1-probe-raw": ("red1-probe-raw", '      - name: Bad\n        run: php tests/bin/multi-clinic-rest-bootstrap-probe.php\n'),
-            "stderr-pipe-to-stdout": ("stderr-pipe-to-stdout", '      - name: Bad\n        run: php vendor/bin/phpunit 2>&1 | grep -E FAIL\n'),
+            "tee": ("tee", 'php vendor/bin/phpunit > /tmp/x.log 2>&1 | tee /tmp/y.log'),
+            "raw-log-dump-inline": ("raw-log-dump", 'cat /tmp/x.log'),
+            "raw-log-dump-tail": ("raw-log-dump", 'tail -n 50 /tmp/x.log'),
+            "raw-log-dump-block-scalar": ("raw-log-dump",
+                'cat /tmp/x.log\n'),
+            "raw-log-dump-indented": ("raw-log-dump",
+                'tail -n 240 /tmp/x.log\ngrep -E "^Tests:" /tmp/x.log\n'),
+            "raw-log-dump-after-then": ("raw-log-dump",
+                'if [ -s /tmp/x.log ]; then cat /tmp/x.log; fi'),
+            "bash-c-raw-dump": ("raw-log-dump",
+                "bash -c 'cat /tmp/x.log'"),
+            "bash-c-tail": ("raw-log-dump",
+                'bash -ec "tail -n 20 /tmp/x.log"'),
+            "sh-c-raw-dump": ("raw-log-dump",
+                "sh -c 'head -5 /tmp/x.log'"),
+            "grep-raw": ("grep-raw", 'grep -E "^Tests:" /tmp/x.log'),
+            "grep-raw-after-semicolon": ("grep-raw",
+                'php vendor/bin/phpunit > /tmp/x.log 2>&1; grep -E "^OK" /tmp/x.log'),
+            "sed-raw": ("sed-raw", "sed -n '1,40p' /tmp/x.log"),
+            "awk-raw": ("awk-raw", "awk '{print}' /tmp/x.log"),
+            "set-x": ("set-x", 'set -x'),
+            "phpunit-raw": ("phpunit-raw", 'php vendor/bin/phpunit'),
+            "composer-raw": ("composer-raw", 'composer install --prefer-dist'),
+            "install-wp-tests-raw": ("install-wp-tests-raw",
+                'bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3'),
+            "red1-probe-raw": ("red1-probe-raw",
+                'php tests/bin/multi-clinic-rest-bootstrap-probe.php'),
+            "stderr-pipe-to-stdout": ("stderr-pipe-to-stdout",
+                'php vendor/bin/phpunit 2>&1 | grep -E FAIL'),
+            "python-c-raw-dump": ("python-raw-read",
+                'python3 -c "print(open(\'/tmp/x.log\').read())"'),
+            "python-c-multiline-raw-dump": ("python-raw-read",
+                "python3 -c 'import sys\ndata = open(\"/tmp/x.out\").read()\nprint(data)'"),
+            "python-c-raw-iter-print": ("python-raw-iter-print",
+                "python3 -c 'for line in open(\"/tmp/x.log\"):\n    print(line)'"),
+            "python-heredoc-raw-dump": ("python-raw-read",
+                "python3 - <<'EOF'\ndata = open('/tmp/x.err').read()\nprint(data)\nEOF"),
+            "python-heredoc-raw-iter-print": ("python-raw-iter-print",
+                "python3 - <<'EOF'\nfor line in open('/tmp/x.log'):\n    print(line)\nEOF"),
+            "php-r-raw": ("php-r-raw",
+                'php -r "var_export(file_get_contents(\'/tmp/x.log\'));"'),
         }
-        for label, (expected_rule, fragment) in fixtures.items():
+        for label, (expected_rule, run) in fixtures.items():
             with self.subTest(violation=label):
-                violations = integration_raw_output_violations(violating + fragment)
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
                 rules = {v[0] for v in violations}
                 self.assertIn(
                     expected_rule,

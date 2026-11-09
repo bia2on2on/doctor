@@ -71,8 +71,12 @@ LABEL_RE = re.compile(r'[a-z0-9_.-]{1,80}\Z')
 # suffix, no build metadata: a suffix can never be validated as more than a
 # pattern, so it is omitted fail-closed (MariaDB build strings drop out).
 MYSQL_VERSION_RE = re.compile(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\Z')
-UINT_RE = re.compile(r'[0-9]{1,20}\Z')
 FD_KEY_RE = re.compile(r'[0-9]{1,3}\Z')
+INT_BOUND = 10 ** 15
+# Signed/unsigned tokens; canonicality is enforced in _canonical_int (no
+# leading zeros, no '-0'), length is checked before int() is ever called.
+_SIGNED_INT_TOKEN_RE = re.compile(r'-?[0-9]{1,17}\Z')
+_UNSIGNED_INT_TOKEN_RE = re.compile(r'[0-9]{1,16}\Z')
 # A chain entry is a priority followed by a code identifier. Parentheses,
 # dots, dashes, spaces, slashes and quotes are all impossible, so no
 # payload can hitchhike in an identifier.
@@ -255,14 +259,50 @@ def _plugin_dir() -> Path:
     return _REPO_ROOT / 'clinic-practice-management'
 
 
-def _int(value):
+def _canonical_int(value, allow_negative=True, allow_str=True):
+    """The one canonical bounded integer validator for projector fields.
+
+    Accepts only:
+      * a JSON/Python int (bool excluded) with magnitude <= INT_BOUND; or
+      * a raw string (never trimmed) of ASCII digits, optionally led by '-',
+        canonical in form: no leading zeros (except the value '0'), no
+        leading '-0', no '+' sign, no spaces or unicode digits
+        (allow_str=False rejects the string surface entirely — used for the
+        source-stage chain counters, which are only ever JSON ints and must
+        fail closed on anything else).
+    Length is checked before int() is called, so a hostile multi-kilobyte
+    digit string is rejected without ever reaching the int parser. Returns
+    the int, or None (callers map None to their existing DROP/absent
+    token). Python ints from JSON pass the same INT_BOUND bound as strings.
+    """
     if isinstance(value, bool):
-        return DROP
-    if isinstance(value, int) and -10**15 <= value <= 10**15:
-        return value
-    if isinstance(value, str) and re.fullmatch(r'-?[0-9]{1,15}', value):
-        return int(value)
-    return DROP
+        return None
+    if isinstance(value, int):
+        return value if -INT_BOUND <= value <= INT_BOUND else None
+    if not allow_str:
+        return None
+    if not isinstance(value, str):
+        return None
+    if len(value) > 17:
+        return None
+    token_re = _SIGNED_INT_TOKEN_RE if allow_negative else _UNSIGNED_INT_TOKEN_RE
+    if not token_re.fullmatch(value):
+        return None
+    negative = value.startswith('-')
+    digits = value[1:] if negative else value
+    if len(digits) > 1 and digits[0] == '0':
+        return None  # leading zeros are not canonical
+    if negative and digits == '0':
+        return None  # '-0' is not canonical
+    parsed = int(value)
+    if abs(parsed) > INT_BOUND:
+        return None
+    return parsed
+
+
+def _int(value):
+    parsed = _canonical_int(value, allow_negative=True)
+    return parsed if parsed is not None else DROP
 
 
 def _int_nullable(value):
@@ -340,9 +380,7 @@ def _put(out, key, value):
 def _attr_int(raw):
     if raw is None:
         return None
-    if re.fullmatch(r'[0-9]{1,12}', str(raw)):
-        return int(raw)
-    return None
+    return _canonical_int(raw, allow_negative=False)
 
 
 def _read_bounded(path, cap=MAX_SOURCE_BYTES):
@@ -522,7 +560,9 @@ def cmd_junit(args):
         'skipped={}'.format(totals['skipped']),
     ]
     if args.phpunit_exit is not None:
-        parts.insert(1, 'phpunit_exit={}'.format(int(args.phpunit_exit)))
+        phpunit_exit = _canonical_int(args.phpunit_exit, allow_negative=False)
+        parts.insert(1, 'phpunit_exit={}'.format(
+            phpunit_exit if phpunit_exit is not None else 'unavailable'))
     if args.log:
         parts.append('terminal_summary_printed={}'.format(terminal_summary(args.log)))
     print(' '.join(parts))
@@ -752,10 +792,10 @@ def project_heartbeat(obj):
         value = obj.get(key)
         if value is None:
             out[key] = None
-        elif isinstance(value, int) and not isinstance(value, bool):
-            out[key] = value
-        elif isinstance(value, str) and UINT_RE.fullmatch(value):
-            out[key] = int(value)
+            continue
+        parsed = _canonical_int(value, allow_negative=True)
+        if parsed is not None:
+            out[key] = parsed
     for key in ('insert_php_type', 'update_php_type'):
         _put(out, key, _exact(obj.get(key), PHP_TYPES, 8))
     _put(out, 'json_type', _exact(obj.get('json_type'), JSON_VALUE_TYPES, 16))
@@ -893,10 +933,14 @@ def project_connection_diag(obj):
         out['chain'] = projected_chain
         # Merge projector-side drops into the same fixed-token counters the
         # source stage passed through (each stage counts only its own drops).
-        source_shape = obj.get('chain_dropped_shape')
-        source_unverified = obj.get('chain_dropped_unverified')
-        source_shape = source_shape if isinstance(source_shape, int) and not isinstance(source_shape, bool) else 0
-        source_unverified = source_unverified if isinstance(source_unverified, int) and not isinstance(source_unverified, bool) else 0
+        # JSON ints only, fail-closed otherwise (existing projector
+        # contract: non-int source counters are ignored, never coerced).
+        source_shape = _canonical_int(obj.get('chain_dropped_shape'),
+                                      allow_negative=False, allow_str=False)
+        source_unverified = _canonical_int(obj.get('chain_dropped_unverified'),
+                                           allow_negative=False, allow_str=False)
+        source_shape = 0 if source_shape is None else source_shape
+        source_unverified = 0 if source_unverified is None else source_unverified
         total_shape = source_shape + dropped_shape
         total_unverified = source_unverified + dropped_unverified
         if total_shape:
@@ -1128,10 +1172,16 @@ def cmd_evidence(args):
     except OSError:
         print(name + ' evidence_unavailable=1')
         return 0
+    omitted = 0
     for raw in lines:
-        if printed >= MAX_RECORDS:
-            break
         line = raw.rstrip('\n')
+        if printed >= MAX_RECORDS:
+            # Every prefix-matching line would have produced exactly one
+            # output line; count the ones dropped by the cap so the
+            # truncation is visible (mirrors cmd_suites' testsuites_truncated).
+            if line.startswith(prefix):
+                omitted += 1
+            continue
         if not line.startswith(prefix):
             continue
         try:
@@ -1154,6 +1204,8 @@ def cmd_evidence(args):
         printed += 1
     if printed == 0:
         print(name + ' evidence_absent=1')
+    if omitted:
+        print(name + ' evidence_truncated={}'.format(omitted))
     return 0
 
 
