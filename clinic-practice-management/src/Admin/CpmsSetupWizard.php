@@ -1608,42 +1608,42 @@ final class CpmsSetupWizard
         try {
             $error = '';
 
-            switch ($step) {
+            switch ( $step ) {
                 case 'facility':
                     $error = self::save_facility( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
                     break;
                 case 'clinic':
-                    $error = self::saveClinic($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
+                    $error = self::saveClinic( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
                     break;
                 case 'doctors':
                     $error = self::save_doctors( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- fields revalidated in save_doctors
                     break;
                 case 'booking':
-                    $error = self::saveBooking($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
+                    $error = self::saveBooking( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
                     break;
                 case 'sms':
-                    $error = self::saveSms($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
+                    $error = self::saveSms( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
                     break;
                 case 'health':
                     $error = self::save_health( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- checkbox revalidated in save_health
                     break;
                 case 'finish':
-                    $error = self::saveFinish($settings, (int) get_current_user_id());
+                    $error = self::saveFinish( $settings, (int) get_current_user_id() );
                     break;
                 default:
                     // گام‌های ارجاعی/اطلاعی: فقط پیشرفت ثبت می‌شود.
                     break;
             }
 
-            if ($error !== '') {
-                set_transient(self::NOTICE_KEY, 'خطا: ' . $error, 60);
+            if ( $error !== '' ) {
+                set_transient( self::NOTICE_KEY, 'خطا: ' . $error, 60 );
                 wp_safe_redirect( self::step_url( $step ) );
                 exit;
             }
 
-            if ($step === 'finish') {
-                set_transient(self::NOTICE_KEY, 'راه‌اندازی تکمیل شد.', 60);
-                wp_safe_redirect(admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG));
+            if ( $step === 'finish' ) {
+                set_transient( self::NOTICE_KEY, 'راه‌اندازی تکمیل شد.', 60 );
+                wp_safe_redirect( admin_url( 'admin.php?page=' . CpmsDashboard::PAGE_SLUG ) );
                 exit;
             }
 
@@ -1692,9 +1692,9 @@ final class CpmsSetupWizard
         // reset commit together or not at all.
         $settings->set_many(
             [
-                'setup.current_step'         => 'welcome',
-                self::COMPLETE_KEY           => false,
-                'setup.outpatient_only_ack'  => false,
+                'setup.current_step'        => 'welcome',
+                self::COMPLETE_KEY          => false,
+                'setup.outpatient_only_ack' => false,
             ],
             $uid
         );
@@ -2072,6 +2072,7 @@ final class CpmsSetupWizard
         $cancel = max(0, min(168, (int) ($post['cancel'] ?? 24)));
 
         // One atomic transition: the whole booking policy commits or none.
+        $updated_by = $updatedBy; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy signature parameter.
         $settings->set_many(
             [
                 'booking.duration_default_min'  => $duration,
@@ -2080,7 +2081,7 @@ final class CpmsSetupWizard
                 'booking.max_future_days'       => $future,
                 'booking.cancel_deadline_hours' => $cancel,
             ],
-            $updatedBy
+            $updated_by
         );
 
         return '';
@@ -2106,11 +2107,11 @@ final class CpmsSetupWizard
         if ($provider !== '') {
             $sms_writes['sms.provider'] = $provider;
         }
-        if ($sender !== '') {
+        if ( $sender !== '' ) {
             $sms_writes['sms.sender'] = $sender;
         }
-        if ($sms_writes !== []) {
-            $settings->set_many($sms_writes, $updatedBy);
+        if ( $sms_writes !== [] ) {
+            $settings->set_many( $sms_writes, $updatedBy ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy signature parameter.
         }
 
         return '';

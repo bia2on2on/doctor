@@ -110,13 +110,13 @@ final class OtpController extends RestBase
             }
 
             return $this->success($result, 200);
-        } catch (SettingsUnavailableException $e) {
+        } catch ( SettingsUnavailableException $e ) {
             // Unreadable OTP rate-limit settings: fail closed with the
             // established neutral service-unavailable envelope (503) —
             // never a raw internal error, never weakened limits.
             unset( $e );
 
-            return $this->error(RuntimeSchemaGate::PUBLIC_ERROR_CODE, 503, RuntimeSchemaGate::NEUTRAL_MESSAGE);
+            return $this->error( RuntimeSchemaGate::PUBLIC_ERROR_CODE, 503, RuntimeSchemaGate::NEUTRAL_MESSAGE );
         } catch (OtpException $e) {
             return $this->error($e->apiCode(), $e->httpStatus(), $e->getMessage(), $e->getData());
         } catch (BookingException $e) {
@@ -143,12 +143,12 @@ final class OtpController extends RestBase
             );
 
             return $this->success($result, 200);
-        } catch (SettingsUnavailableException $e) {
+        } catch ( SettingsUnavailableException $e ) {
             // Same controlled 503 envelope as the request route; the
             // challenge is not consumed and no session is issued.
             unset( $e );
 
-            return $this->error(RuntimeSchemaGate::PUBLIC_ERROR_CODE, 503, RuntimeSchemaGate::NEUTRAL_MESSAGE);
+            return $this->error( RuntimeSchemaGate::PUBLIC_ERROR_CODE, 503, RuntimeSchemaGate::NEUTRAL_MESSAGE );
         } catch (OtpException $e) {
             return $this->error($e->apiCode(), $e->httpStatus(), $e->getMessage(), $e->getData());
         } catch (ScopeRequiredException $e) {

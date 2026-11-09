@@ -14,6 +14,5 @@ use RuntimeException;
  * production boundaries translate it into their established controlled
  * error (for REST, the neutral CLINIC_SERVICE_UNAVAILABLE 503 envelope).
  */
-final class SettingsUnavailableException extends RuntimeException
-{
+final class SettingsUnavailableException extends RuntimeException {
 }

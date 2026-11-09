@@ -626,12 +626,14 @@ final class SystemPage
             // One atomic transition with a controlled, sanitized failure:
             // a settings write failure must not surface as a raw error
             // (or as a false success notice after a partial write).
-            $s->set_many([
-                'update.channel' => in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable',
-                'update.check_interval_hours' => max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))),
-            ]);
+            $s->set_many(
+                [
+                    'update.channel'              => in_array( $channel, [ 'stable', 'beta' ], true ) ? $channel : 'stable',
+                    'update.check_interval_hours' => max( 1, min( 168, (int) ( $_POST['interval_hours'] ?? 24 ) ) ), // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified by guard() before every caller
+                ]
+            );
         } catch ( \RuntimeException ) {
-            self::notify('ذخیرهٔ تنظیمات به‌روزرسانی انجام نشد؛ لطفاً دوباره تلاش کنید.');
+            self::notify( 'ذخیرهٔ تنظیمات به‌روزرسانی انجام نشد؛ لطفاً دوباره تلاش کنید.' );
             return;
         }
         self::notify('تنظیمات به‌روزرسانی ذخیره شد', true);

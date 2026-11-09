@@ -597,9 +597,9 @@ final class SmsService
             $sms_writes['sms.last_test'] = [];
         }
 
-        $sms_writes['sms.provider'] = $providerId;
-        $sms_writes['sms.auth']     = ['method' => $method, 'fields' => $newFields, 'updated_at' => gmdate('c')];
-        $sms_writes['sms.sender']   = $this->sanitizeSender((string) ($in['sender'] ?? ''));
+        $sms_writes['sms.provider'] = $providerId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals in this method.
+        $sms_writes['sms.auth']     = [ 'method' => $method, 'fields' => $newFields, 'updated_at' => gmdate( 'c' ) ]; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals in this method.
+        $sms_writes['sms.sender']   = $this->sanitizeSender( (string) ( $in['sender'] ?? '' ) );
 
         if (is_array($in['advanced'] ?? null)) {
             $advanced = (array) $settings->get('sms.advanced', []);
@@ -611,7 +611,7 @@ final class SmsService
         if ( $generic_next !== null ) {
             $sms_writes['sms.generic'] = $generic_next;
         }
-        $settings->set_many( $sms_writes, $userId );
+        $settings->set_many( $sms_writes, $userId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals in this method.
 
         if ( $generic_next !== null ) {
             $this->auditSms( 'SMS_PROVIDER_CHANGED', $userId, [ 'provider' => 'generic_api', 'scope' => 'config' ] ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy local.
@@ -637,8 +637,9 @@ final class SmsService
     private function record_last_test( Settings $settings, array $payload, int $userId ): void {
         try {
             $settings->set( 'sms.last_test', $payload, $userId );
-        } catch ( \Throwable ) {
+        } catch ( \Throwable $e ) {
             // Telemetry only — the operation's own outcome stands.
+            unset( $e );
         }
     }
 
@@ -669,12 +670,13 @@ final class SmsService
             throw new SmsTemplateException( $ex->apiCode(), $safe );
         }
 
-        $this->record_last_test($settings, [
-            'status' => $result['ok'] ? 'ok' : 'failed',
-            'at' => time(),
-            'provider' => $providerId,
-            'message' => (string) $result['message'],
-        ], $userId);
+        $last_test = [
+            'status'   => $result['ok'] ? 'ok' : 'failed',
+            'at'       => time(),
+            'provider' => $providerId, // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals in this method.
+            'message'  => (string) $result['message'],
+        ];
+        $this->record_last_test( $settings, $last_test, $userId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals in this method.
         $this->auditSms('SMS_CONNECTION_TESTED', $userId, ['provider' => $providerId, 'ok' => (bool) $result['ok']]);
 
         return ['ok' => (bool) $result['ok'], 'message' => (string) $result['message']];
