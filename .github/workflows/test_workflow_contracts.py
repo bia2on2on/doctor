@@ -1557,5 +1557,246 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         self.assertRegex(events, r"(?m)^  push:\n    branches: \[main\]$")
 
 
+CLASSIC_V1 = "classic-v1-remediation.yml"
+PROJECTION_MARKER = "# cpms-fixed-schema-projection"
+CANARY = "CANARY9f8a87af"
+CANARY_SQL = "SELECT password FROM wp_users FOR UPDATE"
+CANARY_TOKEN = "ghp_1234567890abcdefghij"
+
+
+def classic_v1_projection_blocks(text):
+    """Extract the executable fixed-schema projection heredocs from the workflow."""
+    blocks = []
+    for match in re.finditer(r"<<'PY'(?:\s*\|\|\s*true)?\n(.*?)\n\s*PY\b", text, re.S):
+        block = match.group(1)
+        if PROJECTION_MARKER in block:
+            import textwrap
+
+            blocks.append(textwrap.dedent(block))
+    return blocks
+
+
+def run_projection(block, args, env_extra=None):
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "projection.py"
+        script.write_text(block, encoding="utf-8")
+        env = dict(os.environ)
+        env.pop("GITHUB_STEP_SUMMARY", None)
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+
+
+class ClassicV1RemediationPublicationContractTests(unittest.TestCase):
+    """classic-v1-remediation.yml must never publish raw test output.
+
+    Public surfaces (annotations, step summary, artifacts) may carry ONLY
+    strict integers and verdict words from closed sets. Raw JUnit text,
+    test names, log lines, exception text and free-form JSON derived from
+    test/perf output must stay in local files that are neither printed
+    nor uploaded. The projection heredocs are executed against crafted
+    adversarial inputs to prove this with the real code path.
+    """
+
+    maxDiff = None
+
+    def test_no_raw_junit_or_log_extraction_patterns(self):
+        text = workflow(CLASSIC_V1)
+        for forbidden in (
+            "case.get('name'",
+            'case.get("name"',
+            "node.text",
+            ".get('message')",
+            '[:900]',
+            "iter('testcase')",
+            'tail -',
+            "| tee",
+            "tee -a",
+            "cat /tmp/classic",
+            "$line",
+            "str(e)",
+            "json.dumps(summary",
+            "::notice::BASELINE ",
+            "::error::CANDIDATE ",
+        ):
+            self.assertNotIn(forbidden, text, forbidden)
+
+    def test_artifacts_upload_only_fixed_schema_summaries(self):
+        text = workflow(CLASSIC_V1)
+        uploads = re.findall(r"uses: actions/upload-artifact@v4\n(.*?)(?=\n  \w|\n  - uses:|\Z)", text, re.S)
+        self.assertGreaterEqual(len(uploads), 2, "both jobs must keep an evidence artifact")
+        for block in uploads:
+            paths = re.findall(r"^\s+(/tmp/\S+)$", block, re.M)
+            self.assertTrue(paths, block)
+            for path in paths:
+                self.assertIn("summary", path, path)
+                self.assertNotIn(".log", path, path)
+                self.assertNotIn(".xml", path, path)
+                self.assertNotIn(".json", path, path)
+
+    def test_annotations_match_fixed_schema_only(self):
+        text = workflow(CLASSIC_V1)
+        fixed_literals = {
+            "::notice::HTTP seed fixture-ok",
+            "::notice::HTTP seed env-ok",
+            "::notice::HTTP seed source-ok",
+        }
+        schema = re.compile(
+            r"::(notice|error)::(TESTS|PERF|EXIT|HTTP_PROFILE|BASELINE_PREPARE|FIXTURE|SEED|PROFILE)\b"
+        )
+        evidence_printer = "print(line if line.startswith('###') else '::notice::' + line)"
+        seen = 0
+        for line in text.splitlines():
+            if "::notice::" not in line and "::error::" not in line and "::warning::" not in line:
+                continue
+            seen += 1
+            if any(literal in line for literal in fixed_literals):
+                continue
+            if evidence_printer in line:
+                continue
+            self.assertRegex(line, schema, line)
+            for forbidden in ("json.dumps", "str(e)", "case.get", "$line", "{", "message"):
+                self.assertNotIn(forbidden, line, line)
+        self.assertGreater(seen, 5, "the scan must actually observe annotation sites")
+
+    def test_verdict_vocabulary_is_closed(self):
+        text = workflow(CLASSIC_V1)
+        verdicts = set(re.findall(r"verdict=([A-Z]+)", text))
+        self.assertTrue(verdicts, "verdict publications must exist")
+        self.assertLessEqual(verdicts, {"PASS", "FAIL", "OK", "UNAVAILABLE"}, verdicts)
+
+    def test_projection_blocks_exist(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        self.assertGreaterEqual(len(blocks), 3, "tests, evidence and HTTP projections must exist")
+
+    def test_candidate_job_still_fails_and_selection_is_unchanged(self):
+        text = workflow(CLASSIC_V1)
+        self.assertNotIn("continue-on-error", text)
+        for line in text.splitlines():
+            if "vendor/bin/phpunit" in line and "candidate-" in line:
+                self.assertNotIn("|| true", line, line)
+                self.assertNotIn("|| rc", line, line)
+        self.assertIn("--log-junit /tmp/classic-v1/candidate-", text)
+        self.assertIn("--log-junit /tmp/classic-v1/baseline-", text)
+        self.assertIn("ClassicV1CriticalRemediationTest.php", text)
+        self.assertIn("if: failure()", text)
+
+    # ---------------------------------------------------------------
+    # Adversarial: execute the real projection code extracted from the
+    # workflow against JUnit/JSON carrying canary secrets and SQL.
+    # ---------------------------------------------------------------
+
+    def _canary_junit(self):
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<testsuites><testsuite name="classic" tests="3" failures="1" errors="1" skipped="1">'
+            '<testcase name="testLeakCanaryMethod" classname="CanaryClass">'
+            '<failure message="' + CANARY + " " + CANARY_TOKEN + " " + CANARY_SQL + '">'
+            "raw body " + CANARY + " " + CANARY_SQL + "</failure>"
+            "</testcase></testsuite></testsuites>\n"
+        )
+
+    def test_adversarial_junit_projection_leaks_nothing(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        tests_blocks = [b for b in blocks if "project(sys.argv[1], sys.argv[2])" in b]
+        self.assertGreaterEqual(len(tests_blocks), 2, "notice and error TESTS projections must exist")
+        for block in tests_blocks:
+            is_error = "::error::TESTS" in block
+            prefix = "::error::" if is_error else "::notice::"
+            label = "CANDIDATE" if is_error else "BASELINE"
+            with tempfile.TemporaryDirectory() as tmp:
+                xml_path = Path(tmp) / "result.xml"
+                xml_path.write_text(self._canary_junit(), encoding="utf-8")
+                result = run_projection(block, [str(xml_path), label])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = (
+                prefix + "TESTS label=" + label
+                + " tests=3 failures=1 errors=1 skipped=1 verdict=FAIL"
+            )
+            self.assertEqual(result.stdout.strip(), expected, result.stdout)
+            for canary in (CANARY, CANARY_TOKEN, CANARY_SQL, "testLeakCanaryMethod", "CanaryClass"):
+                self.assertNotIn(canary, result.stdout)
+                self.assertNotIn(canary, result.stderr)
+
+    def test_adversarial_projection_missing_and_malformed_inputs(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        block = [b for b in blocks if "project(sys.argv[1], sys.argv[2])" in b][0]
+        result = run_projection(block, ["/nonexistent/result.xml", "BASELINE"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.xml"
+            bad.write_text(
+                '<testsuites><testsuite tests="notanint" failures="1" errors="0" skipped="0"/></testsuites>',
+                encoding="utf-8",
+            )
+            result = run_projection(block, [str(bad), "BASELINE"])
+        self.assertIn("verdict=UNAVAILABLE", result.stdout)
+        self.assertNotIn("notanint", result.stdout)
+
+    def test_adversarial_evidence_projection_leaks_nothing(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        evidence = [b for b in blocks if "baseline-exit.txt" in b]
+        self.assertEqual(len(evidence), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "baseline-mysql.xml").write_text(self._canary_junit(), encoding="utf-8")
+            (base / "candidate-mysql.xml").write_text(
+                '<testsuites><testsuite tests="5" failures="0" errors="0" skipped="2"/></testsuites>',
+                encoding="utf-8",
+            )
+            (base / "baseline-mysql.json").write_text(
+                json.dumps({"samples": {CANARY: [{"ms": 1}], "op": [{"ms": 2}, {"ms": 3}]}}),
+                encoding="utf-8",
+            )
+            (base / "candidate-mysql.json").write_text(
+                json.dumps({"samples": {"op": [{"ms": 1}]}}), encoding="utf-8"
+            )
+            (base / "baseline-exit.txt").write_text("1\n", encoding="utf-8")
+            summary = base / "summary-mysql.txt"
+            step_summary = base / "step-summary.md"
+            result = run_projection(
+                evidence[0],
+                [str(base), "mysql", str(summary)],
+                env_extra={"GITHUB_STEP_SUMMARY": str(step_summary)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            published = result.stdout + summary.read_text(encoding="utf-8") + step_summary.read_text(encoding="utf-8")
+        for canary in (CANARY, CANARY_TOKEN, CANARY_SQL, "testLeakCanaryMethod"):
+            self.assertNotIn(canary, published)
+        self.assertIn("TESTS label=BASELINE tests=3 failures=1 errors=1 skipped=1 verdict=FAIL", published)
+        self.assertIn("TESTS label=CANDIDATE tests=5 failures=0 errors=0 skipped=2 verdict=PASS", published)
+        self.assertIn("PERF label=BASELINE samples=3 verdict=OK", published)
+        self.assertIn("EXIT label=BASELINE code=1 verdict=FAIL", published)
+
+    def test_adversarial_http_projection_leaks_nothing(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        http = [b for b in blocks if "HTTP_PROFILE" in b]
+        self.assertEqual(len(http), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            good = base / "baseline.json"
+            good.write_text(json.dumps({"summary": {CANARY: {"median_ms": 1}, "op2": {"median_ms": 2}}}), encoding="utf-8")
+            bad = base / "candidate.json"
+            bad.write_text("{not json " + CANARY, encoding="utf-8")
+            summary = base / "summary.txt"
+            result = run_projection(http[0], [str(good), str(bad), str(summary)])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            published = result.stdout + summary.read_text(encoding="utf-8")
+        self.assertNotIn(CANARY, published)
+        self.assertIn("HTTP_PROFILE label=BASELINE operations=2 verdict=OK", published)
+        self.assertIn("HTTP_PROFILE label=CANDIDATE operations=0 verdict=UNAVAILABLE", published)
+
+
+
 if __name__ == "__main__":
     unittest.main()
