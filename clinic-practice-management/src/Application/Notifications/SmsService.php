@@ -634,9 +634,9 @@ final class SmsService
      *
      * @param array<string, mixed> $payload
      */
-    private function record_last_test( Settings $settings, array $payload, int $userId ): void {
+    private function record_last_test( Settings $settings, array $payload, int $userId ): void { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy signature parameter in this service.
         try {
-            $settings->set( 'sms.last_test', $payload, $userId );
+            $settings->set( 'sms.last_test', $payload, $userId ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy locals in this method.
         } catch ( \Throwable $e ) {
             // Telemetry only — the operation's own outcome stands.
             unset( $e );

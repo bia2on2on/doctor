@@ -1661,7 +1661,7 @@ final class CpmsSetupWizard
             }
             self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
             self::set_current_step( $settings, self::nextStepId( $step ) );
-            set_transient(self::NOTICE_KEY, 'ذخیره شد.', 60);
+            set_transient( self::NOTICE_KEY, 'ذخیره شد.', 60 );
             wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
             exit;
         } catch ( \RuntimeException ) {
