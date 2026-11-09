@@ -11,6 +11,7 @@ use ClinicCore\Application\System\QueueDiagnosis;
 use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Infrastructure\Licensing\LicenseGatewayException;
@@ -457,8 +458,32 @@ final class SystemPage
     {
         self::guard('cpms_backup_verify');
         $id = trim((string) ($_POST['backup_id'] ?? ''));
-        $v = App::backupService()->verifyBackup($id);
-        self::notify('تأیید بکاپ ' . $id . ': ' . ($v['ok'] ? 'سالم ✅' : 'ناسالم ⛔ ' . implode('; ', $v['errors'])), $v['ok']);
+        try {
+            $verification = App::backupService()->verifyBackup($id);
+        } catch ( \Throwable ) {
+            self::notify(
+                'تأیید بکاپ ناموفق است. [' . BackupVerificationErrorCodes::VERIFICATION_FAILED . '] جزئیات فنی حذف شده‌اند.'
+            );
+
+            return;
+        }
+
+        $ok       = (bool) ( $verification['ok'] ?? false );
+        $errors   = BackupVerificationErrorCodes::safe_error_categories( (array) ( $verification['errors'] ?? array() ) );
+        $warnings = BackupVerificationErrorCodes::safe_warning_categories( (array) ( $verification['warnings'] ?? array() ) );
+        if ( ! $ok && $errors === array() ) {
+            $errors = array( BackupVerificationErrorCodes::VERIFICATION_FAILED );
+        }
+        $categories = $ok ? $warnings : $errors;
+        $message    = 'تأیید بکاپ: ' . ( $ok ? 'سالم ✅' : 'ناسالم ⛔' );
+        if ( $categories !== array() ) {
+            $message .= ' [' . implode( '; ', $categories ) . ']';
+        }
+        if ( ! $ok ) {
+            $message .= ' جزئیات فنی حذف شده‌اند.';
+        }
+
+        self::notify( $message, $ok );
     }
 
     public static function restoreApply(): void

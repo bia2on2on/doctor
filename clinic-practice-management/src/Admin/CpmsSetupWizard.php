@@ -103,8 +103,20 @@ final class CpmsSetupWizard
 
     public static function render(): void
     {
+        // Request-bound selector state must never survive into a rejected or
+        // selector-free render in a long-lived test/worker process.
+        self::$explicit_clinic_id = 0;
+
         if (!current_user_can(RolesAndCapabilities::CONFIG)) {
             wp_die('دسترسی ندارید', 403);
+        }
+
+        // A present but malformed selector is never treated as an absent
+        // selector, including during the pre-bootstrap onboarding branch.
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only selector shape check; no Clinic data is read or changed.
+        if ( self::requested_clinic_selector_is_malformed( $_GET ) ) {
+            self::render_clinic_choice( true );
+            return;
         }
 
         $notice = get_transient(self::NOTICE_KEY);
@@ -1310,6 +1322,7 @@ final class CpmsSetupWizard
                 <?php
                 if ( $action === 'cpms_wizard_save' ) {
                     echo '<input type="hidden" name="step" value="facility">';
+                    self::render_explicit_clinic_field();
                 }
                 ?>
                 <fieldset>
@@ -1745,9 +1758,16 @@ final class CpmsSetupWizard
      */
     private static function bind_requested_clinic( array $source ): bool {
         self::$explicit_clinic_id = 0;
-        $requested_clinic_id      = AdminClinicSelector::requested_clinic_id( $source );
-        if ( null === $requested_clinic_id ) {
+        if ( ! array_key_exists( 'clinic_id', $source ) ) {
             return true;
+        }
+        if ( self::requested_clinic_selector_is_malformed( $source ) ) {
+            return false;
+        }
+
+        $requested_clinic_id = AdminClinicSelector::requested_clinic_id( $source );
+        if ( null === $requested_clinic_id ) {
+            return false;
         }
         $scope = AdminClinicSelector::establish( (int) get_current_user_id(), $requested_clinic_id, RolesAndCapabilities::CONFIG );
         if ( null === $scope ) {
@@ -1757,6 +1777,27 @@ final class CpmsSetupWizard
         self::$explicit_clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
 
         return true;
+    }
+
+    /**
+     * A selector is malformed when present but not a string/integer, or when
+     * the shared parser cannot produce a positive Clinic id. Keep this policy
+     * wizard-local so unrelated admin screens retain their selector contract.
+     *
+     * @param array<string|int, mixed> $source Usually $_GET or $_POST.
+     */
+    private static function requested_clinic_selector_is_malformed( array $source ): bool {
+        if ( ! array_key_exists( 'clinic_id', $source ) ) {
+            return false;
+        }
+
+        if ( ! is_string( $source['clinic_id'] ) && ! is_int( $source['clinic_id'] ) ) {
+            return true;
+        }
+
+        $requested_clinic_id = AdminClinicSelector::requested_clinic_id( $source );
+
+        return null === $requested_clinic_id || $requested_clinic_id <= 0;
     }
 
     /**
@@ -1805,7 +1846,10 @@ final class CpmsSetupWizard
     private static function render_clinic_choice( bool $rejected ): void {
         $choices = AdminClinicSelector::choices( (int) get_current_user_id(), RolesAndCapabilities::CONFIG );
         if ( $rejected ) {
-            echo '<div class="wrap" dir="rtl"><h1>' . esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ) . '</h1>';
+            // Keep the rejection page independent of Clinic-scoped settings:
+            // the selector is not a reason to read or reveal another Clinic's
+            // facility profile in a title or form.
+            echo '<div class="wrap" dir="rtl"><h1>راه‌اندازی</h1>';
             echo '<div class="notice notice-error" data-cpms-clinic-scope="denied"><p>Clinic درخواست‌شده معتبر نیست یا عضویت فعال و مجوز پیکربندی آن را ندارید؛ هیچ داده‌ای نمایش داده نشد.</p></div>';
         }
         if ( [] !== $choices ) {

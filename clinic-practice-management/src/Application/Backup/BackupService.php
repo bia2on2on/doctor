@@ -219,8 +219,8 @@ final class BackupService
 
     /**
      * Slice 2C: همان راستی‌آزماییِ تثبیت‌شده، از منبع یگانه (`LocalBackupVerifier`)؛
-     * شکلِ نتیجهٔ عمومیِ این متد (ok/errors/warnings) عمداً بدونِ تغییر است تا هیچ
-     * مصرف‌کنندهٔ موجودی (Admin/REST) تحت‌تأثیر قرار نگیرد.
+     * شکلِ نتیجهٔ عمومیِ این متد (ok/errors/warnings) ثابت است؛ diagnostics به
+     * categoryهای allowlist‌شده محدودند تا هیچ مسیر/جزئیات exception یا driver افشا نشود.
      *
      * @return array{ok: bool, errors: list<string>, warnings: list<string>}
      */

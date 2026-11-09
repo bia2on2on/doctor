@@ -383,6 +383,222 @@ final class SetupWizardTest extends WP_UnitTestCase
         self::assertTrue(App::authorization_service()->can($user_id, $clinic_b, RolesAndCapabilities::CONFIG));
     }
 
+    public function testFacilityStepCarriesTheExplicitClinicAndPostChangesOnlyThatClinic(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('facility-form-selected');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+
+        $keys = [
+            'setup.facility_type',
+            'setup.facility_structure',
+            'setup.current_step',
+            'setup.outpatient_only_ack',
+            'setup.completed_steps',
+        ];
+        $this->setClinicSetting($clinic_a, 'setup.facility_type', 'doctor_practice', $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.facility_structure', 'single', $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.current_step', 'welcome', $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.outpatient_only_ack', true, $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.completed_steps', 'clinic', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_type', 'general_clinic', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_structure', 'multi_doctor', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.current_step', 'facility', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.outpatient_only_ack', true, $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.completed_steps', 'booking', $user_id);
+        Settings::flushCache();
+        $before_a = $this->clinicSettingValues($clinic_a, $keys);
+
+        $html = $this->renderWizardStep('facility', $clinic_b);
+        $form = $this->findFormWithHiddenValue($html, 'action', 'cpms_wizard_save');
+        self::assertNotNull($form, 'The ordinary facility step must render its real POST form.');
+        self::assertStringContainsString(
+            'name="clinic_id" value="' . $clinic_b . '"',
+            (string) $form,
+            'The selected Clinic must remain attached to the facility form POST.'
+        );
+        self::assertStringNotContainsString(
+            'name="clinic_id" value="' . $clinic_a . '"',
+            (string) $form,
+            'The form must carry only its selected Clinic.'
+        );
+
+        $previous_post = $_POST;
+        $_POST = [
+            '_wpnonce'      => wp_create_nonce('cpms_wizard_save'),
+            'action'        => 'cpms_wizard_save',
+            'step'          => 'facility',
+            'clinic_id'     => (string) $clinic_b,
+            'facility_type' => 'hospital',
+            'structure'     => 'hospital_network',
+        ];
+        try {
+            $location = $this->captureRedirect(static function (): void {
+                CpmsSetupWizard::save();
+            });
+        } finally {
+            $_POST = $previous_post;
+        }
+
+        self::assertStringContainsString('clinic_id=' . $clinic_b, $location, 'The redirect must preserve the selected Clinic too.');
+        Settings::flushCache();
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, $keys), 'Clinic A must remain unchanged by Clinic B’s POST.');
+        $after_b = $this->clinicSettingValues($clinic_b, $keys);
+        self::assertSame('hospital', $after_b['setup.facility_type']);
+        self::assertSame('hospital_network', $after_b['setup.facility_structure']);
+        self::assertSame('clinic', $after_b['setup.current_step']);
+        self::assertFalse($after_b['setup.outpatient_only_ack'], 'Changing the facility selection must reset its Clinic-local acknowledgment.');
+        self::assertSame('booking,facility', $after_b['setup.completed_steps']);
+        self::assertSame($clinic_b, (int) App::scope()->clinicId);
+    }
+
+    public function testUnauthorizedFacilityPostForAnotherClinicWritesNothing(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('facility-form-denied');
+        $keys     = ['setup.facility_type', 'setup.facility_structure', 'setup.current_step'];
+        $this->setClinicSetting($clinic_a, 'setup.facility_type', 'doctor_practice', $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.facility_structure', 'single', $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.current_step', 'welcome', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_type', 'general_clinic', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_structure', 'multi_doctor', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.current_step', 'facility', $user_id);
+        Settings::flushCache();
+        $before_a = $this->clinicSettingValues($clinic_a, $keys);
+        $before_b = $this->clinicSettingValues($clinic_b, $keys);
+        $audit_a  = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_a]
+        );
+        $audit_b  = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        );
+
+        $previous_post = $_POST;
+        $_POST = [
+            '_wpnonce'      => wp_create_nonce('cpms_wizard_save'),
+            'action'        => 'cpms_wizard_save',
+            'step'          => 'facility',
+            'clinic_id'     => (string) $clinic_b,
+            'facility_type' => 'hospital',
+            'structure'     => 'hospital_network',
+        ];
+        $denied = false;
+        try {
+            $this->captureWpDie(static function (): void {
+                CpmsSetupWizard::save();
+            });
+        } catch (\RuntimeException $error) {
+            $denied = true;
+            self::assertStringContainsString('Clinic انتخاب‌شده معتبر نیست', $error->getMessage());
+        } finally {
+            $_POST = $previous_post;
+        }
+
+        self::assertTrue($denied, 'An unauthorized explicit Clinic POST must be rejected.');
+        Settings::flushCache();
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, $keys), 'Denial must not fall back to writing the actor’s authorized Clinic.');
+        self::assertSame($before_b, $this->clinicSettingValues($clinic_b, $keys), 'Denial must not write the unauthorized Clinic either.');
+        self::assertSame($audit_a, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_a]
+        ));
+        self::assertSame($audit_b, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        ));
+        self::assertSame($clinic_a, (int) App::scope()->clinicId, 'Rejecting the selector must not replace the prior scope.');
+    }
+
+    public function testMalformedWizardClinicSelectorsAreRejectedOnGetAndPostWithoutFallback(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $this->createAdditionalClinic('malformed-selector');
+        $keys = ['setup.facility_type', 'setup.facility_structure', 'setup.current_step', 'setup.completed_steps'];
+        $this->setClinicSetting($clinic_a, 'setup.facility_type', 'doctor_practice', $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.facility_structure', 'single', $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.current_step', 'welcome', $user_id);
+        $this->setClinicSetting($clinic_a, 'setup.completed_steps', 'clinic', $user_id);
+        Settings::flushCache();
+        $before = $this->clinicSettingValues($clinic_a, $keys);
+
+        $malformed_selectors = ['', '  ', [], ['1'], null, true, 1.5, 0, 'not-a-clinic'];
+        foreach ($malformed_selectors as $malformed) {
+            $html = $this->renderWizardStep('facility', $malformed);
+            self::assertStringContainsString('data-cpms-clinic-scope="denied"', $html, 'A present malformed selector on GET must be rejected.');
+            self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $html);
+            self::assertStringNotContainsString('name="clinic_name"', $html);
+            self::assertSame($clinic_a, (int) App::scope()->clinicId, 'Malformed GET must not fall back to the actor’s unique Clinic.');
+            Settings::flushCache();
+            self::assertSame($before, $this->clinicSettingValues($clinic_a, $keys), 'Malformed GET must be read-only.');
+        }
+
+        foreach ($malformed_selectors as $malformed) {
+            $previous_post = $_POST;
+            $_POST = [
+                '_wpnonce'      => wp_create_nonce('cpms_wizard_save'),
+                'action'        => 'cpms_wizard_save',
+                'step'          => 'facility',
+                'clinic_id'     => $malformed,
+                'facility_type' => 'hospital',
+                'structure'     => 'hospital_network',
+            ];
+            $denied = false;
+            try {
+                $this->captureWpDie(static function (): void {
+                    CpmsSetupWizard::save();
+                });
+            } catch (\RuntimeException $error) {
+                $denied = true;
+                self::assertStringContainsString('Clinic انتخاب‌شده معتبر نیست', $error->getMessage());
+            } finally {
+                $_POST = $previous_post;
+            }
+
+            self::assertTrue($denied, 'A present malformed selector on POST must fail closed.');
+            self::assertSame($clinic_a, (int) App::scope()->clinicId, 'Malformed POST must not replace or infer scope.');
+            Settings::flushCache();
+            self::assertSame($before, $this->clinicSettingValues($clinic_a, $keys), 'Malformed POST must not write through the implicit single-membership scope.');
+        }
+    }
+
+    public function testMalformedSelectorDoesNotReadAmbientUnauthorizedClinicSettings(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('malformed-ambient-scope');
+        $keys     = ['setup.facility_type', 'setup.facility_structure'];
+        $this->setClinicSetting($clinic_b, 'setup.facility_type', 'hospital', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_structure', 'hospital_network', $user_id);
+        Settings::flushCache();
+
+        // Seed stale request-local selection state, then model an ambient scope
+        // the actor is not authorized to read. A malformed GET must clear that
+        // state and show only the generic rejection/authorized-choice surface.
+        $this->renderWizardStep('booking', $clinic_a);
+        $property = new \ReflectionProperty(CpmsSetupWizard::class, 'explicit_clinic_id');
+        self::assertSame($clinic_a, $property->getValue());
+        $clinic = App::clinicRepository()->find($clinic_a);
+        self::assertIsArray($clinic);
+        App::replaceExplicitScope(ClinicScope::forClinic($clinic_b)->withOrganization((int) $clinic['organization_id']));
+
+        $before_b = $this->clinicSettingValues($clinic_b, $keys);
+        $html     = $this->renderWizardStep('facility', ' ');
+
+        self::assertStringContainsString('data-cpms-clinic-scope="denied"', $html);
+        self::assertStringNotContainsString('data-cpms-facility-guidance=', $html);
+        self::assertStringNotContainsString('data-cpms-inpatient-unsupported=', $html);
+        self::assertStringNotContainsString('name="facility_type"', $html);
+        self::assertSame($clinic_b, (int) App::scope()->clinicId, 'The rejected selector must not replace the ambient scope.');
+        self::assertSame(0, $property->getValue(), 'Rejected GET must clear stale request-local Clinic binding.');
+        self::assertSame($before_b, $this->clinicSettingValues($clinic_b, $keys), 'Rejection must not read/write Clinic B settings through the wizard step.');
+        self::assertFalse(App::authorization_service()->can($user_id, $clinic_b, RolesAndCapabilities::CONFIG));
+    }
+
     public function testUnauthorizedExplicitClinicSelectorShowsOnlyAuthorizedChoices(): void
     {
         $user_id  = $this->authorizeConfigUser();
@@ -983,14 +1199,14 @@ final class SetupWizardTest extends WP_UnitTestCase
 
     // ================= helpers =================
 
-    private function renderWizardStep(string $step, ?int $clinicId = null): string
+    private function renderWizardStep(string $step, mixed $clinicId = null): string
     {
         $previousGet = $_GET;
         $bufferLevel = ob_get_level();
         $_GET['step'] = $step;
         unset($_GET['clinic_id']);
-        if ($clinicId !== null) {
-            $_GET['clinic_id'] = (string) $clinicId;
+        if (func_num_args() > 1) {
+            $_GET['clinic_id'] = is_int($clinicId) ? (string) $clinicId : $clinicId;
         }
         ob_start();
         try {
@@ -1046,7 +1262,7 @@ final class SetupWizardTest extends WP_UnitTestCase
         return $clinic_id;
     }
 
-    private function setClinicSetting(int $clinicId, string $key, int $value, int $updatedBy): void
+    private function setClinicSetting(int $clinicId, string $key, mixed $value, int $updatedBy): void
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();

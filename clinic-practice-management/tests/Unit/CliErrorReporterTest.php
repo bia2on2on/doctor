@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace ClinicCore\Tests\Unit;
 
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 use PHPUnit\Framework\TestCase;
 
 final class CliErrorReporterTest extends TestCase
@@ -62,16 +63,60 @@ final class CliErrorReporterTest extends TestCase
         self::assertStringNotContainsString( '<', $result['stderr'], 'Untrusted code text must not be emitted as markup.' );
     }
 
+    public function testBackupVerificationFailureUsesSafeCategoriesAndExitStatusTwo(): void
+    {
+        $result = $this->runReporterSubprocess(
+            '\\ClinicCore\\Cli\\CliErrorReporter::report_backup_verification_failure('
+            . var_export([
+                BackupVerificationErrorCodes::DATABASE_FILE_INTEGRITY_MISMATCH,
+                '/srv/private/backups/backup-123/db.sql hash mismatch',
+            ], true)
+            . ')',
+            true
+        );
+
+        self::assertSame( 2, $result['status'] );
+        self::assertSame( '', $result['stdout'] );
+        self::assertSame(
+            "CPMS backup verification failed [BACKUP_DATABASE_FILE_INTEGRITY_MISMATCH]. Details are omitted.\n",
+            $result['stderr']
+        );
+        self::assertStringNotContainsString( '/srv/private/backups', $result['stderr'] );
+        self::assertStringNotContainsString( 'db.sql', $result['stderr'] );
+    }
+
+    public function testUnknownVerificationFailureUsesBoundedFallbackAndExitStatusTwo(): void
+    {
+        $result = $this->runReporterSubprocess(
+            '\\ClinicCore\\Cli\\CliErrorReporter::report_backup_verification_failure('
+            . var_export(['PRIVATE_DRIVER_ERROR /var/lib/mysql/private'], true)
+            . ')',
+            true
+        );
+
+        self::assertSame( 2, $result['status'] );
+        self::assertSame(
+            "CPMS backup verification failed [BACKUP_VERIFICATION_FAILED]. Details are omitted.\n",
+            $result['stderr']
+        );
+        self::assertStringNotContainsString( 'PRIVATE_DRIVER_ERROR', $result['stderr'] );
+        self::assertStringNotContainsString( '/var/lib/mysql', $result['stderr'] );
+    }
+
     /**
      * @return array{status:int,stdout:string,stderr:string}
      */
-    private function runReporterSubprocess( string $error_expression ): array
+    private function runReporterSubprocess( string $error_expression, bool $verification = false ): array
     {
         $plugin_root = dirname( __DIR__, 2 );
+        $report_call = $verification
+            ? 'exit(' . $error_expression . ');'
+            : 'exit(\\ClinicCore\\Cli\\CliErrorReporter::report_backup_failure(' . $error_expression . '));';
         $script      = 'require ' . var_export( $plugin_root . '/src/Infrastructure/Backup/BackupException.php', true ) . '; '
             . 'require ' . var_export( $plugin_root . '/src/Infrastructure/Storage/StorageConfigurationException.php', true ) . '; '
+            . 'require ' . var_export( $plugin_root . '/src/Domain/Backup/BackupVerificationErrorCodes.php', true ) . '; '
             . 'require ' . var_export( $plugin_root . '/src/Cli/CliErrorReporter.php', true ) . '; '
-            . 'exit(\\ClinicCore\\Cli\\CliErrorReporter::report_backup_failure(' . $error_expression . '));';
+            . $report_call;
         $process  = proc_open(
             [ PHP_BINARY, '-r', $script ],
             [ 0 => [ 'pipe', 'r' ], 1 => [ 'pipe', 'w' ], 2 => [ 'pipe', 'w' ] ],

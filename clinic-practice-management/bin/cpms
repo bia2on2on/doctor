@@ -38,6 +38,7 @@ require_once ABSPATH . 'wp-load.php';
 
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Cli\CliErrorReporter;
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 use ClinicCore\Infrastructure\Backup\BackupException;
 use ClinicCore\Infrastructure\Storage\StorageConfigurationException;
 
@@ -252,9 +253,23 @@ switch ($cmd) {
                         fwrite(STDERR, "Usage: bin/cpms backup verify <backup_id>\n");
                         exit(1);
                     }
-                    $v = $backups->verifyBackup($arg3);
-                    echo $v['ok'] ? "OK — backup verified\n" : 'CORRUPT: ' . implode('; ', $v['errors']) . "\n";
-                    exit($v['ok'] ? 0 : 2);
+                    try {
+                        $v = $backups->verifyBackup($arg3);
+                    } catch (\Throwable) {
+                        exit(CliErrorReporter::report_backup_verification_failure([
+                            BackupVerificationErrorCodes::VERIFICATION_FAILED,
+                        ]));
+                    }
+                    if (empty($v['ok'])) {
+                        exit(CliErrorReporter::report_backup_verification_failure((array) ($v['errors'] ?? [])));
+                    }
+                    $warnings = BackupVerificationErrorCodes::safe_warning_categories((array) ($v['warnings'] ?? []));
+                    echo "OK — backup verified";
+                    if ($warnings !== []) {
+                        echo ' (warnings: ' . implode(', ', $warnings) . ')';
+                    }
+                    echo "\n";
+                    exit(0);
                 case 'prune':
                     $removed = $backups->prune();
                     echo $removed === [] ? "Nothing to prune.\n" : 'Removed: ' . implode(', ', $removed) . "\n";
@@ -276,6 +291,8 @@ switch ($cmd) {
             }
         } catch ( BackupException | StorageConfigurationException $error ) {
             exit( CliErrorReporter::report_backup_failure( $error ) );
+        } catch ( \Throwable ) {
+            exit( CliErrorReporter::report_unexpected_backup_failure() );
         }
         break;
 

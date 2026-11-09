@@ -4910,3 +4910,26 @@ Two repository-relative `edit_file` calls (for progress-write guards) reported s
 ### Review gate and state
 
 No new product/access-policy decision was needed for this narrow contract restoration. Existing PR questions about implicit/multi-Clinic selection, zero-Clinic bootstrap, bootstrap/recovery eligibility, broad `Throwable` handling, and silent no-op progress helpers remain open for owner/independent security review. Strix was not run. At append time the code/test commit was `1f6b2533` on `arena/0f2e4530-doctor`; the corrected head had not yet been pushed, so its automatic new-head checks were still pending. No merge or rerun was performed.
+
+## 2026-11-08 — PR #334 backup verification, wizard selector, and concurrency transaction follow-up
+
+### Changes
+
+- Added `BackupVerificationErrorCodes` as the allowlist for bounded, pathless verification diagnostics. `BackupManifest::verifyFiles()` and `LocalBackupVerifier` now return only categories (deduplicated and capped at the consumer boundary); local hashing/stat warnings are suppressed and failed I/O becomes a safe missing-file category. Admin notices and CLI output discard IDs, paths, raw exception/driver details, and unknown strings. CLI verification failures retain status **2**; unexpected backup-command failures use a generic status **1**. Updated backup regression assertions, reporter tests, and the Phase 15 mirror test stub.
+- Tightened the wizard-local selector contract: an absent `clinic_id` retains the existing unique-authorized-Clinic behavior, while any present malformed value is rejected on GET and POST before implicit fallback. Rejected renders clear stale request-local binding and do not read a Clinic-scoped facility profile. The ordinary facility form now carries its explicitly selected Clinic into POST/redirect. Added coverage for malformed scalar/array/null selectors, no-write/no-fallback behavior, selected-Clinic facility persistence, unauthorized POST denial, and an unauthorized ambient Clinic scope.
+- Reworked `ConcurrencyTest` so clinician/slot fixtures and cleanup use independent `mysqli` transactions, with fresh-connection visibility/durable-absence checks and exact affected-row checks. A pending `$wpdb` sentinel proves fixture setup/cleanup do not commit the WordPress test transaction and is verified after the parent rollback.
+
+### Validation
+
+- PHP-WASM **8.5.12** syntax checks: **14 changed PHP files plus `bin/cpms` clean**. `git diff --check`: clean.
+- `BackupManifestTest`: **10 tests / 24 assertions passed**.
+- `Phase15S3MirrorUploadRedTest::testControlExistingLocalBackupFixtureCreatesAndVerifiesLocally`: **1 test / 12 assertions passed**.
+- Direct PHP-WASM reporter probe emitted only `BACKUP_DATABASE_FILE_INTEGRITY_MISMATCH` (no backup path) and confirmed the reporter function returns **2**. The WASM CLI wrapper did not preserve an `exit(2)` process status, so that probe validates the return value/output, not a native process exit code.
+- `CliErrorReporterTest` was attempted under PHP-WASM but is not executable reliably there: `proc_open()` cannot run PHP-WASM's virtual `PHP_BINARY`; all five subprocess cases failed, including the three pre-existing cases (status mismatch) and two new cases (shell syntax errors). Native PHP is unavailable here, so these are not treated as product-code results.
+- A full `Phase15S3MirrorUploadRedTest` attempt reported **33 tests, 2 failures, 4 errors, 22 skips** because this runtime lacks Sodium secretstream and the locked AWS SDK/vendor tree. Its local-verification control passed separately.
+- WordPress/MySQL integration suites, including the new wizard and concurrency cases, were **not run**: native `php`, `mysql`, `mysqld`, and `mariadb` executables are unavailable; the WordPress test database environment is absent.
+
+### Review gate and state at append
+
+- Work remains on `/home/user/doctor-diagnostic-pr334`, branch `arena/0f2e4530-doctor`, then at base commit `167561d62411d998f31d07c94ff58bd432b3d8b8`. The existing PR #334 is draft/open and has no review requests. No CI checks were inspected, no PR body was changed, and no merge was performed.
+- The requested two independent reviews have not been performed or requested; reviewer identities were not supplied. Native PHPUnit/WP-MySQL validation and two independent reviews remain outstanding before merge consideration.
