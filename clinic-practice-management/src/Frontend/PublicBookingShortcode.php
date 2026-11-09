@@ -68,6 +68,8 @@ namespace ClinicCore\Frontend;
 
 use ClinicCore\Application\Clinic\PublicClinicDirectory;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Domain\Clinical\DoctorDisplayName;
+use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Bootstrap\App;
 use Throwable;
@@ -809,10 +811,11 @@ final class PublicBookingShortcode
         int $clinic_id,
         array $location_ids = []
     ): string {
-        $id        = (int) ( $clinician['id'] ?? 0 );
-        $name      = trim( (string) ( $clinician['name'] ?? '' ) );
-        $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
-        $weekdays  = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
+        $id              = (int) ( $clinician['id'] ?? 0 );
+        $name            = trim( (string) ( $clinician['name'] ?? '' ) );
+        $specialty       = trim( (string) ( $clinician['specialty'] ?? '' ) );
+        $specialty_label = self::specialty_display_label( $specialty );
+        $weekdays        = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
         $lines = [];
         // `data-locations` = only the Locations the SERVER found eligible for
@@ -826,7 +829,7 @@ final class PublicBookingShortcode
             $clinic_id,
             $id,
             esc_attr( $specialty ),
-            esc_attr( self::normalize_search_text( $name ) ),
+            esc_attr( self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) ) ),
             esc_attr( implode( ' ', array_map( 'intval', $location_ids ) ) )
         );
         $lines[] = sprintf(
@@ -837,11 +840,11 @@ final class PublicBookingShortcode
             $id,
             $clinic_id,
             esc_attr( self::ROOT_CLASS . '__clinician-name' ),
-            esc_html( $name ),
+            esc_html( DoctorDisplayName::with_title_or_fallback( $name ) ),
             $specialty === '' ? '' : sprintf(
                 '<span class="%1$s">%2$s</span>',
                 esc_attr( self::ROOT_CLASS . '__clinician-specialty' ),
-                esc_html( $specialty )
+                esc_html( $specialty_label )
             ),
             sprintf(
                 '<span class="%1$s" data-role="clinician-days">%2$s</span>',
@@ -852,6 +855,19 @@ final class PublicBookingShortcode
         $lines[] = '</li>';
 
         return implode( '', $lines );
+    }
+
+    /**
+     * Recognised catalogue aliases resolve to their canonical Persian label;
+     * any unrecognised custom or historical value is returned exactly as
+     * stored so nothing is silently dropped or forced into a wrong bucket.
+     * The raw `$specialty` value itself is untouched — it remains the filter
+     * key (`data-specialty` / option `value`); only the visible label changes.
+     */
+    private static function specialty_display_label( string $specialty ): string {
+        $match = MedicalSpecialtyCatalog::find( $specialty );
+
+        return null === $match ? $specialty : $match['label'];
     }
 
     /**
@@ -1020,7 +1036,7 @@ final class PublicBookingShortcode
                 $lines[] = sprintf(
                     '<option value="%1$s">%2$s</option>',
                     esc_attr( (string) $specialty ),
-                    esc_html( (string) $specialty )
+                    esc_html( self::specialty_display_label( (string) $specialty ) )
                 );
             }
             $lines[] = '</select>';
