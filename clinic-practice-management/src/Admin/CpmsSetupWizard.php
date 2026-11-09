@@ -961,6 +961,18 @@ final class CpmsSetupWizard
     // ================= Facility-type onboarding (presentation only) =================
 
     public static function selected_facility_type(): string {
+        if ( self::explicit_clinic_bound() > 0 ) {
+            try {
+                $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
+                // An explicitly selected Clinic is canonical; it never borrows
+                // another Clinic's user-meta, including when no choice is saved.
+                return FacilityTypeCatalog::is_valid( $stored ) ? $stored : '';
+            } catch ( \Throwable ) {
+                // An explicitly selected Clinic with unavailable Settings fails closed.
+                return '';
+            }
+        }
+
         $uid = (int) get_current_user_id();
         if ( $uid > 0 ) {
             $v = (string) get_user_meta( $uid, 'cpms_onboarding_facility_type', true );
@@ -968,24 +980,38 @@ final class CpmsSetupWizard
                 return $v;
             }
         }
-        // Cross-admin resumability: the persisted Clinic-scoped selection is
-        // the fallback for an authorized manager without user-meta, so the
-        // facility radio, the flow summary and the hospital/medical-building
-        // disclosures resume identically. Read-only; GET never writes, and a
-        // pre-bootstrap install (no Clinic scope) simply has no selection.
+
+        // Legacy and separate first-practice presentation fallback.
         try {
             $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
             if ( FacilityTypeCatalog::is_valid( $stored ) ) {
                 return $stored;
             }
         } catch ( \Throwable ) {
-            $stored = ''; // Without Clinic-scoped Settings nothing is selected.
+            // No Clinic-scoped Settings is available (for example before bootstrap).
         }
 
         return '';
     }
 
     private static function selected_structure(): string {
+        if ( self::explicit_clinic_bound() > 0 ) {
+            try {
+                $settings        = App::settings();
+                $stored_facility = (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' );
+                if ( ! FacilityTypeCatalog::is_valid( $stored_facility ) ) {
+                    return '';
+                }
+                $stored = (string) ( $settings->get( 'setup.facility_structure', '' ) ?? '' );
+                // An empty structure means "match the Clinic's type"; it
+                // cannot borrow an override from another Clinic's metadata.
+                return isset( FacilityTypeCatalog::structures()[ $stored ] ) ? $stored : '';
+            } catch ( \Throwable ) {
+                // An explicitly selected Clinic with unavailable Settings fails closed.
+                return '';
+            }
+        }
+
         $uid = (int) get_current_user_id();
         if ( $uid > 0 ) {
             $v = (string) get_user_meta( $uid, 'cpms_onboarding_structure', true );
@@ -993,16 +1019,15 @@ final class CpmsSetupWizard
                 return $v;
             }
         }
-        // Resumable/shared presentation state: the Clinic-scoped stored
-        // structure is the fallback so every authorized manager of the same
-        // Clinic sees the same adaptive flow. Read-only; GET never writes.
+
+        // Legacy and separate first-practice presentation fallback.
         try {
             $stored = (string) ( App::settings()->get( 'setup.facility_structure', '' ) ?? '' );
             if ( isset( FacilityTypeCatalog::structures()[ $stored ] ) ) {
                 return $stored;
             }
         } catch ( \Throwable ) {
-            $stored = ''; // Without Clinic-scoped Settings no structure is selected.
+            // No Clinic-scoped Settings is available (for example before bootstrap).
         }
 
         return '';

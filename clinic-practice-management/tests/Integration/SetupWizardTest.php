@@ -383,6 +383,156 @@ final class SetupWizardTest extends WP_UnitTestCase
         self::assertTrue(App::authorization_service()->can($user_id, $clinic_b, RolesAndCapabilities::CONFIG));
     }
 
+    public function testClinicBFlowAndCompletionUsePersistedSettingsBeforeClinicAMetadata(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+
+        // Configure Clinic A through the ordinary wizard first. This leaves
+        // A's type/structure in the actor's user-meta, as happens in production.
+        self::assertSame('', CpmsSetupWizard::save_facility(App::settings(), [
+            'facility_type' => 'doctor_practice',
+            'structure'     => 'single',
+        ], $user_id));
+        self::assertSame('doctor_practice', (string) get_user_meta($user_id, 'cpms_onboarding_facility_type', true));
+        self::assertSame('single', (string) get_user_meta($user_id, 'cpms_onboarding_structure', true));
+
+        $clinic_b = $this->createAdditionalClinic('facility-flow-b');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+
+        // An explicitly selected Clinic's empty structure means "use its type's
+        // default"; it must not inherit Clinic A's user-meta override.
+        $this->setClinicSetting($clinic_b, 'setup.facility_type', 'general_clinic', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_structure', '', $user_id);
+        $auto_structure_html = $this->renderWizardStep('facility', $clinic_b);
+        self::assertStringContainsString('data-cpms-onboarding-flow="multi_doctor_clinic"', $auto_structure_html);
+        self::assertSame(1, preg_match('/value="general_clinic"[^>]*checked/', $auto_structure_html));
+        self::assertSame(0, preg_match('/value="doctor_practice"[^>]*checked/', $auto_structure_html));
+
+        $keys = [
+            'setup.facility_type',
+            'setup.facility_structure',
+            'setup.outpatient_only_ack',
+            'setup.completed_steps',
+            CpmsSetupWizard::COMPLETE_KEY,
+            'booking.duration_default_min',
+            'booking.slot_capacity_default',
+            'booking.min_lead_hours',
+            'booking.max_future_days',
+            'booking.cancel_deadline_hours',
+        ];
+        $this->setClinicSetting($clinic_b, 'setup.facility_type', 'hospital', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_structure', 'hospital_network', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.outpatient_only_ack', false, $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.completed_steps', '', $user_id);
+        $this->setClinicSetting($clinic_b, CpmsSetupWizard::COMPLETE_KEY, false, $user_id);
+
+        // Build every hospital prerequisite except its explicit outpatient-only
+        // acknowledgment, so completion readiness changes only when B is acked.
+        $suffix      = bin2hex(random_bytes(4));
+        $created_at  = App::db()->nowUtcSql();
+        $location_id = App::locationRepository()->create(
+            $clinic_b,
+            'A-to-B location ' . $suffix,
+            'a2b-' . $suffix,
+            'Asia/Tehran',
+            $created_at
+        );
+        self::assertGreaterThan(0, $location_id);
+        $clinician_one = App::clinicianRepository()->create($clinic_b, ['full_name' => 'A-to-B clinician one ' . $suffix]);
+        $clinician_two = App::clinicianRepository()->create($clinic_b, ['full_name' => 'A-to-B clinician two ' . $suffix]);
+        self::assertGreaterThan(0, $clinician_one);
+        self::assertGreaterThan(0, $clinician_two);
+        global $wpdb;
+        $schedule_insert = $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $wpdb->prefix . 'cpms_schedule
+                (clinic_id, location_id, clinician_id, day_of_week, start_time, end_time, is_active, created_at, updated_at)
+             VALUES (%d, %d, %d, %d, %s, %s, %d, %s, %s)',
+            $clinic_b,
+            $location_id,
+            $clinician_one,
+            1,
+            '09:00:00',
+            '12:00:00',
+            1,
+            $created_at,
+            $created_at
+        ));
+        self::assertSame(1, $schedule_insert);
+        Settings::flushCache();
+
+        $before_a = $this->clinicSettingValues($clinic_a, $keys);
+        $before_b = $this->clinicSettingValues($clinic_b, $keys);
+        $clinic_a_before = App::clinicRepository()->find($clinic_a);
+        $audit_a_before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_a]
+        );
+
+        $facility_html = $this->renderWizardStep('facility', $clinic_b);
+        self::assertSame(
+            1,
+            preg_match('/value="hospital"[^>]*checked/', $facility_html),
+            'Clinic B’s persisted facility type must determine the checked choice despite Clinic A user-meta.'
+        );
+        self::assertSame(0, preg_match('/value="doctor_practice"[^>]*checked/', $facility_html));
+        self::assertStringContainsString('data-cpms-onboarding-flow="hospital_network"', $facility_html);
+
+        $settings_b = App::settings();
+        self::assertSame($clinic_b, $settings_b->clinicId());
+        self::assertSame('', CpmsSetupWizard::saveClinic($settings_b, ['clinic_name' => 'A-to-B hospital outpatient ' . $suffix], $user_id));
+        self::assertSame('', CpmsSetupWizard::saveBooking($settings_b, [
+            'duration' => '20',
+            'capacity' => '1',
+            'lead'     => '2',
+            'future'   => '60',
+            'cancel'   => '24',
+        ], $user_id));
+        CpmsSetupWizard::mark_step_completed($settings_b, 'booking', $user_id);
+        self::assertSame(['سلامت سیستم'], CpmsSetupWizard::missing_required_steps($settings_b));
+
+        $health_html = $this->renderWizardStep('health', $clinic_b);
+        self::assertStringContainsString('data-cpms-inpatient-unsupported', $health_html);
+        self::assertStringContainsString('data-cpms-hospital-outpatient-scope="1"', $health_html);
+        $health_form = $this->findFormWithHiddenValue($health_html, 'step', 'health');
+        self::assertNotNull($health_form, 'The authorized Clinic B hospital health step must render.');
+        self::assertStringContainsString('name="outpatient_only_ack"', (string) $health_form);
+        self::assertSame(0, preg_match('/name="outpatient_only_ack"[^>]*checked/', (string) $health_form));
+        self::assertFalse(CpmsSetupWizard::step_is_complete('health', $settings_b));
+
+        $finish_before_ack = $this->renderWizardStep('finish', $clinic_b);
+        self::assertStringContainsString('data-cpms-finish-ready="0"', $finish_before_ack);
+        self::assertStringNotContainsString('✅ راه‌اندازی تکمیل شده است', $finish_before_ack);
+        self::assertSame('', CpmsSetupWizard::save_health($settings_b, ['outpatient_only_ack' => '1'], $user_id));
+        self::assertTrue(CpmsSetupWizard::step_is_complete('health', $settings_b));
+        self::assertSame([], CpmsSetupWizard::missing_required_steps($settings_b));
+
+        $finish_ready = $this->renderWizardStep('finish', $clinic_b);
+        self::assertStringContainsString('data-cpms-finish-ready="1"', $finish_ready);
+        self::assertSame('', $this->invokeSaveFinish($user_id));
+        $finish_complete = $this->renderWizardStep('finish', $clinic_b);
+        self::assertStringContainsString('data-cpms-finish-ready="1"', $finish_complete);
+        self::assertStringContainsString('✅ راه‌اندازی تکمیل شده است', $finish_complete);
+        self::assertSame('doctor_practice', (string) get_user_meta($user_id, 'cpms_onboarding_facility_type', true));
+        self::assertSame('single', (string) get_user_meta($user_id, 'cpms_onboarding_structure', true));
+
+        Settings::flushCache();
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, $keys), 'Clinic B saves must not alter Clinic A settings.');
+        self::assertSame($clinic_a_before, App::clinicRepository()->find($clinic_a), 'Clinic B setup must not write Clinic A profile data.');
+        $after_b = $this->clinicSettingValues($clinic_b, $keys);
+        self::assertSame('hospital', $after_b['setup.facility_type']);
+        self::assertSame('hospital_network', $after_b['setup.facility_structure']);
+        self::assertTrue($after_b['setup.outpatient_only_ack']);
+        self::assertSame('booking', $after_b['setup.completed_steps']);
+        self::assertTrue($after_b[CpmsSetupWizard::COMPLETE_KEY]);
+        self::assertFalse($before_b['setup.outpatient_only_ack']);
+        self::assertFalse($before_b[CpmsSetupWizard::COMPLETE_KEY]);
+        self::assertSame($audit_a_before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_a]
+        ), 'Clinic B settings writes must not create an audit event for Clinic A.');
+    }
+
     public function testFacilityStepCarriesTheExplicitClinicAndPostChangesOnlyThatClinic(): void
     {
         $user_id  = $this->authorizeConfigUser();
