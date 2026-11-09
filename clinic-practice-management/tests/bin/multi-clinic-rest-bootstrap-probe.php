@@ -337,7 +337,7 @@ $firstFailure = null;
  *
  * @param callable():string $fn
  */
-$run = static function (string $id, string $title, callable $fn) use (&$results, &$firstFailure, $out): bool {
+$run = static function (string $id, string $title, callable $fn) use (&$results, &$firstFailure, $out, $emitProbe): bool {
     $e = null;
     try {
         $detail = (string) $fn();
