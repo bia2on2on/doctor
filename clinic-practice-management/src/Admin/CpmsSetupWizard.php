@@ -8,7 +8,6 @@ use ClinicCore\Application\Clinic\ClinicProfileException;
 use ClinicCore\Application\Onboarding\FacilitySetupService;
 use ClinicCore\Application\Onboarding\FacilityTypeCatalog;
 use ClinicCore\Application\Scope\ScopeContext;
-use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Application\Scope\TrustedClinicEstablisher;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
@@ -104,8 +103,20 @@ final class CpmsSetupWizard
 
     public static function render(): void
     {
+        // Request-bound selector state must never survive into a rejected or
+        // selector-free render in a long-lived test/worker process.
+        self::$explicit_clinic_id = 0;
+
         if (!current_user_can(RolesAndCapabilities::CONFIG)) {
             wp_die('دسترسی ندارید', 403);
+        }
+
+        // A present but malformed selector is never treated as an absent
+        // selector, including during the pre-bootstrap onboarding branch.
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- read-only selector shape check; no Clinic data is read or changed.
+        if ( self::requested_clinic_selector_is_malformed( $_GET ) ) {
+            self::render_clinic_choice( true );
+            return;
         }
 
         $notice = get_transient(self::NOTICE_KEY);
@@ -143,7 +154,9 @@ final class CpmsSetupWizard
 
         try {
             $settings = App::settings();
-        } catch ( ScopeRequiredException ) {
+        } catch ( \Throwable ) {
+            // Scope ambiguity and any other failure to establish the Clinic
+            // must leave ordinary wizard settings and forms undisclosed.
             $guidance = CpmsAdminMenu::ambiguous_clinic_guidance();
             echo '<div class="wrap" dir="rtl">';
             echo '<h1>' . esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ) . '</h1>';
@@ -154,13 +167,20 @@ final class CpmsSetupWizard
             echo '</div>';
             return;
         }
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id(), $settings->clinicId() ) ) {
+            echo '<div class="wrap" dir="rtl"><h1>راه‌اندازی</h1>';
+            echo '<div class="notice notice-error" data-cpms-wizard-access="denied"><p>';
+            echo esc_html( 'دسترسی ندارید. برای مشاهده و ویرایش راه‌اندازی، عضویت فعال و مجوز پیکربندی در همین Clinic لازم است.' );
+            echo '</p></div></div>';
+            return;
+        }
         $steps = self::active_steps();
-        $index = self::currentStepIndex();
+        $index = self::current_step_index( $steps );
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only selector; values are restricted to registered steps.
         if ( isset( $_GET['step'] ) && is_string( $_GET['step'] ) ) {
             $requested_step = sanitize_key( wp_unslash( $_GET['step'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only, registry-whitelisted navigation value.
             if ( in_array( $requested_step, array_column( $steps, 'id' ), true ) ) {
-                $index = self::stepIndexById( $requested_step );
+                $index = self::step_index_by_id( $requested_step, $steps );
             }
         }
         $step = $steps[ $index ];
@@ -239,11 +259,19 @@ final class CpmsSetupWizard
 
     // ================= Getters / helpers =================
 
-    private static function currentStepIndex(): int
-    {
+    /**
+     * Index of the stored current step within the given step snapshot.
+     * The snapshot is passed in (never recomputed) so one render always
+     * resolves indexes against the exact list it displays — a transient
+     * Settings read difference between two computations can otherwise
+     * point an index at a different step than the one requested.
+     *
+     * @param list<array{id:string,title:string,icon:string,required:bool}> $steps
+     */
+    private static function current_step_index( array $steps ): int {
         $settings = App::settings();
-        $store = (string) ($settings->get('setup.current_step', 'welcome') ?? 'welcome');
-        foreach ( self::active_steps() as $i => $s ) {
+        $store    = (string) ( $settings->get( 'setup.current_step', 'welcome' ) ?? 'welcome' );
+        foreach ( $steps as $i => $s ) {
             if ($s['id'] === $store) {
                 return $i;
             }
@@ -252,9 +280,14 @@ final class CpmsSetupWizard
         return 0;
     }
 
-    private static function stepIndexById(string $id): int
-    {
-        foreach ( self::active_steps() as $i => $s ) {
+    /**
+     * Index of a step id within the given step snapshot (see
+     * current_step_index() for why the list is never recomputed here).
+     *
+     * @param list<array{id:string,title:string,icon:string,required:bool}> $steps
+     */
+    private static function step_index_by_id( string $id, array $steps ): int {
+        foreach ( $steps as $i => $s ) {
             if ($s['id'] === $id) {
                 return $i;
             }
@@ -279,9 +312,14 @@ final class CpmsSetupWizard
         );
     }
 
-    private static function setCurrentStep(string $id): void
+    private static function set_current_step( Settings $settings, string $id ): void
     {
-        App::settings()->set('setup.current_step', $id, (int) get_current_user_id());
+        $actor_user_id = (int) get_current_user_id();
+        if ( ! self::has_clinic_local_config( $actor_user_id, $settings->clinicId() ) ) {
+            return;
+        }
+
+        $settings->set( 'setup.current_step', $id, $actor_user_id );
     }
 
     /**
@@ -732,7 +770,7 @@ final class CpmsSetupWizard
     public static function save_health( Settings $settings, array $post, int $updated_by ): string {
         // Defense in depth: same Clinic-local CONFIG gate as every other
         // wizard write, before any flow or payload inspection.
-        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updated_by, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
         if ( self::current_flow() !== 'hospital_network' ) {
@@ -876,17 +914,23 @@ final class CpmsSetupWizard
 
     private static function renderFinish(Settings $settings): void
     {
-        $clinic_name      = self::canonical_clinic_name( $settings );
-        $doctor_count     = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
-        $facility_chosen  = self::facility_selected( $settings );
-        $supports_flow    = FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() );
-        $missing_now      = $facility_chosen ? self::missing_required_steps( $settings ) : [];
-        $stored_completed = (bool) $settings->get( self::COMPLETE_KEY, false );
+        $clinic_name         = self::canonical_clinic_name( $settings );
+        $doctor_count        = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
+        $facility_type       = self::selected_facility_type();
+        $facility_chosen     = self::facility_selected( $settings );
+        $facility_type_valid = $facility_type !== '';
+        $supports_flow       = $facility_type_valid && FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() );
+        $missing_now         = $facility_chosen && $facility_type_valid ? self::missing_required_steps( $settings ) : [];
+        try {
+            $stored_completed = (bool) $settings->get( self::COMPLETE_KEY, false );
+        } catch ( \Throwable ) {
+            $stored_completed = false; // An unreadable historical marker cannot establish readiness.
+        }
         // Same invariant as the header banner and step indicator: the stored
         // historical flag is preserved, but the card only claims readiness
         // when the CURRENT flow genuinely satisfies it.
         $ready      = $facility_chosen
-            ? ( $supports_flow && $missing_now === [] )
+            ? ( $facility_type_valid && $supports_flow && $missing_now === [] )
             : ( $clinic_name !== '' && $doctor_count > 0 );
         $stale_note = '';
         if ( $stored_completed ) {
@@ -894,12 +938,15 @@ final class CpmsSetupWizard
                 ? ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده، اما نشانهٔ آمادگی جریان فعلی نیست؛ هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.'
                 : ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده و هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.';
         }
-        $finish_profile = self::current_facility_profile();
+        $unverified_stale = $stored_completed ? ' تکمیل تاریخی در سوابق باقی مانده، اما نشانهٔ آمادگی فعلی نیست.' : '';
+        $finish_profile   = self::current_facility_profile();
         ?>
         <div class="card" data-cpms-finish-ready="<?php echo $ready ? '1' : '0'; ?>">
             <h2>شروع عملیات <?php echo esc_html( $finish_profile['unit'] ); ?></h2>
             <?php if ( $ready ) : ?>
                 <p>🎉 همهٔ پیش‌نیازهای الزامی برآورده شده‌اند. با فشردن دکمهٔ بالا، راه‌اندازی تکمیل و وضعیت «آمادهٔ شروع عملیات» ثبت می‌شود.</p>
+            <?php elseif ( $facility_chosen && ! $facility_type_valid ) : ?>
+                <p style="color:#b26b00;" data-cpms-facility-config-unverified="1" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ تنظیم نوع مرکز ذخیره‌شده قابل تأیید نیست؛ آمادگی جریان فعلی اعلام نمی‌شود. لطفاً تنظیم را بررسی و دوباره ذخیره کنید.<?php echo esc_html( $unverified_stale ); ?></p>
             <?php elseif ( $facility_chosen && ! $supports_flow ) : ?>
                 <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ تکمیل راه‌اندازی برای ساختمان/مجتمع پزشکی در این ویزارد به‌شکل ایمن مسدود است؛ ایجاد درمانگاه مستقل فقط از طریق اختیار صریح مدیر سازمان انجام می‌شود.<?php echo esc_html( $stale_note ); ?></p>
             <?php elseif ( $facility_chosen && $missing_now !== [] ) : ?>
@@ -936,6 +983,18 @@ final class CpmsSetupWizard
     // ================= Facility-type onboarding (presentation only) =================
 
     public static function selected_facility_type(): string {
+        if ( self::explicit_clinic_bound() > 0 ) {
+            try {
+                $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
+                // An explicitly selected Clinic is canonical; it never borrows
+                // another Clinic's user-meta, including when no choice is saved.
+                return FacilityTypeCatalog::is_valid( $stored ) ? $stored : '';
+            } catch ( \Throwable ) {
+                // An explicitly selected Clinic with unavailable Settings fails closed.
+                return '';
+            }
+        }
+
         $uid = (int) get_current_user_id();
         if ( $uid > 0 ) {
             $v = (string) get_user_meta( $uid, 'cpms_onboarding_facility_type', true );
@@ -943,24 +1002,38 @@ final class CpmsSetupWizard
                 return $v;
             }
         }
-        // Cross-admin resumability: the persisted Clinic-scoped selection is
-        // the fallback for an authorized manager without user-meta, so the
-        // facility radio, the flow summary and the hospital/medical-building
-        // disclosures resume identically. Read-only; GET never writes, and a
-        // pre-bootstrap install (no Clinic scope) simply has no selection.
+
+        // Legacy and separate first-practice presentation fallback.
         try {
             $stored = (string) ( App::settings()->get( 'setup.facility_type', '' ) ?? '' );
             if ( FacilityTypeCatalog::is_valid( $stored ) ) {
                 return $stored;
             }
         } catch ( \Throwable ) {
-            $stored = ''; // Without Clinic-scoped Settings nothing is selected.
+            $stored = ''; // Without Clinic-scoped Settings, no value is selected.
         }
 
         return '';
     }
 
     private static function selected_structure(): string {
+        if ( self::explicit_clinic_bound() > 0 ) {
+            try {
+                $settings        = App::settings();
+                $stored_facility = (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' );
+                if ( ! FacilityTypeCatalog::is_valid( $stored_facility ) ) {
+                    return '';
+                }
+                $stored = (string) ( $settings->get( 'setup.facility_structure', '' ) ?? '' );
+                // An empty structure means "match the Clinic's type"; it
+                // cannot borrow an override from another Clinic's metadata.
+                return isset( FacilityTypeCatalog::structures()[ $stored ] ) ? $stored : '';
+            } catch ( \Throwable ) {
+                // An explicitly selected Clinic with unavailable Settings fails closed.
+                return '';
+            }
+        }
+
         $uid = (int) get_current_user_id();
         if ( $uid > 0 ) {
             $v = (string) get_user_meta( $uid, 'cpms_onboarding_structure', true );
@@ -968,16 +1041,15 @@ final class CpmsSetupWizard
                 return $v;
             }
         }
-        // Resumable/shared presentation state: the Clinic-scoped stored
-        // structure is the fallback so every authorized manager of the same
-        // Clinic sees the same adaptive flow. Read-only; GET never writes.
+
+        // Legacy and separate first-practice presentation fallback.
         try {
             $stored = (string) ( App::settings()->get( 'setup.facility_structure', '' ) ?? '' );
             if ( isset( FacilityTypeCatalog::structures()[ $stored ] ) ) {
                 return $stored;
             }
         } catch ( \Throwable ) {
-            $stored = ''; // Without Clinic-scoped Settings no structure is selected.
+            $stored = ''; // Without Clinic-scoped Settings, no value is selected.
         }
 
         return '';
@@ -994,13 +1066,22 @@ final class CpmsSetupWizard
     }
 
     /**
-     * Whether any facility selection exists (per-admin meta or persisted
-     * Clinic-scoped settings). Legacy installs without one keep their
-     * previous wizard semantics untouched.
+     * Whether a facility selection is in effect or a Clinic-scoped row exists.
+     * Only a successfully absent row keeps the legacy completion semantics;
+     * invalid or unreadable configuration must not open that fallback.
      */
     private static function facility_selected( Settings $settings ): bool {
-        return self::selected_facility_type() !== ''
-            || FacilityTypeCatalog::is_valid( (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' ) );
+        if ( self::selected_facility_type() !== '' ) {
+            return true;
+        }
+
+        try {
+            // A row that is present but invalid is not legacy absence. If the
+            // presence read itself fails, do not open the legacy completion path.
+            return $settings->has_stored( 'setup.facility_type' );
+        } catch ( \Throwable ) {
+            return true;
+        }
     }
 
     /**
@@ -1011,15 +1092,23 @@ final class CpmsSetupWizard
      * erased here; evolution keeps tenant and settings history intact.
      */
     private static function current_flow_is_complete( Settings $settings ): bool {
-        if ( ! (bool) $settings->get( self::COMPLETE_KEY, false ) ) {
+        try {
+            if ( ! (bool) $settings->get( self::COMPLETE_KEY, false ) ) {
+                return false;
+            }
+            if ( ! self::facility_selected( $settings ) ) {
+                return true;
+            }
+            if ( self::selected_facility_type() === '' ) {
+                return false;
+            }
+
+            return FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() )
+                && self::missing_required_steps( $settings ) === [];
+        } catch ( \Throwable ) {
+            // An unreadable completion or facility setting is never readiness evidence.
             return false;
         }
-        if ( ! self::facility_selected( $settings ) ) {
-            return true;
-        }
-
-        return FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() )
-            && self::missing_required_steps( $settings ) === [];
     }
 
     /**
@@ -1087,9 +1176,17 @@ final class CpmsSetupWizard
     }
 
     public static function mark_step_completed( Settings $settings, string $step_id, int $updated_by ): void {
+        if ( ! self::has_clinic_local_config( $updated_by, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            return;
+        }
         if ( ! in_array( $step_id, array_column( self::steps(), 'id' ), true ) ) {
             return;
         }
+        // Read-modify-write: the merged list must be computed from a
+        // verified snapshot. After a failed soft read, get() returns an
+        // unverified empty default, and writing the merge after recovery
+        // would silently drop previously completed steps.
+        $settings->require_verified_snapshot();
         $ids = self::completed_step_ids( $settings );
         if ( ! in_array( $step_id, $ids, true ) ) {
             $ids[] = $step_id;
@@ -1202,7 +1299,7 @@ final class CpmsSetupWizard
     public static function save_doctors( Settings $settings, array $post, int $updated_by ): string {
         // Defense in depth: the same Clinic-local CONFIG gate every other
         // wizard write enforces, even when this method is called directly.
-        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updated_by, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
         $flow_min   = self::flow_min_clinicians();
@@ -1294,6 +1391,7 @@ final class CpmsSetupWizard
                 <?php
                 if ( $action === 'cpms_wizard_save' ) {
                     echo '<input type="hidden" name="step" value="facility">';
+                    self::render_explicit_clinic_field();
                 }
                 ?>
                 <fieldset>
@@ -1393,7 +1491,7 @@ final class CpmsSetupWizard
         // Defense in depth: the same Clinic-local CONFIG gate every other
         // wizard write enforces (the pre-bootstrap entry point is the
         // separate manage_options + nonce handler save_facility_selection).
-        if ( ! self::has_clinic_local_config( $updated_by ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updated_by, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
         $facility = isset( $post['facility_type'] ) && is_string( $post['facility_type'] ) ? sanitize_key( $post['facility_type'] ) : '';
@@ -1411,6 +1509,10 @@ final class CpmsSetupWizard
         if ( ! FacilityTypeCatalog::structure_is_compatible( $facility, $structure ) ) {
             return FacilityTypeCatalog::structure_incompatibility_message( $facility, $structure );
         }
+        // The previous selection decides the acknowledgment reset below, so
+        // it must come from a verified snapshot — never from unverified
+        // defaults after a failed read.
+        $settings->require_verified_snapshot();
         $prev_type      = (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' );
         $prev_structure = (string) ( $settings->get( 'setup.facility_structure', '' ) ?? '' );
         // Safe configuration evolution: the selection may be revisited at
@@ -1420,16 +1522,23 @@ final class CpmsSetupWizard
         // keys and this admin's user-meta; tenant rows (Clinic/Location/
         // Membership/Clinician) are never touched, completion markers are
         // never silently deleted, and invalid input never writes anything.
-        $settings->set( 'setup.facility_type', $facility, $updated_by );
-        $settings->set( 'setup.facility_structure', $structure, $updated_by );
+        // One atomic transition: the new selection and the acknowledgment
+        // reset commit together or not at all, so a failure between writes
+        // can never leave a new facility selection governed by the previous
+        // selection's (possibly hospital) acknowledgment.
+        $facility_writes = [
+            'setup.facility_type'      => $facility,
+            'setup.facility_structure' => $structure,
+        ];
         if ( $prev_type !== $facility || $prev_structure !== $structure ) {
             // Stale-acknowledgment prevention: the outpatient-only
             // acknowledgment is bound to the concrete type/structure
             // selection; on any change it must be freshly re-affirmed.
             // Config-scope only — clinical, financial and tenant history
             // are preserved untouched.
-            $settings->set( 'setup.outpatient_only_ack', false, $updated_by );
+            $facility_writes['setup.outpatient_only_ack'] = false;
         }
+        $settings->set_many( $facility_writes, $updated_by );
         if ( $updated_by > 0 ) {
             update_user_meta( $updated_by, 'cpms_onboarding_facility_type', $facility );
             update_user_meta( $updated_by, 'cpms_onboarding_structure', $structure );
@@ -1477,8 +1586,9 @@ final class CpmsSetupWizard
 
         try {
             $settings = App::settings();
-        } catch ( ScopeRequiredException ) {
-            // Multi-Clinic install without an explicit selector: never infer a Clinic.
+        } catch ( \Throwable ) {
+            // Any failure to establish the Settings Clinic is a hard denial.
+            // Never infer or write to another Clinic.
             set_transient( self::NOTICE_KEY, 'خطا: Clinic را صریحاً انتخاب کنید؛ هیچ Clinic پیش‌فرضی حدس زده نمی‌شود.', 60 );
             wp_safe_redirect( admin_url( 'admin.php?page=' . self::PAGE_SLUG ) );
             exit;
@@ -1491,67 +1601,88 @@ final class CpmsSetupWizard
 
         // Every wizard write (including mere progress) requires effective
         // Clinic-local CONFIG — a generic capability is never enough.
-        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id(), $settings->clinicId() ) ) {
             wp_die( 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
-        $error = '';
+        // The notice/redirect pair is computed inside the guarded block and
+        // performed after it: wp_safe_redirect() itself must stay outside
+        // the RuntimeException boundary so a redirect is never mistaken for
+        // a settings failure.
+        $notice     = '';
+        $location   = '';
+        $step_saved = false;
+        try {
+            $error = '';
 
-        switch ($step) {
-            case 'facility':
-                $error = self::save_facility( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
-                break;
-            case 'clinic':
-                $error = self::saveClinic($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
-                break;
-            case 'doctors':
-                $error = self::save_doctors( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- fields revalidated in save_doctors
-                break;
-            case 'booking':
-                $error = self::saveBooking($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
-                break;
-            case 'sms':
-                $error = self::saveSms($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
-                break;
-            case 'health':
-                $error = self::save_health( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- checkbox revalidated in save_health
-                break;
-            case 'finish':
-                $error = self::saveFinish($settings, (int) get_current_user_id());
-                break;
-            default:
-                // گام‌های ارجاعی/اطلاعی: فقط پیشرفت ثبت می‌شود.
-                break;
-        }
+            switch ( $step ) {
+                case 'facility':
+                    $error = self::save_facility( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
+                    break;
+                case 'clinic':
+                    $error = self::saveClinic( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
+                    break;
+                case 'doctors':
+                    $error = self::save_doctors( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- fields revalidated in save_doctors
+                    break;
+                case 'booking':
+                    $error = self::saveBooking( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
+                    break;
+                case 'sms':
+                    $error = self::saveSms( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
+                    break;
+                case 'health':
+                    $error = self::save_health( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- checkbox revalidated in save_health
+                    break;
+                case 'finish':
+                    $error = self::saveFinish( $settings, (int) get_current_user_id() );
+                    break;
+                default:
+                    // گام‌های ارجاعی/اطلاعی: فقط پیشرفت ثبت می‌شود.
+                    break;
+            }
 
-        if ($error !== '') {
-            set_transient(self::NOTICE_KEY, 'خطا: ' . $error, 60);
-            wp_safe_redirect( self::step_url( $step ) );
-            exit;
+            // Past this point the step's own writes are committed (each
+            // step handler persists atomically); only the progress writes
+            // below can still fail, and the failure message must not claim
+            // that nothing was saved when the step itself committed.
+            $step_saved = $error === '';
+            if ( $error !== '' ) {
+                $notice   = 'خطا: ' . $error;
+                $location = self::step_url( $step );
+            } elseif ( $step === 'finish' ) {
+                $notice   = 'راه‌اندازی تکمیل شد.';
+                $location = admin_url( 'admin.php?page=' . CpmsDashboard::PAGE_SLUG );
+            } else {
+                // Verified progression: entity steps advance only when actually
+                // complete; informational steps are recorded as completed.
+                $entity_steps = ['clinic', 'locations', 'doctors', 'schedules', 'review'];
+                if ( ! in_array( $step, $entity_steps, true ) && $step !== 'facility' ) {
+                    self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
+                }
+                $active_required = array_column( array_filter( self::active_steps(), static fn ( $s ) => $s['required'] ), 'id' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+                if ( in_array( $step, $active_required, true ) && ! self::step_is_complete( $step, $settings ) ) {
+                    $notice   = 'خطا: این گام هنوز کامل نیست؛ ابتدا اطلاعات واقعی آن را در صفحهٔ مربوط ثبت و ذخیره کنید، سپس ادامه دهید.';
+                    $location = self::step_url( $step );
+                } else {
+                    self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
+                    self::set_current_step( $settings, self::nextStepId( $step ) );
+                    $notice   = 'ذخیره شد.';
+                    $location = self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) );
+                }
+            }
+        } catch ( \RuntimeException ) {
+            // A settings write failure (for example an unverifiable
+            // settings snapshot or a failed mutation) must surface as a
+            // controlled, sanitized error — never a raw database or
+            // exception message, and never a silent partial save.
+            $notice   = $step_saved
+                ? 'خطا: اطلاعات این گام ذخیره شد، اما ثبت پیشرفت راه‌اندازی انجام نشد؛ لطفاً دوباره تلاش کنید.'
+                : 'خطا: ذخیره انجام نشد؛ لطفاً دوباره تلاش کنید.';
+            $location = self::step_url( $step );
         }
-
-        if ($step === 'finish') {
-            set_transient(self::NOTICE_KEY, 'راه‌اندازی تکمیل شد.', 60);
-            wp_safe_redirect(admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG));
-            exit;
-        }
-
-        // Verified progression: entity steps advance only when actually
-        // complete; informational steps are recorded as completed.
-        $entity_steps = ['clinic', 'locations', 'doctors', 'schedules', 'review'];
-        if ( ! in_array( $step, $entity_steps, true ) && $step !== 'facility' ) {
-            self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
-        }
-        $active_required = array_column( array_filter( self::active_steps(), static fn ( $s ) => $s['required'] ), 'id' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        if ( in_array( $step, $active_required, true ) && ! self::step_is_complete( $step, $settings ) ) {
-            set_transient( self::NOTICE_KEY, 'خطا: این گام هنوز کامل نیست؛ ابتدا اطلاعات واقعی آن را در صفحهٔ مربوط ثبت و ذخیره کنید، سپس ادامه دهید.', 60 );
-            wp_safe_redirect( self::step_url( $step ) );
-            exit;
-        }
-        self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
-        self::setCurrentStep(self::nextStepId($step));
-        set_transient(self::NOTICE_KEY, 'ذخیره شد.', 60);
-        wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
+        set_transient( self::NOTICE_KEY, $notice, 60 );
+        wp_safe_redirect( $location );
         exit;
     }
 
@@ -1564,9 +1695,20 @@ final class CpmsSetupWizard
      * are written.
      */
     public static function reset_progress( Settings $settings, int $uid ): void {
-        $settings->set( 'setup.current_step', 'welcome', $uid );
-        $settings->set( self::COMPLETE_KEY, false, $uid );
-        $settings->set( 'setup.outpatient_only_ack', false, $uid );
+        if ( ! self::has_clinic_local_config( $uid, $settings->clinicId() ) ) {
+            return;
+        }
+
+        // One atomic transition: step, completion flag and acknowledgment
+        // reset commit together or not at all.
+        $settings->set_many(
+            [
+                'setup.current_step'        => 'welcome',
+                self::COMPLETE_KEY          => false,
+                'setup.outpatient_only_ack' => false,
+            ],
+            $uid
+        );
     }
 
     public static function restart(): void
@@ -1582,12 +1724,24 @@ final class CpmsSetupWizard
             wp_die( 'Clinic انتخاب‌شده معتبر نیست یا عضویت فعال و مجوز پیکربندی آن را ندارید.', 403 );
         }
 
-        if ( ! self::has_clinic_local_config( (int) get_current_user_id() ) ) {
+        try {
+            $settings = App::settings();
+        } catch ( \Throwable ) {
+            wp_die( 'Clinic معتبر برای راه‌اندازی یافت نشد.', 403 );
+        }
+        if ( ! self::has_clinic_local_config( (int) get_current_user_id(), $settings->clinicId() ) ) {
             wp_die( 'برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
-        $settings = App::settings();
-        self::reset_progress( $settings, (int) get_current_user_id() );
+        try {
+            self::reset_progress( $settings, (int) get_current_user_id() );
+        } catch ( \RuntimeException ) {
+            // Controlled, sanitized failure: the restart is atomic, so no
+            // partial reset was committed; report a generic error.
+            set_transient( self::NOTICE_KEY, 'خطا: شروع دوباره انجام نشد؛ لطفاً دوباره تلاش کنید.', 60 );
+            wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
+            exit;
+        }
         set_transient(self::NOTICE_KEY, 'راه‌اندازی از نو شروع شد.', 60);
         wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
         exit;
@@ -1609,6 +1763,12 @@ final class CpmsSetupWizard
      */
     public static function saveClinic(Settings $settings, array $post, int $updatedBy): string
     {
+        if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+            // Keep profile-save denials generic: this guard also rejects actor,
+            // Settings, and scope mismatches, not only missing membership or CONFIG.
+            return 'دسترسی لازم را ندارید';
+        }
+
         // Input normalization (same as service validation but early check for UX)
         $name                = trim( (string) ( $post['clinic_name'] ?? '' ) );
         $address             = trim( (string) ( $post['clinic_address'] ?? '' ) );
@@ -1714,9 +1874,16 @@ final class CpmsSetupWizard
      */
     private static function bind_requested_clinic( array $source ): bool {
         self::$explicit_clinic_id = 0;
-        $requested_clinic_id      = AdminClinicSelector::requested_clinic_id( $source );
-        if ( null === $requested_clinic_id ) {
+        if ( ! array_key_exists( 'clinic_id', $source ) ) {
             return true;
+        }
+        if ( self::requested_clinic_selector_is_malformed( $source ) ) {
+            return false;
+        }
+
+        $requested_clinic_id = AdminClinicSelector::requested_clinic_id( $source );
+        if ( null === $requested_clinic_id ) {
+            return false;
         }
         $scope = AdminClinicSelector::establish( (int) get_current_user_id(), $requested_clinic_id, RolesAndCapabilities::CONFIG );
         if ( null === $scope ) {
@@ -1726,6 +1893,27 @@ final class CpmsSetupWizard
         self::$explicit_clinic_id = (int) $scope->clinicId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope::$clinicId is the published scope API.
 
         return true;
+    }
+
+    /**
+     * A selector is malformed when present but not a string/integer, or when
+     * the shared parser cannot produce a positive Clinic id. Keep this policy
+     * wizard-local so unrelated admin screens retain their selector contract.
+     *
+     * @param array<string|int, mixed> $source Usually $_GET or $_POST.
+     */
+    private static function requested_clinic_selector_is_malformed( array $source ): bool {
+        if ( ! array_key_exists( 'clinic_id', $source ) ) {
+            return false;
+        }
+
+        if ( ! is_string( $source['clinic_id'] ) && ! is_int( $source['clinic_id'] ) ) {
+            return true;
+        }
+
+        $requested_clinic_id = AdminClinicSelector::requested_clinic_id( $source );
+
+        return null === $requested_clinic_id || $requested_clinic_id <= 0;
     }
 
     /**
@@ -1774,7 +1962,10 @@ final class CpmsSetupWizard
     private static function render_clinic_choice( bool $rejected ): void {
         $choices = AdminClinicSelector::choices( (int) get_current_user_id(), RolesAndCapabilities::CONFIG );
         if ( $rejected ) {
-            echo '<div class="wrap" dir="rtl"><h1>' . esc_html( FacilityTypeCatalog::wizard_heading( self::selected_facility_type() ) ) . '</h1>';
+            // Keep the rejection page independent of Clinic-scoped settings:
+            // the selector is not a reason to read or reveal another Clinic's
+            // facility profile in a title or form.
+            echo '<div class="wrap" dir="rtl"><h1>راه‌اندازی</h1>';
             echo '<div class="notice notice-error" data-cpms-clinic-scope="denied"><p>Clinic درخواست‌شده معتبر نیست یا عضویت فعال و مجوز پیکربندی آن را ندارید؛ هیچ داده‌ای نمایش داده نشد.</p></div>';
         }
         if ( [] !== $choices ) {
@@ -1787,32 +1978,60 @@ final class CpmsSetupWizard
     }
 
     /**
-     * Effective Clinic-local CONFIG authorization for wizard writes.
+     * Effective Clinic-local CONFIG authorization for the exact Settings scope.
      *
-     * The generic WordPress capability alone is NOT Clinic authority: the
-     * actor must hold an active membership in exactly one trusted Clinic
-     * and pass AuthorizationService for CONFIG in that Clinic (the same
-     * engine every other Clinic write path uses). No clinic_id is ever
-     * taken from the request.
+     * The generic WordPress capability alone is NOT Clinic authority. The
+     * passed actor must be the current WordPress user (no membership borrowing),
+     * and the settings Clinic must match the live App scope and the Clinic
+     * established by that actor's active membership. An explicit selector is
+     * re-checked against that same Clinic; ambiguous or stale scope fails closed.
      */
-    private static function has_clinic_local_config( int $actor_user_id ): bool {
-        if ( $actor_user_id <= 0 || ! current_user_can( RolesAndCapabilities::CONFIG ) ) {
+    private static function has_clinic_local_config( int $actor_user_id, int $settings_clinic_id ): bool {
+        if (
+            $actor_user_id <= 0
+            || $actor_user_id !== (int) get_current_user_id()
+            || $settings_clinic_id <= 0
+            || ! current_user_can( RolesAndCapabilities::CONFIG )
+        ) {
             return false;
         }
 
-        // Multi-Clinic: a Clinic explicitly selected and verified in this request
-        // (bind_requested_clinic) is re-checked here: ACTIVE membership + CONFIG.
-        $explicit_clinic_id = self::explicit_clinic_bound();
-        if ( $explicit_clinic_id > 0 ) {
-            return null !== App::membership_service()->active_membership_for( $explicit_clinic_id, $actor_user_id )
-                && App::authorization_service()->can( $actor_user_id, $explicit_clinic_id, RolesAndCapabilities::CONFIG );
-        }
-
         try {
-            $establisher = new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) );
-            $scope       = $establisher->establish( $actor_user_id, null );
-            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ScopeContext exposes the public domain property as clinicId.
-            App::authorization_service()->authorize( $actor_user_id, (int) $scope->clinicId, RolesAndCapabilities::CONFIG );
+            $scope = App::scope();
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope exposes the public domain property as clinicId.
+            $scope_clinic_id = (int) $scope->clinicId;
+            if ( $scope_clinic_id <= 0 || $scope_clinic_id !== $settings_clinic_id ) {
+                return false;
+            }
+
+            // Preserve the selector decision made at the request boundary. If
+            // the live ScopeContext no longer matches it, do not fall back to
+            // implicit membership resolution for a different Clinic.
+            $explicit_clinic_id = self::$explicit_clinic_id;
+            if ( $explicit_clinic_id > 0 ) {
+                if (
+                    $explicit_clinic_id !== $settings_clinic_id
+                    || self::explicit_clinic_bound() !== $explicit_clinic_id
+                ) {
+                    return false;
+                }
+
+                return null !== App::membership_service()->active_membership_for( $explicit_clinic_id, $actor_user_id )
+                    && App::authorization_service()->can( $actor_user_id, $explicit_clinic_id, RolesAndCapabilities::CONFIG );
+            }
+
+            // No selector: preserve the existing unique-active-membership
+            // requirement, but require it to be exactly the Clinic whose
+            // Settings instance is being rendered or written.
+            $trusted_scope = ( new TrustedClinicEstablisher( App::db(), new MembershipRepository( App::db() ) ) )
+                ->establish( $actor_user_id, null );
+            // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope exposes the public domain property as clinicId.
+            $trusted_clinic_id = (int) $trusted_scope->clinicId;
+            if ( $trusted_clinic_id !== $settings_clinic_id ) {
+                return false;
+            }
+
+            App::authorization_service()->authorize( $actor_user_id, $trusted_clinic_id, RolesAndCapabilities::CONFIG );
 
             return true;
         } catch ( \Throwable ) {
@@ -1844,7 +2063,7 @@ final class CpmsSetupWizard
 
     public static function saveBooking(Settings $settings, array $post, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیرهٔ تنظیمات رزرو، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
@@ -1863,11 +2082,18 @@ final class CpmsSetupWizard
         $future = max(1, min(365, (int) ($post['future'] ?? 60)));
         $cancel = max(0, min(168, (int) ($post['cancel'] ?? 24)));
 
-        $settings->set('booking.duration_default_min', $duration, $updatedBy);
-        $settings->set('booking.slot_capacity_default', $capacity, $updatedBy);
-        $settings->set('booking.min_lead_hours', $lead, $updatedBy);
-        $settings->set('booking.max_future_days', $future, $updatedBy);
-        $settings->set('booking.cancel_deadline_hours', $cancel, $updatedBy);
+        // One atomic transition: the whole booking policy commits or none.
+        $updated_by = $updatedBy; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy signature parameter.
+        $settings->set_many(
+            [
+                'booking.duration_default_min'  => $duration,
+                'booking.slot_capacity_default' => $capacity,
+                'booking.min_lead_hours'        => $lead,
+                'booking.max_future_days'       => $future,
+                'booking.cancel_deadline_hours' => $cancel,
+            ],
+            $updated_by
+        );
 
         return '';
     }
@@ -1881,18 +2107,22 @@ final class CpmsSetupWizard
      */
     public static function saveSms(Settings $settings, array $post, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای ذخیرهٔ تنظیمات پیامک، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
         $provider = trim((string) ($post['sms_provider'] ?? ''));
         $sender = trim((string) ($post['sms_sender'] ?? ''));
 
+        $sms_writes = [];
         if ($provider !== '') {
-            $settings->set('sms.provider', $provider, $updatedBy);
+            $sms_writes['sms.provider'] = $provider;
         }
-        if ($sender !== '') {
-            $settings->set('sms.sender', $sender, $updatedBy);
+        if ( $sender !== '' ) {
+            $sms_writes['sms.sender'] = $sender;
+        }
+        if ( $sms_writes !== [] ) {
+            $settings->set_many( $sms_writes, $updatedBy ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- legacy signature parameter.
         }
 
         return '';
@@ -1903,12 +2133,15 @@ final class CpmsSetupWizard
      */
     private static function saveFinish(Settings $settings, int $updatedBy): string
     {
-        if ( ! self::has_clinic_local_config( $updatedBy ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
+        if ( ! self::has_clinic_local_config( $updatedBy, $settings->clinicId() ) ) { // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase -- pre-existing public wizard API parameter name
             return 'برای تکمیل راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.';
         }
 
         $facility_selected = self::facility_selected( $settings );
         if ( $facility_selected ) {
+            if ( self::selected_facility_type() === '' ) {
+                return 'تنظیم نوع مرکز ذخیره‌شده قابل تأیید نیست؛ پیش‌نیازهای راه‌اندازی بررسی نشد.';
+            }
             if ( ! FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() ) ) {
                 return 'این مرحلهٔ ویزارد هنوز درمانگاه‌های مستقل را به‌صورت تطبیقی راه‌اندازی نمی‌کند. مدیر سازمانِ دارای عضویت صریح می‌تواند درمانگاه را از صفحهٔ «سازمان‌ها و درمانگاه‌ها» ایجاد کند؛ برای ادامهٔ پیکربندی هر درمانگاه، انتخاب صریح محدوده لازم است.';
             }

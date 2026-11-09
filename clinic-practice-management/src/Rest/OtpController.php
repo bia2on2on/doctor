@@ -8,6 +8,8 @@ use ClinicCore\Application\Auth\OtpException;
 use ClinicCore\Application\Auth\OtpService;
 use ClinicCore\Application\Scope\ScopeRequiredException;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Bootstrap\RuntimeSchemaGate;
+use ClinicCore\Settings\SettingsUnavailableException;
 use ClinicCore\Domain\Booking\BookingException;
 use ClinicCore\Infrastructure\Repository\MembershipRepository;
 use ClinicCore\Infrastructure\Security\ClientIp;
@@ -108,6 +110,13 @@ final class OtpController extends RestBase
             }
 
             return $this->success($result, 200);
+        } catch ( SettingsUnavailableException $e ) {
+            // Unreadable OTP rate-limit settings: fail closed with the
+            // established neutral service-unavailable envelope (503) —
+            // never a raw internal error, never weakened limits.
+            unset( $e );
+
+            return $this->error( RuntimeSchemaGate::PUBLIC_ERROR_CODE, 503, RuntimeSchemaGate::NEUTRAL_MESSAGE );
         } catch (OtpException $e) {
             return $this->error($e->apiCode(), $e->httpStatus(), $e->getMessage(), $e->getData());
         } catch (BookingException $e) {
@@ -134,6 +143,12 @@ final class OtpController extends RestBase
             );
 
             return $this->success($result, 200);
+        } catch ( SettingsUnavailableException $e ) {
+            // Same controlled 503 envelope as the request route; the
+            // challenge is not consumed and no session is issued.
+            unset( $e );
+
+            return $this->error( RuntimeSchemaGate::PUBLIC_ERROR_CODE, 503, RuntimeSchemaGate::NEUTRAL_MESSAGE );
         } catch (OtpException $e) {
             return $this->error($e->apiCode(), $e->httpStatus(), $e->getMessage(), $e->getData());
         } catch (ScopeRequiredException $e) {

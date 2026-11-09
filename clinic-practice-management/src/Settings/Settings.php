@@ -138,6 +138,33 @@ final class Settings
     private static array $cache = [];
 
     /**
+     * Clinics whose latest bulk Settings read failed. While a Clinic is in
+     * this set, get() keeps returning the documented defaults instead of
+     * retrying mid-operation: one consumer therefore never combines
+     * unverified defaults for some keys with freshly loaded stored values
+     * for others in the same snapshot. The latch is cleared by a verified
+     * load (require_verified_snapshot()), by flushCache(), or by a
+     * successful set().
+     *
+     * @var array<int, true>
+     */
+    private static array $load_failed = [];
+
+    /**
+     * CpmsDb rollback epoch at which each Clinic's cached snapshot (and
+     * soft-failure latch) was taken. A snapshot read inside a transaction
+     * that later rolls back contains uncommitted values; once the epoch
+     * moves, the snapshot/latch is stale and must be re-read from the
+     * durable state instead of being trusted.
+     *
+     * @var array<int, int>
+     */
+    private static array $cache_epoch = [];
+
+    /** @var array<int, int> */
+    private static array $load_failed_epoch = [];
+
+    /**
      * کلیدهای Telemetry عملیاتی (نه Config کاربر) — Audit نمی‌شوند (F1-4).
      *
      * این کلیدها توسط سیستم و به‌تکرار نوشته می‌شوند (Tick/بکاپ/تست SMS) و جدا
@@ -179,7 +206,9 @@ final class Settings
 
     public function get(string $key, mixed $default = null): mixed
     {
-        $this->load();
+        if ( ! $this->load() ) {
+            return array_key_exists( $key, self::DEFAULTS ) ? self::DEFAULTS[ $key ] : $default;
+        }
         if (array_key_exists($key, self::$cache[$this->clinicId])) {
             return self::$cache[$this->clinicId][$key];
         }
@@ -190,8 +219,32 @@ final class Settings
         return $default;
     }
 
+    /**
+     * Whether this Clinic has a persisted row for the key, independent of
+     * defaults. If the bulk settings cache is unavailable, query strictly so
+     * a read failure cannot masquerade as a missing legacy setting.
+     */
+    public function has_stored( string $key ): bool {
+        $clinic_id = $this->clinicId();
+        if ( $this->snapshot_is_current() ) {
+            return array_key_exists( $key, self::$cache[ $clinic_id ] );
+        }
+
+        return $this->db->fetch_all_strict(
+            'SELECT `key` FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s LIMIT 1',
+            [ $clinic_id, $key ]
+        ) !== [];
+    }
+
     public function set( string $key, mixed $value, ?int $updated_by = null ): void
     {
+        // The before-value drives the effective-change comparison and the
+        // mandatory audit payload, so it must come from a verified read:
+        // if this Clinic's settings cannot be loaded, refuse the write
+        // (no write, no audit) instead of comparing or auditing against
+        // an unverified default that may differ from the stored value.
+        $this->require_verified_snapshot();
+
         // F1-4 — before (مقدار مؤثر: ردیف یا Default) برای Audit تغییر مؤثر
         $before      = $this->get( $key );
         $before_json = wp_json_encode( $before, JSON_UNESCAPED_UNICODE );
@@ -199,10 +252,19 @@ final class Settings
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published API property.
         $clinic_id = $this->clinicId;
 
-        $row = $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s',
-            [ $clinic_id, $key ]
-        );
+        // The point lookup decides insert-vs-update, so it must distinguish
+        // a failed read from genuine absence: a soft fetchRow returns null
+        // for both, which could route a failed read into an insert and let
+        // the audit below record a mutation that never persisted.
+        try {
+            $lookup = $this->db->fetch_all_strict(
+                'SELECT id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s',
+                [ $clinic_id, $key ]
+            );
+        } catch ( \RuntimeException $e ) {
+            throw new SettingsUnavailableException( 'Settings lookup failed.', 0, $e );
+        }
+        $row = $lookup[0] ?? null;
         // D6 audit atomicity: the setting write and its mandatory SETTING_UPDATE
         // audit share one boundary (nested SAVEPOINT when a caller already opened
         // one). A failed audit rolls the setting change back; the in-memory cache is
@@ -210,8 +272,11 @@ final class Settings
         // previous value instead of ever exposing an un-audited setting.
         $this->db->transactional(
             function () use ( $key, $value, $updated_by, $before, $after_json, $before_json, $row, $clinic_id ) {
+                // A failed mutation must abort the boundary (rolling back
+                // any audit written alongside it) instead of letting
+                // auditChange record a change that never persisted.
                 if ( $row === null ) {
-                    $this->db->insert(
+                    $written = $this->db->insert(
                         'cpms_settings',
                         [
                             'clinic_id'             => $clinic_id,
@@ -222,18 +287,54 @@ final class Settings
                         ]
                     );
                 } else {
-                    $this->db->query(
+                    $written = $this->db->query(
                         'UPDATE ' . $this->db->table( 'cpms_settings' ) .
                         ' SET value_json = %s, updated_by_wp_user_id = %s, updated_at = %s
                          WHERE clinic_id = %d AND `key` = %s',
                         [ $after_json, $updated_by, $this->db->nowUtcSql(), $clinic_id, $key ]
                     );
                 }
+                if ( ! $written ) {
+                    throw new \RuntimeException( 'Settings write failed.' );
+                }
 
                 $this->auditChange( $key, $before, $value, $before_json, $after_json, $updated_by );
             }
         );
-        unset( self::$cache[ $clinic_id ] );
+        unset( self::$cache[ $clinic_id ], self::$cache_epoch[ $clinic_id ], self::$load_failed[ $clinic_id ], self::$load_failed_epoch[ $clinic_id ] );
+    }
+
+    /**
+     * Write several settings as ONE atomic transition: every value and its
+     * SETTING_UPDATE audit commits, or none of them do. Callers performing
+     * a single logical transition across keys (facility selection plus
+     * acknowledgment reset, wizard restart, booking policy) must use this
+     * instead of sequential set() calls, whose per-call transactions could
+     * leave a partial state behind (for example a new facility selection
+     * with the previous selection's acknowledgment still valid). Nested
+     * per-set transactions become savepoints under this boundary.
+     *
+     * @param array<string, mixed> $values
+     */
+    public function set_many( array $values, ?int $updated_by = null ): void {
+        try {
+            $this->db->transactional(
+                function () use ( $values, $updated_by ) {
+                    foreach ( $values as $key => $value ) {
+                        $this->set( (string) $key, $value, $updated_by );
+                    }
+                }
+            );
+        } catch ( \Throwable $e ) {
+            // Inner writes repopulate the snapshot cache with values read
+            // inside this transaction; a rollback (or a failed commit)
+            // makes those values phantom. The rollback-epoch check in
+            // load() already refuses such snapshots, and dropping the
+            // cached copy here keeps no stale copy behind even if the
+            // rollback itself could not be verified.
+            unset( self::$cache[ $this->clinicId() ], self::$cache_epoch[ $this->clinicId() ] );
+            throw $e;
+        }
     }
 
     /**
@@ -295,6 +396,12 @@ final class Settings
 
     public function otpPolicy(): OtpPolicy
     {
+        // OTP limits are rate-limiting controls: the policy must be built
+        // entirely from verified stored settings (or genuine defaults when
+        // no rows exist), never from a mix of unverified defaults and
+        // later-loaded values. An unreadable settings table fails closed.
+        $this->require_verified_snapshot();
+
         return new OtpPolicy(
             (int) $this->get('otp.ttl_sec'),
             (int) $this->get('otp.max_attempts'),
@@ -319,23 +426,110 @@ final class Settings
         return $row['timezone'] ?? 'Asia/Tehran';
     }
 
-    private function load(): void
+    /**
+     * Whether the cached snapshot for this Clinic was taken at the
+     * connection's current rollback epoch. A snapshot older than the
+     * latest rollback may contain values that were read inside a
+     * transaction and never committed (for example an inner write of a
+     * set_many() batch that a later failure rolled back).
+     */
+    private function snapshot_is_current(): bool {
+        $clinic_id = $this->clinicId();
+
+        return array_key_exists( $clinic_id, self::$cache )
+            && ( self::$cache_epoch[ $clinic_id ] ?? -1 ) === $this->db->rollback_epoch();
+    }
+
+    private function load(): bool
     {
-        if (array_key_exists($this->clinicId, self::$cache)) {
+        if ( $this->snapshot_is_current() ) {
+            return true;
+        }
+        // A snapshot or latch from before the latest rollback describes
+        // uncommitted (or pre-rollback) state: drop both and re-read the
+        // durable state instead of trusting them.
+        unset( self::$cache[ $this->clinicId() ], self::$cache_epoch[ $this->clinicId() ] );
+        if ( $this->db->is_strict() ) {
+            // CpmsDb strict mode (e.g. migrations): a failed SQL read must
+            // propagate, exactly as the soft reader did before. Strict mode
+            // is checked before the soft-failure latch so that enabling
+            // strict mode later in the same request can never have a strict
+            // contract error masked by an earlier soft failure.
+            $this->load_strict();
+
+            return true;
+        }
+        if ( isset( self::$load_failed[ $this->clinicId() ] )
+            && ( self::$load_failed_epoch[ $this->clinicId() ] ?? -1 ) === $this->db->rollback_epoch()
+        ) {
+            // Consistent snapshot: after a failed read, get() keeps
+            // returning defaults until a verified-load boundary
+            // (require_verified_snapshot(), flushCache(), or set()).
+            // The latch is epoch-scoped: a rollback since the failure
+            // means durable state may differ, so the read is retried.
+            return false;
+        }
+        unset( self::$load_failed[ $this->clinicId() ], self::$load_failed_epoch[ $this->clinicId() ] );
+
+        try {
+            $this->load_strict();
+        } catch ( \RuntimeException ) {
+            // Preserve Settings' soft-read behavior for ordinary consumers,
+            // but never cache the failed read as an empty (legacy)
+            // configuration, and do not retry within this snapshot.
+            self::$load_failed[ $this->clinicId() ]       = true;
+            self::$load_failed_epoch[ $this->clinicId() ] = $this->db->rollback_epoch();
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Load this Clinic's settings with a strict read and cache the verified
+     * result. Throws on any database read failure.
+     */
+    private function load_strict(): void {
+        try {
+            $rows = $this->db->fetch_all_strict(
+                'SELECT `key`, value_json FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
+                [ $this->clinicId() ]
+            );
+        } catch ( \RuntimeException $e ) {
+            throw new SettingsUnavailableException( 'Settings are temporarily unavailable.', 0, $e );
+        }
+
+        $clinic_cache = [];
+        foreach ( $rows as $row ) {
+            $clinic_cache[ (string) $row['key'] ] = json_decode( (string) $row['value_json'], true );
+        }
+        self::$cache[ $this->clinicId() ]       = $clinic_cache;
+        self::$cache_epoch[ $this->clinicId() ] = $this->db->rollback_epoch();
+        unset( self::$load_failed[ $this->clinicId() ], self::$load_failed_epoch[ $this->clinicId() ] );
+    }
+
+    /**
+     * Require a verified settings snapshot for operations whose decisions
+     * must not rest on unverified defaults (settings writes and their
+     * audit comparison, OTP rate-limit policy). Returns immediately when
+     * a verified snapshot is already cached; otherwise performs a fresh
+     * strict load even if an earlier read in this snapshot failed, and
+     * throws a RuntimeException when the settings cannot be verified.
+     */
+    public function require_verified_snapshot(): void {
+        if ( $this->snapshot_is_current() ) {
             return;
         }
-        self::$cache[$this->clinicId] = [];
-        $rows = $this->db->fetchAll(
-            'SELECT `key`, value_json FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d',
-            [$this->clinicId]
-        );
-        foreach ($rows as $row) {
-            self::$cache[$this->clinicId][(string) $row['key']] = json_decode((string) $row['value_json'], true);
-        }
+
+        $this->load_strict();
     }
 
     public static function flushCache(): void
     {
-        self::$cache = [];
+        self::$cache             = [];
+        self::$cache_epoch       = [];
+        self::$load_failed       = [];
+        self::$load_failed_epoch = [];
     }
 }

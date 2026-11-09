@@ -12,7 +12,8 @@
  * تفاوتِ only-این-slice: حالتِ `$require_manifest_hash` — برای مسیرِ آینه‌سازی نبودِ
  * sidecar هم خطاست (نه فقط هشدار)، چون بدونِ آن اصالتِ مانیفست اثبات‌پذیر نیست و
  * آپلودِ «اثبات‌شده» معنا ندارد. مصرف‌کنندهٔ موجود (Admin/REST) مثلِ قبل فقط
- * warning می‌گیرد — شکلِ نتیجه و رشته‌های پیام عمداً یکسانِ قبل است.
+ * warning می‌گیرد — ساختارِ نتیجه ثابت می‌ماند، ولی diagnostics به categoryهای
+ * allowlist‌شده محدودند و هیچ نام فایل/مسیر یا جزئیات فنی را حمل نمی‌کنند.
  *
  * هیچ نوشتنی روی دیسک ندارد؛ فقط خواندنِ اتمیک/حجم‌محور (`filesize`/`hash_file`) تا
  * فایلِ بزرگِ `db.sql` هرگز در حافظه بارگذاری نشود.
@@ -28,6 +29,7 @@ declare(strict_types=1);
 namespace ClinicCore\Application\Backup;
 
 use ClinicCore\Domain\Backup\BackupManifest;
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 
 /**
  * وریفایرِ خالصِ محلی — بدونِ نوشتن روی دیسک، بدونِ وردپرس، بدونِ DB.
@@ -53,7 +55,7 @@ final class LocalBackupVerifier {
 		if ( ! is_string( $expected ) || trim( $expected ) === '' ) {
 			return self::HASH_MISSING;
 		}
-		$actual = hash_file( 'sha256', $dir . '/manifest.json' );
+		$actual = @hash_file( 'sha256', $dir . '/manifest.json' );
 
 		return is_string( $actual ) && hash_equals( trim( $expected ), $actual )
 			? self::HASH_OK
@@ -73,27 +75,27 @@ final class LocalBackupVerifier {
 	public static function verify( string $dir, string $backup_id, bool $require_manifest_hash = false ): array {
 		$raw = self::read_manifest( $dir );
 		if ( $raw === null ) {
-			return self::result( false, array( 'manifest missing/corrupt' ), array(), null );
+			return self::result( false, array( BackupVerificationErrorCodes::MANIFEST_MISSING_OR_INVALID ), array(), null );
 		}
 
 		$warnings   = array();
 		$hash_state = self::manifestHashState( $dir );
 		if ( $hash_state === self::HASH_MISMATCH ) {
-			return self::result( false, array( 'manifest.json tampered' ), array(), null );
+			return self::result( false, array( BackupVerificationErrorCodes::MANIFEST_TAMPERED ), array(), null );
 		}
 		if ( $hash_state === self::HASH_MISSING ) {
 			if ( $require_manifest_hash ) {
 				return self::result(
 					false,
-					array( 'manifest.json.sha256 missing — manifest authenticity cannot be verified' ),
+					array( BackupVerificationErrorCodes::MANIFEST_AUTHENTICITY_UNVERIFIED ),
 					array(),
 					null
 				);
 			}
-			$warnings[] = 'manifest.json.sha256 missing — legacy backup; manifest authenticity cannot be verified';
+			$warnings[] = BackupVerificationErrorCodes::MANIFEST_AUTHENTICITY_UNVERIFIED;
 		}
 		if ( (string) ( $raw['backup_id'] ?? '' ) !== $backup_id ) {
-			return self::result( false, array( 'manifest backup_id mismatch' ), $warnings, null );
+			return self::result( false, array( BackupVerificationErrorCodes::MANIFEST_BACKUP_ID_MISMATCH ), $warnings, null );
 		}
 
 		$result = BackupManifest::verifyFiles(
@@ -103,11 +105,15 @@ final class LocalBackupVerifier {
 				if ( ! is_file( $abs ) ) {
 					return null;
 				}
-				$hash = hash_file( 'sha256', $abs );
+				$hash = @hash_file( 'sha256', $abs );
+				$size = @filesize( $abs );
+				if ( ! is_string( $hash ) || ! is_int( $size ) ) {
+					return null;
+				}
 
 				return array(
-					'size'   => (int) filesize( $abs ),
-					'sha256' => is_string( $hash ) ? $hash : '',
+					'size'   => $size,
+					'sha256' => $hash,
 				);
 			}
 		);
@@ -144,10 +150,15 @@ final class LocalBackupVerifier {
 	 * @return array{ok: bool, errors: list<string>, warnings: list<string>, manifest: array<string, mixed>|null}
 	 */
 	private static function result( bool $ok, array $errors, array $warnings, ?array $manifest ): array {
+		$safe_errors = BackupVerificationErrorCodes::safe_error_categories( $errors );
+		if ( ! $ok && $safe_errors === array() ) {
+			$safe_errors = array( BackupVerificationErrorCodes::VERIFICATION_FAILED );
+		}
+
 		return array(
 			'ok'       => $ok,
-			'errors'   => $errors,
-			'warnings' => $warnings,
+			'errors'   => $safe_errors,
+			'warnings' => BackupVerificationErrorCodes::safe_warning_categories( $warnings ),
 			'manifest' => $manifest,
 		);
 	}
