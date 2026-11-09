@@ -503,6 +503,62 @@ final class SetupWizardTest extends WP_UnitTestCase
         $finish_before_ack = $this->renderWizardStep('finish', $clinic_b);
         self::assertStringContainsString('data-cpms-finish-ready="0"', $finish_before_ack);
         self::assertStringNotContainsString('✅ راه‌اندازی تکمیل شده است', $finish_before_ack);
+
+        // Fail the first full Settings read after cache flush. This used to
+        // initialize an empty cache, making Clinic B look like a legacy setup
+        // and allowing the Clinic-name/clinician fallback to bypass its ack.
+        Settings::flushCache();
+        $render_read_failed = false;
+        $render_fault = $this->failNextSettingsReadForClinic($clinic_b, $render_read_failed);
+        $previous_suppression = $wpdb->suppress_errors(true);
+        add_filter('query', $render_fault, 5, 1);
+        try {
+            $finish_after_read_failure = $this->renderWizardStep('finish', $clinic_b);
+        } finally {
+            remove_filter('query', $render_fault, 5);
+            $wpdb->suppress_errors($previous_suppression);
+        }
+        self::assertTrue($render_read_failed, 'the fixture must fail the first Clinic B settings read');
+        self::assertStringContainsString('data-cpms-finish-ready="0"', $finish_after_read_failure);
+        self::assertStringNotContainsString('data-cpms-finish-ready="1"', $finish_after_read_failure);
+        self::assertStringNotContainsString('✅ راه‌اندازی تکمیل شده است', $finish_after_read_failure);
+
+        // Exercise the same one-shot read failure on the write path as well;
+        // every hospital prerequisite except the fresh acknowledgment is met.
+        $before_a_failed_finish = $this->clinicSettingValues($clinic_a, $keys);
+        $before_b_failed_finish = $this->clinicSettingValues($clinic_b, $keys);
+        $audit_a_before_failed_finish = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_a]
+        );
+        $audit_b_before_failed_finish = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        );
+        Settings::flushCache();
+        $save_read_failed = false;
+        $save_fault = $this->failNextSettingsReadForClinic($clinic_b, $save_read_failed);
+        $previous_suppression = $wpdb->suppress_errors(true);
+        add_filter('query', $save_fault, 5, 1);
+        try {
+            $finish_error_after_read_failure = $this->invokeSaveFinish($user_id);
+        } finally {
+            remove_filter('query', $save_fault, 5);
+            $wpdb->suppress_errors($previous_suppression);
+        }
+        self::assertTrue($save_read_failed, 'saveFinish must encounter the injected Clinic B settings read failure');
+        self::assertStringContainsString('سلامت سیستم', $finish_error_after_read_failure, 'the hospital acknowledgment must remain required');
+        Settings::flushCache();
+        self::assertSame($before_a_failed_finish, $this->clinicSettingValues($clinic_a, $keys), 'a failed Clinic B read must not write Clinic A settings');
+        self::assertSame($before_b_failed_finish, $this->clinicSettingValues($clinic_b, $keys), 'a failed read must not set Clinic B completion');
+        self::assertSame($audit_a_before_failed_finish, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_a]
+        ));
+        self::assertSame($audit_b_before_failed_finish, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        ));
         self::assertSame('', CpmsSetupWizard::save_health($settings_b, ['outpatient_only_ack' => '1'], $user_id));
         self::assertTrue(CpmsSetupWizard::step_is_complete('health', $settings_b));
         self::assertSame([], CpmsSetupWizard::missing_required_steps($settings_b));
@@ -531,6 +587,83 @@ final class SetupWizardTest extends WP_UnitTestCase
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
             [$clinic_a]
         ), 'Clinic B settings writes must not create an audit event for Clinic A.');
+    }
+
+    public function testExplicitClinicWithMissingFacilitySettingKeepsLegacyFinishSemantics(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        self::assertSame('', CpmsSetupWizard::save_facility(App::settings(), [
+            'facility_type' => 'doctor_practice',
+            'structure'     => 'single',
+        ], $user_id));
+
+        $clinic_b = $this->createAdditionalClinic('legacy-no-facility');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+        $clinician_id = App::clinicianRepository()->create($clinic_b, ['full_name' => 'Legacy Clinic B clinician']);
+        self::assertGreaterThan(0, $clinician_id);
+
+        $keys = ['setup.facility_type', 'setup.facility_structure', CpmsSetupWizard::COMPLETE_KEY];
+        $before_a = $this->clinicSettingValues($clinic_a, $keys);
+        $clinic_a_meta = [
+            'facility_type' => (string) get_user_meta($user_id, 'cpms_onboarding_facility_type', true),
+            'structure'     => (string) get_user_meta($user_id, 'cpms_onboarding_structure', true),
+        ];
+        $clinic_b_before = $this->clinicSettingValues($clinic_b, $keys);
+
+        $html = $this->renderWizardStep('finish', $clinic_b);
+        $settings_b = App::settings();
+        self::assertSame($clinic_b, $settings_b->clinicId());
+        self::assertFalse($settings_b->has_stored('setup.facility_type'), 'a genuinely absent B row is the legacy case');
+        self::assertStringContainsString('data-cpms-finish-ready="1"', $html, 'legacy Clinic completion remains based on its canonical name and real clinician');
+        self::assertSame('', $this->invokeSaveFinish($user_id));
+
+        Settings::flushCache();
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, $keys), 'legacy completion in B must not write Clinic A settings');
+        self::assertSame($clinic_b_before['setup.facility_type'], $this->clinicSettingValues($clinic_b, $keys)['setup.facility_type']);
+        self::assertTrue((bool) App::settings()->get(CpmsSetupWizard::COMPLETE_KEY, false), 'the legitimate legacy path still records completion in B');
+        self::assertSame($clinic_a_meta['facility_type'], (string) get_user_meta($user_id, 'cpms_onboarding_facility_type', true));
+        self::assertSame($clinic_a_meta['structure'], (string) get_user_meta($user_id, 'cpms_onboarding_structure', true));
+    }
+
+    public function testExplicitClinicWithInvalidFacilitySettingCannotUseLegacyFinishFallback(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        self::assertSame('', CpmsSetupWizard::save_facility(App::settings(), [
+            'facility_type' => 'doctor_practice',
+            'structure'     => 'single',
+        ], $user_id));
+
+        $clinic_b = $this->createAdditionalClinic('invalid-facility');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+        $this->setClinicSetting($clinic_b, 'setup.facility_type', 'forged_facility_type', $user_id);
+        $this->setClinicSetting($clinic_b, CpmsSetupWizard::COMPLETE_KEY, false, $user_id);
+        $clinician_id = App::clinicianRepository()->create($clinic_b, ['full_name' => 'Invalid Clinic B clinician']);
+        self::assertGreaterThan(0, $clinician_id);
+
+        $keys = ['setup.facility_type', CpmsSetupWizard::COMPLETE_KEY];
+        $before_a = $this->clinicSettingValues($clinic_a, $keys);
+        $before_b = $this->clinicSettingValues($clinic_b, $keys);
+        $clinic_b_profile = App::clinicRepository()->find($clinic_b);
+        $clinic_a_meta = [
+            'facility_type' => (string) get_user_meta($user_id, 'cpms_onboarding_facility_type', true),
+            'structure'     => (string) get_user_meta($user_id, 'cpms_onboarding_structure', true),
+        ];
+
+        $html = $this->renderWizardStep('finish', $clinic_b);
+        self::assertStringContainsString('data-cpms-finish-ready="0"', $html);
+        self::assertStringContainsString('data-cpms-facility-config-unverified="1"', $html);
+        self::assertStringNotContainsString('✅ راه‌اندازی تکمیل شده است', $html);
+        $error = $this->invokeSaveFinish($user_id);
+        self::assertStringContainsString('قابل تأیید نیست', $error, 'invalid persisted data must not enter the legacy save fallback');
+
+        Settings::flushCache();
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, $keys), 'invalid Clinic B data must not write Clinic A settings');
+        self::assertSame($before_b, $this->clinicSettingValues($clinic_b, $keys), 'invalid facility configuration must not set completion');
+        self::assertSame($clinic_b_profile, App::clinicRepository()->find($clinic_b), 'the denied finish must not alter either Clinic profile');
+        self::assertSame($clinic_a_meta['facility_type'], (string) get_user_meta($user_id, 'cpms_onboarding_facility_type', true));
+        self::assertSame($clinic_a_meta['structure'], (string) get_user_meta($user_id, 'cpms_onboarding_structure', true));
     }
 
     public function testFacilityStepCarriesTheExplicitClinicAndPostChangesOnlyThatClinic(): void
@@ -1506,6 +1639,27 @@ final class SetupWizardTest extends WP_UnitTestCase
         $method->setAccessible(true);
 
         return (string) $method->invoke(null, App::settings(), $updatedBy);
+    }
+
+    private function failNextSettingsReadForClinic(int $clinicId, bool &$injected): \Closure
+    {
+        global $wpdb;
+        $settings_table = $wpdb->prefix . 'cpms_settings';
+
+        return static function ($query) use ($clinicId, $settings_table, &$injected) {
+            $query = (string) $query;
+            if (
+                ! $injected
+                && str_contains( $query, 'SELECT `key`, value_json FROM ' . $settings_table )
+                && preg_match( '/WHERE clinic_id = ' . $clinicId . '\s*$/', $query ) === 1
+            ) {
+                $injected = true;
+
+                return str_replace( 'FROM ' . $settings_table, 'FROM ' . $settings_table . '_read_failure', $query );
+            }
+
+            return $query;
+        };
     }
 
     private function captureWpDie(callable $fn): void

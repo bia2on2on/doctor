@@ -4933,3 +4933,23 @@ No new product/access-policy decision was needed for this narrow contract restor
 
 - Work remains on `/home/user/doctor-diagnostic-pr334`, branch `arena/0f2e4530-doctor`, then at base commit `167561d62411d998f31d07c94ff58bd432b3d8b8`. The existing PR #334 is draft/open and has no review requests. No CI checks were inspected, no PR body was changed, and no merge was performed.
 - The requested two independent reviews have not been performed or requested; reviewer identities were not supplied. Native PHPUnit/WP-MySQL validation and two independent reviews remain outstanding before merge consideration.
+
+## 2026-11-08 — PR #334 wizard legacy-fallback fail-closed follow-up (invalid / unreadable facility configuration)
+
+### Changes
+
+- The wizard's legacy finish fallback (canonical Clinic name + one active clinician) now opens only for a *verifiably absent* Clinic-scoped `setup.facility_type` row. A stored-but-invalid value, or a failed Settings read, no longer masquerades as legacy absence: `facility_selected()` treats a present-but-invalid row and an unreadable presence check as selected, `current_flow_is_complete()` and `saveFinish()` refuse the unverified configuration without writing, and the finish card renders not-ready with `data-cpms-facility-config-unverified="1"` plus an honest Persian explanation (a stored historical completion flag is preserved, never presented as current readiness).
+- `Settings` no longer caches a failed bulk read as an empty (legacy) configuration: the new strict reader `CpmsDb::fetch_all_strict()` distinguishes a SQL read error from an empty result, `Settings::load()` returns soft defaults on failure without populating the per-Clinic cache (a later read in the same request retries), and the new `Settings::has_stored()` presence check queries strictly when the bulk cache is unavailable so a read failure cannot be mistaken for a missing row.
+- Regression coverage in `SetupWizardTest`: (1) an explicitly bound Clinic B with a genuinely absent facility row keeps the exact legacy finish semantics and completes without touching Clinic A settings or the actor's Clinic-A user-meta; (2) Clinic B with a forged stored facility type can neither render ready nor complete through the legacy fallback, and neither Clinic's settings/profile nor the actor's meta change; (3) a one-shot injected failure of Clinic B's first Settings bulk read (via the established `query` fault-injection pattern) no longer poisons the request — the rendered finish stays not-ready before the hospital acknowledgment, `saveFinish()` still reports the missing health acknowledgment instead of completing, and no Clinic A/B setting or audit row is written.
+- `docs/onboarding-facility-wizard.md` records the verified-absence legacy gate; genuinely absent rows keep the previous legacy semantics byte-for-byte.
+
+### Validation
+
+- PHP-WASM syntax (`php -l`): all 4 changed PHP files clean; `git diff --check` clean.
+- WPCS changed-lines filter (local PHPCS 3.13.6 + WPCS 3.4.1 against the repository ruleset) over this follow-up's added lines in the 3 changed production files: **0 findings**. The committed full-delta collector scope was re-run (246 files / 86,501 added-line keys against the CI ratchet baseline; collector self-tests 6/6 pass) — the uncommitted follow-up lines were verified separately against HEAD as described.
+- Unit suite under the PHP-WASM harness: 1095 tests / 272,017 assertions with 74 errors / 25 failures / 31 skipped — the failing-test set is **byte-identical to the same harness run on pristine head `cb1f0513`** (pre-existing WASM environment gaps: sockets, sodium, subprocess), so no Unit differential is attributable to this change.
+- WordPress/MySQL Integration tests (including the three new wizard regressions) were **not run locally**: no native PHP/MySQL/WordPress test environment exists in this sandbox. They are claimed only from the automatic CI on the pushed head, reported separately on the PR.
+
+### State
+
+- Work on `/home/user/doctor-diagnostic-pr334`, branch `arena/0f2e4530-doctor`. PR #334 remains open/draft; no merge, approval, or manual CI rerun. Historical CI evidence wording in the PR body is corrected separately to state that the eight successful attempt-1 jobs were not rerun on attempts 2/3 (only the WPCS job ran again).

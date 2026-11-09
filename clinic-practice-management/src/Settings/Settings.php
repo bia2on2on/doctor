@@ -179,7 +179,9 @@ final class Settings
 
     public function get(string $key, mixed $default = null): mixed
     {
-        $this->load();
+        if ( ! $this->load() ) {
+            return array_key_exists( $key, self::DEFAULTS ) ? self::DEFAULTS[ $key ] : $default;
+        }
         if (array_key_exists($key, self::$cache[$this->clinicId])) {
             return self::$cache[$this->clinicId][$key];
         }
@@ -188,6 +190,23 @@ final class Settings
         }
 
         return $default;
+    }
+
+    /**
+     * Whether this Clinic has a persisted row for the key, independent of
+     * defaults. If the bulk settings cache is unavailable, query strictly so
+     * a read failure cannot masquerade as a missing legacy setting.
+     */
+    public function has_stored( string $key ): bool {
+        $clinic_id = $this->clinicId();
+        if ( array_key_exists( $clinic_id, self::$cache ) ) {
+            return array_key_exists( $key, self::$cache[ $clinic_id ] );
+        }
+
+        return $this->db->fetch_all_strict(
+            'SELECT `key` FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s LIMIT 1',
+            [ $clinic_id, $key ]
+        ) !== [];
     }
 
     public function set( string $key, mixed $value, ?int $updated_by = null ): void
@@ -319,19 +338,30 @@ final class Settings
         return $row['timezone'] ?? 'Asia/Tehran';
     }
 
-    private function load(): void
+    private function load(): bool
     {
-        if (array_key_exists($this->clinicId, self::$cache)) {
-            return;
+        if ( array_key_exists( $this->clinicId(), self::$cache ) ) {
+            return true;
         }
-        self::$cache[$this->clinicId] = [];
-        $rows = $this->db->fetchAll(
-            'SELECT `key`, value_json FROM ' . $this->db->table('cpms_settings') . ' WHERE clinic_id = %d',
-            [$this->clinicId]
-        );
-        foreach ($rows as $row) {
-            self::$cache[$this->clinicId][(string) $row['key']] = json_decode((string) $row['value_json'], true);
+
+        try {
+            $rows = $this->db->fetch_all_strict(
+                'SELECT `key`, value_json FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
+                [ $this->clinicId() ]
+            );
+        } catch ( \RuntimeException ) {
+            // Preserve Settings' soft-read behavior for ordinary consumers, but
+            // never cache the failed read as an empty (legacy) configuration.
+            return false;
         }
+
+        $clinic_cache = [];
+        foreach ( $rows as $row ) {
+            $clinic_cache[ (string) $row['key'] ] = json_decode( (string) $row['value_json'], true );
+        }
+        self::$cache[ $this->clinicId() ] = $clinic_cache;
+
+        return true;
     }
 
     public static function flushCache(): void

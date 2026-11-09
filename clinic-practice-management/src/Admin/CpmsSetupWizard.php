@@ -901,17 +901,23 @@ final class CpmsSetupWizard
 
     private static function renderFinish(Settings $settings): void
     {
-        $clinic_name      = self::canonical_clinic_name( $settings );
-        $doctor_count     = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
-        $facility_chosen  = self::facility_selected( $settings );
-        $supports_flow    = FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() );
-        $missing_now      = $facility_chosen ? self::missing_required_steps( $settings ) : [];
-        $stored_completed = (bool) $settings->get( self::COMPLETE_KEY, false );
+        $clinic_name         = self::canonical_clinic_name( $settings );
+        $doctor_count        = count( App::clinicianRepository()->listAll( App::scope()->clinicId, false ) );
+        $facility_type       = self::selected_facility_type();
+        $facility_chosen     = self::facility_selected( $settings );
+        $facility_type_valid = $facility_type !== '';
+        $supports_flow       = $facility_type_valid && FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() );
+        $missing_now         = $facility_chosen && $facility_type_valid ? self::missing_required_steps( $settings ) : [];
+        try {
+            $stored_completed = (bool) $settings->get( self::COMPLETE_KEY, false );
+        } catch ( \Throwable ) {
+            $stored_completed = false; // An unreadable historical marker cannot establish readiness.
+        }
         // Same invariant as the header banner and step indicator: the stored
         // historical flag is preserved, but the card only claims readiness
         // when the CURRENT flow genuinely satisfies it.
         $ready      = $facility_chosen
-            ? ( $supports_flow && $missing_now === [] )
+            ? ( $facility_type_valid && $supports_flow && $missing_now === [] )
             : ( $clinic_name !== '' && $doctor_count > 0 );
         $stale_note = '';
         if ( $stored_completed ) {
@@ -919,12 +925,15 @@ final class CpmsSetupWizard
                 ? ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده، اما نشانهٔ آمادگی جریان فعلی نیست؛ هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.'
                 : ' تکمیل راه‌اندازی تاریخی (از جریان پیشین) در سوابق باقی مانده و هیچ دادهٔ مستأجر یا تاریخچه‌ای حذف نشده است.';
         }
-        $finish_profile = self::current_facility_profile();
+        $unverified_stale = $stored_completed ? ' تکمیل تاریخی در سوابق باقی مانده، اما نشانهٔ آمادگی فعلی نیست.' : '';
+        $finish_profile   = self::current_facility_profile();
         ?>
         <div class="card" data-cpms-finish-ready="<?php echo $ready ? '1' : '0'; ?>">
             <h2>شروع عملیات <?php echo esc_html( $finish_profile['unit'] ); ?></h2>
             <?php if ( $ready ) : ?>
                 <p>🎉 همهٔ پیش‌نیازهای الزامی برآورده شده‌اند. با فشردن دکمهٔ بالا، راه‌اندازی تکمیل و وضعیت «آمادهٔ شروع عملیات» ثبت می‌شود.</p>
+            <?php elseif ( $facility_chosen && ! $facility_type_valid ) : ?>
+                <p style="color:#b26b00;" data-cpms-facility-config-unverified="1" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ تنظیم نوع مرکز ذخیره‌شده قابل تأیید نیست؛ آمادگی جریان فعلی اعلام نمی‌شود. لطفاً تنظیم را بررسی و دوباره ذخیره کنید.<?php echo esc_html( $unverified_stale ); ?></p>
             <?php elseif ( $facility_chosen && ! $supports_flow ) : ?>
                 <p style="color:#b26b00;" data-cpms-stale-completion="<?php echo $stored_completed ? '1' : '0'; ?>">⚠️ تکمیل راه‌اندازی برای ساختمان/مجتمع پزشکی در این ویزارد به‌شکل ایمن مسدود است؛ ایجاد درمانگاه مستقل فقط از طریق اختیار صریح مدیر سازمان انجام می‌شود.<?php echo esc_html( $stale_note ); ?></p>
             <?php elseif ( $facility_chosen && $missing_now !== [] ) : ?>
@@ -1044,13 +1053,22 @@ final class CpmsSetupWizard
     }
 
     /**
-     * Whether any facility selection exists (per-admin meta or persisted
-     * Clinic-scoped settings). Legacy installs without one keep their
-     * previous wizard semantics untouched.
+     * Whether a facility selection is in effect or a Clinic-scoped row exists.
+     * Only a successfully absent row keeps the legacy completion semantics;
+     * invalid or unreadable configuration must not open that fallback.
      */
     private static function facility_selected( Settings $settings ): bool {
-        return self::selected_facility_type() !== ''
-            || FacilityTypeCatalog::is_valid( (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' ) );
+        if ( self::selected_facility_type() !== '' ) {
+            return true;
+        }
+
+        try {
+            // A row that is present but invalid is not legacy absence. If the
+            // presence read itself fails, do not open the legacy completion path.
+            return $settings->has_stored( 'setup.facility_type' );
+        } catch ( \Throwable ) {
+            return true;
+        }
     }
 
     /**
@@ -1061,15 +1079,23 @@ final class CpmsSetupWizard
      * erased here; evolution keeps tenant and settings history intact.
      */
     private static function current_flow_is_complete( Settings $settings ): bool {
-        if ( ! (bool) $settings->get( self::COMPLETE_KEY, false ) ) {
+        try {
+            if ( ! (bool) $settings->get( self::COMPLETE_KEY, false ) ) {
+                return false;
+            }
+            if ( ! self::facility_selected( $settings ) ) {
+                return true;
+            }
+            if ( self::selected_facility_type() === '' ) {
+                return false;
+            }
+
+            return FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() )
+                && self::missing_required_steps( $settings ) === [];
+        } catch ( \Throwable ) {
+            // An unreadable completion or facility setting is never readiness evidence.
             return false;
         }
-        if ( ! self::facility_selected( $settings ) ) {
-            return true;
-        }
-
-        return FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() )
-            && self::missing_required_steps( $settings ) === [];
     }
 
     /**
@@ -2037,6 +2063,9 @@ final class CpmsSetupWizard
 
         $facility_selected = self::facility_selected( $settings );
         if ( $facility_selected ) {
+            if ( self::selected_facility_type() === '' ) {
+                return 'تنظیم نوع مرکز ذخیره‌شده قابل تأیید نیست؛ پیش‌نیازهای راه‌اندازی بررسی نشد.';
+            }
             if ( ! FacilityTypeCatalog::flow_supports_provisioning( self::current_flow() ) ) {
                 return 'این مرحلهٔ ویزارد هنوز درمانگاه‌های مستقل را به‌صورت تطبیقی راه‌اندازی نمی‌کند. مدیر سازمانِ دارای عضویت صریح می‌تواند درمانگاه را از صفحهٔ «سازمان‌ها و درمانگاه‌ها» ایجاد کند؛ برای ادامهٔ پیکربندی هر درمانگاه، انتخاب صریح محدوده لازم است.';
             }

@@ -142,6 +142,25 @@ final class CpmsDb
         return is_array($rows) ? array_map(static fn ($r) => (array) $r, $rows) : [];
     }
 
+    /**
+     * Fetch rows while distinguishing an empty result from a failed query.
+     * Unlike the ordinary soft-mode reader, this method always throws on a
+     * database error so callers can fail closed without treating it as absence.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function fetch_all_strict( string $sql, array $params = [] ): array {
+        $profile_start = RequestProfiler::query_start();
+        $rows          = $this->wpdb->get_results( $this->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
+
+        if ( $this->wpdb->last_error !== '' || ! is_array( $rows ) ) {
+            throw new RuntimeException( 'Database read failed.' );
+        }
+
+        return array_map( static fn ( $row ) => (array) $row, $rows );
+    }
+
     public function fetchValue(string $sql, array $params = []): mixed
     {
         $profile_start = RequestProfiler::query_start();
