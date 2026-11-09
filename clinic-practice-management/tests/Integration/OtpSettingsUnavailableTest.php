@@ -84,6 +84,12 @@ final class OtpSettingsUnavailableTest extends WP_UnitTestCase
         $_SERVER['REMOTE_ADDR'] = '203.0.113.22';
         $token_id = $this->seedToken('123456');
 
+        // Model a fresh REST request: seeding may have populated the
+        // verified settings snapshot (a successful verified load earlier
+        // in the same process legitimately satisfies later reads), so
+        // clear it — the unreadable-settings dispatch below must perform
+        // its own settings read.
+        Settings::flushCache();
         $this->failSettingsBulkReads();
         $response = $this->dispatch('/clinic/v1/otp/verify', [
             'mobile'  => self::MOBILE,
