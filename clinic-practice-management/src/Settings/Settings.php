@@ -238,10 +238,19 @@ final class Settings
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- published API property.
         $clinic_id = $this->clinicId;
 
-        $row = $this->db->fetchRow(
-            'SELECT id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s',
-            [ $clinic_id, $key ]
-        );
+        // The point lookup decides insert-vs-update, so it must distinguish
+        // a failed read from genuine absence: a soft fetchRow returns null
+        // for both, which could route a failed read into an insert and let
+        // the audit below record a mutation that never persisted.
+        try {
+            $lookup = $this->db->fetch_all_strict(
+                'SELECT id FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d AND `key` = %s',
+                [ $clinic_id, $key ]
+            );
+        } catch ( \RuntimeException $e ) {
+            throw new SettingsUnavailableException( 'Settings lookup failed.', 0, $e );
+        }
+        $row = $lookup[0] ?? null;
         // D6 audit atomicity: the setting write and its mandatory SETTING_UPDATE
         // audit share one boundary (nested SAVEPOINT when a caller already opened
         // one). A failed audit rolls the setting change back; the in-memory cache is
@@ -249,8 +258,11 @@ final class Settings
         // previous value instead of ever exposing an un-audited setting.
         $this->db->transactional(
             function () use ( $key, $value, $updated_by, $before, $after_json, $before_json, $row, $clinic_id ) {
+                // A failed mutation must abort the boundary (rolling back
+                // any audit written alongside it) instead of letting
+                // auditChange record a change that never persisted.
                 if ( $row === null ) {
-                    $this->db->insert(
+                    $written = $this->db->insert(
                         'cpms_settings',
                         [
                             'clinic_id'             => $clinic_id,
@@ -261,18 +273,43 @@ final class Settings
                         ]
                     );
                 } else {
-                    $this->db->query(
+                    $written = $this->db->query(
                         'UPDATE ' . $this->db->table( 'cpms_settings' ) .
                         ' SET value_json = %s, updated_by_wp_user_id = %s, updated_at = %s
                          WHERE clinic_id = %d AND `key` = %s',
                         [ $after_json, $updated_by, $this->db->nowUtcSql(), $clinic_id, $key ]
                     );
                 }
+                if ( ! $written ) {
+                    throw new \RuntimeException( 'Settings write failed.' );
+                }
 
                 $this->auditChange( $key, $before, $value, $before_json, $after_json, $updated_by );
             }
         );
         unset( self::$cache[ $clinic_id ], self::$load_failed[ $clinic_id ] );
+    }
+
+    /**
+     * Write several settings as ONE atomic transition: every value and its
+     * SETTING_UPDATE audit commits, or none of them do. Callers performing
+     * a single logical transition across keys (facility selection plus
+     * acknowledgment reset, wizard restart, booking policy) must use this
+     * instead of sequential set() calls, whose per-call transactions could
+     * leave a partial state behind (for example a new facility selection
+     * with the previous selection's acknowledgment still valid). Nested
+     * per-set transactions become savepoints under this boundary.
+     *
+     * @param array<string, mixed> $values
+     */
+    public function set_many( array $values, ?int $updated_by = null ): void {
+        $this->db->transactional(
+            function () use ( $values, $updated_by ) {
+                foreach ( $values as $key => $value ) {
+                    $this->set( (string) $key, $value, $updated_by );
+                }
+            }
+        );
     }
 
     /**
@@ -369,6 +406,16 @@ final class Settings
         if ( array_key_exists( $this->clinicId(), self::$cache ) ) {
             return true;
         }
+        if ( $this->db->is_strict() ) {
+            // CpmsDb strict mode (e.g. migrations): a failed SQL read must
+            // propagate, exactly as the soft reader did before. Strict mode
+            // is checked before the soft-failure latch so that enabling
+            // strict mode later in the same request can never have a strict
+            // contract error masked by an earlier soft failure.
+            $this->load_strict();
+
+            return true;
+        }
         if ( isset( self::$load_failed[ $this->clinicId() ] ) ) {
             // Consistent snapshot: after a failed read, get() keeps
             // returning defaults until a verified-load boundary
@@ -378,12 +425,7 @@ final class Settings
 
         try {
             $this->load_strict();
-        } catch ( \RuntimeException $e ) {
-            if ( $this->db->is_strict() ) {
-                // CpmsDb strict mode (e.g. migrations): a failed SQL read
-                // must propagate, exactly as the soft reader did before.
-                throw $e;
-            }
+        } catch ( \RuntimeException ) {
             // Preserve Settings' soft-read behavior for ordinary consumers,
             // but never cache the failed read as an empty (legacy)
             // configuration, and do not retry within this snapshot.
@@ -400,10 +442,14 @@ final class Settings
      * result. Throws on any database read failure.
      */
     private function load_strict(): void {
-        $rows = $this->db->fetch_all_strict(
-            'SELECT `key`, value_json FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
-            [ $this->clinicId() ]
-        );
+        try {
+            $rows = $this->db->fetch_all_strict(
+                'SELECT `key`, value_json FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
+                [ $this->clinicId() ]
+            );
+        } catch ( \RuntimeException $e ) {
+            throw new SettingsUnavailableException( 'Settings are temporarily unavailable.', 0, $e );
+        }
 
         $clinic_cache = [];
         foreach ( $rows as $row ) {

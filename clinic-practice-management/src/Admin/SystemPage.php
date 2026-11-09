@@ -622,8 +622,18 @@ final class SystemPage
         App::replaceExplicitScope( $scope );
         $channel = (string) ($_POST['channel'] ?? 'stable');
         $s = App::settings();
-        $s->set('update.channel', in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable');
-        $s->set('update.check_interval_hours', max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))));
+        try {
+            // One atomic transition with a controlled, sanitized failure:
+            // a settings write failure must not surface as a raw error
+            // (or as a false success notice after a partial write).
+            $s->set_many([
+                'update.channel' => in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable',
+                'update.check_interval_hours' => max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))),
+            ]);
+        } catch ( \RuntimeException ) {
+            self::notify('ذخیرهٔ تنظیمات به‌روزرسانی انجام نشد؛ لطفاً دوباره تلاش کنید.');
+            return;
+        }
         self::notify('تنظیمات به‌روزرسانی ذخیره شد', true);
     }
 

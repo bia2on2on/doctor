@@ -24,6 +24,9 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
     /** @var callable|null */
     private $settingsReadFault = null;
 
+    /** @var callable|null */
+    private $settingsWriteFault = null;
+
     private bool $settingsFaultFired = false;
 
     private bool $previousSuppression = false;
@@ -41,6 +44,7 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        $this->restoreSettingsStatementFault();
         $this->restoreSettingsBulkReads();
         $this->restoreAuditInserts();
         Settings::flushCache();
@@ -197,6 +201,106 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame(1800, $policy->remaining_lockout($state, $now), 'restrictive lockout 1800 must apply after recovery');
     }
 
+
+    public function testSetPointLookupFailureAbortsWithoutWriteOrAudit(): void
+    {
+        $settings = App::settings();
+        $key      = 'otp.max_attempts';
+
+        $settings->set($key, 2, $this->adminId);
+        $baseline_audits = $this->settingAuditCount($key);
+
+        // The insert-vs-update point lookup fails: it must not be mistaken
+        // for absence (which would attempt an insert and then audit a
+        // mutation that never persisted).
+        $this->failSettingsStatement('lookup');
+        Settings::flushCache();
+        $threw = false;
+        try {
+            $settings->set($key, 5, $this->adminId);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            $this->restoreSettingsStatementFault();
+        }
+
+        self::assertTrue($threw, 'a failed settings point lookup must abort the write');
+        self::assertSame(2, $this->storedSettingValue($key), 'the stored value must be unchanged');
+        self::assertSame($baseline_audits, $this->settingAuditCount($key), 'no audit row may be written');
+    }
+
+    public function testSetInsertFailureLeavesNoRowAndNoAudit(): void
+    {
+        $key             = 'otp.cooldown_sec';
+        $baseline_audits = $this->settingAuditCount($key);
+
+        $this->failSettingsStatement('insert');
+        Settings::flushCache();
+        $threw = false;
+        try {
+            App::settings()->set($key, 45, $this->adminId);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            $this->restoreSettingsStatementFault();
+        }
+
+        self::assertTrue($threw, 'a failed insert must abort instead of auditing a phantom change');
+        self::assertNull($this->storedSettingValue($key), 'no settings row may persist after a failed insert');
+        self::assertSame($baseline_audits, $this->settingAuditCount($key), 'no audit row may be written for a failed insert');
+    }
+
+    public function testSetUpdateFailureKeepsStoredValueAndAuditCount(): void
+    {
+        $settings = App::settings();
+        $key      = 'otp.max_attempts';
+
+        $settings->set($key, 2, $this->adminId);
+        $baseline_audits = $this->settingAuditCount($key);
+
+        $this->failSettingsStatement('update');
+        Settings::flushCache();
+        $threw = false;
+        try {
+            $settings->set($key, 5, $this->adminId);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            $this->restoreSettingsStatementFault();
+        }
+
+        self::assertTrue($threw, 'a failed update must abort instead of auditing a phantom change');
+        self::assertSame(2, $this->storedSettingValue($key), 'the stored value must be unchanged');
+        self::assertSame($baseline_audits, $this->settingAuditCount($key), 'no audit row may be written for a failed update');
+    }
+
+    public function testStrictModeReadAfterSoftFailureStillPropagates(): void
+    {
+        // Contract ordering: a soft read failure latches defaults for soft
+        // consumers, but enabling CpmsDb strict mode afterwards (as
+        // MigrationRunner does) must still surface the read failure.
+        // This is a contract inconsistency in the previous ordering, fixed
+        // by checking strict mode before the latch; no migration failure
+        // was observed in production.
+        $this->failSettingsBulkReads(false);
+        Settings::flushCache();
+        self::assertSame(5, (int) App::settings()->get('otp.max_attempts'), 'soft read keeps returning defaults after a soft failure');
+
+        App::db()->setStrict(true);
+        $threw = false;
+        try {
+            App::settings()->get('otp.max_attempts');
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            App::db()->setStrict(false);
+            $this->restoreSettingsBulkReads();
+            Settings::flushCache();
+        }
+
+        self::assertTrue($threw, 'strict mode must not be masked by an earlier soft-failure latch');
+    }
+
     private function settingAuditCount(string $key): int
     {
         // Each test runs in its own rolled-back data view, so the clinic-scoped
@@ -233,6 +337,42 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
         $after  = json_decode((string) $row['after_json'], true);
 
         return [(int) ($before['value'] ?? -1), (int) ($after['value'] ?? -1)];
+    }
+
+
+    private function failSettingsStatement(string $mode): void
+    {
+        global $wpdb;
+        self::assertNull($this->settingsWriteFault, 'the settings write fault must not be installed twice');
+        $table = $wpdb->prefix . 'cpms_settings';
+
+        $fault = function ($query) use ($table, $mode) {
+            $query = (string) $query;
+            $hit   = match ($mode) {
+                'lookup' => str_starts_with($query, 'SELECT id FROM ' . $table),
+                'insert' => str_contains($query, 'INSERT INTO `' . $table . '`') || str_contains($query, 'INSERT INTO ' . $table),
+                'update' => str_starts_with($query, 'UPDATE ' . $table . ' SET value_json'),
+                default  => false,
+            };
+
+            return $hit ? str_replace($table, $table . '_write_failure', $query) : $query;
+        };
+
+        $this->previousSuppression  = (bool) $wpdb->suppress_errors(true);
+        $this->settingsWriteFault   = $fault;
+        add_filter('query', $fault, 5, 1);
+    }
+
+    private function restoreSettingsStatementFault(): void
+    {
+        if ($this->settingsWriteFault === null) {
+            return;
+        }
+        remove_filter('query', $this->settingsWriteFault, 5);
+        $this->settingsWriteFault = null;
+
+        global $wpdb;
+        $wpdb->suppress_errors($this->previousSuppression);
     }
 
     private function failSettingsBulkReads(bool $oneShot): void

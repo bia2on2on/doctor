@@ -1482,6 +1482,150 @@ final class SetupWizardTest extends WP_UnitTestCase
 
     // ================= helpers =================
 
+
+    public function testFacilityChangeRollsBackAtomicallyWhenAcknowledgmentResetFails(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('facility-atomic-b');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+
+        // Clinic B starts as a hospital whose outpatient-only acknowledgment
+        // is affirmed for the hospital selection.
+        $this->setClinicSetting($clinic_b, 'setup.facility_type', 'hospital', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_structure', 'hospital_network', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.outpatient_only_ack', true, $user_id);
+        update_user_meta($user_id, 'cpms_onboarding_facility_type', 'hospital');
+        update_user_meta($user_id, 'cpms_onboarding_structure', 'hospital_network');
+
+        $watched        = ['setup.facility_type', 'setup.facility_structure', 'setup.outpatient_only_ack'];
+        $before_a       = $this->clinicSettingValues($clinic_a, $watched);
+        $audit_a_before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_a]
+        );
+        $audit_b_before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        );
+
+        $this->renderWizardStep('facility', $clinic_b);
+        $settings_b = App::settings();
+        self::assertSame($clinic_b, $settings_b->clinicId());
+
+        // Fail the acknowledgment-reset write in the middle of the change.
+        $fault = $this->failSettingsWritesForKey('setup.outpatient_only_ack');
+        add_filter('query', $fault, 5, 1);
+        $threw = false;
+        try {
+            CpmsSetupWizard::save_facility($settings_b, [
+                'facility_type' => 'doctor_practice',
+                'structure'     => 'single',
+            ], $user_id);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            remove_filter('query', $fault, 5);
+        }
+        Settings::flushCache();
+
+        self::assertTrue($threw, 'a failed acknowledgment reset must abort the facility transition');
+        $after_b = $this->clinicSettingValues($clinic_b, $watched);
+        self::assertSame('hospital', $after_b['setup.facility_type'], 'the facility type must roll back with the failed transition');
+        self::assertSame('hospital_network', $after_b['setup.facility_structure'], 'the facility structure must roll back');
+        self::assertSame(true, $after_b['setup.outpatient_only_ack'], 'the acknowledgment must stay bound to the unchanged hospital selection');
+        self::assertSame($audit_b_before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        ), 'the audits of the earlier writes in the transition must roll back too');
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, $watched), 'Clinic A settings must be untouched');
+        self::assertSame($audit_a_before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_a]
+        ), 'Clinic A audit rows must be untouched');
+        self::assertSame('hospital', (string) get_user_meta($user_id, 'cpms_onboarding_facility_type', true), 'the actor facility user-meta must not change on a rolled-back transition');
+
+        // After the fault clears, the same change commits atomically.
+        self::assertSame('', CpmsSetupWizard::save_facility($settings_b, [
+            'facility_type' => 'doctor_practice',
+            'structure'     => 'single',
+        ], $user_id));
+        $committed_b = $this->clinicSettingValues($clinic_b, $watched);
+        self::assertSame('doctor_practice', $committed_b['setup.facility_type']);
+        self::assertSame('single', $committed_b['setup.facility_structure']);
+        self::assertSame(false, $committed_b['setup.outpatient_only_ack'], 'the acknowledgment reset must commit together with the new selection');
+    }
+
+    public function testRestartRollsBackAtomicallyWhenALaterWriteFails(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_b = $this->createAdditionalClinic('restart-atomic-b');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+
+        $this->setClinicSetting($clinic_b, 'setup.current_step', 'booking', $user_id);
+        $this->setClinicSetting($clinic_b, CpmsSetupWizard::COMPLETE_KEY, true, $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.outpatient_only_ack', true, $user_id);
+
+        $this->renderWizardStep('facility', $clinic_b);
+        $settings_b = App::settings();
+        self::assertSame($clinic_b, $settings_b->clinicId());
+
+        // Fail the completion-flag write after the current-step write.
+        $fault = $this->failSettingsWritesForKey(CpmsSetupWizard::COMPLETE_KEY);
+        add_filter('query', $fault, 5, 1);
+        $threw = false;
+        try {
+            CpmsSetupWizard::reset_progress($settings_b, $user_id);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            remove_filter('query', $fault, 5);
+        }
+        Settings::flushCache();
+
+        self::assertTrue($threw, 'a failed restart write must abort the whole restart');
+        $after_b = $this->clinicSettingValues($clinic_b, [
+            'setup.current_step',
+            CpmsSetupWizard::COMPLETE_KEY,
+            'setup.outpatient_only_ack',
+        ]);
+        self::assertSame('booking', $after_b['setup.current_step'], 'the current-step write must roll back');
+        self::assertSame(true, $after_b[CpmsSetupWizard::COMPLETE_KEY], 'the completion flag must be unchanged');
+        self::assertSame(true, $after_b['setup.outpatient_only_ack'], 'the acknowledgment must be unchanged');
+    }
+
+    public function testMarkStepCompletedPreservesStoredStepsAfterTransientReadFailure(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('completed-steps-rmw-b');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+
+        $this->setClinicSetting($clinic_a, 'setup.completed_steps', 'clinic', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.completed_steps', 'booking', $user_id);
+        $before_a = $this->clinicSettingValues($clinic_a, ['setup.completed_steps']);
+
+        $this->renderWizardStep('facility', $clinic_b);
+        $settings_b = App::settings();
+        self::assertSame($clinic_b, $settings_b->clinicId());
+
+        // Production sequence: an earlier soft read fails and yields the
+        // unverified empty default; the read-modify-write runs only after
+        // the database recovers, and must merge with the stored list.
+        $injected = false;
+        $fault    = $this->failNextSettingsReadForClinic($clinic_b, $injected);
+        add_filter('query', $fault, 5, 1);
+        self::assertSame('', (string) $settings_b->get('setup.completed_steps', ''));
+        self::assertTrue($injected, 'the transient read failure must be injected');
+        remove_filter('query', $fault, 5);
+
+        CpmsSetupWizard::mark_step_completed($settings_b, 'doctors', $user_id);
+
+        $after_b = $this->clinicSettingValues($clinic_b, ['setup.completed_steps']);
+        self::assertSame('booking,doctors', $after_b['setup.completed_steps'], 'previously completed steps must survive a merge computed after a transient read failure');
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, ['setup.completed_steps']), 'Clinic A completed steps must be untouched');
+    }
+
     private function renderWizardStep(string $step, mixed $clinicId = null): string
     {
         $previousGet = $_GET;
@@ -1639,6 +1783,25 @@ final class SetupWizardTest extends WP_UnitTestCase
         $method->setAccessible(true);
 
         return (string) $method->invoke(null, App::settings(), $updatedBy);
+    }
+
+
+    private function failSettingsWritesForKey(string $key): \Closure
+    {
+        global $wpdb;
+        $settings_table = $wpdb->prefix . 'cpms_settings';
+
+        return static function ($query) use ($key, $settings_table) {
+            $query = (string) $query;
+            if (
+                (str_contains($query, 'INSERT INTO `' . $settings_table . '`') || str_starts_with($query, 'UPDATE ' . $settings_table . ' '))
+                && str_contains($query, "'" . $key . "'")
+            ) {
+                return str_replace($settings_table, $settings_table . '_write_failure', $query);
+            }
+
+            return $query;
+        };
     }
 
     private function failNextSettingsReadForClinic(int $clinicId, bool &$injected): \Closure

@@ -55,6 +55,29 @@ final class SmsFlowTest extends WP_UnitTestCase
         $this->assertTrue(App::audit()->verifyChain(500)['ok']);
     }
 
+
+    private function failSettingsBulkReads(int $clinicId, bool $oneShot): \Closure
+    {
+        global $wpdb;
+        $settings_table = $wpdb->prefix . 'cpms_settings';
+        $fired          = false;
+
+        return static function ($query) use ($clinicId, $settings_table, $oneShot, &$fired) {
+            $query = (string) $query;
+            if (
+                (! $oneShot || ! $fired)
+                && str_contains($query, 'SELECT `key`, value_json FROM ' . $settings_table)
+                && preg_match('/WHERE clinic_id = ' . $clinicId . '\s*$/', $query) === 1
+            ) {
+                $fired = true;
+
+                return str_replace('FROM ' . $settings_table, 'FROM ' . $settings_table . '_read_failure', $query);
+            }
+
+            return $query;
+        };
+    }
+
     private function sms(): SmsService
     {
         return App::smsService();
@@ -200,6 +223,60 @@ final class SmsFlowTest extends WP_UnitTestCase
         $this->sms()->saveSettings(['provider' => 'generic_api', 'auth_method' => 'api_key', 'credentials' => ['api_key' => '__CLEAR__']], 1);
         $stored = (array) App::settings()->get('sms.auth', []);
         $this->assertArrayNotHasKey('api_key', (array) ($stored['fields'] ?? []), '__CLEAR__ باید Credential را حذف کند');
+    }
+
+
+    public function testSaveSettingsPreservesCredentialsAcrossTransientSettingsReadFailure(): void
+    {
+        App::settings()->set('sms.provider', 'generic_api');
+        App::settings()->set(
+            'sms.auth',
+            [
+                'method' => 'api_key',
+                'fields' => [
+                    'api_key' => [
+                        'sealed' => App::vault()->encrypt('keep-me-1234'),
+                        'last4' => '1234',
+                    ],
+                ],
+                'updated_at' => gmdate('c'),
+            ]
+        );
+        \ClinicCore\Settings\Settings::flushCache();
+
+        // One transient bulk-read failure: an earlier soft read yields
+        // unverified defaults, then the actual save runs after recovery.
+        // Blank credential fields mean "retain existing", so the stored
+        // credential must survive — never be dropped by an unverified read.
+        $clinic_id = (int) App::scope()->clinicId;
+        $one_shot  = $this->failSettingsBulkReads($clinic_id, true);
+        add_filter('query', $one_shot, 5, 1);
+        self::assertSame('', (string) App::settings()->get('sms.provider', ''), 'the transient failure must surface as unverified defaults first');
+        remove_filter('query', $one_shot, 5);
+
+        $this->sms()->saveSettings(['provider' => 'generic_api', 'auth_method' => 'api_key', 'credentials' => ['api_key' => '']], 1);
+
+        $plain = App::vault()->decrypt((array) ((array) App::settings()->get('sms.auth', []))['fields']['api_key']['sealed']);
+        self::assertSame('keep-me-1234', $plain, 'the stored credential must survive a save computed across a transient read failure');
+
+        // A persistent read failure refuses the save without touching the
+        // stored credential.
+        \ClinicCore\Settings\Settings::flushCache();
+        $persistent = $this->failSettingsBulkReads($clinic_id, false);
+        add_filter('query', $persistent, 5, 1);
+        $threw = false;
+        try {
+            $this->sms()->saveSettings(['provider' => 'generic_api', 'auth_method' => 'api_key', 'credentials' => ['api_key' => '']], 1);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            remove_filter('query', $persistent, 5);
+        }
+        \ClinicCore\Settings\Settings::flushCache();
+
+        self::assertTrue($threw, 'an unverifiable settings snapshot must refuse the SMS save');
+        $plain = App::vault()->decrypt((array) ((array) App::settings()->get('sms.auth', []))['fields']['api_key']['sealed']);
+        self::assertSame('keep-me-1234', $plain, 'the stored credential must be untouched by the refused save');
     }
 
     public function testTemplateTestWithLogProvider(): void

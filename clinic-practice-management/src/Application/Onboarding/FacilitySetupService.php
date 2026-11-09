@@ -1161,14 +1161,18 @@ final class FacilitySetupService {
         ];
 
         $settings = $this->settings->forClinic( $clinic_id );
-        foreach ( $policy as $key => $value ) {
-            $settings->set( $key, $value, $actor_id );
-        }
+        // The completed-steps merge is read-modify-write: compute it from a
+        // verified snapshot, then commit policy + progress as ONE atomic
+        // transition (previously six sequential writes could partially
+        // commit a policy without its progress marker, or vice versa).
+        $settings->require_verified_snapshot();
+        $writes    = $policy;
         $completed = array_filter( array_map( 'trim', explode( ',', (string) ( $settings->get( 'setup.completed_steps', '' ) ?? '' ) ) ) );
         if ( ! in_array( 'booking', $completed, true ) ) {
-            $completed[] = 'booking';
-            $settings->set( 'setup.completed_steps', implode( ',', $completed ), $actor_id );
+            $completed[]                 = 'booking';
+            $writes['setup.completed_steps'] = implode( ',', $completed );
         }
+        $settings->set_many( $writes, $actor_id );
 
         return $policy;
     }

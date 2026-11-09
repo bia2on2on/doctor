@@ -1182,6 +1182,11 @@ final class CpmsSetupWizard
         if ( ! in_array( $step_id, array_column( self::steps(), 'id' ), true ) ) {
             return;
         }
+        // Read-modify-write: the merged list must be computed from a
+        // verified snapshot. After a failed soft read, get() returns an
+        // unverified empty default, and writing the merge after recovery
+        // would silently drop previously completed steps.
+        $settings->require_verified_snapshot();
         $ids = self::completed_step_ids( $settings );
         if ( ! in_array( $step_id, $ids, true ) ) {
             $ids[] = $step_id;
@@ -1504,6 +1509,10 @@ final class CpmsSetupWizard
         if ( ! FacilityTypeCatalog::structure_is_compatible( $facility, $structure ) ) {
             return FacilityTypeCatalog::structure_incompatibility_message( $facility, $structure );
         }
+        // The previous selection decides the acknowledgment reset below, so
+        // it must come from a verified snapshot — never from unverified
+        // defaults after a failed read.
+        $settings->require_verified_snapshot();
         $prev_type      = (string) ( $settings->get( 'setup.facility_type', '' ) ?? '' );
         $prev_structure = (string) ( $settings->get( 'setup.facility_structure', '' ) ?? '' );
         // Safe configuration evolution: the selection may be revisited at
@@ -1513,16 +1522,23 @@ final class CpmsSetupWizard
         // keys and this admin's user-meta; tenant rows (Clinic/Location/
         // Membership/Clinician) are never touched, completion markers are
         // never silently deleted, and invalid input never writes anything.
-        $settings->set( 'setup.facility_type', $facility, $updated_by );
-        $settings->set( 'setup.facility_structure', $structure, $updated_by );
+        // One atomic transition: the new selection and the acknowledgment
+        // reset commit together or not at all, so a failure between writes
+        // can never leave a new facility selection governed by the previous
+        // selection's (possibly hospital) acknowledgment.
+        $facility_writes = [
+            'setup.facility_type'      => $facility,
+            'setup.facility_structure' => $structure,
+        ];
         if ( $prev_type !== $facility || $prev_structure !== $structure ) {
             // Stale-acknowledgment prevention: the outpatient-only
             // acknowledgment is bound to the concrete type/structure
             // selection; on any change it must be freshly re-affirmed.
             // Config-scope only — clinical, financial and tenant history
             // are preserved untouched.
-            $settings->set( 'setup.outpatient_only_ack', false, $updated_by );
+            $facility_writes['setup.outpatient_only_ack'] = false;
         }
+        $settings->set_many( $facility_writes, $updated_by );
         if ( $updated_by > 0 ) {
             update_user_meta( $updated_by, 'cpms_onboarding_facility_type', $facility );
             update_user_meta( $updated_by, 'cpms_onboarding_structure', $structure );
@@ -1589,64 +1605,74 @@ final class CpmsSetupWizard
             wp_die( 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
-        $error = '';
+        try {
+            $error = '';
 
-        switch ($step) {
-            case 'facility':
-                $error = self::save_facility( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
-                break;
-            case 'clinic':
-                $error = self::saveClinic($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
-                break;
-            case 'doctors':
-                $error = self::save_doctors( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- fields revalidated in save_doctors
-                break;
-            case 'booking':
-                $error = self::saveBooking($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
-                break;
-            case 'sms':
-                $error = self::saveSms($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
-                break;
-            case 'health':
-                $error = self::save_health( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- checkbox revalidated in save_health
-                break;
-            case 'finish':
-                $error = self::saveFinish($settings, (int) get_current_user_id());
-                break;
-            default:
-                // گام‌های ارجاعی/اطلاعی: فقط پیشرفت ثبت می‌شود.
-                break;
-        }
+            switch ($step) {
+                case 'facility':
+                    $error = self::save_facility( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() );
+                    break;
+                case 'clinic':
+                    $error = self::saveClinic($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
+                    break;
+                case 'doctors':
+                    $error = self::save_doctors( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- fields revalidated in save_doctors
+                    break;
+                case 'booking':
+                    $error = self::saveBooking($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
+                    break;
+                case 'sms':
+                    $error = self::saveSms($settings, (array) wp_unslash($_POST), (int) get_current_user_id());
+                    break;
+                case 'health':
+                    $error = self::save_health( $settings, (array) wp_unslash( $_POST ), (int) get_current_user_id() ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- checkbox revalidated in save_health
+                    break;
+                case 'finish':
+                    $error = self::saveFinish($settings, (int) get_current_user_id());
+                    break;
+                default:
+                    // گام‌های ارجاعی/اطلاعی: فقط پیشرفت ثبت می‌شود.
+                    break;
+            }
 
-        if ($error !== '') {
-            set_transient(self::NOTICE_KEY, 'خطا: ' . $error, 60);
-            wp_safe_redirect( self::step_url( $step ) );
-            exit;
-        }
+            if ($error !== '') {
+                set_transient(self::NOTICE_KEY, 'خطا: ' . $error, 60);
+                wp_safe_redirect( self::step_url( $step ) );
+                exit;
+            }
 
-        if ($step === 'finish') {
-            set_transient(self::NOTICE_KEY, 'راه‌اندازی تکمیل شد.', 60);
-            wp_safe_redirect(admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG));
-            exit;
-        }
+            if ($step === 'finish') {
+                set_transient(self::NOTICE_KEY, 'راه‌اندازی تکمیل شد.', 60);
+                wp_safe_redirect(admin_url('admin.php?page=' . CpmsDashboard::PAGE_SLUG));
+                exit;
+            }
 
-        // Verified progression: entity steps advance only when actually
-        // complete; informational steps are recorded as completed.
-        $entity_steps = ['clinic', 'locations', 'doctors', 'schedules', 'review'];
-        if ( ! in_array( $step, $entity_steps, true ) && $step !== 'facility' ) {
+            // Verified progression: entity steps advance only when actually
+            // complete; informational steps are recorded as completed.
+            $entity_steps = ['clinic', 'locations', 'doctors', 'schedules', 'review'];
+            if ( ! in_array( $step, $entity_steps, true ) && $step !== 'facility' ) {
+                self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
+            }
+            $active_required = array_column( array_filter( self::active_steps(), static fn ( $s ) => $s['required'] ), 'id' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+            if ( in_array( $step, $active_required, true ) && ! self::step_is_complete( $step, $settings ) ) {
+                set_transient( self::NOTICE_KEY, 'خطا: این گام هنوز کامل نیست؛ ابتدا اطلاعات واقعی آن را در صفحهٔ مربوط ثبت و ذخیره کنید، سپس ادامه دهید.', 60 );
+                wp_safe_redirect( self::step_url( $step ) );
+                exit;
+            }
             self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
-        }
-        $active_required = array_column( array_filter( self::active_steps(), static fn ( $s ) => $s['required'] ), 'id' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        if ( in_array( $step, $active_required, true ) && ! self::step_is_complete( $step, $settings ) ) {
-            set_transient( self::NOTICE_KEY, 'خطا: این گام هنوز کامل نیست؛ ابتدا اطلاعات واقعی آن را در صفحهٔ مربوط ثبت و ذخیره کنید، سپس ادامه دهید.', 60 );
+            self::set_current_step( $settings, self::nextStepId( $step ) );
+            set_transient(self::NOTICE_KEY, 'ذخیره شد.', 60);
+            wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
+            exit;
+        } catch ( \RuntimeException ) {
+            // A settings write failure (for example an unverifiable
+            // settings snapshot or a failed mutation) must surface as a
+            // controlled, sanitized error — never a raw database or
+            // exception message, and never a silent partial save.
+            set_transient( self::NOTICE_KEY, 'خطا: ذخیره انجام نشد؛ لطفاً دوباره تلاش کنید.', 60 );
             wp_safe_redirect( self::step_url( $step ) );
             exit;
         }
-        self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
-        self::set_current_step( $settings, self::nextStepId( $step ) );
-        set_transient(self::NOTICE_KEY, 'ذخیره شد.', 60);
-        wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
-        exit;
     }
 
     /**
@@ -1662,9 +1688,16 @@ final class CpmsSetupWizard
             return;
         }
 
-        $settings->set( 'setup.current_step', 'welcome', $uid );
-        $settings->set( self::COMPLETE_KEY, false, $uid );
-        $settings->set( 'setup.outpatient_only_ack', false, $uid );
+        // One atomic transition: step, completion flag and acknowledgment
+        // reset commit together or not at all.
+        $settings->set_many(
+            [
+                'setup.current_step'         => 'welcome',
+                self::COMPLETE_KEY           => false,
+                'setup.outpatient_only_ack'  => false,
+            ],
+            $uid
+        );
     }
 
     public static function restart(): void
@@ -1689,7 +1722,15 @@ final class CpmsSetupWizard
             wp_die( 'برای این کار، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
-        self::reset_progress( $settings, (int) get_current_user_id() );
+        try {
+            self::reset_progress( $settings, (int) get_current_user_id() );
+        } catch ( \RuntimeException ) {
+            // Controlled, sanitized failure: the restart is atomic, so no
+            // partial reset was committed; report a generic error.
+            set_transient( self::NOTICE_KEY, 'خطا: شروع دوباره انجام نشد؛ لطفاً دوباره تلاش کنید.', 60 );
+            wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
+            exit;
+        }
         set_transient(self::NOTICE_KEY, 'راه‌اندازی از نو شروع شد.', 60);
         wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
         exit;
@@ -2030,11 +2071,17 @@ final class CpmsSetupWizard
         $future = max(1, min(365, (int) ($post['future'] ?? 60)));
         $cancel = max(0, min(168, (int) ($post['cancel'] ?? 24)));
 
-        $settings->set('booking.duration_default_min', $duration, $updatedBy);
-        $settings->set('booking.slot_capacity_default', $capacity, $updatedBy);
-        $settings->set('booking.min_lead_hours', $lead, $updatedBy);
-        $settings->set('booking.max_future_days', $future, $updatedBy);
-        $settings->set('booking.cancel_deadline_hours', $cancel, $updatedBy);
+        // One atomic transition: the whole booking policy commits or none.
+        $settings->set_many(
+            [
+                'booking.duration_default_min'  => $duration,
+                'booking.slot_capacity_default' => $capacity,
+                'booking.min_lead_hours'        => $lead,
+                'booking.max_future_days'       => $future,
+                'booking.cancel_deadline_hours' => $cancel,
+            ],
+            $updatedBy
+        );
 
         return '';
     }
@@ -2055,11 +2102,15 @@ final class CpmsSetupWizard
         $provider = trim((string) ($post['sms_provider'] ?? ''));
         $sender = trim((string) ($post['sms_sender'] ?? ''));
 
+        $sms_writes = [];
         if ($provider !== '') {
-            $settings->set('sms.provider', $provider, $updatedBy);
+            $sms_writes['sms.provider'] = $provider;
         }
         if ($sender !== '') {
-            $settings->set('sms.sender', $sender, $updatedBy);
+            $sms_writes['sms.sender'] = $sender;
+        }
+        if ($sms_writes !== []) {
+            $settings->set_many($sms_writes, $updatedBy);
         }
 
         return '';
