@@ -175,12 +175,12 @@ final class CpmsSetupWizard
             return;
         }
         $steps = self::active_steps();
-        $index = self::currentStepIndex();
+        $index = self::current_step_index( $steps );
         // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only selector; values are restricted to registered steps.
         if ( isset( $_GET['step'] ) && is_string( $_GET['step'] ) ) {
             $requested_step = sanitize_key( wp_unslash( $_GET['step'] ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Read-only, registry-whitelisted navigation value.
             if ( in_array( $requested_step, array_column( $steps, 'id' ), true ) ) {
-                $index = self::stepIndexById( $requested_step );
+                $index = self::step_index_by_id( $requested_step, $steps );
             }
         }
         $step = $steps[ $index ];
@@ -259,11 +259,19 @@ final class CpmsSetupWizard
 
     // ================= Getters / helpers =================
 
-    private static function currentStepIndex(): int
-    {
+    /**
+     * Index of the stored current step within the given step snapshot.
+     * The snapshot is passed in (never recomputed) so one render always
+     * resolves indexes against the exact list it displays — a transient
+     * Settings read difference between two computations can otherwise
+     * point an index at a different step than the one requested.
+     *
+     * @param list<array{id:string,title:string,icon:string,required:bool}> $steps
+     */
+    private static function current_step_index( array $steps ): int {
         $settings = App::settings();
-        $store = (string) ($settings->get('setup.current_step', 'welcome') ?? 'welcome');
-        foreach ( self::active_steps() as $i => $s ) {
+        $store    = (string) ( $settings->get( 'setup.current_step', 'welcome' ) ?? 'welcome' );
+        foreach ( $steps as $i => $s ) {
             if ($s['id'] === $store) {
                 return $i;
             }
@@ -272,9 +280,14 @@ final class CpmsSetupWizard
         return 0;
     }
 
-    private static function stepIndexById(string $id): int
-    {
-        foreach ( self::active_steps() as $i => $s ) {
+    /**
+     * Index of a step id within the given step snapshot (see
+     * current_step_index() for why the list is never recomputed here).
+     *
+     * @param list<array{id:string,title:string,icon:string,required:bool}> $steps
+     */
+    private static function step_index_by_id( string $id, array $steps ): int {
+        foreach ( $steps as $i => $s ) {
             if ($s['id'] === $id) {
                 return $i;
             }
