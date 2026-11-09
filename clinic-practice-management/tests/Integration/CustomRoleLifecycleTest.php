@@ -754,7 +754,6 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                         'mysql_version' => $mysqlVersion,
                         'parent_connection_id' => $parentConnectionId,
                         'child_connection_id' => $childConnectionId,
-                        'child_lock_query_sha256' => $childQueryFingerprint,
                         'parent_transaction_state' => is_array($parentTxn) ? ($parentTxn['trx_state'] ?? null) : null,
                         'child_transaction_state' => is_array($childTxn) ? ($childTxn['trx_state'] ?? null) : null,
                         'wait_edge' => null,
@@ -957,7 +956,6 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 'child' => [
                     'connection_id' => $childConnectionId,
                     'transaction_id' => $waitEvidence['requesting_transaction_id'] ?? null,
-                    'assignment_lock_query_sha256' => $childQueryFingerprint,
                     'requesting_lock_id' => $waitEvidence['requesting_lock_id'] ?? null,
                     'transaction_state_while_waiting' => $childTransactionWhileWaiting['trx_state'] ?? null,
                     'transaction_state_after_deactivation_before_commit' => $childTransactionAfterTransition['trx_state'] ?? null,

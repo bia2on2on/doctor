@@ -861,6 +861,7 @@ jobs:
             --phpunit-version-file /tmp/authz-coverage/phpunit-version.txt \
             --phpunit-rc-file /tmp/authz-coverage/phpunit.rc \
             --phpunit-log /tmp/authz-coverage/phpunit.log \
+            --phpunit-junit /tmp/authz-coverage/junit.xml \
             --out-dir /tmp/authz-coverage/summary \
             --commit "$HEAD_SHA" --event-sha "$EVENT_SHA" \
             --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT"
@@ -934,16 +935,17 @@ jobs:
           php -d memory_limit=1G tests/bin/multi-clinic-rest-bootstrap-probe.php > /tmp/red1-probe.log 2>&1
           PROBE_RC=$?
           set -e
-          cat /tmp/red1-probe.log
-          # The probe's own stdout/stderr IS the RED evidence, and the raw job
-          # log is not readable through the API — same reason the repository
-          # already mirrors the integration summary onto the PR. Mirroring here
-          # never changes the step's verdict: we re-exit with the probe's rc.
+          # Publication boundary: the probe's raw stdout/stderr is NEVER echoed
+          # and NEVER mirrored. Only the fixed-schema projection reaches the job
+          # log, the step summary and the PR. The exit code stays the verdict.
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" red1-probe /tmp/red1-probe.log || true
+          # The probe's own exit code is the RED verdict authority; this mirror
+          # never changes it: we re-exit with the probe's rc.
           if [ -n "$PR_NUMBER" ]; then
             {
               echo "### RED 1 — process-fresh multi-Clinic REST bootstrap probe (run ${{ github.run_id }}, attempt ${{ github.run_attempt }}, rc=${PROBE_RC})"
               echo '```'
-              cat /tmp/red1-probe.log
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" red1-probe /tmp/red1-probe.log || true
               echo '```'
             } > /tmp/red1-probe-comment.md
             bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-red1-probe --body-file /tmp/red1-probe-comment.md \
@@ -1014,22 +1016,17 @@ jobs:
               || echo '::notice::Integration failure evidence could not be mirrored (see the warning above)'
           fi
 
-      # خروجی PHPUnit به‌صورت annotation هم منتشر می‌شود (سقف GitHub: 10 به‌ازای Step)
+      # خروجی PHPUnit به‌صورت annotation هم منتشر می‌شود (سقف GitHub: 10 به‌ازای Step).
+      # فقط شناسه‌های Class::method که در سورس source-verified باشند (PSR-4 +
+      # متدِ اعلام‌شده) منتشر می‌شوند؛ هر چیز دیگری از لاگ خام خوانده نمی‌شود.
       - name: Surface test failures (part 1)
         if: failure()
         run: |
-          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/phpunit-int.log | sort -u | head -10 | while IFS= read -r l; do
-            echo "::error::${l:0:400}"
-          done
-          grep -E "^Tests: " /tmp/phpunit-int.log | head -1 | while IFS= read -r l; do
-            echo "::notice::${l:0:400}"
-          done
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" annotate /tmp/phpunit-int-junit.xml --offset 0 --limit 10 || true
       - name: Surface test failures (part 2)
         if: failure()
         run: |
-          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/phpunit-int.log | sort -u | sed -n '11,20p' | while IFS= read -r l; do
-            echo "::error::${l:0:400}"
-          done
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" annotate /tmp/phpunit-int-junit.xml --offset 10 --limit 10 || true
 
   # F1-3 (گروه 4) — PHPStan در CI. سطح و scope در phpstan.neon.dist ثبت است
   # (level=3 — بالاترین سطح سبز روی وضعیت واقعی کد، با اجرای واقعی/probe؛

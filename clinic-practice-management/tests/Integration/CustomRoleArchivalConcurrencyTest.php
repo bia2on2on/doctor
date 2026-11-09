@@ -526,7 +526,6 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 'parent_transaction_visible_on_own_session' => is_array($selfTransaction),
                 'parent_transaction_state' => $parentTransaction['trx_state'] ?? null,
                 'child_transaction_state' => $childTransaction['trx_state'] ?? null,
-                'waiter_lock_query_sha256' => hash('sha256', $childQuery),
                 'wait_edge' => $waitEdge,
                 'same_wait_edge_through_mutation_and_audit_before_commit' => $waitAfterMutation !== null,
                 'child_outcome_after_parent_commit' => $outcome,

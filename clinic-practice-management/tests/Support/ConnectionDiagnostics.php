@@ -105,7 +105,13 @@ final class ConnectionDiagnostics
         }
 
         $shapes = [];
+        $segment = '[A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)*';
         foreach ($hook->callbacks as $priority => $callbacks) {
+            // Only integer priorities in [0, 9999] reach the publication
+            // boundary; anything else is skipped at the source.
+            if (! is_int($priority) || $priority < 0 || $priority > 9999) {
+                continue;
+            }
             if (! is_array($callbacks)) {
                 continue;
             }
@@ -119,9 +125,15 @@ final class ConnectionDiagnostics
                 } elseif ($fn instanceof \Closure) {
                     $shape = 'closure#' . substr((string) spl_object_id($fn), -3);
                 } else {
-                    $shape = get_debug_type($fn);
+                    continue; // debug_type() tokens carry no diagnostic value for the boundary.
                 }
-                $shapes[] = (string) $priority . ':' . $shape;
+                // Fixed shape: priority:(closure#nnn|Fqcn::method|bare_fn).
+                // Anything else is skipped at the source (fail-closed).
+                if (preg_match('/\A' . $segment . '(::[A-Za-z_][A-Za-z0-9_]*)?\z/', $shape) !== 1
+                    && preg_match('/\Aclosure#[0-9]{1,3}\z/', $shape) !== 1) {
+                    continue;
+                }
+                $shapes[] = $priority . ':' . $shape;
             }
         }
 

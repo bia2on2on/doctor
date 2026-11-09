@@ -1196,6 +1196,158 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
 _MIGRATION_VERSION_RE = re.compile(r"^(\d{4}_\d{2}_\d{2}_\d{4})_")
 
 
+class IntegrationPublicationBoundaryTests(unittest.TestCase):
+    """Static contracts pinning the Integration job's publication boundary.
+
+    These tests pin the SHAPES of the publication boundary after the
+    adversarial review: raw probe output is never echoed or mirrored, idents
+    reach PR annotations only through the source-verified projector, coverage
+    guard summaries carry fixed tokens only, and no artifact path ships a raw
+    log. They intentionally do not re-derive behavior the Python contract
+    suite (bin/test_integration_evidence.py) already executes.
+    """
+
+    def setUp(self):
+        self.ci = workflow("ci.yml")
+        self.integration = ci_job_block(self.ci, "integration")
+
+    # --- RED-1 probe publication boundary ---
+
+    def test_red1_step_never_echoes_raw_probe_output(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        self.assertNotIn("cat /tmp/red1-probe.log", step)
+        self.assertNotIn("tee /tmp/red1-probe.log", step)
+        # The fixed-schema projection is the only thing published.
+        self.assertIn("red1-probe /tmp/red1-probe.log", step)
+
+    def test_red1_probe_source_emits_fixed_schema_lines_and_fatal_handler(self):
+        probe = (ROOT / "clinic-practice-management" / "tests" / "bin"
+                 / "multi-clinic-rest-bootstrap-probe.php").read_text(encoding="utf-8")
+        self.assertIn("RED1_PROBE v1 ", probe)
+        self.assertIn("register_shutdown_function", probe)
+        self.assertIn("event=fatal", probe)
+        # INVALID-exit paths carry a fixed reason token.
+        for token in ("plugin_file", "autoload", "test_library", "core", "database",
+                      "bootstrap", "migration", "precondition"):
+            self.assertIn("'reason' => '{0}'".format(token), probe)
+
+    def test_red1_projection_is_the_only_pr_mirror_of_the_probe(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        body = step.split("red1-probe-comment.md")[0]
+        self.assertIn("red1-probe /tmp/red1-probe.log", body)
+        self.assertNotIn("cat ", body.split("echo '```'", 1)[-1])
+
+    # --- GitHub annotations: source-verified idents only ---
+
+    def test_failure_annotations_use_the_source_verified_projector(self):
+        part1 = ci_step_block(self.integration, "Surface test failures (part 1)")
+        part2 = ci_step_block(self.integration, "Surface test failures (part 2)")
+        for block in (part1, part2):
+            self.assertIn("annotate /tmp/phpunit-int-junit.xml", block)
+        self.assertNotIn("grep -oE", part1)
+        self.assertNotIn("grep -oE", part2)
+
+    # --- Coverage guard: mandatory JUnit cross-check, fixed tokens only ---
+
+    def test_coverage_guard_invocation_passes_the_junit_cross_check(self):
+        step = ci_step_block(self.integration,
+                             "AuthorizationService coverage guard (fail-closed; includes negative-control self-test)")
+        self.assertIn("--phpunit-junit /tmp/authz-coverage/junit.xml", step)
+
+    def test_coverage_guard_publishes_no_raw_summary_token(self):
+        guard = (ROOT / "clinic-practice-management" / "bin"
+                 / "authorization-coverage-guard.py").read_text(encoding="utf-8")
+        # Dict-key emission of the raw summary line must not exist; the
+        # positive control already asserts the key is absent from results.
+        self.assertNotIn('"terminal_summary":', guard)
+        self.assertIn("terminal_verdict", guard)
+        self.assertIn("check_junit", guard)
+
+    # --- No raw logs in artifacts ---
+
+    def test_no_uploaded_artifact_path_is_a_raw_log(self):
+        raw_paths = ("/tmp/phpunit-int.log", "/tmp/red1-probe.log",
+                     "/tmp/cpms-conn-diag.jsonl", "/tmp/custom-role-race.log",
+                     "/tmp/custom-role-archive-race.log", "/tmp/heartbeat-recovery-mysql.log",
+                     "/tmp/authz-coverage/phpunit.log", "/tmp/authz-coverage/clover.xml",
+                     "/tmp/custom-role-mariadb.log", "/tmp/custom-role-archive-migration.log",
+                     "/tmp/custom-role-archive.log", "/tmp/first-practice-mariadb.log")
+        # Split the job into step blocks and inspect upload-artifact steps only.
+        step_blocks = re.split(r"(?m)^      - name: ", self.integration)[1:]
+        uploads = [b for b in step_blocks if "uses: actions/upload-artifact" in b]
+        self.assertTrue(uploads, "expected at least one upload-artifact step in the Integration job")
+        for block in uploads:
+            for raw in raw_paths:
+                self.assertNotIn(raw, block, raw + " must never be uploaded")
+            # Inspect only the `path: |` payload lines, not comments.
+            lines = block.splitlines()
+            for index, line in enumerate(lines):
+                if line.strip() == "path: |":
+                    indent = len(line) - len(line.lstrip())
+                    for payload in lines[index + 1:]:
+                        payload_indent = len(payload) - len(payload.lstrip())
+                        if payload.strip() and payload_indent <= indent:
+                            break
+                        self.assertNotIn(".log", payload)
+                        self.assertNotIn(".jsonl", payload)
+                        self.assertNotIn("clover.xml", payload)
+                        self.assertNotIn(".junit", payload)
+
+    # --- Source emitters: hashing removed, fixed vocabularies ---
+
+    def test_bounded_evidence_publishes_no_hashes_and_exact_vocab(self):
+        text = (ROOT / "clinic-practice-management" / "tests" / "Support"
+                / "BoundedEvidence.php").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "sha256" in line.lower() or "sha-256" in line.lower():
+                self.assertIn("NOT published", line)
+        self.assertNotIn("hash(", text)
+        # FD vocabulary is exactly the four categories.
+        self.assertIn("'dev-null', 'pipe', 'socket', 'other'", text)
+        # Race outcome vocabulary is source-exact: the 16 reason codes only.
+        self.assertNotIn("CUSTOM_ROLE_MUTATION_FAILED", text)
+        self.assertNotIn("CUSTOM_ROLE_ARCHIVED", text)
+        self.assertNotIn("CUSTOM_ROLE_DEACTIVATED", text)
+        self.assertNotIn("CUSTOM_ROLE_REACTIVATED", text)
+        self.assertIn("CUSTOM_ROLE_ASSIGNMENT_DEFINITION_NOT_ACTIVE", text)
+        self.assertIn("CUSTOM_ROLE_MEMBERSHIP_REFERENCES", text)
+
+    def test_projector_has_no_hashing_and_no_sha256_fields(self):
+        text = (ROOT / "bin" / "integration_evidence.py").read_text(encoding="utf-8")
+        self.assertNotIn("hashlib", text)
+        self.assertNotIn("statement_sha256'", text)
+        self.assertNotIn("assignment_lock_query_sha256'", text)
+        self.assertNotIn("waiter_lock_query_sha256'", text)
+
+    def test_connection_diagnostics_emits_only_bounded_chain_shapes(self):
+        text = (ROOT / "clinic-practice-management" / "tests" / "Support"
+                / "ConnectionDiagnostics.php").read_text(encoding="utf-8")
+        self.assertIn("is_int($priority)", text)
+        self.assertIn("closure#", text)
+        self.assertNotIn("get_debug_type($fn)", text)
+
+    # --- Table-facts test lives on the real database ---
+
+    def test_table_facts_test_is_integration_not_unit(self):
+        integration = ROOT / "clinic-practice-management" / "tests" / "Integration" / "WpSqlFailureLedgerIntegrationTest.php"
+        unit = ROOT / "clinic-practice-management" / "tests" / "Unit" / "Support" / "WpSqlFailureLedgerTest.php"
+        self.assertTrue(integration.is_file())
+        self.assertIn("WP_UnitTestCase", integration.read_text(encoding="utf-8"))
+        self.assertNotIn("127.0.0.1", unit.read_text(encoding="utf-8"))
+        self.assertNotIn("wordpress_test", unit.read_text(encoding="utf-8"))
+
+    # --- Verdict semantics preserved (fail-closed, no gate weakening) ---
+
+    def test_red1_step_still_exits_with_the_probe_rc(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        self.assertIn('exit "${PROBE_RC:-1}"', step)
+
+    def test_full_suite_step_still_requires_terminal_summary(self):
+        step = ci_step_block(self.integration, "Run integration tests")
+        self.assertIn("terminal summary", step)
+        self.assertIn("phpunit_status", step)
+
+
 def link_production_at_baseline(source: Path, target: Path, baseline: str) -> None:
     """Symlink a production tree with its migrations truncated at `baseline`.
 

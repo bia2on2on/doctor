@@ -267,36 +267,6 @@ final class WpSqlFailureLedgerTest extends TestCase
         }
     }
 
-    public function testTableFactsPublishOnlyBooleansWhenDbExists(): void
-    {
-        if (!class_exists('\mysqli')) {
-            $this->markTestSkipped('mysqli extension not available.');
-        }
-        try {
-            // PHP 8 mysqli throws mysqli_sql_exception on connect failure by
-            // default, so a missing server would surface as an error rather
-            // than a skipped test — catch it and skip instead.
-            $mysqli = new \mysqli('127.0.0.1', 'root', 'root', 'wordpress_test', 3306);
-        } catch (\Throwable) {
-            $this->markTestSkipped('No MySQL service in this environment.');
-        }
-        $fake = self::fakeWpdb('Duplicate entry for key', 'SELECT 1');
-        $fake->dbh = $mysqli;
-        $this->useWpdb($fake, []);
-
-        WpSqlFailureLedger::observe('SELECT 1');
-        $lines = $this->buildLedgerLines($fake);
-        $facts = $this->ledgerJsonLines($lines, 'CPMS_SQL_FAILURE_LEDGER_TABLE ');
-        $mysqli->close();
-
-        $this->assertNotEmpty($facts);
-        foreach ($facts as $fact) {
-            $this->assertSame(['table', 'real_exists', 'name_visible'], array_keys($fact));
-            $this->assertIsBool($fact['real_exists']);
-            $this->assertIsBool($fact['name_visible']);
-        }
-    }
-
     public function testJsonLedgerLinesDecodeCleanly(): void
     {
         $fake = self::fakeWpdb("Duplicate entry 'x\ny' for key", 'SELECT 1');

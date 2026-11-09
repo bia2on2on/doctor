@@ -23,7 +23,7 @@ Usage:
   python3 bin/authorization-coverage-guard.py \
       --clover FILE --target RELPATH --source FILE \
       --driver-json FILE --phpunit-version-file FILE \
-      --phpunit-rc-file FILE --phpunit-log FILE --out-dir DIR \
+      --phpunit-rc-file FILE --phpunit-log FILE --phpunit-junit FILE --out-dir DIR \
       --commit SHA --run-id ID --run-attempt N
   python3 bin/authorization-coverage-guard.py --test
 
@@ -46,7 +46,18 @@ TARGET = "src/Application/Authorization/AuthorizationService.php"
 SUMMARY_NAME = "authz-coverage-summary.json"
 MARKDOWN_NAME = "authz-coverage-summary.md"
 TERMINAL_RE = re.compile(r"^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!)", re.MULTILINE)
-PHPUNIT_VERSION_RE = re.compile(r"PHPUnit (\d+\.\d+\.\d+)")
+PHPUNIT_VERSION_RE = re.compile(r"^PHPUnit ([0-9]+\.[0-9]+\.[0-9]+)\b", re.MULTILINE)
+JUNIT_CLASS = "ClinicCore\\Tests\\Integration\\AuthorizationServiceTest"
+VERDICT_TOKENS = {"OK (": "OK", "OK, but": "OK, but", "FAILURES!": "FAILURES!",
+                  "ERRORS!": "ERRORS!", "WARNINGS!": "WARNINGS!"}
+
+
+def fullmatch_int(text: str, max_digits: int = 15) -> int:
+    """Strict full-string non-negative integer parse; anything else raises."""
+    candidate = (text or "").strip()
+    if not re.fullmatch(r"[0-9]{1,%d}" % max_digits, candidate):
+        raise GuardFailure("malformed integer record")
+    return int(candidate)
 
 
 class GuardFailure(Exception):
@@ -88,7 +99,7 @@ def check_driver(driver_json: Path) -> dict:
 
 def check_phpunit(rc_file: Path, log_file: Path, version_file: Path) -> dict:
     rc_text = read_text(rc_file, "PHPUnit exit-code record").strip()
-    if not re.fullmatch(r"-?\d+", rc_text):
+    if not re.fullmatch(r"-?[0-9]{1,15}", rc_text):
         raise GuardFailure("PHPUnit exit-code record is malformed")
     rc = int(rc_text)
     log = read_text(log_file, "PHPUnit log")
@@ -97,12 +108,45 @@ def check_phpunit(rc_file: Path, log_file: Path, version_file: Path) -> dict:
         raise GuardFailure(f"test execution failed: PHPUnit exit code {rc}")
     if m is None:
         raise GuardFailure("PHPUnit terminated without a terminal summary (not a completed run)")
+    # Fixed verdict token only — the raw summary line is never published.
+    verdict = VERDICT_TOKENS[m.group(1)]
     version_text = read_text(version_file, "PHPUnit version record")
     vm = PHPUNIT_VERSION_RE.search(version_text)
     if vm is None:
         raise GuardFailure("PHPUnit version identity not recorded")
-    summary_line = next((ln for ln in log.splitlines() if TERMINAL_RE.match(ln)), "")
-    return {"exit_code": rc, "terminal_summary": summary_line.strip(), "version": vm.group(1)}
+    return {"exit_code": rc, "terminal_verdict": verdict, "version": vm.group(1)}
+
+
+def check_junit(junit_file: Path) -> dict:
+    """Mandatory cross-check of the PHPUnit JUnit report from the same run.
+
+    Fixed expectations only: it must parse, carry at least one testcase, no
+    skipped/failure/error cases, and every testcase must belong to the one
+    expected class. Anything else fails closed. Nothing from the junit is
+    published except pure integers and the fixed class token.
+    """
+    raw = read_text(junit_file, "PHPUnit JUnit report")
+    try:
+        root = ET.fromstring(raw)
+    except ET.ParseError as exc:
+        raise GuardFailure("PHPUnit JUnit report is malformed XML") from exc
+    if root.tag not in ("testsuites", "testsuite"):
+        raise GuardFailure("PHPUnit JUnit report root element is not testsuites/testsuite")
+    cases = root.findall(".//testcase")
+    if not cases:
+        raise GuardFailure("PHPUnit JUnit report contains no testcase elements")
+    bad = sum(1 for case in cases
+              if any(case.find(tag) is not None for tag in ("skipped", "failure", "error")))
+    if bad:
+        raise GuardFailure(f"PHPUnit JUnit report records {bad} skipped/failure/error case(s)")
+    classes = {(case.get("class") or "").strip() for case in cases}
+    if classes != {JUNIT_CLASS}:
+        raise GuardFailure("PHPUnit JUnit report covers unexpected test class(es)")
+    assertions = 0
+    for case in cases:
+        raw_assertions = case.get("assertions")
+        assertions += fullmatch_int(raw_assertions) if raw_assertions is not None else 0
+    return {"junit_tests": len(cases), "junit_assertions": assertions, "junit_class": JUNIT_CLASS}
 
 
 def parse_clover(clover_file: Path, target: str) -> dict:
@@ -205,7 +249,12 @@ def build_summary(args: argparse.Namespace) -> tuple[dict, list[str]]:
                                 Path(args.phpunit_version_file))
         result["phpunit_version"] = phpunit["version"]
         result["phpunit_exit_code"] = phpunit["exit_code"]
-        result["phpunit_terminal_summary"] = phpunit["terminal_summary"]
+        result["phpunit_verdict"] = phpunit["terminal_verdict"]
+    except GuardFailure as exc:
+        failures.append(str(exc))
+    try:
+        junit = check_junit(Path(args.phpunit_junit))
+        result.update(junit)
     except GuardFailure as exc:
         failures.append(str(exc))
     try:
@@ -244,6 +293,7 @@ def render_markdown(result: dict) -> str:
         f"- Head commit: `{result['commit']}` (event SHA `{result.get('event_sha')}`)",
         f"- Workflow run `{result['run_id']}` attempt `{result['run_attempt']}`",
         f"- PHP `{result.get('php_version')}` · PHPUnit `{result.get('phpunit_version')}` · PCOV `{result.get('pcov_version')}`",
+        f"- PHPUnit verdict: `{result.get('phpunit_verdict')}` · JUnit cross-check: `{result.get('junit_class')}` ({result.get('junit_tests')} tests, {result.get('junit_assertions')} assertions)",
     ]
     if "executable_lines" in result:
         lines += [
@@ -298,16 +348,25 @@ GOOD_DRIVER = json.dumps({"pcov_loaded": True, "pcov_enabled": True,
                           "pcov_version": "1.0.12", "php_version": "8.2.99"})
 GOOD_VERSION = "PHPUnit 9.6.38 by Sebastian Bergmann and contributors."
 GOOD_LOG = "...\n\nOK (11 tests, 40 assertions)\n"
+GOOD_JUNIT = """<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="ClinicCore\\Tests\\Integration\\AuthorizationServiceTest" tests="11" assertions="40">
+    <testcase class="ClinicCore\\Tests\\Integration\\AuthorizationServiceTest" name="testAllows" assertions="4"/>
+    <testcase class="ClinicCore\\Tests\\Integration\\AuthorizationServiceTest" name="testDenies" assertions="4"/>
+  </testsuite>
+</testsuites>
+"""
 
 
 def _case(tmp: Path, name: str, *, clover: str | None = GOOD_CLOVER, driver: str | None = GOOD_DRIVER,
           rc: str | None = "0", log: str | None = GOOD_LOG, version: str | None = GOOD_VERSION,
+          junit: str | None = GOOD_JUNIT,
           target: str = TARGET) -> tuple[argparse.Namespace, Path]:
     d = tmp / name
     d.mkdir(parents=True)
     paths = {}
     for key, content in (("clover.xml", clover), ("driver.json", driver), ("rc.txt", rc),
-                         ("phpunit.log", log), ("version.txt", version)):
+                         ("phpunit.log", log), ("version.txt", version), ("junit.xml", junit)):
         if content is not None:
             (d / key).write_text(content, encoding="utf-8")
     source = d / "AuthorizationService.php"
@@ -316,6 +375,7 @@ def _case(tmp: Path, name: str, *, clover: str | None = GOOD_CLOVER, driver: str
         clover=str(d / "clover.xml"), target=target, source=str(source),
         driver_json=str(d / "driver.json"), phpunit_version_file=str(d / "version.txt"),
         phpunit_rc_file=str(d / "rc.txt"), phpunit_log=str(d / "phpunit.log"),
+        phpunit_junit=str(d / "junit.xml"),
         out_dir=str(d / "out"), commit="0" * 40, event_sha="0" * 40, run_id="selftest", run_attempt="1",
     )
     return ns, d
@@ -331,7 +391,10 @@ def run_self_test() -> int:
         res, failures = build_summary(ns)
         ok = (not failures and res["status"] == "PASS" and res["executable_lines"] == 4
               and res["covered_lines"] == 2 and res["uncovered_lines"] == [11, 14]
-              and res["line_coverage_percent"] == 50.0 and res["phpunit_version"] == "9.6.38")
+              and res["line_coverage_percent"] == 50.0 and res["phpunit_version"] == "9.6.38"
+              and res["phpunit_verdict"] == "OK" and res["junit_tests"] == 2
+              and res["junit_assertions"] == 8 and res["junit_class"] == JUNIT_CLASS
+              and "terminal_summary" not in res)
         results.append(("positive control: well-formed report passes with exact numbers", ok, str(failures)))
 
         negatives = [
@@ -353,6 +416,17 @@ def run_self_test() -> int:
             ("PHPUnit exit-code record missing", dict(rc=None)),
             ("no terminal PHPUnit summary (premature exit rc=0)", dict(log="partial output only\n")),
             ("PHPUnit version not recorded", dict(version=None)),
+            ("JUnit report absent", dict(junit=None)),
+            ("JUnit report malformed", dict(junit="<testsuites>")),
+            ("JUnit report has no testcase elements", dict(junit='<testsuites><testsuite name="x"/></testsuites>')),
+            ("JUnit report records a failure", dict(junit=(
+                '<testsuites><testsuite name="s">'
+                '<testcase class="ClinicCore\\Tests\\Integration\\AuthorizationServiceTest" name="testX" assertions="1">'
+                '<failure type="x">msg</failure></testcase>'
+                '</testsuite></testsuites>'))),
+            ("JUnit report covers an unexpected class", dict(junit=GOOD_JUNIT.replace(
+                "ClinicCore\\Tests\\Integration\\AuthorizationServiceTest",
+                "ClinicCore\\Tests\\Integration\\SomeoneElseTest"))),
         ]
         for name, overrides in negatives:
             ns, _ = _case(tmp, name.replace(" ", "_").replace("(", "").replace(")", "").replace("=", ""), **overrides)
@@ -384,6 +458,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--phpunit-version-file")
     parser.add_argument("--phpunit-rc-file")
     parser.add_argument("--phpunit-log")
+    parser.add_argument("--phpunit-junit")
     parser.add_argument("--out-dir")
     parser.add_argument("--commit", default="UNKNOWN", help="PR head SHA (or pushed SHA)")
     parser.add_argument("--event-sha", default="UNKNOWN", help="GITHUB_SHA of the workflow event")
@@ -392,7 +467,7 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
     if args.test:
         return run_self_test()
-    required = ["clover", "driver_json", "phpunit_version_file", "phpunit_rc_file", "phpunit_log", "out_dir"]
+    required = ["clover", "driver_json", "phpunit_version_file", "phpunit_rc_file", "phpunit_log", "phpunit_junit", "out_dir"]
     missing = [r for r in required if not getattr(args, r)]
     if missing:
         parser.error("missing required arguments: " + ", ".join("--" + m.replace("_", "-") for m in missing))
