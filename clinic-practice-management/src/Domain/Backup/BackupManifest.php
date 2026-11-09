@@ -121,7 +121,7 @@ final class BackupManifest
             }
         }
 
-        $errors = array_values(array_unique($errors));
+        $errors = array_values( array_unique( $errors ) );
 
         return ['ok' => $errors === [], 'errors' => $errors, 'warnings' => $warnings];
     }

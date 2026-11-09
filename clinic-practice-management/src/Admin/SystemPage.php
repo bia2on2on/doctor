@@ -459,7 +459,7 @@ final class SystemPage
         self::guard('cpms_backup_verify');
         $id = trim((string) ($_POST['backup_id'] ?? ''));
         try {
-            $verification = App::backupService()->verifyBackup($id);
+            $verification = App::backupService()->verifyBackup( $id );
         } catch ( \Throwable ) {
             self::notify(
                 'تأیید بکاپ ناموفق است. [' . BackupVerificationErrorCodes::VERIFICATION_FAILED . '] جزئیات فنی حذف شده‌اند.'
