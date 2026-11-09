@@ -1166,10 +1166,10 @@ final class FacilitySetupService {
         // transition (previously six sequential writes could partially
         // commit a policy without its progress marker, or vice versa).
         $settings->require_verified_snapshot();
-        $writes = $policy;
+        $writes    = $policy;
         $completed = array_filter( array_map( 'trim', explode( ',', (string) ( $settings->get( 'setup.completed_steps', '' ) ?? '' ) ) ) );
         if ( ! in_array( 'booking', $completed, true ) ) {
-            $completed[] = 'booking';
+            $completed[]                     = 'booking';
             $writes['setup.completed_steps'] = implode( ',', $completed );
         }
         $settings->set_many( $writes, $actor_id );
