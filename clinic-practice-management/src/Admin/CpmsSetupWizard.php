@@ -1605,6 +1605,12 @@ final class CpmsSetupWizard
             wp_die( 'برای ذخیره در راه‌اندازی، عضویت فعال در همین مطب و مجوز پیکربندی لازم است.', 403 );
         }
 
+        // The notice/redirect pair is computed inside the guarded block and
+        // performed after it: wp_safe_redirect() itself must stay outside
+        // the RuntimeException boundary so a redirect is never mistaken for
+        // a settings failure.
+        $notice   = '';
+        $location = '';
         try {
             $error = '';
 
@@ -1636,43 +1642,40 @@ final class CpmsSetupWizard
             }
 
             if ( $error !== '' ) {
-                set_transient( self::NOTICE_KEY, 'خطا: ' . $error, 60 );
-                wp_safe_redirect( self::step_url( $step ) );
-                exit;
+                $notice   = 'خطا: ' . $error;
+                $location = self::step_url( $step );
+            } elseif ( $step === 'finish' ) {
+                $notice   = 'راه‌اندازی تکمیل شد.';
+                $location = admin_url( 'admin.php?page=' . CpmsDashboard::PAGE_SLUG );
+            } else {
+                // Verified progression: entity steps advance only when actually
+                // complete; informational steps are recorded as completed.
+                $entity_steps = ['clinic', 'locations', 'doctors', 'schedules', 'review'];
+                if ( ! in_array( $step, $entity_steps, true ) && $step !== 'facility' ) {
+                    self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
+                }
+                $active_required = array_column( array_filter( self::active_steps(), static fn ( $s ) => $s['required'] ), 'id' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+                if ( in_array( $step, $active_required, true ) && ! self::step_is_complete( $step, $settings ) ) {
+                    $notice   = 'خطا: این گام هنوز کامل نیست؛ ابتدا اطلاعات واقعی آن را در صفحهٔ مربوط ثبت و ذخیره کنید، سپس ادامه دهید.';
+                    $location = self::step_url( $step );
+                } else {
+                    self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
+                    self::set_current_step( $settings, self::nextStepId( $step ) );
+                    $notice   = 'ذخیره شد.';
+                    $location = self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) );
+                }
             }
-
-            if ( $step === 'finish' ) {
-                set_transient( self::NOTICE_KEY, 'راه‌اندازی تکمیل شد.', 60 );
-                wp_safe_redirect( admin_url( 'admin.php?page=' . CpmsDashboard::PAGE_SLUG ) );
-                exit;
-            }
-
-            // Verified progression: entity steps advance only when actually
-            // complete; informational steps are recorded as completed.
-            $entity_steps = ['clinic', 'locations', 'doctors', 'schedules', 'review'];
-            if ( ! in_array( $step, $entity_steps, true ) && $step !== 'facility' ) {
-                self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
-            }
-            $active_required = array_column( array_filter( self::active_steps(), static fn ( $s ) => $s['required'] ), 'id' ); // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-            if ( in_array( $step, $active_required, true ) && ! self::step_is_complete( $step, $settings ) ) {
-                set_transient( self::NOTICE_KEY, 'خطا: این گام هنوز کامل نیست؛ ابتدا اطلاعات واقعی آن را در صفحهٔ مربوط ثبت و ذخیره کنید، سپس ادامه دهید.', 60 );
-                wp_safe_redirect( self::step_url( $step ) );
-                exit;
-            }
-            self::mark_step_completed( $settings, $step, (int) get_current_user_id() );
-            self::set_current_step( $settings, self::nextStepId( $step ) );
-            set_transient( self::NOTICE_KEY, 'ذخیره شد.', 60 );
-            wp_safe_redirect( self::with_explicit_clinic( admin_url( 'admin.php?page=cpms-wizard' ) ) );
-            exit;
         } catch ( \RuntimeException ) {
             // A settings write failure (for example an unverifiable
             // settings snapshot or a failed mutation) must surface as a
             // controlled, sanitized error — never a raw database or
             // exception message, and never a silent partial save.
-            set_transient( self::NOTICE_KEY, 'خطا: ذخیره انجام نشد؛ لطفاً دوباره تلاش کنید.', 60 );
-            wp_safe_redirect( self::step_url( $step ) );
-            exit;
+            $notice   = 'خطا: ذخیره انجام نشد؛ لطفاً دوباره تلاش کنید.';
+            $location = self::step_url( $step );
         }
+        set_transient( self::NOTICE_KEY, $notice, 60 );
+        wp_safe_redirect( $location );
+        exit;
     }
 
     /**

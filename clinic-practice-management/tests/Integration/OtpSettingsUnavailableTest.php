@@ -63,10 +63,7 @@ final class OtpSettingsUnavailableTest extends WP_UnitTestCase
             'purpose' => 'login',
         ]);
 
-        self::assertInstanceOf(\WP_Error::class, $response, 'unreadable settings must fail the request route closed');
-        self::assertSame('CLINIC_SERVICE_UNAVAILABLE', $response->get_error_code());
-        self::assertSame(503, (int) ($response->get_error_data()['status'] ?? 0));
-        self::assertSame('سرویس موقتاً در دسترس نیست.', $response->get_error_message(), 'only the neutral service-unavailable message may be exposed');
+        $this->assertServiceUnavailable($response, 'unreadable settings must fail the request route closed with the neutral 503 envelope');
         self::assertSame(0, $this->tokenCount(self::MOBILE), 'no challenge may be issued while limits are unverifiable');
 
         $this->restoreSettingsBulkReads();
@@ -94,10 +91,7 @@ final class OtpSettingsUnavailableTest extends WP_UnitTestCase
             'purpose' => 'login',
         ]);
 
-        self::assertInstanceOf(\WP_Error::class, $response, 'unreadable settings must fail the verify route closed');
-        self::assertSame('CLINIC_SERVICE_UNAVAILABLE', $response->get_error_code());
-        self::assertSame(503, (int) ($response->get_error_data()['status'] ?? 0));
-        self::assertSame('سرویس موقتاً در دسترس نیست.', $response->get_error_message());
+        $this->assertServiceUnavailable($response, 'unreadable settings must fail the verify route closed with the neutral 503 envelope');
         self::assertSame(1, $this->verifyIpHits('203.0.113.22'), 'verify charges the otp-verify-ip counter before the settings read (established production order)');
         self::assertNull($this->tokenConsumedAt($token_id), 'the challenge must not be consumed while limits are unverifiable');
 
@@ -135,13 +129,30 @@ final class OtpSettingsUnavailableTest extends WP_UnitTestCase
             'mobile'  => self::MOBILE,
             'purpose' => 'login',
         ]);
-        self::assertInstanceOf(\WP_Error::class, $second, 'the restrictive persisted daily limit (1, not the default 3) must deny the second request');
-        self::assertSame('CLINIC_OTP_DAILY_LIMIT', $second->get_error_code());
-        self::assertSame(429, (int) ($second->get_error_data()['status'] ?? 0));
+        self::assertInstanceOf(\WP_REST_Response::class, $second, 'the restrictive persisted daily limit (1, not the default 3) must deny the second request');
+        self::assertSame(429, $second->get_status(), 'the restrictive persisted daily limit (1, not the default 3) must deny the second request');
+        $second_data = $second->get_data();
+        self::assertSame('CLINIC_OTP_DAILY_LIMIT', (string) ($second_data['code'] ?? ''));
+        self::assertSame(429, (int) ($second_data['data']['status'] ?? 0));
         self::assertSame(1, $this->tokenCount(self::MOBILE), 'the denied request must not issue a second challenge');
     }
 
     // ---------------------------------------------------------------
+
+    /**
+     * The REST server converts the boundary's WP_Error into the standard
+     * CLINIC_* response envelope; assert that envelope, not the WP_Error.
+     */
+    private function assertServiceUnavailable(mixed $response, string $what): void
+    {
+        self::assertInstanceOf(\WP_REST_Response::class, $response, $what);
+        self::assertSame(503, $response->get_status(), $what);
+        $data = $response->get_data();
+        self::assertIsArray($data, $what);
+        self::assertSame('CLINIC_SERVICE_UNAVAILABLE', (string) ($data['code'] ?? ''), $what);
+        self::assertSame('سرویس موقتاً در دسترس نیست.', (string) ($data['message'] ?? ''), $what . ' — only the neutral service-unavailable message may be exposed');
+        self::assertSame(503, (int) ($data['data']['status'] ?? 0), $what);
+    }
 
     private function dispatch(string $route, array $params): mixed
     {

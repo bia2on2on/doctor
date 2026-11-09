@@ -1606,7 +1606,11 @@ final class SetupWizardTest extends WP_UnitTestCase
         $before_a = $this->clinicSettingValues($clinic_a, ['setup.completed_steps']);
 
         $this->renderWizardStep('facility', $clinic_b);
-        $settings_b = App::settings();
+        // A fresh Settings instance with an empty snapshot cache: its first
+        // (soft) read below is the one that fails, exactly like a request
+        // whose settings load failed before any successful read.
+        Settings::flushCache();
+        $settings_b = new Settings(App::db(), $clinic_b, App::audit());
         self::assertSame($clinic_b, $settings_b->clinicId());
 
         // Production sequence: an earlier soft read fails and yields the
