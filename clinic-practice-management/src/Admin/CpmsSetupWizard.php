@@ -988,7 +988,7 @@ final class CpmsSetupWizard
                 return $stored;
             }
         } catch ( \Throwable ) {
-            // No Clinic-scoped Settings is available (for example before bootstrap).
+            $stored = ''; // Without Clinic-scoped Settings, no value is selected.
         }
 
         return '';
@@ -1027,7 +1027,7 @@ final class CpmsSetupWizard
                 return $stored;
             }
         } catch ( \Throwable ) {
-            // No Clinic-scoped Settings is available (for example before bootstrap).
+            $stored = ''; // Without Clinic-scoped Settings, no value is selected.
         }
 
         return '';
