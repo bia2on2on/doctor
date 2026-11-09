@@ -30,6 +30,20 @@ final class CpmsDb
      */
     private int $tx_depth = 0;
 
+    /**
+     * Rollback generation of this connection: incremented whenever a
+     * transaction (or nested savepoint) is rolled back, including the
+     * rollback attempted after a failed COMMIT. Consumers caching
+     * snapshots read inside a transaction (Settings) compare against
+     * this value: a snapshot taken before the latest rollback may hold
+     * values that were never committed and must not be trusted.
+     */
+    private int $rollback_epoch = 0;
+
+    public function rollback_epoch(): int {
+        return $this->rollback_epoch;
+    }
+
     public function __construct(private readonly wpdb $wpdb, private string $prefix = 'cpms_')
     {
     }
@@ -308,6 +322,9 @@ final class CpmsDb
      * ROLLBACK TO SAVEPOINT + آزادسازی آن (تراکنش بیرونی دست‌نخورده می‌ماند).
      */
     private function undo( ?string $savepoint ): void {
+        // Bump FIRST: even if the rollback statement itself fails, cached
+        // snapshots from this transaction are untrustworthy from now on.
+        ++$this->rollback_epoch;
         if ( $savepoint === null ) {
             $this->tx_control( '/*cpms*/ ROLLBACK' );
 

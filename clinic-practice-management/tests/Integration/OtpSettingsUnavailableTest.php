@@ -65,6 +65,7 @@ final class OtpSettingsUnavailableTest extends WP_UnitTestCase
 
         $this->assertServiceUnavailable($response, 'unreadable settings must fail the request route closed with the neutral 503 envelope');
         self::assertSame(0, $this->tokenCount(self::MOBILE), 'no challenge may be issued while limits are unverifiable');
+        self::assertSame(0, $this->rateHits('otp-ip:' . '203.0.113.21'), 'a fail-closed request must not charge the per-IP request counter (the snapshot is verified before any counter)');
 
         $this->restoreSettingsBulkReads();
         Settings::flushCache();
@@ -100,6 +101,7 @@ final class OtpSettingsUnavailableTest extends WP_UnitTestCase
         $this->assertServiceUnavailable($response, 'unreadable settings must fail the verify route closed with the neutral 503 envelope');
         self::assertSame(1, $this->verifyIpHits('203.0.113.22'), 'verify charges the otp-verify-ip counter before the settings read (established production order)');
         self::assertNull($this->tokenConsumedAt($token_id), 'the challenge must not be consumed while limits are unverifiable');
+        self::assertSame(0, $this->tokenAttempts($token_id), 'the challenge attempt counter must not increment while limits are unverifiable');
 
         $this->restoreSettingsBulkReads();
         Settings::flushCache();
@@ -217,6 +219,11 @@ final class OtpSettingsUnavailableTest extends WP_UnitTestCase
 
     private function verifyIpHits(string $ip): int
     {
+        return $this->rateHits('otp-verify-ip:' . $ip);
+    }
+
+    private function rateHits(string $window_key): int
+    {
         global $wpdb;
         $table = $wpdb->prefix . 'cpms_rate_limits';
 
@@ -224,7 +231,15 @@ final class OtpSettingsUnavailableTest extends WP_UnitTestCase
         $sql = "SELECT hits FROM {$table} WHERE window_key = %s AND window_id = %d";
 
         return (int) $wpdb->get_var(
-            $wpdb->prepare($sql, 'otp-verify-ip:' . $ip, intdiv(time(), 3600))
+            $wpdb->prepare($sql, $window_key, intdiv(time(), 3600))
+        );
+    }
+
+    private function tokenAttempts(int $token_id): int
+    {
+        return (int) App::db()->fetchValue(
+            'SELECT attempts FROM ' . App::db()->table('cpms_otp_tokens') . ' WHERE id = %d',
+            [$token_id]
         );
     }
 

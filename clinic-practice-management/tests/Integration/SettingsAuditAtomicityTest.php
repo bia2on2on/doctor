@@ -86,6 +86,40 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
     }
 
 
+    public function testSetManyRolledBackByOuterTransactionLeavesNoPhantomCache(): void
+    {
+        $settings = App::settings();
+        $settings->set('booking.duration_default_min', 20, $this->adminId);
+        $settings->set('booking.min_lead_hours', 2, $this->adminId);
+        $audits_before = $this->settingAuditCount('booking.duration_default_min');
+
+        $threw = false;
+        try {
+            App::db()->transactional(function () use ($settings): void {
+                $settings->set_many([
+                    'booking.duration_default_min' => 45,
+                    'booking.min_lead_hours'       => 9,
+                ], $this->adminId);
+                // Inside the transaction the uncommitted values are visible.
+                self::assertSame(45, (int) $settings->get('booking.duration_default_min'));
+                throw new \RuntimeException('outer transaction rollback (test)');
+            });
+        } catch (\RuntimeException) {
+            $threw = true;
+        }
+
+        self::assertTrue($threw, 'the outer rollback must propagate');
+        // Same process, deliberately NO flushCache(): values read inside
+        // the rolled-back transaction must not survive in the snapshot
+        // cache (inner set_many writes repopulate the cache with
+        // uncommitted values; the rollback must invalidate them).
+        self::assertSame(20, (int) App::settings()->get('booking.duration_default_min'), 'a value rolled back by the outer transaction must not survive in the cache');
+        self::assertSame(2, (int) App::settings()->get('booking.min_lead_hours'), 'a value rolled back by the outer transaction must not survive in the cache');
+        self::assertSame(20, $this->storedSettingValue('booking.duration_default_min'), 'the durable value must be the pre-transaction one');
+        self::assertSame(2, $this->storedSettingValue('booking.min_lead_hours'), 'the durable value must be the pre-transaction one');
+        self::assertSame($audits_before, $this->settingAuditCount('booking.duration_default_min'), 'audits written inside the rolled-back transaction must roll back too');
+    }
+
     public function testSetToDefaultValueAuditsAgainstStoredRestrictiveValue(): void
     {
         $settings = App::settings();

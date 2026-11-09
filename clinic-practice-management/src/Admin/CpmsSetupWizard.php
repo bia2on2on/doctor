@@ -1609,8 +1609,9 @@ final class CpmsSetupWizard
         // performed after it: wp_safe_redirect() itself must stay outside
         // the RuntimeException boundary so a redirect is never mistaken for
         // a settings failure.
-        $notice   = '';
-        $location = '';
+        $notice     = '';
+        $location   = '';
+        $step_saved = false;
         try {
             $error = '';
 
@@ -1641,6 +1642,11 @@ final class CpmsSetupWizard
                     break;
             }
 
+            // Past this point the step's own writes are committed (each
+            // step handler persists atomically); only the progress writes
+            // below can still fail, and the failure message must not claim
+            // that nothing was saved when the step itself committed.
+            $step_saved = $error === '';
             if ( $error !== '' ) {
                 $notice   = 'خطا: ' . $error;
                 $location = self::step_url( $step );
@@ -1670,7 +1676,9 @@ final class CpmsSetupWizard
             // settings snapshot or a failed mutation) must surface as a
             // controlled, sanitized error — never a raw database or
             // exception message, and never a silent partial save.
-            $notice   = 'خطا: ذخیره انجام نشد؛ لطفاً دوباره تلاش کنید.';
+            $notice   = $step_saved
+                ? 'خطا: اطلاعات این گام ذخیره شد، اما ثبت پیشرفت راه‌اندازی انجام نشد؛ لطفاً دوباره تلاش کنید.'
+                : 'خطا: ذخیره انجام نشد؛ لطفاً دوباره تلاش کنید.';
             $location = self::step_url( $step );
         }
         set_transient( self::NOTICE_KEY, $notice, 60 );

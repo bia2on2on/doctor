@@ -1556,6 +1556,170 @@ final class SetupWizardTest extends WP_UnitTestCase
         self::assertSame(false, $committed_b['setup.outpatient_only_ack'], 'the acknowledgment reset must commit together with the new selection');
     }
 
+    public function testFacilityChangeRollbackLeavesNoPhantomCacheAndRetryCommits(): void
+    {
+        $user_id  = $this->authorizeConfigUser();
+        $clinic_a = (int) App::scope()->clinicId;
+        $clinic_b = $this->createAdditionalClinic('facility-cache-b');
+        cpms_test_seed_membership($user_id, $clinic_b, RolesAndCapabilities::ROLE_MANAGER);
+
+        $this->setClinicSetting($clinic_b, 'setup.facility_type', 'hospital', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.facility_structure', 'hospital_network', $user_id);
+        $this->setClinicSetting($clinic_b, 'setup.outpatient_only_ack', true, $user_id);
+
+        $watched        = ['setup.facility_type', 'setup.facility_structure', 'setup.outpatient_only_ack'];
+        $before_a       = $this->clinicSettingValues($clinic_a, $watched);
+        $audit_b_before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        );
+
+        $this->renderWizardStep('facility', $clinic_b);
+        $settings_b = App::settings();
+        self::assertSame($clinic_b, $settings_b->clinicId());
+
+        // Fail the acknowledgment-reset write in the middle of the change.
+        $fault = $this->failSettingsWritesForKey('setup.outpatient_only_ack');
+        add_filter('query', $fault, 5, 1);
+        $threw = false;
+        try {
+            CpmsSetupWizard::save_facility($settings_b, [
+                'facility_type' => 'doctor_practice',
+                'structure'     => 'single',
+            ], $user_id);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            remove_filter('query', $fault, 5);
+        }
+
+        self::assertTrue($threw, 'a failed acknowledgment reset must abort the facility transition');
+        // Same process, deliberately NO flushCache(): the inner writes
+        // repopulated the snapshot cache with uncommitted values before
+        // the failure; after the rollback, reads must show the durable
+        // (old) selection, never the phantom new one.
+        self::assertSame('hospital', (string) $settings_b->get('setup.facility_type', ''), 'the rolled-back facility type must not survive in the snapshot cache');
+        self::assertSame('hospital_network', (string) $settings_b->get('setup.facility_structure', ''), 'the rolled-back facility structure must not survive in the snapshot cache');
+        self::assertSame(true, $settings_b->get('setup.outpatient_only_ack', false), 'the old acknowledgment must still govern the unchanged selection');
+        $after_b = $this->clinicSettingValues($clinic_b, $watched);
+        self::assertSame('hospital', $after_b['setup.facility_type'], 'the durable facility type must be unchanged');
+        self::assertSame(true, $after_b['setup.outpatient_only_ack'], 'the durable acknowledgment must be unchanged');
+        self::assertSame($audit_b_before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        ), 'the audits of the rolled-back transition must roll back too');
+        self::assertSame($before_a, $this->clinicSettingValues($clinic_a, $watched), 'Clinic A settings must be untouched');
+
+        // Retry in the same process (still no flushCache): the change now
+        // commits atomically, and the old acknowledgment must not survive
+        // the committed selection change.
+        self::assertSame('', CpmsSetupWizard::save_facility($settings_b, [
+            'facility_type' => 'doctor_practice',
+            'structure'     => 'single',
+        ], $user_id));
+        self::assertSame('doctor_practice', (string) $settings_b->get('setup.facility_type', ''), 'the committed selection must be readable in the same process');
+        self::assertSame(false, $settings_b->get('setup.outpatient_only_ack', true), 'the old acknowledgment must not survive a committed selection change');
+        $committed_b = $this->clinicSettingValues($clinic_b, $watched);
+        self::assertSame('doctor_practice', $committed_b['setup.facility_type']);
+        self::assertSame('single', $committed_b['setup.facility_structure']);
+        self::assertSame(false, $committed_b['setup.outpatient_only_ack'], 'the acknowledgment reset must commit together with the new selection');
+        self::assertSame($audit_b_before + 3, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_b]
+        ), 'the committed retry must audit exactly the three changed keys');
+    }
+
+    public function testBookingStepFailureRollsBackWholePolicyAndRetryCommits(): void
+    {
+        $user_id   = $this->authorizeConfigUser();
+        $clinic_id = (int) App::scope()->clinicId;
+        $keys      = [
+            'booking.duration_default_min'  => 20,
+            'booking.slot_capacity_default' => 1,
+            'booking.min_lead_hours'        => 2,
+            'booking.max_future_days'       => 60,
+            'booking.cancel_deadline_hours' => 24,
+        ];
+        foreach ($keys as $key => $value) {
+            $this->setClinicSetting($clinic_id, $key, $value, $user_id);
+        }
+        $settings = App::settings();
+
+        // Fail the third policy write: the whole booking policy (wizard
+        // entry point) must roll back, in the database and in the
+        // same-process snapshot cache (no flushCache below).
+        $fault = $this->failSettingsWritesForKey('booking.min_lead_hours');
+        add_filter('query', $fault, 5, 1);
+        $threw = false;
+        try {
+            CpmsSetupWizard::saveBooking($settings, ['duration' => '35', 'capacity' => '2', 'lead' => '3', 'future' => '40', 'cancel' => '12'], $user_id);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            remove_filter('query', $fault, 5);
+        }
+
+        self::assertTrue($threw, 'a mid-policy failure must abort the booking step');
+        self::assertSame(20, (int) $settings->get('booking.duration_default_min'), 'the rolled-back duration must not survive in the snapshot cache');
+        self::assertSame(1, (int) $settings->get('booking.slot_capacity_default'), 'the rolled-back capacity must not survive in the snapshot cache');
+        $durable = $this->clinicSettingValues($clinic_id, array_keys($keys));
+        foreach ($keys as $key => $value) {
+            self::assertSame($value, $durable[$key], 'the durable policy must be unchanged after rollback: ' . $key);
+        }
+
+        self::assertSame('', CpmsSetupWizard::saveBooking($settings, ['duration' => '35', 'capacity' => '2', 'lead' => '3', 'future' => '40', 'cancel' => '12'], $user_id), 'the retry must commit after the fault clears');
+        self::assertSame(35, (int) $settings->get('booking.duration_default_min'));
+        self::assertSame(3, (int) $settings->get('booking.min_lead_hours'));
+    }
+
+    public function testBookingSaveThroughDispatcherReportsProgressFailureTruthfully(): void
+    {
+        $admin_id   = $this->authorizeConfigUser();
+        $clinic_id  = (int) App::scope()->clinicId;
+        $audit_before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_id]
+        );
+
+        $_POST = [
+            '_wpnonce' => wp_create_nonce('cpms_wizard_save'),
+            'action'   => 'cpms_wizard_save',
+            'step'     => 'booking',
+            'duration' => '35',
+            'capacity' => '2',
+            'lead'     => '3',
+            'future'   => '40',
+            'cancel'   => '12',
+        ];
+
+        // The booking step itself commits; only the subsequent progress
+        // write (completed-steps) fails.
+        $fault = $this->failSettingsWritesForKey('setup.completed_steps');
+        add_filter('query', $fault, 5, 1);
+        try {
+            $location = $this->captureRedirect(static function (): void {
+                CpmsSetupWizard::save();
+            });
+        } finally {
+            remove_filter('query', $fault, 5);
+        }
+
+        self::assertStringContainsString('cpms-wizard', $location);
+        $notice = (string) get_transient('cpms_wizard_notice');
+        self::assertStringContainsString('ذخیره شد، اما ثبت پیشرفت', $notice, 'the message must admit the step was saved when only progress recording failed: ' . $notice);
+        self::assertStringNotContainsString('ذخیره انجام نشد', $notice, 'the message must not falsely claim that nothing was saved');
+
+        // Durable truth: the booking policy committed and was audited; the
+        // progress marker was not recorded.
+        $durable = $this->clinicSettingValues($clinic_id, ['booking.duration_default_min', 'setup.completed_steps']);
+        self::assertSame(35, $durable['booking.duration_default_min'], 'the committed booking step must be durable');
+        self::assertStringNotContainsString('booking', (string) ($durable['setup.completed_steps'] ?? ''), 'the failed progress write must not be recorded');
+        self::assertGreaterThan($audit_before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_id]
+        ), 'the committed booking step must be audited');
+    }
+
     public function testRestartRollsBackAtomicallyWhenALaterWriteFails(): void
     {
         $user_id  = $this->authorizeConfigUser();

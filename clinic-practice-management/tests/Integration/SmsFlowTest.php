@@ -7,6 +7,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Notifications\SmsService;
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Sms\SmsMessageStatus;
+use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
 
 /**
@@ -277,6 +278,51 @@ final class SmsFlowTest extends WP_UnitTestCase
         self::assertTrue($threw, 'an unverifiable settings snapshot must refuse the SMS save');
         $plain = App::vault()->decrypt((array) ((array) App::settings()->get('sms.auth', []))['fields']['api_key']['sealed']);
         self::assertSame('keep-me-1234', $plain, 'the stored credential must be untouched by the refused save');
+    }
+
+    public function testSaveTemplateMergesAgainstVerifiedSnapshotAfterTransientReadFailure(): void
+    {
+        App::settings()->set('sms.templates', [
+            'appointment_reminder' => ['template_id' => 'TPL-KEEP', 'updated_at' => gmdate('c')],
+            'otp'                  => ['template_id' => 'TPL-OTP', 'updated_at' => gmdate('c')],
+        ]);
+        Settings::flushCache();
+
+        // One transient bulk-read failure: an earlier soft read yields the
+        // unverified empty default, then the actual save runs after
+        // recovery. The merge must be computed from the verified stored
+        // map so the other event's template is not dropped.
+        $clinic_id = (int) App::scope()->clinicId;
+        $one_shot  = $this->failSettingsBulkReads($clinic_id, true);
+        add_filter('query', $one_shot, 5, 1);
+        self::assertSame([], (array) App::settings()->get('sms.templates', []), 'the transient failure must surface as unverified defaults first');
+        remove_filter('query', $one_shot, 5);
+
+        $this->sms()->saveTemplate('appointment_reminder', '', 1);
+
+        Settings::flushCache();
+        $stored = (array) App::settings()->get('sms.templates', []);
+        self::assertSame('', (string) ($stored['appointment_reminder']['template_id'] ?? 'missing'), 'the edited event must be updated');
+        self::assertSame('TPL-OTP', (string) ($stored['otp']['template_id'] ?? ''), 'the other event template must survive a merge computed after a transient read failure');
+
+        // A persistent read failure refuses the save and leaves the
+        // stored template map untouched.
+        Settings::flushCache();
+        $persistent = $this->failSettingsBulkReads($clinic_id, false);
+        add_filter('query', $persistent, 5, 1);
+        $threw = false;
+        try {
+            $this->sms()->saveTemplate('otp', '', 1);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            remove_filter('query', $persistent, 5);
+        }
+        Settings::flushCache();
+
+        self::assertTrue($threw, 'an unverifiable settings snapshot must refuse the template save');
+        $stored = (array) App::settings()->get('sms.templates', []);
+        self::assertSame('TPL-OTP', (string) ($stored['otp']['template_id'] ?? ''), 'the stored template map must be untouched by the refused save');
     }
 
     public function testTemplateTestWithLogProvider(): void

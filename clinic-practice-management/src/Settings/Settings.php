@@ -151,6 +151,20 @@ final class Settings
     private static array $load_failed = [];
 
     /**
+     * CpmsDb rollback epoch at which each Clinic's cached snapshot (and
+     * soft-failure latch) was taken. A snapshot read inside a transaction
+     * that later rolls back contains uncommitted values; once the epoch
+     * moves, the snapshot/latch is stale and must be re-read from the
+     * durable state instead of being trusted.
+     *
+     * @var array<int, int>
+     */
+    private static array $cache_epoch = [];
+
+    /** @var array<int, int> */
+    private static array $load_failed_epoch = [];
+
+    /**
      * کلیدهای Telemetry عملیاتی (نه Config کاربر) — Audit نمی‌شوند (F1-4).
      *
      * این کلیدها توسط سیستم و به‌تکرار نوشته می‌شوند (Tick/بکاپ/تست SMS) و جدا
@@ -212,7 +226,7 @@ final class Settings
      */
     public function has_stored( string $key ): bool {
         $clinic_id = $this->clinicId();
-        if ( array_key_exists( $clinic_id, self::$cache ) ) {
+        if ( $this->snapshot_is_current() ) {
             return array_key_exists( $key, self::$cache[ $clinic_id ] );
         }
 
@@ -287,7 +301,7 @@ final class Settings
                 $this->auditChange( $key, $before, $value, $before_json, $after_json, $updated_by );
             }
         );
-        unset( self::$cache[ $clinic_id ], self::$load_failed[ $clinic_id ] );
+        unset( self::$cache[ $clinic_id ], self::$cache_epoch[ $clinic_id ], self::$load_failed[ $clinic_id ], self::$load_failed_epoch[ $clinic_id ] );
     }
 
     /**
@@ -303,13 +317,24 @@ final class Settings
      * @param array<string, mixed> $values
      */
     public function set_many( array $values, ?int $updated_by = null ): void {
-        $this->db->transactional(
-            function () use ( $values, $updated_by ) {
-                foreach ( $values as $key => $value ) {
-                    $this->set( (string) $key, $value, $updated_by );
+        try {
+            $this->db->transactional(
+                function () use ( $values, $updated_by ) {
+                    foreach ( $values as $key => $value ) {
+                        $this->set( (string) $key, $value, $updated_by );
+                    }
                 }
-            }
-        );
+            );
+        } catch ( \Throwable $e ) {
+            // Inner writes repopulate the snapshot cache with values read
+            // inside this transaction; a rollback (or a failed commit)
+            // makes those values phantom. The rollback-epoch check in
+            // load() already refuses such snapshots, and dropping the
+            // cached copy here keeps no stale copy behind even if the
+            // rollback itself could not be verified.
+            unset( self::$cache[ $this->clinicId() ], self::$cache_epoch[ $this->clinicId() ] );
+            throw $e;
+        }
     }
 
     /**
@@ -401,11 +426,29 @@ final class Settings
         return $row['timezone'] ?? 'Asia/Tehran';
     }
 
+    /**
+     * Whether the cached snapshot for this Clinic was taken at the
+     * connection's current rollback epoch. A snapshot older than the
+     * latest rollback may contain values that were read inside a
+     * transaction and never committed (for example an inner write of a
+     * set_many() batch that a later failure rolled back).
+     */
+    private function snapshot_is_current(): bool {
+        $clinic_id = $this->clinicId();
+
+        return array_key_exists( $clinic_id, self::$cache )
+            && ( self::$cache_epoch[ $clinic_id ] ?? -1 ) === $this->db->rollback_epoch();
+    }
+
     private function load(): bool
     {
-        if ( array_key_exists( $this->clinicId(), self::$cache ) ) {
+        if ( $this->snapshot_is_current() ) {
             return true;
         }
+        // A snapshot or latch from before the latest rollback describes
+        // uncommitted (or pre-rollback) state: drop both and re-read the
+        // durable state instead of trusting them.
+        unset( self::$cache[ $this->clinicId() ], self::$cache_epoch[ $this->clinicId() ] );
         if ( $this->db->is_strict() ) {
             // CpmsDb strict mode (e.g. migrations): a failed SQL read must
             // propagate, exactly as the soft reader did before. Strict mode
@@ -416,12 +459,17 @@ final class Settings
 
             return true;
         }
-        if ( isset( self::$load_failed[ $this->clinicId() ] ) ) {
+        if ( isset( self::$load_failed[ $this->clinicId() ] )
+            && ( self::$load_failed_epoch[ $this->clinicId() ] ?? -1 ) === $this->db->rollback_epoch()
+        ) {
             // Consistent snapshot: after a failed read, get() keeps
             // returning defaults until a verified-load boundary
             // (require_verified_snapshot(), flushCache(), or set()).
+            // The latch is epoch-scoped: a rollback since the failure
+            // means durable state may differ, so the read is retried.
             return false;
         }
+        unset( self::$load_failed[ $this->clinicId() ], self::$load_failed_epoch[ $this->clinicId() ] );
 
         try {
             $this->load_strict();
@@ -429,7 +477,8 @@ final class Settings
             // Preserve Settings' soft-read behavior for ordinary consumers,
             // but never cache the failed read as an empty (legacy)
             // configuration, and do not retry within this snapshot.
-            self::$load_failed[ $this->clinicId() ] = true;
+            self::$load_failed[ $this->clinicId() ]       = true;
+            self::$load_failed_epoch[ $this->clinicId() ] = $this->db->rollback_epoch();
 
             return false;
         }
@@ -455,8 +504,9 @@ final class Settings
         foreach ( $rows as $row ) {
             $clinic_cache[ (string) $row['key'] ] = json_decode( (string) $row['value_json'], true );
         }
-        self::$cache[ $this->clinicId() ] = $clinic_cache;
-        unset( self::$load_failed[ $this->clinicId() ] );
+        self::$cache[ $this->clinicId() ]       = $clinic_cache;
+        self::$cache_epoch[ $this->clinicId() ] = $this->db->rollback_epoch();
+        unset( self::$load_failed[ $this->clinicId() ], self::$load_failed_epoch[ $this->clinicId() ] );
     }
 
     /**
@@ -468,7 +518,7 @@ final class Settings
      * throws a RuntimeException when the settings cannot be verified.
      */
     public function require_verified_snapshot(): void {
-        if ( array_key_exists( $this->clinicId(), self::$cache ) ) {
+        if ( $this->snapshot_is_current() ) {
             return;
         }
 
@@ -477,7 +527,9 @@ final class Settings
 
     public static function flushCache(): void
     {
-        self::$cache       = [];
-        self::$load_failed = [];
+        self::$cache             = [];
+        self::$cache_epoch       = [];
+        self::$load_failed       = [];
+        self::$load_failed_epoch = [];
     }
 }
