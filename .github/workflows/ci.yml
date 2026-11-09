@@ -282,11 +282,30 @@ jobs:
           WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
         run: |
           set -euo pipefail
-          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3307 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()' 2>&1)"
+          # Capture ONLY the version query's stdout into the compared variable;
+          # client stderr (warnings included) goes to a local file that is
+          # never printed, uploaded, summarized or published. The pin pattern
+          # itself is unchanged (11.4.13-MariaDB*). Failure diagnostics are a
+          # fixed vocabulary only: booleans, a bounded canonical line count
+          # and stderr_nonempty - never any byte of the client output.
+          version_query_stderr=/tmp/mariadb-version-query-stderr.log
+          set +e
+          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3307 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()' 2>"$version_query_stderr")"
+          mysql_rc=$?
+          set -e
+          stdout_empty=false; [ -z "$server_version" ] && stdout_empty=true
           case "$server_version" in
-            11.4.13-MariaDB*) echo 'MariaDB server matched pinned 11.4.13 (raw VERSION() string not published).' ;;
-            *) echo '::error::MariaDB server does not match pinned 11.4.13 (raw VERSION() string not published).' >&2; exit 1 ;;
+            11.4.13-MariaDB*) stdout_starts_with_expected_prefix=true ;;
+            *) stdout_starts_with_expected_prefix=false ;;
           esac
+          stderr_nonempty=false; [ -s "$version_query_stderr" ] && stderr_nonempty=true
+          stdout_line_count="$(printf '%s' "$server_version" | awk 'END{print NR+0}')"
+          case "$stdout_line_count" in ''|*[!0-9]*) stdout_line_count=0 ;; esac
+          if [ "$mysql_rc" -ne 0 ] || [ "$stdout_starts_with_expected_prefix" != "true" ]; then
+            echo "::error::MariaDB server does not match pinned 11.4.13 (raw VERSION() string not published). stdout_empty=${stdout_empty} stdout_starts_with_expected_prefix=${stdout_starts_with_expected_prefix} stdout_line_count=${stdout_line_count} stderr_nonempty=${stderr_nonempty}" >&2
+            exit 1
+          fi
+          echo 'MariaDB server matched pinned 11.4.13 (raw VERSION() string not published).'
           bash tests/bin/install-wp-tests.sh wordpress_mariadb root root 127.0.0.1 7.1.3 3307 > /tmp/install-wp-tests-mariadb.log 2>&1
 
       - name: Run focused custom-role migrations on MariaDB 11.4.13

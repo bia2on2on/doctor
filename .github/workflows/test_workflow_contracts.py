@@ -119,7 +119,13 @@ def integration_job_document(text):
 #   * a python expression without `print`/`write` emits nothing and is not a
 #     publication, so the rules key on read/print primitives;
 #   * quoted bodies cannot contain the enclosing quote character, so chunk
-#     boundaries are quote-bounded.
+#     boundaries are quote-bounded;
+#   * wrapper commands (sudo/command/exec/env/nice/time) are unwrapped with
+#     a bounded skip of their option words — nested/value-taking long
+#     options outside the known set are not tracked;
+#   * since Round 51 also detected: `$(<file)` reads, encoders/transformers
+#     of raw paths (base64/gzip/zcat/tar/sort/uniq/cut/diff; xxd/od/strings
+#     were already dump utilities) and cp/mv/ln of a raw path.
 #
 # Anything not enumerated below is not claimed to be checked. Violations are
 # (rule, step_name, excerpt); an empty list means the job is clean under the
@@ -143,14 +149,80 @@ _REDIRECT_TMP_RE = re.compile(r'>\s*"?/tmp/')
 _PY_READ_PRIMITIVE_RE = re.compile(r"\.read\s*\(|read_text\s*\(|readlines\s*\(|writelines\s*\(")
 _PY_ITER_OPEN_RE = re.compile(r"(?m)^\s*for\s+\w+\s+in\s+open\s*\(")
 _PY_PRINT_RE = re.compile(r"print\s*\(|sys\.stdout\.write\s*\(|sys\.stderr\.write\s*\(")
+# A shell/python option word: short or long, with an optional value either
+# attached via '=' or as the following non-dash word (e.g. `-o pipefail`).
+_OPT = r"--?[A-Za-z][A-Za-z0-9_-]*(?:\s+(?!-)[^\s'\"]+|=[^\s'\"]+)?"
 _BASH_C_RE = re.compile(
-    r"(?:bash|sh)\s+(?:-[A-Za-z0-9]+\s+)*-[A-Za-z0-9]*c[A-Za-z0-9]*\s*(['\"])(.*?)\1",
+    r"(?:bash|sh)(?:\s+" + _OPT + r")*\s+-[A-Za-z0-9]*c[A-Za-z0-9]*\s*(['\"])(.*?)\1",
     re.DOTALL)
 _PY_C_RE = re.compile(
-    r"python[0-9.]*\s+-c\s*(['\"])(.*?)\1",
+    r"python[0-9.]*(?:\s+" + _OPT + r")*\s+-c\s*(['\"])(.*?)\1",
     re.DOTALL)
+# Encoders/transformers that read their raw file argument and emit transformed
+# bytes (base64 of a raw capture is still raw content). od/xxd/strings are
+# already dump utilities.
+_TRANSFORM_UTIL_RE = re.compile(
+    _CMD_POS + r"(base64|gzip|zcat|tar|sort|uniq|cut|diff)(?:\s|$)")
+# cp/mv/ln of a raw capture path to another path defeats the raw-class
+# naming boundary (the copy is no longer matched by _RAW_LITERAL_RE).
+_RAW_PATH_CMD_RE = re.compile(
+    _CMD_POS + r"(cp|mv|ln)(?:\s|$)")
+# bash $(<file) is a read of the file's full contents.
+_RAW_SUBSHELL_READ_RE = re.compile(
+    r"\$\(\s*<\s*" + _RAW_LITERAL_RE.pattern)
 _PY_HEREDOC_RE = re.compile(
     r"python[0-9.]*\s+(?:-[A-Za-z]+\s+)*-\s*<<\s*(?:-\s*)?(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+# Wrapper commands that exec their arguments transparently: the wrapped
+# command is where publication happens, so the wrappers are unwrapped before
+# the per-command rules are applied (bounded: at most 4 nesting levels).
+_WRAP_HEAD_RE = re.compile(r"^\s*(sudo|command|exec|env|nice|time)\b")
+_WRAP_OPT_WITH_VALUE = frozenset(
+    ['-n', '-u', '-g', '-C', '-D', '-T', '-o', '-a',
+     '--user', '--group', '--chdir', '--adjustment', '--unset'])
+_WRAP_ASSIGN_RE = re.compile(r"^\s+[A-Za-z_][A-Za-z0-9_]*=[^\s]*")
+_WRAP_WORD_RE = re.compile(r"^\s+(-{1,2}[A-Za-z0-9][^\s]*)")
+_WRAP_VALUE_RE = re.compile(r"^\s+(?!-)[^\s]+")
+_WRAP_DDASH_RE = re.compile(r"^\s+--(?:\s|$)")
+
+
+def _unwrap_wrapped_command(cmd):
+    """Strip leading wrapper commands (sudo/command/exec/env/nice/time).
+
+    Skips each wrapper's option words and (for env/sudo) VAR=value words,
+    and a bare `--` end-of-options word. Returns the innermost command.
+    Blind spots retained deliberately: `env` reading a script file,
+    `sudo -E`-style flags are skipped fine, but long options whose separate
+    value is not in _WRAP_OPT_WITH_VALUE leave the value word in place
+    (which simply fails to match any raw rule) — disclosed, not chased.
+    """
+    for _ in range(4):
+        head = _WRAP_HEAD_RE.match(cmd)
+        if head is None:
+            return cmd
+        rest = cmd[head.end():]
+        while True:
+            dash = _WRAP_DDASH_RE.match(rest)
+            if dash:
+                rest = rest[dash.end():]
+                continue
+            word = _WRAP_WORD_RE.match(rest)
+            if word:
+                rest = rest[word.end():]
+                if word.group(1) in _WRAP_OPT_WITH_VALUE:
+                    value = _WRAP_VALUE_RE.match(rest)
+                    if value:
+                        rest = rest[value.end():]
+                continue
+            if head.group(1) in ('env', 'sudo'):
+                assign = _WRAP_ASSIGN_RE.match(rest)
+                if assign:
+                    rest = rest[assign.end():]
+                    continue
+            break
+        cmd = rest.strip()
+    return cmd.strip()
 
 
 def _python_chunks(run_text):
@@ -231,6 +303,8 @@ def _cmd_violations(command_text, step_name):
             continue
         if re.search(r"(^|\s)set\s+-[A-Za-z]*x(\s|$)", line):
             violations.append(("set-x", step_name, stripped[:160]))
+        if _RAW_SUBSHELL_READ_RE.search(line):
+            violations.append(("raw-subshell-read", step_name, stripped[:160]))
         # (E) Piping stderr into another stdout producer without a file
         # (`2>&1 | cmd`). `2>&1 ||` (the boolean-OR idiom) is NOT flagged.
         if re.search(r"2>&1\s*\|(?!\|)", line):
@@ -239,7 +313,7 @@ def _cmd_violations(command_text, step_name):
             commands = _split_quote_aware(pipeline, pipelines=False)
             pipe_raw = _RAW_LITERAL_RE.search(pipeline) is not None
             for index, command in enumerate(commands):
-                cmd = command.strip()
+                cmd = _unwrap_wrapped_command(command.strip())
                 excerpt = cmd[:160]
                 raw_in_cmd = _RAW_LITERAL_RE.search(cmd) is not None
                 redirect = _REDIRECT_TMP_RE.search(cmd) is not None
@@ -251,6 +325,15 @@ def _cmd_violations(command_text, step_name):
                 # mode this contract exists to forbid. No exceptions.
                 if re.search(r"(^|[\s|;(])tee(\s|$)", cmd):
                     violations.append(("tee", step_name, excerpt))
+                # (A2) Encoders/transformers of a raw capture path: the
+                # output still contains raw bytes (base64 is encoding, not
+                # redaction). No exceptions.
+                if _TRANSFORM_UTIL_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-transform", step_name, excerpt))
+                # (A3) cp/mv/ln of a raw capture path: the copy leaves the
+                # raw-class naming boundary. No exceptions.
+                if _RAW_PATH_CMD_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
                 # (B) Dump utilities on raw capture paths (.log/.out/.err or
                 # junit-named .xml). No exceptions.
                 if _DUMP_UTIL_RE.search(cmd) and pipe_raw:
@@ -2141,6 +2224,73 @@ class IntegrationJobLogHygieneContractTest(unittest.TestCase):
                 "python3 - <<'EOF'\nfor line in open('/tmp/x.log'):\n    print(line)\nEOF"),
             "php-r-raw": ("php-r-raw",
                 'php -r "var_export(file_get_contents(\'/tmp/x.log\'));"'),
+        }
+        for label, (expected_rule, run) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_round51_guard_additions_fail_on_deliberately_violating_fixtures(self):
+        # Round 51 reviewer LOW 4b: options before -c, wrapper commands
+        # (sudo/command/exec/env/nice/time) and the encoder/duplicate raw
+        # classes. Each fixture must be rejected; the real workflow file is
+        # never modified. Not a completeness claim: the guard is static and
+        # cannot prove absence of all leaks.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
+        fixtures = {
+            "bash-o-pipefail-c": ("raw-log-dump",
+                "bash -o pipefail -c 'cat /tmp/x.log'"),
+            "bash-long-opt-c": ("raw-log-dump",
+                "bash --noprofile -c 'cat /tmp/x.log'"),
+            "sh-o-pipefail-c": ("raw-log-dump",
+                "sh -o pipefail -c 'tail /tmp/a.log'"),
+            "python-dash-I-c": ("python-raw-read",
+                'python3 -I -c "print(open(\'/tmp/y.log\').read())"'),
+            "python-dash-W-c": ("python-raw-read",
+                'python3 -W ignore -c "print(open(\'/tmp/y.log\').read())"'),
+            "sudo-cat": ("raw-log-dump", "sudo cat /tmp/x.log"),
+            "sudo-ddash-cat": ("raw-log-dump", "sudo -- cat /tmp/x.log"),
+            "sudo-user-cat": ("raw-log-dump", "sudo --user deploy cat /tmp/x.log"),
+            "command-cat": ("raw-log-dump", "command cat /tmp/x.log"),
+            "exec-cat": ("raw-log-dump", "exec cat /tmp/x.log"),
+            "env-cat": ("raw-log-dump", "env cat /tmp/x.log"),
+            "env-assign-grep": ("grep-raw", "env FOO=bar grep pat /tmp/x.log"),
+            "env-i-cat": ("raw-log-dump", "env -i cat /tmp/x.log"),
+            "nice-cat": ("raw-log-dump", "nice cat /tmp/x.log"),
+            "nice-n-cat": ("raw-log-dump", "nice -n 5 cat /tmp/x.log"),
+            "nice-adjustment-cat": ("raw-log-dump",
+                "nice --adjustment 5 cat /tmp/x.log"),
+            "time-cat": ("raw-log-dump", "time cat /tmp/x.log"),
+            "time-p-cat": ("raw-log-dump", "time -p cat /tmp/x.log"),
+            "nested-wrap-cat": ("raw-log-dump", "sudo nice -n 5 cat /tmp/x.log"),
+            "raw-subshell-read": ("raw-subshell-read",
+                'leak=$(</tmp/x.log); echo "$leak"'),
+            "base64-raw": ("raw-transform", "base64 /tmp/x.log"),
+            "gzip-raw": ("raw-transform", "gzip -dc /tmp/x.log"),
+            "zcat-raw": ("raw-transform", "zcat /tmp/x.log"),
+            "tar-raw": ("raw-transform", "tar -cf - /tmp/x.log"),
+            "sort-raw": ("raw-transform", "sort /tmp/x.log"),
+            "uniq-raw": ("raw-transform", "uniq /tmp/x.log"),
+            "cut-raw": ("raw-transform", "cut -d: -f1 /tmp/x.log"),
+            "diff-raw": ("raw-transform", "diff /tmp/x.log /tmp/y.log"),
+            "cp-raw": ("raw-path-duplicate", "cp /tmp/x.log /tmp/copy.txt"),
+            "mv-raw": ("raw-path-duplicate", "mv /tmp/x.log /tmp/moved.txt"),
+            "ln-raw": ("raw-path-duplicate", "ln -s /tmp/x.log /tmp/link.txt"),
         }
         for label, (expected_rule, run) in fixtures.items():
             with self.subTest(violation=label):

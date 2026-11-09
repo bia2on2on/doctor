@@ -278,6 +278,8 @@ def _canonical_int(value, allow_negative=True, allow_str=True):
     if isinstance(value, bool):
         return None
     if isinstance(value, int):
+        if not allow_negative and value < 0:
+            return None
         return value if -INT_BOUND <= value <= INT_BOUND else None
     if not allow_str:
         return None

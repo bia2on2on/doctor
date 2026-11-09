@@ -1206,5 +1206,37 @@ class CanonicalIntegerValidatorTest(unittest.TestCase):
         self.assertEqual(1, totals['cases'])
 
 
+    def test_python_int_path_enforces_unsigned_when_allow_negative_false(self):
+        # Round 51, reviewer LOW 4a: allow_negative=False must hold for the
+        # JSON/Python int surface, not only the string surface.
+        self.assertIsNone(ie._canonical_int(-1, allow_negative=False))
+        self.assertIsNone(ie._canonical_int(-10 ** 15, allow_negative=False))
+        self.assertEqual(0, ie._canonical_int(0, allow_negative=False))
+        self.assertEqual(1, ie._canonical_int(1, allow_negative=False))
+        self.assertEqual(10 ** 15, ie._canonical_int(10 ** 15, allow_negative=False))
+        self.assertIsNone(ie._canonical_int(10 ** 15 + 1, allow_negative=False))
+        self.assertIsNone(ie._attr_int(True))
+        # junit --phpunit-exit -1 must not publish phpunit_exit=-1
+        self.assertIsNone(ie._canonical_int(-1, allow_negative=False))
+
+    def test_source_counter_negative_json_int_fails_closed(self):
+        # project_connection_diag source counters are fail-closed; a negative
+        # JSON int must now be dropped (previously accepted).
+        diag = ie.project_connection_diag({'chain_dropped_shape': -3, 'chain_dropped_unverified': -7})
+        self.assertNotIn('chain_dropped_shape', diag)
+        self.assertNotIn('chain_dropped_unverified', diag)
+
+    def test_phpunit_exit_negative_cli_int_prints_unavailable(self):
+        # cmd_junit --phpunit-exit -1: fixed token, never phpunit_exit=-1.
+        path = write_tmp(JUNIT_BASIC, '.xml')
+        try:
+            code, out = run_cli('junit', path, '--phpunit-exit', '-1')
+        finally:
+            os.unlink(path)
+        self.assertEqual(0, code)
+        self.assertIn('phpunit_exit=unavailable', out)
+        self.assertNotIn('phpunit_exit=-1', out)
+
+
 if __name__ == '__main__':
     unittest.main()
