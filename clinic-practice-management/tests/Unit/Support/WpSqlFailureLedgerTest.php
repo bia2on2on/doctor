@@ -260,7 +260,10 @@ final class WpSqlFailureLedgerTest extends TestCase
         WpSqlFailureLedger::observe('SELECT 1');
         $lines = $this->buildLedgerLines(null);
         foreach ($lines as $line) {
-            $this->assertStringNotStartsWith('CPMS_SQL_FAILURE_LEDGER_TABLE ', $line);
+            $this->assertFalse(
+                str_starts_with($line, 'CPMS_SQL_FAILURE_LEDGER_TABLE '),
+                'Table fact lines must not be emitted without a database handle.'
+            );
         }
     }
 
@@ -269,8 +272,12 @@ final class WpSqlFailureLedgerTest extends TestCase
         if (!class_exists('\mysqli')) {
             $this->markTestSkipped('mysqli extension not available.');
         }
-        $mysqli = @new \mysqli('127.0.0.1', 'root', 'root', 'wordpress_test', 3306);
-        if ($mysqli->connect_error) {
+        try {
+            // PHP 8 mysqli throws mysqli_sql_exception on connect failure by
+            // default, so a missing server would surface as an error rather
+            // than a skipped test — catch it and skip instead.
+            $mysqli = new \mysqli('127.0.0.1', 'root', 'root', 'wordpress_test', 3306);
+        } catch (\Throwable) {
             $this->markTestSkipped('No MySQL service in this environment.');
         }
         $fake = self::fakeWpdb('Duplicate entry for key', 'SELECT 1');
@@ -298,7 +305,11 @@ final class WpSqlFailureLedgerTest extends TestCase
         WpSqlFailureLedger::observe('SELECT 1');
         foreach ($this->buildLedgerLines($fake) as $line) {
             $space = strpos($line, ' ');
-            $this->assertNotFalse($space);
+            if ($space === false) {
+                // Spaceless fixed terminator — not a JSON payload line.
+                $this->assertSame('CPMS_SQL_FAILURE_LEDGER_END', $line);
+                continue;
+            }
             $prefix = substr($line, 0, $space);
             if ($prefix === 'CPMS_SQL_FAILURE_LEDGER'
                 || $prefix === 'CPMS_SQL_FAILURE_LEDGER_SUMMARY'
