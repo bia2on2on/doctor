@@ -2021,7 +2021,7 @@ class ClassicV1RemediationPublicationContractTests(unittest.TestCase):
                 "</testsuite></testsuites>",
                 prefix + "tests=2 failures=0 errors=0 skipped=2 verdict=FAIL",
             ),
-            # Warning-only, with a declared warnings count (generic JUnit).
+            # Warning-only, with a declared warnings count (PHPUnit 9.6 emits both).
             (
                 '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0" warnings="1">'
                 "<testcase><warning/></testcase></testsuite></testsuites>",
@@ -2101,6 +2101,135 @@ class ClassicV1RemediationPublicationContractTests(unittest.TestCase):
             # UTF-16 baseline: visible UNAVAILABLE, baseline semantics
             # (no step failure) unchanged with a healthy candidate.
             (base / "baseline-mysql.xml").write_bytes(utf16_candidate)
+            (base / "candidate-mysql.xml").write_text(valid, encoding="utf-8")
+            base_bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(base_bad.returncode, 0, base_bad.stdout + base_bad.stderr)
+            self.assertIn("TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", base_bad.stdout)
+            self.assertNotIn(CANARY, base_bad.stdout)
+
+    # ---------------------------------------------------------------
+    # Round 4: whole-document consistency — no testcase or result
+    # element may live outside a counted testsuite. Same real blocks.
+    # ---------------------------------------------------------------
+
+    _VALID_SUITE = (
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        "<testcase/></testsuite>"
+    )
+
+    def test_orphan_result_elements_are_unavailable(self):
+        block = self._tests_block()
+        unavailable = (
+            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE"
+        )
+        cases = {}
+        for tag in ("failure", "error", "skipped", "warning"):
+            cases["orphan-" + tag] = (
+                "<testsuites>" + self._VALID_SUITE
+                + "<testcase><" + tag + "/></testcase></testsuites>"
+            )
+        cases["testcase-directly-under-root"] = "<testsuites><testcase/></testsuites>"
+        cases["bare-testcase-next-to-suite"] = (
+            "<testsuites>" + self._VALID_SUITE + "<testcase/></testsuites>"
+        )
+        cases["result-element-directly-under-root"] = (
+            "<testsuites>" + self._VALID_SUITE + "<failure/></testsuites>"
+        )
+        cases["valid-nested-plus-orphan"] = (
+            "<testsuites>"
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            "<testcase/>"
+            "</testsuite></testsuite>"
+            "<testcase><error/></testcase>"
+            "</testsuites>"
+        )
+        cases["orphan-canary"] = (
+            "<testsuites>" + self._VALID_SUITE
+            + '<testcase><failure message="' + CANARY + '">' + CANARY + "</failure></testcase></testsuites>"
+        )
+        for name, xml in cases.items():
+            with self.subTest(name=name):
+                result = self._project_xml(block, xml)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout.strip(), unavailable)
+                self.assertNotIn(CANARY, result.stdout)
+                self.assertNotIn(CANARY, result.stderr)
+
+    def test_healthy_producer_shaped_nested_documents_still_project(self):
+        # Shaped like the resolved PHPUnit 9.6 JUnit logger: nested suites
+        # whose declared counts (including warnings) are propagated to the
+        # parents, testcase children only failure/error/skipped/warning.
+        block = self._tests_block()
+        prefix = "::notice::TESTS label=BASELINE "
+        healthy = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<testsuites>"
+            '<testsuite name="classic" tests="3" assertions="9" errors="0" warnings="0" failures="1" skipped="1" time="1.5">'
+            '<testsuite name="SomeTest" file="/tmp/SomeTest.php" tests="3" assertions="9" errors="0" warnings="0" failures="1" skipped="1" time="1.5">'
+            '<testcase name="testA" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="1" assertions="3" time="0.5"/>'
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"><failure type="AssertionFailedError">x</failure></testcase>'
+            '<testcase name="testC" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="3" assertions="3" time="0.5"><skipped/></testcase>'
+            "</testsuite></testsuite></testsuites>"
+        )
+        result = self._project_xml(block, healthy)
+        self.assertEqual(
+            result.stdout.strip(),
+            prefix + "tests=3 failures=1 errors=0 skipped=1 verdict=FAIL",
+        )
+        # Same shape with all tests passing: PASS.
+        passing = healthy.replace('failures="1"', 'failures="0"').replace(
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"><failure type="AssertionFailedError">x</failure></testcase>',
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"/>',
+        )
+        result = self._project_xml(block, passing)
+        self.assertEqual(
+            result.stdout.strip(),
+            prefix + "tests=3 failures=0 errors=0 skipped=1 verdict=PASS",
+        )
+        # Producer-shaped with a declared, matching warning: consistent,
+        # so FAIL — never UNAVAILABLE from the consistency checks alone.
+        warned = passing.replace('warnings="0"', 'warnings="1"').replace(
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"/>',
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"><warning type="Warning">x</warning></testcase>',
+        )
+        result = self._project_xml(block, warned)
+        self.assertEqual(
+            result.stdout.strip(),
+            prefix + "tests=3 failures=0 errors=0 skipped=1 verdict=FAIL",
+        )
+
+    def test_evidence_block_rejects_orphans_identically(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        evidence = [b for b in blocks if "baseline-exit.txt" in b][0]
+        valid = "<testsuites>" + self._VALID_SUITE + "</testsuites>"
+        orphan_candidate = (
+            "<testsuites>" + self._VALID_SUITE
+            + '<testcase><failure message="' + CANARY + '"/></testcase></testsuites>'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for db_file in ("baseline-mysql.json", "candidate-mysql.json"):
+                (base / db_file).write_text(
+                    json.dumps({"samples": {"op": [{"ms": 1, "queries": 1}]}}), encoding="utf-8"
+                )
+            (base / "baseline-exit.txt").write_text("1\n", encoding="utf-8")
+            summary = base / "summary-mysql.txt"
+            step_summary = base / "step-summary.md"
+            env = {"GITHUB_STEP_SUMMARY": str(step_summary)}
+            # Orphan in the candidate: UNAVAILABLE, evidence step fails,
+            # canary reaches no surface (stdout, artifact, step summary).
+            (base / "baseline-mysql.xml").write_text(valid, encoding="utf-8")
+            (base / "candidate-mysql.xml").write_text(orphan_candidate, encoding="utf-8")
+            bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(bad.returncode, 1, bad.stdout + bad.stderr)
+            published = bad.stdout + summary.read_text(encoding="utf-8") + step_summary.read_text(encoding="utf-8")
+            self.assertIn("TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", published)
+            self.assertNotIn(CANARY, published)
+            self.assertNotIn(CANARY, bad.stderr)
+            # Orphan in the baseline only: visible UNAVAILABLE, step ok.
+            (base / "baseline-mysql.xml").write_text(orphan_candidate, encoding="utf-8")
             (base / "candidate-mysql.xml").write_text(valid, encoding="utf-8")
             base_bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
             self.assertEqual(base_bad.returncode, 0, base_bad.stdout + base_bad.stderr)

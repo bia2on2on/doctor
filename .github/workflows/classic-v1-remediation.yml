@@ -82,6 +82,11 @@ jobs:
       - name: Install locked test dependencies and WordPress
         run: |
           composer install --prefer-dist --no-progress --no-interaction
+          # The classic runs deliberately do NOT use the composer.lock PHPUnit:
+          # this require resolves the newest 9.6.x on the runner (the exact
+          # patch is not pinned in this repository). The workflow projectors
+          # are written against that 9.6 JUnit shape (nested suites with
+          # propagated counts, a warnings attribute and <warning> children).
           composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
           bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3 ${{ matrix.port }}
       - name: Prepare archived baseline with identical regression tests
@@ -213,6 +218,24 @@ jobs:
                   totals['warnings'] += suite_counts(suite)['warnings']
                   if totals['warnings'] > MAX_COUNT:
                       return None
+              doc = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              stack = [(root, False)]
+              while stack:
+                  element, inside = stack.pop()
+                  if element.tag == 'testsuite':
+                      inside = True
+                  if element.tag == 'testcase':
+                      if not inside:
+                          return None
+                      doc['tests'] += 1
+                  elif element.tag in TAG_KEYS:
+                      if not inside:
+                          return None
+                      doc[TAG_KEYS[element.tag]] += 1
+                  for child in element:
+                      stack.append((child, inside))
+              if doc['tests'] != totals['tests'] or doc['failures'] != totals['failures'] or doc['errors'] != totals['errors'] or doc['skipped'] != totals['skipped'] or doc['warnings'] != totals['warnings']:
+                  return None
               return totals
           def pass_verdict(totals):
               if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
@@ -366,6 +389,24 @@ jobs:
                   totals['warnings'] += suite_counts(suite)['warnings']
                   if totals['warnings'] > MAX_COUNT:
                       return None
+              doc = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              stack = [(root, False)]
+              while stack:
+                  element, inside = stack.pop()
+                  if element.tag == 'testsuite':
+                      inside = True
+                  if element.tag == 'testcase':
+                      if not inside:
+                          return None
+                      doc['tests'] += 1
+                  elif element.tag in TAG_KEYS:
+                      if not inside:
+                          return None
+                      doc[TAG_KEYS[element.tag]] += 1
+                  for child in element:
+                      stack.append((child, inside))
+              if doc['tests'] != totals['tests'] or doc['failures'] != totals['failures'] or doc['errors'] != totals['errors'] or doc['skipped'] != totals['skipped'] or doc['warnings'] != totals['warnings']:
+                  return None
               return totals
           def pass_verdict(totals):
               if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
@@ -514,6 +555,24 @@ jobs:
                   totals['warnings'] += suite_counts(suite)['warnings']
                   if totals['warnings'] > MAX_COUNT:
                       return None
+              doc = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              stack = [(root, False)]
+              while stack:
+                  element, inside = stack.pop()
+                  if element.tag == 'testsuite':
+                      inside = True
+                  if element.tag == 'testcase':
+                      if not inside:
+                          return None
+                      doc['tests'] += 1
+                  elif element.tag in TAG_KEYS:
+                      if not inside:
+                          return None
+                      doc[TAG_KEYS[element.tag]] += 1
+                  for child in element:
+                      stack.append((child, inside))
+              if doc['tests'] != totals['tests'] or doc['failures'] != totals['failures'] or doc['errors'] != totals['errors'] or doc['skipped'] != totals['skipped'] or doc['warnings'] != totals['warnings']:
+                  return None
               return totals
           def pass_verdict(totals):
               if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
