@@ -4946,7 +4946,7 @@ No new product/access-policy decision was needed for this narrow contract restor
 ### Validation
 
 - PHP-WASM syntax (`php -l`): all 4 changed PHP files clean; `git diff --check` clean.
-- WPCS changed-lines filter (local PHPCS 3.13.6 + WPCS 3.4.1 against the repository ruleset) over this follow-up's added lines in the 3 changed production files: **0 findings**. The committed full-delta collector scope was re-run (246 files / 86,501 added-line keys against the CI ratchet baseline; collector self-tests 6/6 pass) — the uncommitted follow-up lines were verified separately against HEAD as described.
+- WPCS changed-lines gate reproduced locally (PHPCS 3.13.6 + WPCS 3.4.1, repository ruleset) over the final committed full delta against the CI ratchet baseline: **246 files / 86,590 added-line keys, 0 findings on added lines** (collector self-tests 6/6 pass). The whole-file report contains inherited legacy findings and is not the changed-line gate.
 - Unit suite under the PHP-WASM harness: 1095 tests / 272,017 assertions with 74 errors / 25 failures / 31 skipped — the failing-test set is **byte-identical to the same harness run on pristine head `cb1f0513`** (pre-existing WASM environment gaps: sockets, sodium, subprocess), so no Unit differential is attributable to this change.
 - WordPress/MySQL Integration tests (including the three new wizard regressions) were **not run locally**: no native PHP/MySQL/WordPress test environment exists in this sandbox. They are claimed only from the automatic CI on the pushed head, reported separately on the PR.
 
