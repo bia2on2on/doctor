@@ -138,6 +138,19 @@ final class Settings
     private static array $cache = [];
 
     /**
+     * Clinics whose latest bulk Settings read failed. While a Clinic is in
+     * this set, get() keeps returning the documented defaults instead of
+     * retrying mid-operation: one consumer therefore never combines
+     * unverified defaults for some keys with freshly loaded stored values
+     * for others in the same snapshot. The latch is cleared by a verified
+     * load (require_verified_snapshot()), by flushCache(), or by a
+     * successful set().
+     *
+     * @var array<int, true>
+     */
+    private static array $load_failed = [];
+
+    /**
      * کلیدهای Telemetry عملیاتی (نه Config کاربر) — Audit نمی‌شوند (F1-4).
      *
      * این کلیدها توسط سیستم و به‌تکرار نوشته می‌شوند (Tick/بکاپ/تست SMS) و جدا
@@ -211,6 +224,13 @@ final class Settings
 
     public function set( string $key, mixed $value, ?int $updated_by = null ): void
     {
+        // The before-value drives the effective-change comparison and the
+        // mandatory audit payload, so it must come from a verified read:
+        // if this Clinic's settings cannot be loaded, refuse the write
+        // (no write, no audit) instead of comparing or auditing against
+        // an unverified default that may differ from the stored value.
+        $this->require_verified_snapshot();
+
         // F1-4 — before (مقدار مؤثر: ردیف یا Default) برای Audit تغییر مؤثر
         $before      = $this->get( $key );
         $before_json = wp_json_encode( $before, JSON_UNESCAPED_UNICODE );
@@ -252,7 +272,7 @@ final class Settings
                 $this->auditChange( $key, $before, $value, $before_json, $after_json, $updated_by );
             }
         );
-        unset( self::$cache[ $clinic_id ] );
+        unset( self::$cache[ $clinic_id ], self::$load_failed[ $clinic_id ] );
     }
 
     /**
@@ -314,6 +334,12 @@ final class Settings
 
     public function otpPolicy(): OtpPolicy
     {
+        // OTP limits are rate-limiting controls: the policy must be built
+        // entirely from verified stored settings (or genuine defaults when
+        // no rows exist), never from a mix of unverified defaults and
+        // later-loaded values. An unreadable settings table fails closed.
+        $this->require_verified_snapshot();
+
         return new OtpPolicy(
             (int) $this->get('otp.ttl_sec'),
             (int) $this->get('otp.max_attempts'),
@@ -343,29 +369,69 @@ final class Settings
         if ( array_key_exists( $this->clinicId(), self::$cache ) ) {
             return true;
         }
-
-        try {
-            $rows = $this->db->fetch_all_strict(
-                'SELECT `key`, value_json FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
-                [ $this->clinicId() ]
-            );
-        } catch ( \RuntimeException ) {
-            // Preserve Settings' soft-read behavior for ordinary consumers, but
-            // never cache the failed read as an empty (legacy) configuration.
+        if ( isset( self::$load_failed[ $this->clinicId() ] ) ) {
+            // Consistent snapshot: after a failed read, get() keeps
+            // returning defaults until a verified-load boundary
+            // (require_verified_snapshot(), flushCache(), or set()).
             return false;
         }
+
+        try {
+            $this->load_strict();
+        } catch ( \RuntimeException $e ) {
+            if ( $this->db->is_strict() ) {
+                // CpmsDb strict mode (e.g. migrations): a failed SQL read
+                // must propagate, exactly as the soft reader did before.
+                throw $e;
+            }
+            // Preserve Settings' soft-read behavior for ordinary consumers,
+            // but never cache the failed read as an empty (legacy)
+            // configuration, and do not retry within this snapshot.
+            self::$load_failed[ $this->clinicId() ] = true;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Load this Clinic's settings with a strict read and cache the verified
+     * result. Throws on any database read failure.
+     */
+    private function load_strict(): void {
+        $rows = $this->db->fetch_all_strict(
+            'SELECT `key`, value_json FROM ' . $this->db->table( 'cpms_settings' ) . ' WHERE clinic_id = %d',
+            [ $this->clinicId() ]
+        );
 
         $clinic_cache = [];
         foreach ( $rows as $row ) {
             $clinic_cache[ (string) $row['key'] ] = json_decode( (string) $row['value_json'], true );
         }
         self::$cache[ $this->clinicId() ] = $clinic_cache;
+        unset( self::$load_failed[ $this->clinicId() ] );
+    }
 
-        return true;
+    /**
+     * Require a verified settings snapshot for operations whose decisions
+     * must not rest on unverified defaults (settings writes and their
+     * audit comparison, OTP rate-limit policy). Returns immediately when
+     * a verified snapshot is already cached; otherwise performs a fresh
+     * strict load even if an earlier read in this snapshot failed, and
+     * throws a RuntimeException when the settings cannot be verified.
+     */
+    public function require_verified_snapshot(): void {
+        if ( array_key_exists( $this->clinicId(), self::$cache ) ) {
+            return;
+        }
+
+        $this->load_strict();
     }
 
     public static function flushCache(): void
     {
-        self::$cache = [];
+        self::$cache       = [];
+        self::$load_failed = [];
     }
 }

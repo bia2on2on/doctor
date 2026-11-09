@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Otp\OtpState;
 use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
 
@@ -19,6 +20,11 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
 {
     /** @var callable|null */
     private $auditFault = null;
+
+    /** @var callable|null */
+    private $settingsReadFault = null;
+
+    private bool $settingsFaultFired = false;
 
     private bool $previousSuppression = false;
 
@@ -35,6 +41,7 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
 
     protected function tearDown(): void
     {
+        $this->restoreSettingsBulkReads();
         $this->restoreAuditInserts();
         Settings::flushCache();
         wp_set_current_user(0);
@@ -74,6 +81,122 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
         self::assertSame($baselineAudits + 1, $this->settingAuditCount($key));
     }
 
+
+    public function testSetToDefaultValueAuditsAgainstStoredRestrictiveValue(): void
+    {
+        $settings = App::settings();
+        $key      = 'otp.max_attempts'; // documented default is 5
+
+        $settings->set($key, 2, $this->adminId);
+        $audits_after_restrictive = $this->settingAuditCount($key);
+        Settings::flushCache();
+
+        // The proposed value equals the default but differs from the stored
+        // value, so it IS an effective change and must be audited as 2 -> 5.
+        $settings->set($key, 5, $this->adminId);
+
+        self::assertSame($audits_after_restrictive + 1, $this->settingAuditCount($key), 'a default-equal value that changes the stored value must still be audited');
+        [$before, $after] = $this->latestSettingAuditValues();
+        self::assertSame(2, $before, 'the audited before-value must be the stored restrictive value');
+        self::assertSame(5, $after);
+    }
+
+    public function testSetRefusesWriteWhenBeforeValueCannotBeVerified(): void
+    {
+        $settings = App::settings();
+        $key      = 'otp.max_attempts'; // documented default is 5
+
+        $settings->set($key, 2, $this->adminId);
+        $baseline_audits = $this->settingAuditCount($key);
+
+        // Persistently fail the bulk settings read, then propose the
+        // default-equal value. Comparing against an unverified default (5)
+        // would look like a no-op and silently write 2 -> 5 with no audit.
+        $this->failSettingsBulkReads(false);
+        Settings::flushCache();
+        $threw = false;
+        try {
+            $settings->set($key, 5, $this->adminId);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            $this->restoreSettingsBulkReads();
+        }
+
+        self::assertTrue($threw, 'a settings write whose before-value cannot be verified must be refused');
+        self::assertSame(2, $this->storedSettingValue($key), 'the refused write must not change the stored value');
+        self::assertSame($baseline_audits, $this->settingAuditCount($key), 'the refused write must not create an audit row');
+
+        // After the read recovers, the same write proceeds and audits 2 -> 5.
+        Settings::flushCache();
+        $settings->set($key, 5, $this->adminId);
+        self::assertSame($baseline_audits + 1, $this->settingAuditCount($key));
+        [$before, $after] = $this->latestSettingAuditValues();
+        self::assertSame(2, $before);
+        self::assertSame(5, $after);
+    }
+
+    public function testStrictModeSettingsReadFailureStillPropagates(): void
+    {
+        $this->failSettingsBulkReads(false);
+        Settings::flushCache();
+        App::db()->setStrict(true);
+        $threw = false;
+        try {
+            App::settings()->get('otp.max_attempts');
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            App::db()->setStrict(false);
+            $this->restoreSettingsBulkReads();
+            Settings::flushCache();
+        }
+
+        self::assertTrue($threw, 'CpmsDb strict mode must keep propagating settings read failures');
+    }
+
+    public function testOtpPolicyFailsClosedOnTransientReadFailureThenUsesRestrictiveValues(): void
+    {
+        $settings = App::settings();
+        $settings->set('otp.ttl_sec', 30, $this->adminId);
+        $settings->set('otp.max_attempts', 2, $this->adminId);
+        $settings->set('otp.cooldown_sec', 90, $this->adminId);
+        $settings->set('otp.daily_max', 1, $this->adminId);
+        $settings->set('otp.lockout_sec', 1800, $this->adminId);
+        Settings::flushCache();
+
+        $now    = new \DateTimeImmutable('2026-11-09 12:00:00');
+        $policy = App::settings()->otpPolicy();
+        self::assertTrue($policy->isCodeExpired($now->modify('-31 seconds'), $now), 'control: restrictive TTL 30 applies');
+        self::assertSame(2, $policy->remainingAttempts(new OtpState()), 'control: restrictive max attempts 2 applies');
+
+        // One transient bulk-read failure: the policy must fail closed
+        // rather than fall back to (weaker) defaults or a mixed snapshot.
+        $this->failSettingsBulkReads(true);
+        Settings::flushCache();
+        $threw = false;
+        try {
+            App::settings()->otpPolicy();
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            $this->restoreSettingsBulkReads();
+        }
+        self::assertTrue($threw, 'an unverifiable OTP policy must fail closed, not use unverified defaults');
+
+        // After the transient failure, the policy is built entirely from
+        // the restrictive persisted values — never a default/stored mix.
+        $policy = App::settings()->otpPolicy();
+        self::assertTrue($policy->isCodeExpired($now->modify('-31 seconds'), $now), 'restrictive TTL 30 must apply after recovery');
+        self::assertFalse($policy->isCodeExpired($now->modify('-29 seconds'), $now));
+        self::assertSame(2, $policy->remainingAttempts(new OtpState()), 'restrictive max attempts 2 must apply after recovery');
+        self::assertSame(90, $policy->remaining_cooldown(new OtpState(lastSentAt: $now), $now), 'restrictive cooldown 90 must apply after recovery');
+        self::assertSame('daily_limit', $policy->canSend(new OtpState(sentToday: 1), $now)['reason'], 'restrictive daily max 1 must apply after recovery');
+        $state = $policy->registerFailedAttempt(new OtpState(), $now);
+        $state = $policy->registerFailedAttempt($state, $now);
+        self::assertSame(1800, $policy->remaining_lockout($state, $now), 'restrictive lockout 1800 must apply after recovery');
+    }
+
     private function settingAuditCount(string $key): int
     {
         // Each test runs in its own rolled-back data view, so the clinic-scoped
@@ -84,6 +207,72 @@ final class SettingsAuditAtomicityTest extends WP_UnitTestCase
             . " WHERE action = 'SETTING_UPDATE' AND clinic_id = %d",
             [ App::scope()->clinicId ]
         );
+    }
+
+
+    private function storedSettingValue(string $key): ?int
+    {
+        $json = App::db()->fetchValue(
+            'SELECT value_json FROM ' . App::db()->table('cpms_settings') . ' WHERE clinic_id = %d AND `key` = %s',
+            [App::scope()->clinicId, $key]
+        );
+
+        return $json === null ? null : (int) json_decode((string) $json, true);
+    }
+
+    /** @return array{0: int, 1: int} */
+    private function latestSettingAuditValues(): array
+    {
+        $row = App::db()->fetchRow(
+            'SELECT before_json, after_json FROM ' . App::db()->table('cpms_audit_logs')
+            . ' WHERE action = %s AND clinic_id = %d ORDER BY id DESC LIMIT 1',
+            ['SETTING_UPDATE', App::scope()->clinicId]
+        );
+        self::assertIsArray($row);
+        $before = json_decode((string) $row['before_json'], true);
+        $after  = json_decode((string) $row['after_json'], true);
+
+        return [(int) ($before['value'] ?? -1), (int) ($after['value'] ?? -1)];
+    }
+
+    private function failSettingsBulkReads(bool $oneShot): void
+    {
+        global $wpdb;
+        self::assertNull($this->settingsReadFault, 'the settings read fault must not be installed twice');
+        $clinic_id      = (int) App::scope()->clinicId;
+        $settings_table = $wpdb->prefix . 'cpms_settings';
+        $this->settingsFaultFired = false;
+
+        $fault = function ($query) use ($clinic_id, $settings_table, $oneShot) {
+            $query = (string) $query;
+            if (
+                (! $oneShot || ! $this->settingsFaultFired)
+                && str_contains($query, 'SELECT `key`, value_json FROM ' . $settings_table)
+                && preg_match('/WHERE clinic_id = ' . $clinic_id . '\s*$/', $query) === 1
+            ) {
+                $this->settingsFaultFired = true;
+
+                return str_replace('FROM ' . $settings_table, 'FROM ' . $settings_table . '_read_failure', $query);
+            }
+
+            return $query;
+        };
+
+        $this->previousSuppression = (bool) $wpdb->suppress_errors(true);
+        $this->settingsReadFault   = $fault;
+        add_filter('query', $fault, 5, 1);
+    }
+
+    private function restoreSettingsBulkReads(): void
+    {
+        if ($this->settingsReadFault === null) {
+            return;
+        }
+        remove_filter('query', $this->settingsReadFault, 5);
+        $this->settingsReadFault = null;
+
+        global $wpdb;
+        $wpdb->suppress_errors($this->previousSuppression);
     }
 
     private function failAuditInserts(): void

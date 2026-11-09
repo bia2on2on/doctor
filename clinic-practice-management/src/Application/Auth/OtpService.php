@@ -176,6 +176,13 @@ final class OtpService
             ? $this->settingsFactory->forClinic($clinicId)
             : $this->currentSettings();
 
+        // Rate-limit inputs (daily/hourly/IP ceilings and the OTP policy
+        // below) must all come from one verified settings snapshot: if
+        // this Clinic's settings cannot be read, the request fails closed
+        // here instead of combining unverified defaults with stored
+        // values loaded a moment later, which could weaken the limits.
+        $settings->require_verified_snapshot();
+
         $daily_max = (int) $settings->get('otp.daily_max');
         $hourly_max = (int) $settings->get('otp.hourly_max');
 

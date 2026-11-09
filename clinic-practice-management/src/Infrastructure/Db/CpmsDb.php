@@ -39,6 +39,10 @@ final class CpmsDb
         $this->strict = $strict;
     }
 
+    public function is_strict(): bool {
+        return $this->strict;
+    }
+
     /**
      * فقط در Strict mode: هر خطای SQLِ فراخوانیِ آخر باید Exception شود
      * (wpdb خطا را در last_error نگه می‌دارد و در موفقیت پاک می‌کند).

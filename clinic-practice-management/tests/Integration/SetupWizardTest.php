@@ -547,7 +547,7 @@ final class SetupWizardTest extends WP_UnitTestCase
             $wpdb->suppress_errors($previous_suppression);
         }
         self::assertTrue($save_read_failed, 'saveFinish must encounter the injected Clinic B settings read failure');
-        self::assertStringContainsString('سلامت سیستم', $finish_error_after_read_failure, 'the hospital acknowledgment must remain required');
+        self::assertStringContainsString('قابل تأیید نیست', $finish_error_after_read_failure, 'an unverified facility configuration must fail closed instead of completing through any fallback');
         Settings::flushCache();
         self::assertSame($before_a_failed_finish, $this->clinicSettingValues($clinic_a, $keys), 'a failed Clinic B read must not write Clinic A settings');
         self::assertSame($before_b_failed_finish, $this->clinicSettingValues($clinic_b, $keys), 'a failed read must not set Clinic B completion');
