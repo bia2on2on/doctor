@@ -12,7 +12,17 @@ Cases:
   (b) non-matching version on stdout -> gate fails, fixed-vocabulary
       diagnostic only, no shim bytes published;
   (c) mysql exits nonzero -> gate fails, fixed-vocabulary diagnostic only;
-  (d) mysql prints nothing, exits 0 -> gate fails (empty != pinned).
+  (d) mysql prints nothing, exits 0 -> gate fails (empty != pinned);
+  (e) matching stdout + EMPTY stderr + non-zero mysql exit -> gate fails
+      via the rc branch (fixed tokens; version prefix matched but rc=0
+      is required).
+
+Enforcement: this suite is executed in CI by the ci.yml job
+"Tenant Tripwire (hardcode scan)", step "MariaDB step 7 pin gate shell test",
+on every pull_request (no `|| true`, no continue-on-error — a failure fails
+the job). Needs bash + python3 only; no mysql, no PHP, no WordPress.
+The temp dir honors TMPDIR (default system temp); no fixed path is
+hard-coded.
 
 Non-vacuity: CI_YML=<path> python3 test_mariadb_pin_step.py <unittest args>
 runs the same suite against another workflow file; case (a) MUST fail there
@@ -78,7 +88,7 @@ def extract_step_script(ci_yml_text, step_name):
 
 class MariaDBPinStepTest(unittest.TestCase):
     def setUp(self):
-        self.tmp = Path(tempfile.mkdtemp(prefix='pr336-step7-', dir='/home/user'))
+        self.tmp = Path(tempfile.mkdtemp(prefix='pr336-step7-'))
         bin_dir = self.tmp / 'shimbin'
         bin_dir.mkdir()
         install_stub = self.tmp / 'tests' / 'bin'
@@ -157,6 +167,23 @@ class MariaDBPinStepTest(unittest.TestCase):
         self.assertIn('MariaDB server does not match pinned 11.4.13', combined)
         for token in ('stdout_empty=true', 'stdout_starts_with_expected_prefix=false',
                       'stdout_line_count=0', 'stderr_nonempty=true'):
+            self.assertIn(token, combined)
+        self._assert_no_shim_bytes(result)
+        self.assertFalse(self.install_record.exists())
+
+    def test_e_matching_stdout_with_nonzero_rc_fails_via_rc_branch(self):
+        # Round 52 LOW-4.1: isolates the rc != 0 branch even when the stdout
+        # prefix matches the pin and stderr is empty. The gate must still
+        # fail, with fixed tokens only (prefix token stays true).
+        self._write_mysql_shim('echo {0}\nexit 3\n'.format(MATCH_VERSION))
+        result = self._run_step()
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn('MariaDB server does not match pinned 11.4.13', combined)
+        for token in ('stdout_empty=false',
+                      'stdout_starts_with_expected_prefix=true',
+                      'stdout_line_count=1',
+                      'stderr_nonempty=false'):
             self.assertIn(token, combined)
         self._assert_no_shim_bytes(result)
         self.assertFalse(self.install_record.exists())

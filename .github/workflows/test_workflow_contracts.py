@@ -125,7 +125,9 @@ def integration_job_document(text):
 #     options outside the known set are not tracked;
 #   * since Round 51 also detected: `$(<file)` reads, encoders/transformers
 #     of raw paths (base64/gzip/zcat/tar/sort/uniq/cut/diff; xxd/od/strings
-#     were already dump utilities) and cp/mv/ln of a raw path.
+#     were already dump utilities) and cp/mv/ln of a raw path;
+#   * since Round 52 also detected: install of a raw path, dd with a raw
+#     if=/of= operand, and openssl base64/enc with a raw path.
 #
 # Anything not enumerated below is not claimed to be checked. Violations are
 # (rule, step_name, excerpt); an empty list means the job is clean under the
@@ -163,10 +165,17 @@ _PY_C_RE = re.compile(
 # already dump utilities.
 _TRANSFORM_UTIL_RE = re.compile(
     _CMD_POS + r"(base64|gzip|zcat|tar|sort|uniq|cut|diff)(?:\s|$)")
-# cp/mv/ln of a raw capture path to another path defeats the raw-class
-# naming boundary (the copy is no longer matched by _RAW_LITERAL_RE).
+# cp/mv/ln/install of a raw capture path to another path defeats the
+# raw-class naming boundary (the copy is no longer matched by
+# _RAW_LITERAL_RE). dd with a raw if=/of= operand and openssl base64/enc
+# with a raw path are the same class: bytes of the raw capture end up in
+# a new file. Conservative flagging; no completeness claim.
 _RAW_PATH_CMD_RE = re.compile(
-    _CMD_POS + r"(cp|mv|ln)(?:\s|$)")
+    _CMD_POS + r"(cp|mv|ln|install)(?:\s|$)")
+_DD_CMD_RE = re.compile(_CMD_POS + r"dd(?:\s|$)")
+_DD_OPERAND_RE = re.compile(r"(?:if|of)=" + _RAW_LITERAL_RE.pattern)
+_OPENSSL_RAW_RE = re.compile(
+    _CMD_POS + r"openssl\s+(?:base64|enc)(?:\s|$)")
 # bash $(<file) is a read of the file's full contents.
 _RAW_SUBSHELL_READ_RE = re.compile(
     r"\$\(\s*<\s*" + _RAW_LITERAL_RE.pattern)
@@ -330,9 +339,19 @@ def _cmd_violations(command_text, step_name):
                 # redaction). No exceptions.
                 if _TRANSFORM_UTIL_RE.search(cmd) and pipe_raw:
                     violations.append(("raw-transform", step_name, excerpt))
-                # (A3) cp/mv/ln of a raw capture path: the copy leaves the
-                # raw-class naming boundary. No exceptions.
+                # (A3) cp/mv/ln/install of a raw capture path: the copy
+                # leaves the raw-class naming boundary. No exceptions.
                 if _RAW_PATH_CMD_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
+                # (A3b) dd with a raw if=/of= operand: raw bytes are copied.
+                # if= read side leaks the raw capture; of= of a raw path is
+                # flagged conservatively (it names a raw-class file).
+                if _DD_CMD_RE.search(cmd) and _DD_OPERAND_RE.search(cmd):
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
+                # (A3c) openssl base64/enc with a raw path: encoding is not
+                # redaction; the output still carries (encoded or encrypted)
+                # copies of the raw bytes. No exceptions.
+                if _OPENSSL_RAW_RE.search(cmd) and pipe_raw:
                     violations.append(("raw-path-duplicate", step_name, excerpt))
                 # (B) Dump utilities on raw capture paths (.log/.out/.err or
                 # junit-named .xml). No exceptions.
@@ -2291,6 +2310,54 @@ class IntegrationJobLogHygieneContractTest(unittest.TestCase):
             "cp-raw": ("raw-path-duplicate", "cp /tmp/x.log /tmp/copy.txt"),
             "mv-raw": ("raw-path-duplicate", "mv /tmp/x.log /tmp/moved.txt"),
             "ln-raw": ("raw-path-duplicate", "ln -s /tmp/x.log /tmp/link.txt"),
+        }
+        for label, (expected_rule, run) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_round52_raw_path_duplicate_additions_fail_on_deliberately_violating_fixtures(self):
+        # Round 52 LOW-5.1: install, dd (raw if=/of= operands) and openssl
+        # base64/enc extend the raw-path-duplicate class. Each fixture must
+        # be rejected; the real workflow file is never modified. Not a
+        # completeness claim.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
+        fixtures = {
+            "install-raw": ("raw-path-duplicate",
+                "install /tmp/x.log /tmp/installed.txt"),
+            "install-flags-raw": ("raw-path-duplicate",
+                "install -m 644 /tmp/x.log /tmp/installed.txt"),
+            "install-d-raw": ("raw-path-duplicate",
+                "install -D /tmp/a.log /dest/x.log"),
+            "dd-if-raw": ("raw-path-duplicate",
+                "dd if=/tmp/x.log of=/tmp/blob.bin"),
+            "dd-if-raw-bs": ("raw-path-duplicate",
+                "dd if=/tmp/x.log of=/tmp/blob.bin bs=4k"),
+            "dd-of-raw-conservative": ("raw-path-duplicate",
+                "dd if=/dev/zero of=/tmp/x.log bs=1M count=1"),
+            "openssl-base64-raw": ("raw-path-duplicate",
+                "openssl base64 -in /tmp/x.log"),
+            "openssl-base64-out-raw": ("raw-path-duplicate",
+                "openssl base64 -in /tmp/x.log -out /tmp/enc.txt"),
+            "openssl-enc-raw": ("raw-path-duplicate",
+                "openssl enc -aes-256-cbc -in /tmp/x.log -out /tmp/enc.bin -pass pass:dummy"),
+            "openssl-enc-decode-raw": ("raw-path-duplicate",
+                "openssl enc -d -in /tmp/enc.bin -out /tmp/y.log -pass pass:dummy"),
         }
         for label, (expected_rule, run) in fixtures.items():
             with self.subTest(violation=label):

@@ -51,6 +51,18 @@ jobs:
           python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
         working-directory: ${{ github.workspace }}
 
+      - name: MariaDB step 7 pin gate shell test
+        # Runs bin/test_mariadb_pin_step.py on every PR: it extracts the
+        # Integration step-7 ("Prepare MariaDB 11.4.13 WordPress test suite")
+        # shell block from this file and executes it under bash with a shim
+        # mysql on PATH (and a shim install-wp-tests.sh). bash + python3 only;
+        # no mysql/PHP/WordPress needed. Deliberately NOT optional: no
+        # `|| true`, no continue-on-error — a failure fails this job. Never
+        # renamed or removed: this job's check context stays exactly
+        # "Tenant Tripwire (hardcode scan)".
+        working-directory: ${{ github.workspace }}
+        run: python3 bin/test_mariadb_pin_step.py
+
       - name: Pilot benchmark report safety self-tests
         run: python3 bin/pilot-bench-report.py --test
         working-directory: ${{ github.workspace }}/clinic-practice-management
@@ -300,7 +312,14 @@ jobs:
           esac
           stderr_nonempty=false; [ -s "$version_query_stderr" ] && stderr_nonempty=true
           stdout_line_count="$(printf '%s' "$server_version" | awk 'END{print NR+0}')"
-          case "$stdout_line_count" in ''|*[!0-9]*) stdout_line_count=0 ;; esac
+          # Fixed vocabulary only: print the number when it is a canonical
+          # integer below the fixed bound 1000 (at most 3 digits) — never any
+          # larger value (no long-digit parse is ever performed). Otherwise
+          # print the fixed tokens over_bound / unknown.
+          case "$stdout_line_count" in
+            ''|*[!0-9]*) stdout_line_count=unknown ;;
+            *) if [ "${#stdout_line_count}" -gt 3 ]; then stdout_line_count=over_bound; fi ;;
+          esac
           if [ "$mysql_rc" -ne 0 ] || [ "$stdout_starts_with_expected_prefix" != "true" ]; then
             echo "::error::MariaDB server does not match pinned 11.4.13 (raw VERSION() string not published). stdout_empty=${stdout_empty} stdout_starts_with_expected_prefix=${stdout_starts_with_expected_prefix} stdout_line_count=${stdout_line_count} stderr_nonempty=${stderr_nonempty}" >&2
             exit 1
