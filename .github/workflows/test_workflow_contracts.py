@@ -1832,14 +1832,15 @@ class ClassicV1RemediationPublicationContractTests(unittest.TestCase):
             '<testsuites><testsuite failures="0" errors="0" skipped="0"><testcase/></testsuite></testsuites>',
         )
         self.assertIn("verdict=UNAVAILABLE", result.stdout)
-        # Canonical zero and small counts still work.
+        # Canonical zero is a valid COUNT, but zero executed tests can no
+        # longer be reported as PASS (round 3): the verdict is FAIL.
         result = self._project_xml(
             block,
             '<testsuites><testsuite tests="0" failures="0" errors="0" skipped="0"/></testsuites>',
         )
         self.assertEqual(
             result.stdout.strip(),
-            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=PASS",
+            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=FAIL",
         )
 
     def test_nested_suites_use_outermost_totals_and_recursive_cases(self):
@@ -1907,6 +1908,204 @@ class ClassicV1RemediationPublicationContractTests(unittest.TestCase):
         )
         self.assertIn("verdict=UNAVAILABLE", result.stdout)
         self.assertNotIn(CANARY, result.stdout)
+
+    # ---------------------------------------------------------------
+    # Round 3: encoding-independent XML hardening (parser-level DTD /
+    # entity rejection, strict UTF-8) and per-suite consistency with
+    # stricter PASS conditions. Same real extracted blocks.
+    # ---------------------------------------------------------------
+
+    def _project_xml_bytes(self, block, data, label="BASELINE"):
+        with tempfile.TemporaryDirectory() as tmp:
+            xml_path = Path(tmp) / "result.xml"
+            xml_path.write_bytes(data)
+            return run_projection(block, [str(xml_path), label])
+
+    def test_non_utf8_and_dtd_junit_is_unavailable(self):
+        block = self._tests_block()
+        unavailable = (
+            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE"
+        )
+        inner = (
+            '<?xml version="1.0" encoding="{enc}"?>'
+            '<!DOCTYPE testsuites [<!ENTITY x "' + CANARY + '">]>'
+            '<testsuites><testsuite tests="1" failures="1" errors="0" skipped="0">'
+            "<testcase><failure>&x;</failure></testcase></testsuite></testsuites>"
+        )
+        cases = {
+            "utf16-with-bom": inner.format(enc="UTF-16").encode("utf-16"),
+            "utf16le-no-bom": inner.format(enc="UTF-16").encode("utf-16le"),
+            "utf16be-with-bom": b"\xfe\xff" + inner.format(enc="UTF-16").encode("utf-16be"),
+            "utf32-with-bom": inner.format(enc="UTF-32").encode("utf-32"),
+            "utf32be-no-bom": inner.format(enc="UTF-32").encode("utf-32be"),
+        }
+        for name, data in cases.items():
+            with self.subTest(name=name):
+                result = self._project_xml_bytes(block, data)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout.strip(), unavailable)
+                self.assertNotIn(CANARY, result.stdout)
+                self.assertNotIn(CANARY, result.stderr)
+        valid_body = (
+            "<testsuites><testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\">"
+            "<testcase/></testsuite></testsuites>"
+        )
+        more = {
+            # UTF-8 bytes declaring a different encoding.
+            "foreign-encoding-decl": (
+                '<?xml version="1.0" encoding="ISO-8859-1"?>' + valid_body
+            ).encode("utf-8"),
+            "utf16-encoding-decl": (
+                '<?xml version="1.0" encoding="UTF-16"?>' + valid_body
+            ).encode("utf-8"),
+            # UTF-8 BOM is never emitted by PHPUnit's JUnit logger.
+            "utf8-bom": b"\xef\xbb\xbf" + valid_body.encode("utf-8"),
+            # NUL byte anywhere rejects the input.
+            "nul-byte": (valid_body + "\x00").encode("utf-8"),
+            # Undecodable bytes.
+            "undecodable": b"<?xml version=\"1.0\"?><testsuites>\xc3\x28</testsuites>",
+        }
+        for name, data in more.items():
+            with self.subTest(name=name):
+                result = self._project_xml_bytes(block, data)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout.strip(), unavailable)
+        # An honest UTF-8 declaration with the same body still projects.
+        result = self._project_xml_bytes(
+            block, ('<?xml version="1.0" encoding="UTF-8"?>' + valid_body).encode("utf-8")
+        )
+        self.assertIn("verdict=PASS", result.stdout)
+
+    def test_per_suite_consistency_cannot_cancel_across_suites(self):
+        block = self._tests_block()
+        cases = [
+            # Skipped counts compensate across suites: aggregates match
+            # (tests=2, skipped=1) but each suite is individually wrong.
+            '<testsuites>'
+            '<testsuite tests="1" failures="0" errors="0" skipped="1"><testcase/></testsuite>'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase><skipped/></testcase></testsuite>'
+            "</testsuites>",
+            # Failure counts compensate across suites: aggregate failures
+            # declared (1) equals aggregate actual (1), per-suite it is not.
+            '<testsuites>'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase><failure/></testcase></testsuite>'
+            '<testsuite tests="1" failures="1" errors="0" skipped="0"><testcase/></testsuite>'
+            "</testsuites>",
+            # A nested suite that under-declares its own failure is caught
+            # even though the outer suite's aggregate is correct.
+            '<testsuite tests="1" failures="1" errors="0" skipped="0">'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            "<testcase><failure/></testcase>"
+            "</testsuite></testsuite>",
+        ]
+        for xml in cases:
+            with self.subTest(xml=xml[:60]):
+                result = self._project_xml(block, xml)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("verdict=UNAVAILABLE", result.stdout)
+                self.assertNotIn("verdict=PASS", result.stdout)
+
+    def test_zero_all_skipped_and_warning_only_are_not_pass(self):
+        block = self._tests_block()
+        prefix = "::notice::TESTS label=BASELINE "
+        cases = [
+            (
+                '<testsuites><testsuite tests="0" failures="0" errors="0" skipped="0"/></testsuites>',
+                prefix + "tests=0 failures=0 errors=0 skipped=0 verdict=FAIL",
+            ),
+            (
+                '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="2">'
+                "<testcase><skipped/></testcase><testcase><skipped/></testcase>"
+                "</testsuite></testsuites>",
+                prefix + "tests=2 failures=0 errors=0 skipped=2 verdict=FAIL",
+            ),
+            # Warning-only, with a declared warnings count (generic JUnit).
+            (
+                '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0" warnings="1">'
+                "<testcase><warning/></testcase></testsuite></testsuites>",
+                prefix + "tests=1 failures=0 errors=0 skipped=0 verdict=FAIL",
+            ),
+            # Warning-only without a declared warnings attribute.
+            (
+                '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0">'
+                "<testcase><warning/></testcase></testsuite></testsuites>",
+                prefix + "tests=1 failures=0 errors=0 skipped=0 verdict=FAIL",
+            ),
+            # A declared warnings count that contradicts the children is
+            # inconsistent data, not a verdict.
+            (
+                '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0" warnings="0">'
+                "<testcase><warning/></testcase></testsuite></testsuites>",
+                prefix + "tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE",
+            ),
+        ]
+        for xml, expected in cases:
+            with self.subTest(expected=expected[-30:]):
+                result = self._project_xml(block, xml)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+        # Partial skips with real executions still PASS.
+        result = self._project_xml(
+            block,
+            '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="1">'
+            "<testcase/><testcase><skipped/></testcase></testsuite></testsuites>",
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            prefix + "tests=2 failures=0 errors=0 skipped=1 verdict=PASS",
+        )
+
+    def test_evidence_block_applies_same_encoding_and_pass_rules(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        evidence = [b for b in blocks if "baseline-exit.txt" in b][0]
+        valid = (
+            '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0">'
+            "<testcase/></testsuite></testsuites>"
+        )
+        utf16_candidate = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE testsuites [<!ENTITY x "' + CANARY + '">]>' + valid
+        ).encode("utf-16")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for db_file in ("baseline-mysql.json", "candidate-mysql.json"):
+                (base / db_file).write_text(
+                    json.dumps({"samples": {"op": [{"ms": 1, "queries": 1}]}}), encoding="utf-8"
+                )
+            (base / "baseline-exit.txt").write_text("1\n", encoding="utf-8")
+            summary = base / "summary-mysql.txt"
+            step_summary = base / "step-summary.md"
+            env = {"GITHUB_STEP_SUMMARY": str(step_summary)}
+            # UTF-16 candidate: UNAVAILABLE, the step fails, no canary
+            # anywhere it publishes (stdout, artifact, step summary).
+            (base / "baseline-mysql.xml").write_text(valid, encoding="utf-8")
+            (base / "candidate-mysql.xml").write_bytes(utf16_candidate)
+            bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(bad.returncode, 1, bad.stdout + bad.stderr)
+            published = bad.stdout + summary.read_text(encoding="utf-8") + step_summary.read_text(encoding="utf-8")
+            self.assertIn("TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", published)
+            self.assertNotIn(CANARY, published)
+            self.assertNotIn(CANARY, bad.stderr)
+            # Zero-test candidate: FAIL diagnostic, but the evidence step
+            # itself still exits 0 — only UNAVAILABLE (and PHPUnit's own
+            # exit code, which is unchanged) can fail the job.
+            (base / "candidate-mysql.xml").write_text(
+                '<testsuites><testsuite tests="0" failures="0" errors="0" skipped="0"/></testsuites>',
+                encoding="utf-8",
+            )
+            zero = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(zero.returncode, 0, zero.stdout + zero.stderr)
+            self.assertIn("TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=FAIL", zero.stdout)
+            # UTF-16 baseline: visible UNAVAILABLE, baseline semantics
+            # (no step failure) unchanged with a healthy candidate.
+            (base / "baseline-mysql.xml").write_bytes(utf16_candidate)
+            (base / "candidate-mysql.xml").write_text(valid, encoding="utf-8")
+            base_bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(base_bad.returncode, 0, base_bad.stdout + base_bad.stderr)
+            self.assertIn("TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", base_bad.stdout)
+            self.assertNotIn(CANARY, base_bad.stdout)
 
     def test_evidence_candidate_unavailable_fails_but_baseline_does_not(self):
         blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))

@@ -116,6 +116,7 @@ jobs:
           python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml BASELINE <<'PY'
           # cpms-fixed-schema-projection
           import sys, xml.etree.ElementTree as ET
+          import xml.parsers.expat as expat
           MAX_COUNT = 1000000
           MAX_SUITES = 10000
           MAX_XML_BYTES = 8388608
@@ -129,14 +130,104 @@ jobs:
                   return None
               value = int(raw)
               return value if value <= MAX_COUNT else None
+          def parse_junit(blob):
+              if blob is None or len(blob) > MAX_XML_BYTES:
+                  return None
+              if blob.startswith(b'\xef\xbb\xbf') or blob.startswith(b'\xff\xfe') or blob.startswith(b'\xfe\xff') or b'\x00' in blob:
+                  return None
+              try:
+                  text = blob.decode('utf-8')
+              except Exception:
+                  return None
+              holder = {'root': None, 'stack': []}
+              parser = expat.ParserCreate()
+              def fail(*args):
+                  raise ValueError('invalid')
+              def xml_decl(version, encoding, standalone):
+                  if encoding is not None and encoding.lower() != 'utf-8':
+                      fail()
+              def start_element(name, attrs):
+                  element = ET.Element(name, dict(attrs))
+                  if holder['stack']:
+                      holder['stack'][-1].append(element)
+                  elif holder['root'] is None:
+                      holder['root'] = element
+                  else:
+                      fail()
+                  holder['stack'].append(element)
+              def end_element(name):
+                  if not holder['stack']:
+                      fail()
+                  holder['stack'].pop()
+              parser.StartElementHandler = start_element
+              parser.EndElementHandler = end_element
+              parser.StartDoctypeDeclHandler = fail
+              parser.EntityDeclHandler = fail
+              parser.ExternalEntityRefHandler = fail
+              parser.XmlDeclHandler = xml_decl
+              try:
+                  parser.Parse(text, True)
+              except Exception:
+                  return None
+              if holder['stack'] or holder['root'] is None:
+                  return None
+              return holder['root']
+          TAG_KEYS = {'failure': 'failures', 'error': 'errors', 'skipped': 'skipped', 'warning': 'warnings'}
+          def suite_counts(suite):
+              counts = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              for element in suite.iter():
+                  if element.tag != 'testcase':
+                      continue
+                  counts['tests'] += 1
+                  seen = set()
+                  for child in element:
+                      if child.tag in TAG_KEYS and child.tag not in seen:
+                          seen.add(child.tag)
+                          counts[TAG_KEYS[child.tag]] += 1
+              return counts
+          def suites_consistent(root, outer):
+              suites = [el for el in root.iter() if el.tag == 'testsuite']
+              if not outer or not suites or len(suites) > MAX_SUITES:
+                  return None
+              for suite in suites:
+                  actual = suite_counts(suite)
+                  for key in ('tests', 'failures', 'errors', 'skipped'):
+                      value = canon_count(suite.get(key))
+                      if value is None or value != actual[key]:
+                          return None
+                  declared_warnings = suite.get('warnings')
+                  if declared_warnings is not None:
+                      value = canon_count(declared_warnings)
+                      if value is None or value != actual['warnings']:
+                          return None
+              totals = {}
+              for key in ('tests', 'failures', 'errors', 'skipped'):
+                  total = 0
+                  for suite in outer:
+                      total += canon_count(suite.get(key))
+                      if total > MAX_COUNT:
+                          return None
+                  totals[key] = total
+              totals['warnings'] = 0
+              for suite in outer:
+                  totals['warnings'] += suite_counts(suite)['warnings']
+                  if totals['warnings'] > MAX_COUNT:
+                      return None
+              return totals
+          def pass_verdict(totals):
+              if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
+                  return 'PASS'
+              return 'FAIL'
           def verdict_for(path):
               try:
                   with open(path, 'rb') as handle:
                       blob = handle.read(MAX_XML_BYTES + 1)
-                  if len(blob) > MAX_XML_BYTES or b'<!DOCTYPE' in blob:
-                      return None
-                  root = ET.fromstring(blob)
               except Exception:
+                  return None
+              if len(blob) > MAX_XML_BYTES:
+                  return None
+              root = parse_junit(blob)
+              if root is None:
                   return None
               if root.tag == 'testsuite':
                   outer = [root]
@@ -144,32 +235,7 @@ jobs:
                   outer = root.findall('testsuite')
               else:
                   return None
-              if not outer or len(outer) > MAX_SUITES:
-                  return None
-              totals = {}
-              for key in ('tests', 'failures', 'errors', 'skipped'):
-                  total = 0
-                  for suite in outer:
-                      value = canon_count(suite.get(key))
-                      if value is None:
-                          return None
-                      total += value
-                      if total > MAX_COUNT:
-                          return None
-                  totals[key] = total
-              cases = [el for el in root.iter() if el.tag == 'testcase']
-              if len(cases) > MAX_COUNT:
-                  return None
-              actual = {'failure': 0, 'error': 0, 'skipped': 0}
-              for case in cases:
-                  seen = set()
-                  for child in case:
-                      if child.tag in actual and child.tag not in seen:
-                          seen.add(child.tag)
-                          actual[child.tag] += 1
-              if totals['tests'] != len(cases) or totals['failures'] != actual['failure'] or totals['errors'] != actual['error'] or totals['skipped'] != actual['skipped']:
-                  return None
-              return totals
+              return suites_consistent(root, outer)
           def project(path, label):
               if label not in ('BASELINE', 'CANDIDATE'):
                   print('::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
@@ -178,7 +244,7 @@ jobs:
               if totals is None:
                   print('::notice::TESTS label=' + label + ' tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
                   return
-              verdict = 'PASS' if totals['failures'] == 0 and totals['errors'] == 0 else 'FAIL'
+              verdict = pass_verdict(totals)
               print('::notice::TESTS label=' + label + ' tests=%d failures=%d errors=%d skipped=%d verdict=%s' % (totals['tests'], totals['failures'], totals['errors'], totals['skipped'], verdict))
           try:
               project(sys.argv[1], sys.argv[2])
@@ -203,6 +269,7 @@ jobs:
           python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml CANDIDATE <<'PY'
           # cpms-fixed-schema-projection
           import sys, xml.etree.ElementTree as ET
+          import xml.parsers.expat as expat
           MAX_COUNT = 1000000
           MAX_SUITES = 10000
           MAX_XML_BYTES = 8388608
@@ -216,14 +283,104 @@ jobs:
                   return None
               value = int(raw)
               return value if value <= MAX_COUNT else None
+          def parse_junit(blob):
+              if blob is None or len(blob) > MAX_XML_BYTES:
+                  return None
+              if blob.startswith(b'\xef\xbb\xbf') or blob.startswith(b'\xff\xfe') or blob.startswith(b'\xfe\xff') or b'\x00' in blob:
+                  return None
+              try:
+                  text = blob.decode('utf-8')
+              except Exception:
+                  return None
+              holder = {'root': None, 'stack': []}
+              parser = expat.ParserCreate()
+              def fail(*args):
+                  raise ValueError('invalid')
+              def xml_decl(version, encoding, standalone):
+                  if encoding is not None and encoding.lower() != 'utf-8':
+                      fail()
+              def start_element(name, attrs):
+                  element = ET.Element(name, dict(attrs))
+                  if holder['stack']:
+                      holder['stack'][-1].append(element)
+                  elif holder['root'] is None:
+                      holder['root'] = element
+                  else:
+                      fail()
+                  holder['stack'].append(element)
+              def end_element(name):
+                  if not holder['stack']:
+                      fail()
+                  holder['stack'].pop()
+              parser.StartElementHandler = start_element
+              parser.EndElementHandler = end_element
+              parser.StartDoctypeDeclHandler = fail
+              parser.EntityDeclHandler = fail
+              parser.ExternalEntityRefHandler = fail
+              parser.XmlDeclHandler = xml_decl
+              try:
+                  parser.Parse(text, True)
+              except Exception:
+                  return None
+              if holder['stack'] or holder['root'] is None:
+                  return None
+              return holder['root']
+          TAG_KEYS = {'failure': 'failures', 'error': 'errors', 'skipped': 'skipped', 'warning': 'warnings'}
+          def suite_counts(suite):
+              counts = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              for element in suite.iter():
+                  if element.tag != 'testcase':
+                      continue
+                  counts['tests'] += 1
+                  seen = set()
+                  for child in element:
+                      if child.tag in TAG_KEYS and child.tag not in seen:
+                          seen.add(child.tag)
+                          counts[TAG_KEYS[child.tag]] += 1
+              return counts
+          def suites_consistent(root, outer):
+              suites = [el for el in root.iter() if el.tag == 'testsuite']
+              if not outer or not suites or len(suites) > MAX_SUITES:
+                  return None
+              for suite in suites:
+                  actual = suite_counts(suite)
+                  for key in ('tests', 'failures', 'errors', 'skipped'):
+                      value = canon_count(suite.get(key))
+                      if value is None or value != actual[key]:
+                          return None
+                  declared_warnings = suite.get('warnings')
+                  if declared_warnings is not None:
+                      value = canon_count(declared_warnings)
+                      if value is None or value != actual['warnings']:
+                          return None
+              totals = {}
+              for key in ('tests', 'failures', 'errors', 'skipped'):
+                  total = 0
+                  for suite in outer:
+                      total += canon_count(suite.get(key))
+                      if total > MAX_COUNT:
+                          return None
+                  totals[key] = total
+              totals['warnings'] = 0
+              for suite in outer:
+                  totals['warnings'] += suite_counts(suite)['warnings']
+                  if totals['warnings'] > MAX_COUNT:
+                      return None
+              return totals
+          def pass_verdict(totals):
+              if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
+                  return 'PASS'
+              return 'FAIL'
           def verdict_for(path):
               try:
                   with open(path, 'rb') as handle:
                       blob = handle.read(MAX_XML_BYTES + 1)
-                  if len(blob) > MAX_XML_BYTES or b'<!DOCTYPE' in blob:
-                      return None
-                  root = ET.fromstring(blob)
               except Exception:
+                  return None
+              if len(blob) > MAX_XML_BYTES:
+                  return None
+              root = parse_junit(blob)
+              if root is None:
                   return None
               if root.tag == 'testsuite':
                   outer = [root]
@@ -231,32 +388,7 @@ jobs:
                   outer = root.findall('testsuite')
               else:
                   return None
-              if not outer or len(outer) > MAX_SUITES:
-                  return None
-              totals = {}
-              for key in ('tests', 'failures', 'errors', 'skipped'):
-                  total = 0
-                  for suite in outer:
-                      value = canon_count(suite.get(key))
-                      if value is None:
-                          return None
-                      total += value
-                      if total > MAX_COUNT:
-                          return None
-                  totals[key] = total
-              cases = [el for el in root.iter() if el.tag == 'testcase']
-              if len(cases) > MAX_COUNT:
-                  return None
-              actual = {'failure': 0, 'error': 0, 'skipped': 0}
-              for case in cases:
-                  seen = set()
-                  for child in case:
-                      if child.tag in actual and child.tag not in seen:
-                          seen.add(child.tag)
-                          actual[child.tag] += 1
-              if totals['tests'] != len(cases) or totals['failures'] != actual['failure'] or totals['errors'] != actual['error'] or totals['skipped'] != actual['skipped']:
-                  return None
-              return totals
+              return suites_consistent(root, outer)
           def project(path, label):
               if label not in ('BASELINE', 'CANDIDATE'):
                   print('::error::TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
@@ -265,7 +397,7 @@ jobs:
               if totals is None:
                   print('::error::TESTS label=' + label + ' tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
                   return
-              verdict = 'PASS' if totals['failures'] == 0 and totals['errors'] == 0 else 'FAIL'
+              verdict = pass_verdict(totals)
               print('::error::TESTS label=' + label + ' tests=%d failures=%d errors=%d skipped=%d verdict=%s' % (totals['tests'], totals['failures'], totals['errors'], totals['skipped'], verdict))
           try:
               project(sys.argv[1], sys.argv[2])
@@ -278,6 +410,7 @@ jobs:
           python3 - /tmp/classic-v1 "${{ matrix.database }}" "/tmp/classic-v1/summary-${{ matrix.database }}.txt" <<'PY'
           # cpms-fixed-schema-projection
           import json, os, sys, xml.etree.ElementTree as ET
+          import xml.parsers.expat as expat
           MAX_COUNT = 1000000
           MAX_SUITES = 10000
           MAX_BYTES = 8388608
@@ -298,14 +431,101 @@ jobs:
                   return None if len(blob) > MAX_BYTES else blob
               except Exception:
                   return None
+          def parse_junit(blob):
+              if blob is None or len(blob) > MAX_BYTES:
+                  return None
+              if blob.startswith(b'\xef\xbb\xbf') or blob.startswith(b'\xff\xfe') or blob.startswith(b'\xfe\xff') or b'\x00' in blob:
+                  return None
+              try:
+                  text = blob.decode('utf-8')
+              except Exception:
+                  return None
+              holder = {'root': None, 'stack': []}
+              parser = expat.ParserCreate()
+              def fail(*args):
+                  raise ValueError('invalid')
+              def xml_decl(version, encoding, standalone):
+                  if encoding is not None and encoding.lower() != 'utf-8':
+                      fail()
+              def start_element(name, attrs):
+                  element = ET.Element(name, dict(attrs))
+                  if holder['stack']:
+                      holder['stack'][-1].append(element)
+                  elif holder['root'] is None:
+                      holder['root'] = element
+                  else:
+                      fail()
+                  holder['stack'].append(element)
+              def end_element(name):
+                  if not holder['stack']:
+                      fail()
+                  holder['stack'].pop()
+              parser.StartElementHandler = start_element
+              parser.EndElementHandler = end_element
+              parser.StartDoctypeDeclHandler = fail
+              parser.EntityDeclHandler = fail
+              parser.ExternalEntityRefHandler = fail
+              parser.XmlDeclHandler = xml_decl
+              try:
+                  parser.Parse(text, True)
+              except Exception:
+                  return None
+              if holder['stack'] or holder['root'] is None:
+                  return None
+              return holder['root']
+          TAG_KEYS = {'failure': 'failures', 'error': 'errors', 'skipped': 'skipped', 'warning': 'warnings'}
+          def suite_counts(suite):
+              counts = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              for element in suite.iter():
+                  if element.tag != 'testcase':
+                      continue
+                  counts['tests'] += 1
+                  seen = set()
+                  for child in element:
+                      if child.tag in TAG_KEYS and child.tag not in seen:
+                          seen.add(child.tag)
+                          counts[TAG_KEYS[child.tag]] += 1
+              return counts
+          def suites_consistent(root, outer):
+              suites = [el for el in root.iter() if el.tag == 'testsuite']
+              if not outer or not suites or len(suites) > MAX_SUITES:
+                  return None
+              for suite in suites:
+                  actual = suite_counts(suite)
+                  for key in ('tests', 'failures', 'errors', 'skipped'):
+                      value = canon_count(suite.get(key))
+                      if value is None or value != actual[key]:
+                          return None
+                  declared_warnings = suite.get('warnings')
+                  if declared_warnings is not None:
+                      value = canon_count(declared_warnings)
+                      if value is None or value != actual['warnings']:
+                          return None
+              totals = {}
+              for key in ('tests', 'failures', 'errors', 'skipped'):
+                  total = 0
+                  for suite in outer:
+                      total += canon_count(suite.get(key))
+                      if total > MAX_COUNT:
+                          return None
+                  totals[key] = total
+              totals['warnings'] = 0
+              for suite in outer:
+                  totals['warnings'] += suite_counts(suite)['warnings']
+                  if totals['warnings'] > MAX_COUNT:
+                      return None
+              return totals
+          def pass_verdict(totals):
+              if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
+                  return 'PASS'
+              return 'FAIL'
           def tests_result(path, label):
               unavailable = ('TESTS label=' + label + ' tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE', 'UNAVAILABLE')
               blob = read_bounded(path)
-              if blob is None or b'<!DOCTYPE' in blob:
+              if blob is None:
                   return unavailable
-              try:
-                  root = ET.fromstring(blob)
-              except Exception:
+              root = parse_junit(blob)
+              if root is None:
                   return unavailable
               if root.tag == 'testsuite':
                   outer = [root]
@@ -313,32 +533,10 @@ jobs:
                   outer = root.findall('testsuite')
               else:
                   return unavailable
-              if not outer or len(outer) > MAX_SUITES:
+              totals = suites_consistent(root, outer)
+              if totals is None:
                   return unavailable
-              totals = {}
-              for key in ('tests', 'failures', 'errors', 'skipped'):
-                  total = 0
-                  for suite in outer:
-                      value = canon_count(suite.get(key))
-                      if value is None:
-                          return unavailable
-                      total += value
-                      if total > MAX_COUNT:
-                          return unavailable
-                  totals[key] = total
-              cases = [el for el in root.iter() if el.tag == 'testcase']
-              if len(cases) > MAX_COUNT:
-                  return unavailable
-              actual = {'failure': 0, 'error': 0, 'skipped': 0}
-              for case in cases:
-                  seen = set()
-                  for child in case:
-                      if child.tag in actual and child.tag not in seen:
-                          seen.add(child.tag)
-                          actual[child.tag] += 1
-              if totals['tests'] != len(cases) or totals['failures'] != actual['failure'] or totals['errors'] != actual['error'] or totals['skipped'] != actual['skipped']:
-                  return unavailable
-              verdict = 'PASS' if totals['failures'] == 0 and totals['errors'] == 0 else 'FAIL'
+              verdict = pass_verdict(totals)
               return ('TESTS label=' + label + ' tests=%d failures=%d errors=%d skipped=%d verdict=%s' % (totals['tests'], totals['failures'], totals['errors'], totals['skipped'], verdict), verdict)
           def finite_number(value):
               return not isinstance(value, bool) and isinstance(value, (int, float)) and value == value and abs(value) <= 1000000000
