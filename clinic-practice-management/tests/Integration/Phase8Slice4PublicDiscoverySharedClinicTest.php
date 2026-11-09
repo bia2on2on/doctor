@@ -139,6 +139,52 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         self::assertStringContainsString('option value="قلب"', $html, 'Specialty options come from the listed clinicians.');
     }
 
+    public function testPublicSpecialtyLabelsPreserveSearchKeysCustomTextAndEscaping(): void
+    {
+        $cases = [
+            [ 'cardiology', 'متخصص قلب و عروق' ],
+            [ 'متخصص قلب و عروق', 'متخصص قلب و عروق' ],
+            [ 'فلوشیپ ناباروری', 'فلوشیپ ناباروری' ],
+            [ 'فلوشیپ ناباروری"><script>alert(1)</script>', 'فلوشیپ ناباروری"><script>alert(1)</script>' ],
+        ];
+
+        foreach ( $cases as [ $stored, $display ] ) {
+            self::assertSame(
+                1,
+                App::db()->update( 'cpms_clinicians', [ 'specialty' => $stored ], [ 'id' => $this->clinicianA ] ),
+                'The synthetic legacy specialty fixture must be updated.'
+            );
+
+            $html = $this->render( 'all' );
+
+            self::assertStringContainsString(
+                'data-specialty="' . esc_attr( $stored ) . '"',
+                $html,
+                'The doctor row keeps the exact filter key.'
+            );
+            self::assertStringContainsString(
+                '<option value="' . esc_attr( $stored ) . '">' . esc_html( $display ) . '</option>',
+                $html,
+                'The filter option keeps its exact value while showing its safe label.'
+            );
+            self::assertStringContainsString(
+                '<span class="cpms-public-booking__clinician-specialty">' . esc_html( $display ) . '</span>',
+                $html,
+                'The visible doctor specialty uses the Persian catalog label or unchanged custom text.'
+            );
+            self::assertStringContainsString(
+                'data-clinician-id="' . $this->clinicianA . '"',
+                $html,
+                'The clinician selection identifier remains present.'
+            );
+            self::assertStringNotContainsString(
+                '<script>alert(1)</script>',
+                $html,
+                'Persisted unsafe custom text must remain escaped in the public listing.'
+            );
+        }
+    }
+
     public function testSuspendedClinicIsExcludedEvenWithConsent(): void
     {
         $this->setConsent($this->clinicSuspended);

@@ -421,7 +421,85 @@ function bootSandbox(root, handler) {
 
 function tick() { return new Promise(function (r) { setTimeout(r, 0); }); }
 
+function runPublicSpecialtyFilterSpecs() {
+  var root = buildM5Surface({
+    surface_id: 'pb-specialty-filter',
+    mode: 'single',
+    clinic_id: 3,
+    rest_root: 'https://clinic.test/wp-json/clinic/v1',
+    availability_path: '/availability',
+    quote_path: '/booking/quote',
+    hold_path: '/booking/hold',
+    confirm_path: '/booking/confirm',
+    session_clinic_id: 0,
+    locations_by_clinic: {}
+  });
+  var list = root.querySelector('[data-role="clinicians"]');
+  var items = list.querySelectorAll('.cpms-public-booking__clinician-item');
+  var aliasItem = items[0];
+  aliasItem.setAttribute('data-specialty', 'cardiology');
+
+  function addClinician(id, specialty) {
+    return list.appendChild(mk('li', {
+      'class': 'cpms-public-booking__clinician-item',
+      'data-clinic-id': '3',
+      'data-specialty': specialty,
+      'data-search': ''
+    }, [mk('button', {
+      'type': 'button',
+      'class': 'cpms-public-booking__clinician',
+      'data-clinician-id': String(id),
+      'data-clinic-id': '3',
+      'aria-pressed': 'false'
+    })]));
+  }
+
+  var canonicalItem = addClinician(33, 'متخصص قلب و عروق');
+  var customItem = addClinician(34, 'فلوشیپ ناباروری');
+  var doctorSearch = mk('input', { 'data-role': 'doctor-search' });
+  var specialtyFilter = mk('select', { 'data-role': 'specialty-filter' });
+  var aliasOption = mk('option', { value: 'cardiology' });
+  aliasOption.value = 'cardiology';
+  aliasOption.textContent = 'متخصص قلب و عروق';
+  specialtyFilter.appendChild(aliasOption);
+  root.appendChild(doctorSearch);
+  root.appendChild(specialtyFilter);
+
+  bootSandbox(root, function () { return { status: 404, body: { ok: false } }; });
+
+  specialtyFilter.value = 'cardiology';
+  specialtyFilter.dispatch('change');
+  check(
+    'specialty alias filter uses raw catalog key, not Persian label',
+    [aliasItem.hidden, canonicalItem.hidden, customItem.hidden],
+    [false, true, true]
+  );
+  check(
+    'alias filter leaves clinician selection identifiers and state intact',
+    [aliasItem.querySelector('button').getAttribute('data-clinician-id'), aliasItem.querySelector('button').getAttribute('aria-pressed')],
+    ['11', 'false']
+  );
+
+  specialtyFilter.value = 'متخصص قلب و عروق';
+  specialtyFilter.dispatch('change');
+  check(
+    'canonical Persian filter key selects its matching raw value',
+    [aliasItem.hidden, canonicalItem.hidden, customItem.hidden],
+    [true, false, true]
+  );
+
+  specialtyFilter.value = 'فلوشیپ ناباروری';
+  specialtyFilter.dispatch('change');
+  check(
+    'custom specialty filter key remains selectable',
+    [aliasItem.hidden, canonicalItem.hidden, customItem.hidden],
+    [true, true, false]
+  );
+}
+
 (async function runM5Specs() {
+  runPublicSpecialtyFilterSpecs();
+
   // 1. Discovery mode: session_clinic_id=3 allows hold in Clinic 3, then switching to Clinic 5
   //    clears hold/patient/doctor/slot state, hides Clinic 3 chooser, unhides OTP step, and gates B1.
   var discRoot = buildM5Surface({

@@ -68,6 +68,7 @@ namespace ClinicCore\Frontend;
 
 use ClinicCore\Application\Clinic\PublicClinicDirectory;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Bootstrap\App;
 use Throwable;
@@ -809,10 +810,11 @@ final class PublicBookingShortcode
         int $clinic_id,
         array $location_ids = []
     ): string {
-        $id        = (int) ( $clinician['id'] ?? 0 );
-        $name      = trim( (string) ( $clinician['name'] ?? '' ) );
-        $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
-        $weekdays  = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
+        $id              = (int) ( $clinician['id'] ?? 0 );
+        $name            = trim( (string) ( $clinician['name'] ?? '' ) );
+        $specialty       = trim( (string) ( $clinician['specialty'] ?? '' ) );
+        $specialty_label = self::specialty_display_label( $specialty );
+        $weekdays        = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
         $lines = [];
         // `data-locations` = only the Locations the SERVER found eligible for
@@ -841,7 +843,7 @@ final class PublicBookingShortcode
             $specialty === '' ? '' : sprintf(
                 '<span class="%1$s">%2$s</span>',
                 esc_attr( self::ROOT_CLASS . '__clinician-specialty' ),
-                esc_html( $specialty )
+                esc_html( $specialty_label )
             ),
             sprintf(
                 '<span class="%1$s" data-role="clinician-days">%2$s</span>',
@@ -852,6 +854,16 @@ final class PublicBookingShortcode
         $lines[] = '</li>';
 
         return implode( '', $lines );
+    }
+
+    /**
+     * Recognized catalogue aliases are labels, not presentation text. Keep any
+     * unrecognized custom or historical value exactly as stored.
+     */
+    private static function specialty_display_label( string $specialty ): string {
+        $match = MedicalSpecialtyCatalog::find( $specialty );
+
+        return null === $match ? $specialty : $match['label'];
     }
 
     /**
@@ -1017,10 +1029,11 @@ final class PublicBookingShortcode
             );
             $lines[] = sprintf( '<option value="">%s</option>', esc_html( self::SPECIALTY_ALL ) );
             foreach ( $specialties as $specialty ) {
+                $specialty = (string) $specialty;
                 $lines[] = sprintf(
                     '<option value="%1$s">%2$s</option>',
-                    esc_attr( (string) $specialty ),
-                    esc_html( (string) $specialty )
+                    esc_attr( $specialty ),
+                    esc_html( self::specialty_display_label( $specialty ) )
                 );
             }
             $lines[] = '</select>';
