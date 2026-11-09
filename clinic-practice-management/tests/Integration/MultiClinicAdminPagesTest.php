@@ -85,6 +85,7 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         Settings::flushCache();
         App::resetScope();
         ScopeContext::clear();
+        $this->resetWizardRequestScope();
         wp_set_current_user(0);
         $_GET = [];
         $_POST = [];
@@ -139,6 +140,7 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
         unset($_REQUEST['_wpnonce']);
         ScopeContext::clear();
         App::resetScope();
+        $this->resetWizardRequestScope();
         SystemClinicResolver::flush();
         Settings::flushCache();
         App::settingsFactory()->reset();
@@ -505,6 +507,12 @@ final class MultiClinicAdminPagesTest extends WP_UnitTestCase
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
+
+    private function resetWizardRequestScope(): void
+    {
+        $property = new \ReflectionProperty(CpmsSetupWizard::class, 'explicit_clinic_id');
+        $property->setValue(null, 0);
+    }
 
     /**
      * @param array<string, string> $get

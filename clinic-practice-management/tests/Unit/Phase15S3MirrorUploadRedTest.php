@@ -202,6 +202,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Unit;
 
 use ClinicCore\Domain\Backup\BackupManifest;
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 use ClinicCore\Infrastructure\Backup\BackupEncryptionEnvelope;
 use ClinicCore\Infrastructure\Backup\BackupException;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
@@ -1756,20 +1757,20 @@ final class Phase15S3MirrorUploadRedTest extends TestCase
         $dir  = $root . '/' . $backupId;
         $json = @file_get_contents($dir . '/manifest.json');
         if (! is_string($json)) {
-            return array('ok' => false, 'errors' => array('manifest missing/corrupt'), 'warnings' => array(), 'hash_missing' => false);
+            return array('ok' => false, 'errors' => array(BackupVerificationErrorCodes::MANIFEST_MISSING_OR_INVALID), 'warnings' => array(), 'hash_missing' => false);
         }
         $raw = json_decode($json, true);
         if (! is_array($raw)) {
-            return array('ok' => false, 'errors' => array('manifest missing/corrupt'), 'warnings' => array(), 'hash_missing' => false);
+            return array('ok' => false, 'errors' => array(BackupVerificationErrorCodes::MANIFEST_MISSING_OR_INVALID), 'warnings' => array(), 'hash_missing' => false);
         }
 
         $sidecar     = @file_get_contents($dir . '/manifest.json.sha256');
         $hash_missing = ! is_string($sidecar) || trim($sidecar) === '';
         if (! $hash_missing && ! hash_equals(trim($sidecar), (string) hash_file('sha256', $dir . '/manifest.json'))) {
-            return array('ok' => false, 'errors' => array('manifest.json tampered'), 'warnings' => array(), 'hash_missing' => false);
+            return array('ok' => false, 'errors' => array(BackupVerificationErrorCodes::MANIFEST_TAMPERED), 'warnings' => array(), 'hash_missing' => false);
         }
         if ((string) ($raw['backup_id'] ?? '') !== $backupId) {
-            return array('ok' => false, 'errors' => array('manifest backup_id mismatch'), 'warnings' => array(), 'hash_missing' => $hash_missing);
+            return array('ok' => false, 'errors' => array(BackupVerificationErrorCodes::MANIFEST_BACKUP_ID_MISMATCH), 'warnings' => array(), 'hash_missing' => $hash_missing);
         }
 
         $result = BackupManifest::verifyFiles($raw, static function (string $relative) use ($dir): ?array {

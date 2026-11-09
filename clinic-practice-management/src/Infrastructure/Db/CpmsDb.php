@@ -30,6 +30,20 @@ final class CpmsDb
      */
     private int $tx_depth = 0;
 
+    /**
+     * Rollback generation of this connection: incremented whenever a
+     * transaction (or nested savepoint) is rolled back, including the
+     * rollback attempted after a failed COMMIT. Consumers caching
+     * snapshots read inside a transaction (Settings) compare against
+     * this value: a snapshot taken before the latest rollback may hold
+     * values that were never committed and must not be trusted.
+     */
+    private int $rollback_epoch = 0;
+
+    public function rollback_epoch(): int {
+        return $this->rollback_epoch;
+    }
+
     public function __construct(private readonly wpdb $wpdb, private string $prefix = 'cpms_')
     {
     }
@@ -37,6 +51,10 @@ final class CpmsDb
     public function setStrict(bool $strict): void
     {
         $this->strict = $strict;
+    }
+
+    public function is_strict(): bool {
+        return $this->strict;
     }
 
     /**
@@ -67,6 +85,16 @@ final class CpmsDb
     public function dbPrefix(): string
     {
         return $this->wpdb->prefix;
+    }
+
+    /** Count CPMS tables using the active WordPress database prefix. */
+    public function count_cpms_tables(): int {
+        $prefix_pattern = $this->wpdb->esc_like( $this->wpdb->prefix . $this->prefix ) . '%';
+
+        return (int) $this->fetchValue(
+            'SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name LIKE %s',
+            [ $prefix_pattern ]
+        );
     }
 
     public function prepare(string $sql, array $params): string
@@ -130,6 +158,25 @@ final class CpmsDb
         $this->ensureNoSqlError();
 
         return is_array($rows) ? array_map(static fn ($r) => (array) $r, $rows) : [];
+    }
+
+    /**
+     * Fetch rows while distinguishing an empty result from a failed query.
+     * Unlike the ordinary soft-mode reader, this method always throws on a
+     * database error so callers can fail closed without treating it as absence.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function fetch_all_strict( string $sql, array $params = [] ): array {
+        $profile_start = RequestProfiler::query_start();
+        $rows          = $this->wpdb->get_results( $this->prepare( $sql, $params ), ARRAY_A ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        RequestProfiler::query_end( $profile_start );
+
+        if ( $this->wpdb->last_error !== '' || ! is_array( $rows ) ) {
+            throw new RuntimeException( 'Database read failed.' );
+        }
+
+        return array_map( static fn ( $row ) => (array) $row, $rows );
     }
 
     public function fetchValue(string $sql, array $params = []): mixed
@@ -275,6 +322,9 @@ final class CpmsDb
      * ROLLBACK TO SAVEPOINT + آزادسازی آن (تراکنش بیرونی دست‌نخورده می‌ماند).
      */
     private function undo( ?string $savepoint ): void {
+        // Bump FIRST: even if the rollback statement itself fails, cached
+        // snapshots from this transaction are untrustworthy from now on.
+        ++$this->rollback_epoch;
         if ( $savepoint === null ) {
             $this->tx_control( '/*cpms*/ ROLLBACK' );
 

@@ -7,6 +7,7 @@ namespace ClinicCore\Tests\Integration;
 use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 use ClinicCore\Infrastructure\Backup\BackupException;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
@@ -453,7 +454,7 @@ final class BackupStorageBoundaryTest extends WP_UnitTestCase
 
         $verify = $unsafe->verifyBackup($id);
         self::assertFalse($verify['ok']);
-        self::assertContains('manifest.json tampered', $verify['errors']);
+        self::assertSame([BackupVerificationErrorCodes::MANIFEST_TAMPERED], $verify['errors']);
 
         $pre = $unsafe->restorePreflight($id);
         self::assertFalse($pre['restore_safe']);

@@ -38,6 +38,23 @@ _cap_methods = '\n'.join(
 (_FIXTURE / 'src' / 'Application' / 'Authorization' / 'FakeGuardException.php').write_text(
     '<?php\nnamespace ClinicCore\\Application\\Authorization;\n'
     'class FakeGuardException extends \\RuntimeException {}\n', encoding='utf-8')
+# Legitimately publishable source-controlled basenames used across the CLI tests:
+# the basenames must exist in the tree or the (correct, fail-closed) basename
+# verifier drops them to 'unknown'.
+for _sub, _ns, _cls in [
+    ('tests/Support', 'ClinicCore\\Tests\\Support', 'WpSqlFailureLedger'),
+    ('src/Domain/System', 'ClinicCore\\Domain\\System', 'SystemClinicResolver'),
+]:
+    (_FIXTURE / _sub).mkdir(parents=True, exist_ok=True)
+    (_FIXTURE / _sub / (_cls + '.php')).write_text(
+        '<?php\nnamespace ' + _ns + ';\n'
+        'final class ' + _cls + ' {\n'
+        '    public function observe(): void {}\n'
+        '}\n', encoding='utf-8')
+(_FIXTURE / 'tests' / 'bin').mkdir(parents=True, exist_ok=True)
+(_FIXTURE / 'tests' / 'bin' / 'bootstrap.php').write_text(
+    '<?php\n// fixture bootstrap\n'
+    'function cpms_fixture_helper_never_called(): void {}\n', encoding='utf-8')
 os.environ['INTEGRATION_EVIDENCE_PLUGIN_DIR'] = str(_FIXTURE)
 
 import integration_evidence as ie  # noqa: E402
@@ -655,6 +672,113 @@ class ConnectionDiagProjectionTest(unittest.TestCase):
         self.assertIn('"thread_id":4242', out)
         self.assertIn('record_dropped=invalid_json', out)
         assert_no_canaries(self, out)
+
+
+class VersionProjectionTest(unittest.TestCase):
+    def test_dotted_integers_pass_suffixes_drop(self):
+        for good in ('8.0.46', '11.4.13', '5.5.5', '10.11.6'):
+            out = ie.project_lifecycle({'mysql_version': good})
+            self.assertEqual(good, out['mysql_version'], good)
+        for hostile in ('8.0.46-0ubuntu0.24.04.1', '11.4.13-MariaDB',
+                        '8.0.46-canaryCallSign42', '8.0.x', '8.0.46.1',
+                        '٨.٠.٤٦', '8_0_46', '99999.1.1', '8', '8.0',
+                        '8.0.46; DROP TABLE', "8.0.46\njunk"):
+            out = ie.project_lifecycle({'mysql_version': hostile})
+            self.assertNotIn('mysql_version', out, hostile)
+
+    def test_surrounding_whitespace_publishes_stripped_canonical_value(self):
+        # _version strips before fullmatch; the published value is the bounded
+        # canonical triplet — never the raw bytes.
+        for padded in (' 8.0.46', '8.0.46\n', '  11.4.13  '):
+            out = ie.project_lifecycle({'mysql_version': padded})
+            self.assertEqual(padded.strip(), out['mysql_version'], padded)
+
+    def test_suffixed_version_never_reaches_archival(self):
+        out = ie.project_archival({'mysql_version': '8.0.46-MariaDB'})
+        self.assertNotIn('mysql_version', out)
+
+
+class ChainVerifierTest(unittest.TestCase):
+    def test_source_declared_bare_function_is_ok(self):
+        # Declared in the fixture tree (tests/bin/bootstrap.php).
+        self.assertEqual(('ok', '10:cpms_fixture_helper_never_called'),
+                         ie._chain('10:cpms_fixture_helper_never_called'))
+
+    def test_canaries_are_unverified_not_shape(self):
+        for hostile in ('10:wp_dump_patient_ssn_420042',
+                        '10:totally_fake_source_fn_abc123',
+                        '10:ClinicCore\\Tests\\Support\\WpSqlFailureLedger::neverDeclaredCanaryMethodXYZ'):
+            verdict, token = ie._chain(hostile)
+            self.assertEqual('unverified', verdict, hostile)
+            self.assertIsNone(token)
+
+    def test_shape_violations(self):
+        for hostile in ('10:Foo::bar(', 'abc:def', '10000:whatever',
+                        '10:' + 'a' * 200, '10:../../secret',
+                        '10:Config::get(secret)', ':bare_fn', '10:',
+                        '', '10:Foo::bar::baz', ' closure#1'):
+            verdict, token = ie._chain(hostile)
+            self.assertEqual('shape', verdict, hostile)
+            self.assertIsNone(token)
+
+    def test_external_token_and_closure_pass(self):
+        self.assertEqual(('ok', '10:external'), ie._chain('10:external'))
+        self.assertEqual(('ok', '10:closure#42'), ie._chain('10:closure#42'))
+        self.assertEqual(('ok', '9999:closure#999'), ie._chain('9999:closure#999'))
+
+    def test_unlisted_fqcn_namespace_is_unverified(self):
+        verdict, token = ie._chain('10:Someone\\Else\\Repo\\Class::method')
+        self.assertEqual('unverified', verdict)
+        self.assertIsNone(token)
+
+    def test_projector_counts_drops_by_cause(self):
+        payload = {'count': 3,
+                   'chain': ['10:closure#007', '10:wp_dump_patient_ssn_420042'],
+                   'chain_dropped_shape': 2,
+                   'chain_dropped_unverified': 3}
+        out = ie.project_connection_diag(payload)
+        self.assertEqual(['10:closure#007'], out['chain'])
+        self.assertEqual(2, out['chain_dropped_shape'])      # source 2 + projector 0
+        self.assertEqual(4, out['chain_dropped_unverified'])  # source 3 + projector 1
+        self.assertEqual(6, out['chain_dropped'])
+
+    def test_projector_ignores_non_int_source_counters(self):
+        payload = {'chain': ['10:closure#1'],
+                   'chain_dropped_shape': True,
+                   'chain_dropped_unverified': '9'}
+        out = ie.project_connection_diag(payload)
+        self.assertNotIn('chain_dropped_shape', out)
+        self.assertNotIn('chain_dropped_unverified', out)
+        self.assertNotIn('chain_dropped', out)
+
+
+class RestCodesSourceDerivationTest(unittest.TestCase):
+    def test_rest_codes_are_exact_set(self):
+        self.assertEqual(23, len(ie.REST_CODES))
+        for code in ('rest_no_route', 'rest_invalid_param', 'CLINIC_SCOPE_REQUIRED',
+                     'CLINIC_HOLD_EXPIRED', 'CLINIC_DUPLICATE_APPOINTMENT',
+                     'CLINIC_SLOT_AMBIGUOUS', 'CLINIC_PATIENT_SELECTION_REQUIRED'):
+            self.assertIn(code, ie.REST_CODES)
+
+    def test_every_clinic_code_exists_in_plugin_source(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        src_dir = repo_root / 'clinic-practice-management' / 'src'
+        haystack_parts = []
+        for php in src_dir.rglob('*.php'):
+            try:
+                if php.stat().st_size <= 8 * 1024 * 1024:
+                    haystack_parts.append(php.read_text(encoding='utf-8', errors='ignore'))
+            except OSError:
+                continue
+        haystack = '\n'.join(haystack_parts)
+        for code in sorted(c for c in ie.REST_CODES if c.startswith('CLINIC_')):
+            self.assertIn(code, haystack, code)
+
+    def test_plausible_but_unlisted_codes_project_to_drop_sentinel(self):
+        for unlisted in ('CLINIC_OTP_INVALID', 'CLINIC_BACKUP_CONFLICT',
+                         'CLINIC_RATE_LIMITED', 'CLINIC_LICENSE_BLOCKED'):
+            self.assertIs(ie.DROP, ie._rest_code(unlisted), unlisted)
+
 
 
 RED1_GOOD = '''RED1_PROBE v1 event=start

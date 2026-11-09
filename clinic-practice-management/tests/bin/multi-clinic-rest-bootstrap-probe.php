@@ -166,14 +166,44 @@ register_shutdown_function(static function (): void {
 $emitProbe(['event' => 'start']);
 
 /**
- * A REST envelope `code` is printed only if it matches a strict bounded
- * token shape; anything else prints as `unavailable`. Never prints messages.
+ * A REST envelope `code` is printed only if it is a member of the exact
+ * bounded vocabulary below; anything else prints as `unavailable`. The list
+ * is the same fixed set the integration-evidence projector allow-lists
+ * (bin/integration_evidence.py REST_CODES): WordPress core rest_* codes plus
+ * the source-verified product booking/scope-envelope codes. Never prints
+ * messages. Keep in sync with REST_CODES — a divergence fails closed on both
+ * sides (extra words never pass, missing words project as unavailable).
  *
  * @param mixed $data
  */
 $boundedCode = static function ($data): string {
+    static $allow = [
+        'rest_no_route' => true,
+        'rest_invalid_param' => true,
+        'rest_missing_callback_param' => true,
+        'rest_invalid_handler' => true,
+        'rest_forbidden' => true,
+        'rest_not_logged_in' => true,
+        'rest_forbidden_context' => true,
+        'CLINIC_SCOPE_REQUIRED' => true,
+        'CLINIC_SCOPE_UNAVAILABLE' => true,
+        'CLINIC_NOT_FOUND' => true,
+        'CLINIC_PERMISSION_DENIED' => true,
+        'CLINIC_UNAUTHORIZED' => true,
+        'CLINIC_VALIDATION_FAILED' => true,
+        'CLINIC_INTERNAL_ERROR' => true,
+        'CLINIC_HOLD_EXPIRED' => true,
+        'CLINIC_POLICY_VIOLATION' => true,
+        'CLINIC_PATIENT_SELECTION_REQUIRED' => true,
+        'CLINIC_INVALID_TRANSITION' => true,
+        'CLINIC_SLOT_AMBIGUOUS' => true,
+        'CLINIC_DUPLICATE_IN_FLIGHT' => true,
+        'CLINIC_SLOT_TAKEN' => true,
+        'CLINIC_SUSPENDED' => true,
+        'CLINIC_DUPLICATE_APPOINTMENT' => true,
+    ];
     $code = is_array($data) ? ($data['code'] ?? '') : '';
-    if (!is_string($code) || preg_match('/\A[A-Za-z0-9_.-]{1,64}\z/D', $code) !== 1) {
+    if (!is_string($code) || !isset($allow[$code])) {
         return 'unavailable';
     }
 

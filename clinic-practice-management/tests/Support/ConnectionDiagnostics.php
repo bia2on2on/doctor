@@ -21,6 +21,12 @@ namespace ClinicCore\Tests\Support;
  *  - Only sanitized scalars are emitted: statement verb + plugin table name,
  *    booleans, counts and connection identities. No SQL text, no row values,
  *    no credentials, no patient/user data.
+ *  - Query-filter chain records are SOURCE-VERIFIED identifiers: a bare
+ *    function must be declared in this repository's src/ or tests/ tree, and
+ *    a Class::method must resolve through the PSR-4 mapping to a real file
+ *    with a declared method. Everything else (including WP-core and other
+ *    plugins' callbacks and any valid-shaped canary) is dropped and counted
+ *    by cause in chain_dropped_shape / chain_dropped_unverified.
  *  - Output is capped (MAX_LINES) so the evidence stays bounded.
  */
 final class ConnectionDiagnostics
@@ -28,6 +34,38 @@ final class ConnectionDiagnostics
     private const PREFIX    = 'CPMS_CONN_DIAG ';
     private const FILE      = '/tmp/cpms-conn-diag.jsonl';
     private const MAX_LINES = 40;
+
+    /**
+     * Tables created by the plugin migrations (short, unprefixed names).
+     * Independent copy of the boundary list (BoundedEvidence / projector keep
+     * their own); tableFacts() echoes a table name only from this set.
+     */
+    private const KNOWN_TABLES = [
+        'cpms_appointments', 'cpms_audit_logs', 'cpms_audit_seq',
+        'cpms_clinic_memberships', 'cpms_clinical_note_versions',
+        'cpms_clinical_notes', 'cpms_clinician_locations', 'cpms_clinicians',
+        'cpms_clinics', 'cpms_custom_role_capabilities', 'cpms_custom_role_defs',
+        'cpms_doctor_consultation_fees', 'cpms_drug_reference', 'cpms_follow_ups',
+        'cpms_handwriting_documents', 'cpms_handwriting_page_versions',
+        'cpms_handwriting_pages', 'cpms_idempotency_keys', 'cpms_invoice_items',
+        'cpms_invoices', 'cpms_jobs', 'cpms_license_install', 'cpms_license_state',
+        'cpms_locations', 'cpms_medical_attachments', 'cpms_membership_capabilities',
+        'cpms_membership_locations', 'cpms_message_participants',
+        'cpms_message_threads', 'cpms_messages', 'cpms_notifications',
+        'cpms_ocr_jobs', 'cpms_operational_logs',
+        'cpms_organization_membership_capabilities', 'cpms_organization_memberships',
+        'cpms_organizations', 'cpms_otp_tokens', 'cpms_patient_identities',
+        'cpms_patient_identity_links', 'cpms_patient_merges',
+        'cpms_patient_user_links', 'cpms_patients',
+        'cpms_payment_adjustments', 'cpms_payments', 'cpms_prescription_items',
+        'cpms_prescriptions', 'cpms_rate_limits', 'cpms_recommendations',
+        'cpms_schedule', 'cpms_schedule_exceptions', 'cpms_schedule_slots',
+        'cpms_schema_migrations', 'cpms_services', 'cpms_settings',
+        'cpms_slot_holds', 'cpms_sms_messages',
+        'cpms_visit_charge_items', 'cpms_visit_consultation_fees',
+        'cpms_visit_fee_snapshot_failures', 'cpms_visit_status_history',
+        'cpms_visits',
+    ];
 
     private static int $emitted = 0;
 
@@ -52,6 +90,128 @@ final class ConnectionDiagnostics
     }
 
     /**
+     * Sorted set of every function name declared in this repository's src/ or
+     * tests/ tree. Cached per process; built once (bounded reads).
+     *
+     * @return array<string, true>
+     */
+    private static function declaredFunctionNames(): array
+    {
+        static $names = null;
+        if ($names !== null) {
+            return $names;
+        }
+        $names = [];
+        $root = dirname(__DIR__, 2);
+        $candidates = [$root . '/src', $root . '/tests'];
+        foreach ($candidates as $base) {
+            if (!is_dir($base)) {
+                continue;
+            }
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($base, \FilesystemIterator::SKIP_DOTS)
+            );
+            foreach ($iterator as $file) {
+                if (!$file->isFile() || $file->getExtension() !== 'php' || $file->getSize() > 8 * 1024 * 1024) {
+                    continue;
+                }
+                self::collectDeclaredFunctions($file->getPathname(), $names);
+            }
+        }
+        // Plugin entry points at the root (e.g. clinic-practice-management.php).
+        foreach (glob($root . '/*.php') ?: [] as $entry) {
+            if (is_file($entry) && filesize($entry) <= 8 * 1024 * 1024) {
+                self::collectDeclaredFunctions($entry, $names);
+            }
+        }
+
+        return $names;
+    }
+
+    /**
+     * @param array<string, true> $names
+     */
+    private static function collectDeclaredFunctions(string $path, array &$names): void
+    {
+        $text = @file_get_contents($path);
+        if (!is_string($text)) {
+            return;
+        }
+        $count = preg_match_all('/function\s+([A-Za-z_][A-Za-z0-9_]{0,127})\s*\(/', $text, $m);
+        if (is_int($count)) {
+            foreach ($m[1] as $name) {
+                $names[$name] = true;
+            }
+        }
+    }
+
+    /**
+     * Source-verified Class::method for this repository (PSR-4 mapping +
+     * declared method in the resolved file). Null when unverifiable.
+     */
+    private static function sourceVerifiedMethod(string $fqcn, string $method): ?string
+    {
+        if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*\z/D', $fqcn) !== 1) {
+            return null;
+        }
+        if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]{0,127}\z/D', $method) !== 1) {
+            return null;
+        }
+        $root = dirname(__DIR__, 2);
+        $prefixes = ['ClinicCore\\Tests\\' => 'tests/', 'ClinicCore\\' => 'src/'];
+        foreach ($prefixes as $prefix => $sub) {
+            if (strncmp($fqcn, $prefix, strlen($prefix)) !== 0) {
+                continue;
+            }
+            $rel = str_replace('\\', '/', substr($fqcn, strlen($prefix))) . '.php';
+            $candidate = $root . '/' . $sub . $rel;
+            $real = realpath($candidate);
+            if ($real === false || !is_file($real) || !str_starts_with($real, $root)) {
+                return null;
+            }
+            static $methodCache = [];
+            $key = $real . '#' . $method;
+            if (!array_key_exists($key, $methodCache)) {
+                $text = @file_get_contents($real);
+                $methodCache[$key] = is_string($text)
+                    && preg_match('/function\s+' . preg_quote($method, '/') . '\s*\(/', $text) === 1;
+            }
+
+            return $methodCache[$key] ? $fqcn . '::' . $method : null;
+        }
+
+        return null;
+    }
+
+    /**
+     * Source-verified bare function name declared in this repository.
+     * Null when unverifiable.
+     */
+    private static function sourceVerifiedFunction(string $name): ?string
+    {
+        if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]{0,127}\z/D', $name) !== 1) {
+            return null;
+        }
+
+        return isset(self::declaredFunctionNames()[$name]) ? $name : null;
+    }
+
+    /**
+     * Resolve a callback to a source-verified shape, or null (drop).
+     *
+     * @param string $owner   class part (possibly an object class) for methods
+     * @param string $method  method part for methods
+     */
+    private static function sourceVerifiedCallback(string $kind, string $owner, string $method): ?string
+    {
+        if ($kind === 'method') {
+            return self::sourceVerifiedMethod($owner, $method);
+        }
+
+        return self::sourceVerifiedFunction($owner);
+    }
+
+    /**
      * Connection identity of a mysqli handle WITHOUT issuing a query.
      */
     public static function threadId(mixed $dbh): int
@@ -65,6 +225,27 @@ final class ConnectionDiagnostics
         } catch (\Throwable) {
             return -2;
         }
+    }
+
+    /**
+     * Map a captured table identifier to a known short table name.
+     * Anything outside KNOWN_TABLES (exact, or the tail of a prefixed name
+     * such as wptests_cpms_visits) collapses to 'other' — never echoed raw.
+     */
+    private static function knownTableFromIdentifier(string $name): string
+    {
+        foreach (self::KNOWN_TABLES as $short) {
+            if ($name === $short) {
+                return $short;
+            }
+            $suffix = '_' . $short;
+            $length = strlen($suffix);
+            if (strlen($name) > $length && substr($name, -$length) === $suffix) {
+                return $short;
+            }
+        }
+
+        return 'other';
     }
 
     /**
@@ -82,18 +263,21 @@ final class ConnectionDiagnostics
         $verb = preg_match('/^([a-z]+)/i', $sql, $m) === 1 ? strtolower($m[1]) : 'other';
 
         $table = 'none';
-        if (preg_match('/(?:into|from|update|table)\s+`?([a-z0-9_]+)`?/i', $sql, $t) === 1) {
-            $name  = strtolower($t[1]);
-            $table = str_contains($name, 'cpms_') ? (string) preg_replace('/^[a-z0-9]*cpms_/', 'cpms_', $name) : 'other';
+        if (preg_match('/(?:into|from|update|table)\s+`?([A-Za-z0-9_]+)`?/i', $sql, $t) === 1) {
+            $table = self::knownTableFromIdentifier(strtolower($t[1]));
         }
 
         return ['verb' => $verb, 'table' => $table];
     }
 
     /**
-     * Census of the live 'query' filter chain (identities only, never bodies).
+     * Census of the live 'query' filter chain (source-verified identities only,
+     * never bodies). Dropped records are counted by cause with fixed tokens:
+     * chain_dropped_shape (unparseable priority/callback shape) and
+     * chain_dropped_unverified (parseable, but not declared/resolvable in this
+     * repository — WP-core/other-plugin callbacks and canary identifiers).
      *
-     * @return array{count: int, chain: list<string>}
+     * @return array{count: int, chain: list<string>, chain_dropped_shape: int, chain_dropped_unverified: int}
      */
     public static function queryFilters(): array
     {
@@ -105,42 +289,91 @@ final class ConnectionDiagnostics
         }
 
         $shapes = [];
-        $segment = '[A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)*';
+        $droppedShape = 0;
+        $droppedUnverified = 0;
+        $segment = '[A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*';
         foreach ($hook->callbacks as $priority => $callbacks) {
             // Only integer priorities in [0, 9999] reach the publication
-            // boundary; anything else is skipped at the source.
+            // boundary; anything else is skipped at the source (and counted).
             if (! is_int($priority) || $priority < 0 || $priority > 9999) {
+                $droppedShape++;
                 continue;
             }
             if (! is_array($callbacks)) {
+                $droppedShape++;
                 continue;
             }
             foreach ($callbacks as $entry) {
                 $fn = is_array($entry) ? ($entry['function'] ?? null) : null;
-                if (is_string($fn)) {
-                    $shape = $fn;
-                } elseif (is_array($fn)) {
-                    $owner = is_object($fn[0] ?? null) ? get_class($fn[0]) : (string) ($fn[0] ?? '?');
-                    $shape = $owner . '::' . (string) ($fn[1] ?? '?');
-                } elseif ($fn instanceof \Closure) {
-                    $shape = 'closure#' . substr((string) spl_object_id($fn), -3);
-                } else {
-                    continue; // debug_type() tokens carry no diagnostic value for the boundary.
-                }
-                // Fixed shape: priority:(closure#nnn|Fqcn::method|bare_fn).
-                // Anything else is skipped at the source (fail-closed).
-                if (preg_match('/\A' . $segment . '(::[A-Za-z_][A-Za-z0-9_]*)?\z/', $shape) !== 1
-                    && preg_match('/\Aclosure#[0-9]{1,3}\z/', $shape) !== 1) {
+                if ($fn instanceof \Closure) {
+                    $shapes[] = $priority . ':closure#' . substr((string) spl_object_id($fn), -3);
                     continue;
                 }
-                $shapes[] = $priority . ':' . $shape;
+                $kind = null;
+                $owner = null;
+                $method = null;
+                if (is_string($fn)) {
+                    $kind = 'bare';
+                    $owner = $fn;
+                    $method = '';
+                } elseif (is_array($fn)) {
+                    $class = $fn[0] ?? null;
+                    $owner = is_object($class) ? get_class($class) : (is_string($class) ? $class : null);
+                    $method = (string) ($fn[1] ?? '');
+                    if ($owner === null) {
+                        $droppedShape++;
+                        continue;
+                    }
+                    $kind = 'method';
+                } elseif (is_callable($fn)) {
+                    $verified = null;
+                    try {
+                        $reflection = new \ReflectionFunction(\Closure::fromCallable($fn));
+                        // First-class callable syntax: publish only a source-verified name.
+                        if ($reflection->isClosure() === false) {
+                            $verified = self::sourceVerifiedFunction($reflection->getName());
+                        }
+                    } catch (\Throwable) {
+                        $verified = null;
+                    }
+                    if ($verified === null) {
+                        $droppedUnverified++;
+                    } else {
+                        $shapes[] = $priority . ':' . $verified;
+                    }
+                    continue;
+                } else {
+                    $droppedShape++;
+                    continue; // unsupported callback shapes carry no diagnostic value.
+                }
+                // Shape gate (defence-in-depth): priority:(bare_fn|Fqcn::method).
+                $shape = $kind === 'method' ? $owner . '::' . $method : $owner;
+                $shapeOk = $kind === 'method'
+                    ? (bool) preg_match('/\A' . $segment . '::[A-Za-z_][A-Za-z0-9_]{0,127}\z/', $shape)
+                    : (bool) preg_match('/\A[A-Za-z_][A-Za-z0-9_]{0,127}\z/', $shape);
+                if (! $shapeOk) {
+                    $droppedShape++;
+                    continue;
+                }
+                // Source gate: declared in this repository, or dropped by cause.
+                $verified = self::sourceVerifiedCallback($kind, $owner, (string) $method);
+                if ($verified === null) {
+                    $droppedUnverified++;
+                    continue;
+                }
+                $shapes[] = $priority . ':' . $verified;
             }
         }
 
         $shapes = array_values(array_unique($shapes));
         sort($shapes);
 
-        return ['count' => count($shapes), 'chain' => array_slice($shapes, 0, 12)];
+        return [
+            'count' => count($shapes),
+            'chain' => array_slice($shapes, 0, 12),
+            'chain_dropped_shape' => $droppedShape,
+            'chain_dropped_unverified' => $droppedUnverified,
+        ];
     }
 
     /**
@@ -230,6 +463,18 @@ final class ConnectionDiagnostics
     public static function tableFacts(\mysqli $conn, string $shortTable, string $keyColumn, ?int $keyValue = null): array
     {
         global $wpdb;
+
+        if (! in_array($shortTable, self::KNOWN_TABLES, true)) {
+            // Never echo an unlisted table identifier; the boundary vocabulary
+            // is the fixed KNOWN_TABLES set, not a pattern. All-facts-unknown.
+            return [
+                'table'              => 'none',
+                'has_auto_increment' => -1,
+                'next_auto_increment' => -1,
+                'row_exists_for_key' => -1,
+                'temp_shadow_rows'   => -1,
+            ];
+        }
 
         $full  = (string) $wpdb->prefix . $shortTable;
         $facts = [

@@ -27,10 +27,11 @@ namespace ClinicCore\Tests\Support;
  *                    identifier, never a prefixed table name, never a value.
  *    • `op`        — one of OPERATIONS, otherwise `OTHER`.
  *    • `mysql_errno` — a positive int or the literal `unavailable`.
- *    • `sqlstate`  — exactly 5 ASCII base-32 chars, otherwise null/omitted.
  *    • `count`/`seq`/`dropped` — ints derived from counters only.
- *    • `test`/`product` — `Class::method` identifiers matching a strict ASCII
- *                    charset and length caps, otherwise `(unknown)`.
+ *    • `test`/`product` — `Class::method` identifiers, SOURCE-VERIFIED against
+ *                    this repository (PSR-4 file resolution + declared method
+ *                    in the resolved file), otherwise `(unknown)`. A character
+ *                    pattern alone is never sufficient.
  *    • `focus`     — bool.
  *    • table facts — the allow-listed short table name, `real_exists` and
  *                    `name_visible` (both bools). Row counts are NOT published.
@@ -164,7 +165,6 @@ final class WpSqlFailureLedger
         $fingerprint = substr(hash('sha256', $message), 0, 16);
         $signature = $category . '|' . $table . '|' . $op . '|'
             . (is_int($driver['errno']) ? (string) $driver['errno'] : 'unavailable') . '|'
-            . (is_string($driver['sqlstate']) ? $driver['sqlstate'] : 'none') . '|'
             . $fingerprint;
 
         self::$failures++;
@@ -189,7 +189,6 @@ final class WpSqlFailureLedger
             'table' => $table,
             'op' => $op,
             'mysql_errno' => $driver['errno'],
-            'sqlstate' => $driver['sqlstate'],
             'test' => $context['test'],
             'product' => $context['product'],
             'focus' => self::is_focus($table, $message, $statement),
@@ -297,11 +296,6 @@ final class WpSqlFailureLedger
             $errno = 'unavailable';
         }
 
-        $sqlstate = $row['sqlstate'] ?? null;
-        if (!is_string($sqlstate) || !preg_match('/\A[0-9A-Z]{5}\z/D', $sqlstate)) {
-            $sqlstate = null;
-        }
-
         $category = $row['category'] ?? 'other';
         if (!is_string($category) || !in_array($category, self::CATEGORIES, true)) {
             $category = 'other';
@@ -325,7 +319,6 @@ final class WpSqlFailureLedger
             'table' => $table,
             'op' => $op,
             'mysql_errno' => $errno,
-            'sqlstate' => $sqlstate,
             'test' => self::identifier($row['test'] ?? null),
             'product' => self::identifier($row['product'] ?? null),
             'focus' => !empty($row['focus']),
@@ -333,7 +326,11 @@ final class WpSqlFailureLedger
     }
 
     /**
-     * شناسهٔ `Class::method` — charset و طول کاملاً محدود؛ هر چیز دیگر `(unknown)`.
+     * شناسهٔ `Class::method` — SOURCE-VERIFIED against this repository: the
+     * class resolves through the PSR-4 mapping (ClinicCore\Tests\ → tests/,
+     * ClinicCore\ → src/) to a real file and the method is declared there.
+     * Anything else — including valid-shaped canary identifiers — is
+     * `(unknown)`. A character pattern alone is never sufficient.
      *
      * @param mixed $value
      */
@@ -343,11 +340,44 @@ final class WpSqlFailureLedger
             return '(unknown)';
         }
         $value = trim($value);
-        if (!preg_match('/\A[A-Za-z0-9_\\\\]{1,200}::[A-Za-z0-9_]{1,128}\z/D', $value)) {
+        if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*::[A-Za-z_][A-Za-z0-9_]{0,127}\z/D', $value) !== 1) {
             return '(unknown)';
         }
+        [$class, $method] = explode('::', $value, 2);
 
-        return $value;
+        static $cache = [];
+        $key = $value;
+        if (!array_key_exists($key, $cache)) {
+            $cache[$key] = self::source_verified_method($class, $method);
+        }
+
+        return $cache[$key] ? $value : '(unknown)';
+    }
+
+    /**
+     * PSR-4 file resolution + declared-method check against this repository.
+     */
+    private static function source_verified_method(string $class, string $method): bool
+    {
+        $root = dirname(__DIR__, 2);
+        $prefixes = ['ClinicCore\\Tests\\' => 'tests/', 'ClinicCore\\' => 'src/'];
+        foreach ($prefixes as $prefix => $sub) {
+            if (strncmp($class, $prefix, strlen($prefix)) !== 0) {
+                continue;
+            }
+            $rel = str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+            $candidate = $root . '/' . $sub . $rel;
+            $real = realpath($candidate);
+            if ($real === false || !is_file($real) || strncmp($real, $root, strlen($root)) !== 0) {
+                return false;
+            }
+            $text = @file_get_contents($real);
+
+            return is_string($text)
+                && preg_match('/function\s+' . preg_quote($method, '/') . '\s*\(/', $text) === 1;
+        }
+
+        return false;
     }
 
     /**
@@ -363,24 +393,24 @@ final class WpSqlFailureLedger
     }
 
     /**
-     * errno / SQLSTATE درایور در همان لحظه (best-effort، اعتبارسنجی‌شده).
+     * errno درایور در همان لحظه (best-effort).
      *
-     * @return array{errno: int|string, sqlstate: string|null}
+     * SQLSTATE is deliberately NOT published: it is a 5-char pattern-only
+     * field (no fixed vocabulary is enforceable across MySQL 8 / MariaDB 11.4),
+     * and errno + category already carry the same diagnostic class.
+     *
+     * @return array{errno: int|string}
      */
     private static function driver_facts(object $wpdb): array
     {
         $dbh = $wpdb->dbh ?? null;
         if (!($dbh instanceof \mysqli)) {
-            return ['errno' => 'unavailable', 'sqlstate' => null];
+            return ['errno' => 'unavailable'];
         }
 
         $errno = (int) mysqli_errno($dbh);
-        $sqlstate = (string) mysqli_sqlstate($dbh);
 
-        return [
-            'errno' => $errno > 0 ? $errno : 'unavailable',
-            'sqlstate' => preg_match('/\A[0-9A-Z]{5}\z/D', $sqlstate) === 1 && $sqlstate !== '00000' ? $sqlstate : null,
-        ];
+        return ['errno' => $errno > 0 ? $errno : 'unavailable'];
     }
 
     /**

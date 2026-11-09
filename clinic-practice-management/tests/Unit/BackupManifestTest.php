@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Unit;
 
 use ClinicCore\Domain\Backup\BackupManifest;
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -101,15 +102,25 @@ final class BackupManifestTest extends TestCase
         $this->assertSame([], $result['errors']);
     }
 
-    public function testVerifyFilesDetectsMissingFile(): void
+    public function testVerifyFilesDetectsMissingFileWithoutReturningAnyPath(): void
     {
         $m = $this->validManifest();
         $result = BackupManifest::verifyFiles($m, static fn (string $rel): ?array => null);
         $this->assertFalse($result['ok']);
-        $this->assertNotEmpty($result['errors']);
+        $this->assertSame(
+            [
+                BackupVerificationErrorCodes::DATABASE_FILE_MISSING,
+                BackupVerificationErrorCodes::STORAGE_FILE_MISSING,
+            ],
+            $result['errors']
+        );
+        $diagnostics = implode('; ', $result['errors']);
+        $this->assertStringNotContainsString('db.sql', $diagnostics);
+        $this->assertStringNotContainsString('storage/', $diagnostics);
+        $this->assertLessThanOrEqual(6, count($result['errors']), 'Verification diagnostics must stay bounded.');
     }
 
-    public function testVerifyFilesDetectsTamperedHash(): void
+    public function testVerifyFilesDetectsTamperedHashWithoutReturningAnyPath(): void
     {
         $m = $this->validManifest();
         $result = BackupManifest::verifyFiles($m, function (string $rel): ?array {
@@ -120,6 +131,34 @@ final class BackupManifestTest extends TestCase
             return null;
         });
         $this->assertFalse($result['ok']);
-        $this->assertStringContainsString('hash mismatch db.sql', implode('; ', $result['errors']));
+        $this->assertSame(
+            [
+                BackupVerificationErrorCodes::DATABASE_FILE_INTEGRITY_MISMATCH,
+                BackupVerificationErrorCodes::STORAGE_FILE_MISSING,
+            ],
+            $result['errors']
+        );
+        $diagnostics = implode('; ', $result['errors']);
+        $this->assertStringNotContainsString('db.sql', $diagnostics);
+        $this->assertStringNotContainsString('storage/', $diagnostics);
+    }
+
+    public function testSafeErrorCategoriesAreAllowlistedAndBounded(): void
+    {
+        $diagnostics = BackupVerificationErrorCodes::safe_error_categories([
+            BackupVerificationErrorCodes::DATABASE_FILE_MISSING,
+            '/srv/private/backups/backup-123/db.sql',
+            BackupVerificationErrorCodes::STORAGE_FILE_MISSING,
+            BackupVerificationErrorCodes::DATABASE_FILE_INTEGRITY_MISMATCH,
+            BackupVerificationErrorCodes::MANIFEST_TAMPERED,
+            BackupVerificationErrorCodes::MANIFEST_INVALID,
+            BackupVerificationErrorCodes::MANIFEST_BACKUP_ID_MISMATCH,
+            BackupVerificationErrorCodes::VERIFICATION_FAILED,
+        ]);
+
+        $this->assertCount(6, $diagnostics);
+        $this->assertContains(BackupVerificationErrorCodes::DATABASE_FILE_MISSING, $diagnostics);
+        $this->assertNotContains('/srv/private/backups/backup-123/db.sql', $diagnostics);
+        $this->assertLessThanOrEqual(6, count($diagnostics));
     }
 }

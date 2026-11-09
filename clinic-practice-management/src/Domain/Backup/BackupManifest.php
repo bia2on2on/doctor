@@ -100,26 +100,28 @@ final class BackupManifest
         $errors = [];
         $warnings = [];
         if (!self::isValid($raw)) {
-            return ['ok' => false, 'errors' => self::validate($raw), 'warnings' => []];
+            return ['ok' => false, 'errors' => [BackupVerificationErrorCodes::MANIFEST_INVALID], 'warnings' => []];
         }
 
         $dbFile = (string) ($raw['db']['file'] ?? 'db.sql');
         $s = $stat($dbFile);
         if ($s === null) {
-            $errors[] = 'missing ' . $dbFile;
+            $errors[] = BackupVerificationErrorCodes::DATABASE_FILE_MISSING;
         } elseif ($s['sha256'] !== $raw['db']['sha256']) {
-            $errors[] = 'hash mismatch ' . $dbFile;
+            $errors[] = BackupVerificationErrorCodes::DATABASE_FILE_INTEGRITY_MISMATCH;
         }
 
         foreach ((array) ($raw['storage']['files'] ?? []) as $f) {
             $p = (string) $f['path'];
             $s = $stat('storage/' . $p);
             if ($s === null) {
-                $errors[] = 'missing storage/' . $p;
+                $errors[] = BackupVerificationErrorCodes::STORAGE_FILE_MISSING;
             } elseif ($s['sha256'] !== (string) $f['sha256'] || $s['size'] !== (int) $f['size']) {
-                $errors[] = 'hash/size mismatch storage/' . $p;
+                $errors[] = BackupVerificationErrorCodes::STORAGE_FILE_INTEGRITY_MISMATCH;
             }
         }
+
+        $errors = array_values( array_unique( $errors ) );
 
         return ['ok' => $errors === [], 'errors' => $errors, 'warnings' => $warnings];
     }

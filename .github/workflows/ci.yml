@@ -261,11 +261,12 @@ jobs:
       #    MySQL 8 + نصب/فعال‌سازی/migration/probe زمان‌اجرا، بدون تست‌لیبِ PHPUnit).
       - name: Install dependencies (PHPUnit 9.6 for WP test lib)
         run: |
-          composer install --prefer-dist --no-progress --no-interaction
-          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+          composer install --prefer-dist --no-progress --no-interaction > /tmp/cpms-composer-install.log 2>&1
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies > /tmp/cpms-composer-require.log 2>&1
+          echo 'composer dependencies installed (raw output redirected to /tmp).'
 
       - name: Prepare WordPress test suite
-        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3 > /tmp/install-wp-tests.log 2>&1
 
       # Add a separate real MariaDB runtime within this existing Integration
       # check: the historical MySQL 8 database and full suite remain unchanged.
@@ -276,13 +277,12 @@ jobs:
           WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
         run: |
           set -euo pipefail
-          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3307 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()')"
-          echo "MariaDB server VERSION(): ${server_version}"
+          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3307 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()' 2>&1)"
           case "$server_version" in
-            11.4.13-MariaDB*) ;;
-            *) echo "Expected MariaDB 11.4.13, received: ${server_version}" >&2; exit 1 ;;
+            11.4.13-MariaDB*) echo 'MariaDB server matched pinned 11.4.13 (raw VERSION() string not published).' ;;
+            *) echo '::error::MariaDB server does not match pinned 11.4.13 (raw VERSION() string not published).' >&2; exit 1 ;;
           esac
-          bash tests/bin/install-wp-tests.sh wordpress_mariadb root root 127.0.0.1 7.1.3 3307
+          bash tests/bin/install-wp-tests.sh wordpress_mariadb root root 127.0.0.1 7.1.3 3307 > /tmp/install-wp-tests-mariadb.log 2>&1
 
       - name: Run focused custom-role migrations on MariaDB 11.4.13
         env:
@@ -294,7 +294,7 @@ jobs:
           phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-mariadb-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php 2>&1 | tee /tmp/custom-role-mariadb.log || phpunit_status=$?
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php > /tmp/custom-role-mariadb.log 2>&1 || phpunit_status=$?
           # Sanitized stage + error-category evidence, mirrored onto the PR because
           # raw job logs and artifact blobs are unreachable for some reviewers.
           # Deliberately bounded: PHPUnit exit code, JUnit case count and exception
@@ -346,7 +346,7 @@ jobs:
           phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/iran-v1-mariadb-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/StaffMessagingPricingMigrationTest.php 2>&1 | tee /tmp/iran-v1-mariadb.log || phpunit_status=$?
+            --bootstrap tests/integration-bootstrap.php tests/Integration/StaffMessagingPricingMigrationTest.php > /tmp/iran-v1-mariadb.log 2>&1 || phpunit_status=$?
           if [ "$phpunit_status" -ne 0 ]; then
             # Bounded projection only: strict Class::method idents and exception
             # short-class categories; never raw failure text. The strict verdict
@@ -385,8 +385,9 @@ jobs:
           set -o pipefail
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/first-practice-mariadb-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/FirstPracticeSetupTest.php 2>&1 | tee /tmp/first-practice-mariadb.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/FirstPracticeSetupTest.php > /tmp/first-practice-mariadb.log 2>&1
           if ! grep -qE '^(OK \(|OK, but)' /tmp/first-practice-mariadb.log; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/first-practice-mariadb-junit.xml --label first_practice_mariadb --phpunit-exit 1 || true
             echo '::error::MariaDB first-practice onboarding suite did not finish with a passing PHPUnit summary.'
             exit 1
           fi
@@ -419,11 +420,11 @@ jobs:
             if ! php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
               --log-junit "/tmp/heartbeat-recovery-${engine}-junit.xml" \
               --bootstrap tests/integration-bootstrap.php tests/Integration/InterruptedSetupRecoveryTest.php \
-              2>&1 | tee "/tmp/heartbeat-recovery-${engine}.log"; then
+              > "/tmp/heartbeat-recovery-${engine}.log" 2>&1; then
               result=1
             fi
           done
-          if ! python3 - <<'PYFOCUS' | tee /tmp/heartbeat-recovery-junit-summary.txt
+          if ! python3 - <<'PYFOCUS' > /tmp/heartbeat-recovery-junit-summary.txt 2>&1
           import sys
           import xml.etree.ElementTree as ET
           ok = True
@@ -442,6 +443,7 @@ jobs:
           sys.exit(0 if ok else 1)
           PYFOCUS
           then result=1; fi
+          cat /tmp/heartbeat-recovery-junit-summary.txt || true
           if [ -n "$PR_NUMBER" ]; then
             {
               echo "### Heartbeat recovery persistence — focused MySQL + MariaDB (run ${{ github.run_id }}, rc=$result)"
@@ -503,7 +505,7 @@ jobs:
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --filter 'testAssignmentWaitsForLockedDefinitionAndRevalidatesAfterDeactivation' \
             --log-junit /tmp/custom-role-race-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleLifecycleTest.php 2>&1 | tee /tmp/custom-role-race.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleLifecycleTest.php > /tmp/custom-role-race.log 2>&1
           python3 - <<'PY'
           import sys
           import xml.etree.ElementTree as ET
@@ -518,10 +520,12 @@ jobs:
               sys.exit('Focused concurrency test must execute exactly once without skip/failure/error.')
           PY
           if ! grep -qE '^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!)' /tmp/custom-role-race.log; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-race-junit.xml --label focused_custom_role_race --phpunit-exit 1 --log /tmp/custom-role-race.log || true
             echo '::error::Focused PHPUnit run ended without a terminal summary.'
             exit 1
           fi
           if ! grep -q '^CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE ' /tmp/custom-role-race.log; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE /tmp/custom-role-race.log || true
             echo '::error::Focused race completed without its required exact-connection/lock-edge evidence.'
             exit 1
           fi
@@ -547,7 +551,7 @@ jobs:
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-archive-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalTest.php 2>&1 | tee /tmp/custom-role-archive.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalTest.php > /tmp/custom-role-archive.log 2>&1
           TEST_RC=$?
           set -e
           {
@@ -562,7 +566,7 @@ jobs:
           if [ -n "$PR_NUMBER" ]; then
             bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-archive --body-file /tmp/custom-role-archive-pr.md
           fi
-          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          if [ "$TEST_RC" -ne 0 ]; then cat /tmp/custom-role-archive-pr.md || true; exit "$TEST_RC"; fi
           python3 - <<'PYARCHIVE'
           import sys
           import xml.etree.ElementTree as ET
@@ -599,7 +603,7 @@ jobs:
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-archive-migration-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php 2>&1 | tee /tmp/custom-role-archive-migration.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php > /tmp/custom-role-archive-migration.log 2>&1
           TEST_RC=$?
           set -e
           {
@@ -612,7 +616,7 @@ jobs:
           } > /tmp/custom-role-archive-migration-pr.md
           cat /tmp/custom-role-archive-migration-pr.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR_NUMBER" ]; then bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-migration --body-file /tmp/custom-role-archive-migration-pr.md; fi
-          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          if [ "$TEST_RC" -ne 0 ]; then cat /tmp/custom-role-archive-migration-pr.md || true; exit "$TEST_RC"; fi
           grep -qE '^OK \(' /tmp/custom-role-archive-migration.log
 
       - name: Run focused archival independent MySQL races
@@ -624,7 +628,7 @@ jobs:
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-archive-race-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalConcurrencyTest.php 2>&1 | tee /tmp/custom-role-archive-race.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalConcurrencyTest.php > /tmp/custom-role-archive-race.log 2>&1
           TEST_RC=$?
           set -e
           {
@@ -637,7 +641,7 @@ jobs:
           } > /tmp/custom-role-archive-race-pr.md
           cat /tmp/custom-role-archive-race-pr.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR_NUMBER" ]; then bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-races --body-file /tmp/custom-role-archive-race-pr.md; fi
-          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          if [ "$TEST_RC" -ne 0 ]; then cat /tmp/custom-role-archive-race-pr.md || true; exit "$TEST_RC"; fi
           python3 - <<'PYRACE'
           import json
           import sys
@@ -691,8 +695,12 @@ jobs:
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/phpunit-int-junit.xml \
             --bootstrap tests/integration-bootstrap.php \
-            tests/Integration/ReturningPatientFirstEnrollmentTest.php 2>&1 | tee /tmp/phpunit-int.log
-          grep -qE '^OK \(' /tmp/phpunit-int.log
+            tests/Integration/ReturningPatientFirstEnrollmentTest.php > /tmp/phpunit-int.log 2>&1
+          if ! grep -qE '^OK \(' /tmp/phpunit-int.log; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/phpunit-int-junit.xml --label focused_returning_patient --phpunit-exit 1 --log /tmp/phpunit-int.log || true
+            echo '::error::Returning-patient suite did not finish with a passing PHPUnit summary.'
+            exit 1
+          fi
 
       # Classic patient-facing enrollment UI: server-derived Clinic list,
       # unverified/unavailable states, strict policy boundaries and read-only
@@ -704,8 +712,12 @@ jobs:
             php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
               --log-junit "/tmp/${suite}-junit.xml" \
               --bootstrap tests/integration-bootstrap.php \
-              "tests/Integration/${suite}" 2>&1 | tee "/tmp/${suite}.log"
-            grep -qE '^OK \(' "/tmp/${suite}.log"
+              "tests/Integration/${suite}" > "/tmp/${suite}.log" 2>&1
+            if ! grep -qE '^OK \(' "/tmp/${suite}.log"; then
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit "/tmp/${suite}-junit.xml" --label patient_enrollment --phpunit-exit 1 --log "/tmp/${suite}.log" || true
+              echo "::error::${suite} did not finish with a passing PHPUnit summary."
+              exit 1
+            fi
           done
           python3 - <<'PYENROLL'
           import xml.etree.ElementTree as ET
@@ -725,11 +737,27 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -o pipefail
-          python3 -m unittest discover -s "$GITHUB_WORKSPACE/bin" -p 'test_integration_*.py'
+          set +e
+          python3 -m unittest discover -s "$GITHUB_WORKSPACE/bin" -p 'test_integration_*.py' > /tmp/bin-projector-tests.log 2>&1
+          bin_tests_rc=$?
+          set -e
+          if [ "$bin_tests_rc" -ne 0 ]; then
+            python3 -c 'import re, sys
+            shown = 0
+            for line in open(sys.argv[1], errors="ignore"):
+                if re.match(r"^(FAIL|ERROR): |^(OK|FAILED)", line):
+                    print(line.rstrip())
+                    shown += 1
+                if shown >= 25:
+                    break' /tmp/bin-projector-tests.log
+            echo "::error::bin projector tests failed (rc=$bin_tests_rc); bounded summary above."
+            exit "$bin_tests_rc"
+          fi
+          echo 'bin projector tests: OK (output redirected to /tmp).'
           phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/phpunit-int-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log || phpunit_status=$?
+            --bootstrap tests/integration-bootstrap.php tests/Integration > /tmp/phpunit-int.log 2>&1 || phpunit_status=$?
           # Narrow sanitized diagnostics for the FULL suite, mirrored onto the PR
           # because raw job logs are publicly reachable. Published facts are
           # bounded and non-sensitive only: PHPUnit exit code, test/assertion
@@ -750,6 +778,7 @@ jobs:
               || echo '::notice::Full-suite evidence comment could not be mirrored'
           fi
           if [ "$phpunit_status" -ne 0 ]; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/phpunit-int-junit.xml --label full_integration_suite --phpunit-exit "$phpunit_status" --log /tmp/phpunit-int.log || true
             echo "::error::Integration PHPUnit exited $phpunit_status."
             exit "$phpunit_status"
           fi
@@ -765,10 +794,50 @@ jobs:
             exit 1
           fi
 
+      # Focused, real-DB proof that the WpSqlFailureLedger publication boundary
+      # was exercised against the Integration MySQL service — not skipped and
+      # not wasm/mocked. Bounded counts only; exit code is the verdict.
+      - name: Run WpSqlFailureLedger DB-backed boundary test
+        run: |
+          set -o pipefail
+          ledger_status=0
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/wp-sql-failure-ledger-junit.xml \
+            --bootstrap tests/integration-bootstrap.php \
+            tests/Integration/WpSqlFailureLedgerIntegrationTest.php > /tmp/wp-sql-failure-ledger.log 2>&1 || ledger_status=$?
+          ledger_counts_rc=0
+          python3 - <<'PYLEDGER' || ledger_counts_rc=$?
+          import sys
+          import xml.etree.ElementTree as ET
+          try:
+              root = ET.parse('/tmp/wp-sql-failure-ledger-junit.xml').getroot()
+          except Exception:
+              print('WpSqlFailureLedger DB-backed boundary JUnit: parse_failed')
+              sys.exit(3)
+          cases = root.findall('.//testcase')
+          skipped = sum(1 for c in cases if c.find('skipped') is not None)
+          failures = sum(1 for c in cases if c.find('failure') is not None)
+          errors = sum(1 for c in cases if c.find('error') is not None)
+          print(f'WpSqlFailureLedger DB-backed boundary JUnit: tests={len(cases)} skipped={skipped} failures={failures} errors={errors}')
+          if len(cases) != 1 or skipped or failures or errors:
+              print('WpSqlFailureLedger DB-backed boundary JUnit: unexpected_shape')
+              sys.exit(3)
+          sys.exit(0)
+          PYLEDGER
+          if [ "$ledger_status" -ne 0 ] || [ "$ledger_counts_rc" -ne 0 ]; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/wp-sql-failure-ledger-junit.xml --label wp_sql_failure_ledger_db --phpunit-exit "$ledger_status" --log /tmp/wp-sql-failure-ledger.log || true
+            echo "::error::WpSqlFailureLedger DB-backed boundary gate failed (phpunit_rc=$ledger_status counts_rc=$ledger_counts_rc)."
+            if [ "$ledger_status" -ne 0 ]; then
+              exit "$ledger_status"
+            fi
+            exit 1
+          fi
+
       - name: Build sanitized Integration evidence
         if: always()
         run: |
           mkdir -p /tmp/evidence
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/wp-sql-failure-ledger-junit.xml --label wp_sql_failure_ledger_db > /tmp/evidence/wp-sql-failure-ledger.txt || true
           python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-race-junit.xml --label focused_custom_role_race > /tmp/evidence/custom-role-race.txt || true
           python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/custom-role-race.log >> /tmp/evidence/custom-role-race.txt || true
           python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE /tmp/custom-role-race.log >> /tmp/evidence/custom-role-race.txt || true
@@ -781,6 +850,7 @@ jobs:
         with:
           name: integration-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
+            /tmp/evidence/wp-sql-failure-ledger.txt
             /tmp/evidence/custom-role-race.txt
             /tmp/evidence/custom-role-race.evidence.txt
             /tmp/evidence/phpunit-int.txt
@@ -816,9 +886,9 @@ jobs:
           set -o pipefail
           mkdir -p /tmp/authz-coverage
           php -d pcov.enabled=1 -r 'echo json_encode(["pcov_loaded"=>extension_loaded("pcov"),"pcov_enabled"=>extension_loaded("pcov") && (bool) ini_get("pcov.enabled"),"pcov_version"=>(phpversion("pcov") ?: null),"php_version"=>PHP_VERSION]), "\n";' > /tmp/authz-coverage/driver.json
-          cat /tmp/authz-coverage/driver.json
+          php -r '$d = json_decode((string) file_get_contents("/tmp/authz-coverage/driver.json"), true); printf("driver pcov_loaded=%d pcov_enabled=%d pcov_version=%s\n", !empty($d["pcov_loaded"]), !empty($d["pcov_enabled"]), isset($d["pcov_version"]) && is_string($d["pcov_version"]) ? "set" : "unset");'
           php -d memory_limit=1G vendor/bin/phpunit --version > /tmp/authz-coverage/phpunit-version.txt
-          cat /tmp/authz-coverage/phpunit-version.txt
+          sed -n 's/^\(PHPUnit [0-9]\+\.[0-9]\+\.[0-9]\+\).*/phpunit_version=\1/p' /tmp/authz-coverage/phpunit-version.txt || true
           set +e
           php -d pcov.enabled=1 -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php \
@@ -849,7 +919,7 @@ jobs:
               echo "::warning::AuthorizationService focused coverage measurement is NOT RUN (step outcome: ${AUTHZ_COVERAGE_RUN_OUTCOME:-unknown})."
               echo "Missing coverage artifacts below therefore mean 'measurement could not run', NOT 'AuthorizationService is uncovered'."
               echo "The guard stays fail-closed: NOT RUN is never converted into PASS."
-            } | tee -a "$GITHUB_STEP_SUMMARY"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           python3 bin/authorization-coverage-guard.py --test
           set +e

@@ -188,7 +188,7 @@ final class WpSqlFailureLedgerTest extends TestCase
             'table' => "patients;-- " . self::CANARY,
             'op' => "INSERT\nINTO " . self::CANARY_SQL,
             'mysql_errno' => 'not-an-errno',
-            'sqlstate' => "41; DROP TABLE patients",
+            'sqlstate' => "41; DROP TABLE patients", // ignored: field no longer published
             'test' => "ClinicCore\\Tests\\AppTest::testX\nevil " . self::CANARY_SECRET,
             'product' => "../../etc/passwd::read " . self::CANARY_UNICODE,
             'focus' => 'yes',
@@ -209,7 +209,7 @@ final class WpSqlFailureLedgerTest extends TestCase
         $this->assertSame('unknown', $row['table']);
         $this->assertSame('OTHER', $row['op']);
         $this->assertSame('unavailable', $row['mysql_errno']);
-        $this->assertNull($row['sqlstate']);
+        $this->assertArrayNotHasKey('sqlstate', $row);
         $this->assertSame('(unknown)', $row['test']);
         $this->assertSame('(unknown)', $row['product']);
         $this->assertTrue($row['focus']);
@@ -224,7 +224,6 @@ final class WpSqlFailureLedgerTest extends TestCase
             'table' => 'unknown',
             'op' => 'OTHER',
             'mysql_errno' => 'unavailable',
-            'sqlstate' => null,
             'test' => '(unknown)',
             'product' => '(unknown)',
             'focus' => false,

@@ -434,16 +434,17 @@ final class BoundedEvidence
     }
 
     /**
-     * Server version string: <digits>.<digits>.<digits> with an optional
-     * alnum/dash suffix (e.g. "8.0.46", "8.0.46-0ubuntu0.24.04.1",
-     * "11.4.13-MariaDB-ubu2404"). No spaces or separators beyond the pattern.
+     * Server version: dotted bounded integers <1-3 digits>.<1-3 digits>.<1-3 digits>
+     * and NOTHING else. A suffix can never be validated as more than a character
+     * pattern, so it is omitted fail-closed (MariaDB build metadata, distro
+     * suffixes and any valid-shaped canary call-signs all drop out).
      *
      * @param mixed $value
      * @return string DROP-constant
      */
     private static function version($value): string
     {
-        if (!is_string($value) || preg_match('/\A[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(-[A-Za-z0-9.-]{1,32})?\z/D', $value) !== 1) {
+        if (!is_string($value) || preg_match('/\A[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\z/D', $value) !== 1) {
             return self::DROP;
         }
 

@@ -67,7 +67,10 @@ CLASS_RE = re.compile(r'[A-Za-z0-9_\\]{1,200}\Z')
 SUITE_NAME_RE = re.compile(r'[A-Za-z0-9_/\\.-]{1,200}\Z')
 CLASSSHORT_RE = re.compile(r'[A-Za-z0-9_]{1,80}\Z')
 LABEL_RE = re.compile(r'[a-z0-9_.-]{1,80}\Z')
-MYSQL_VERSION_RE = re.compile(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}(-[A-Za-z0-9.-]{1,32})?\Z')
+# Dotted bounded integers ONLY (three 1-3 digit components). No letters, no
+# suffix, no build metadata: a suffix can never be validated as more than a
+# pattern, so it is omitted fail-closed (MariaDB build strings drop out).
+MYSQL_VERSION_RE = re.compile(r'[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\Z')
 UINT_RE = re.compile(r'[0-9]{1,20}\Z')
 FD_KEY_RE = re.compile(r'[0-9]{1,3}\Z')
 # A chain entry is a priority followed by a code identifier. Parentheses,
@@ -191,12 +194,31 @@ JSON_VALUE_TYPES = frozenset({
 })
 
 # REST `code` values the RED-1 probe may publish. Everything else → unavailable.
+#
+# Taken from source (2026-11-09), exact members only:
+#  * WP REST dispatch failures the probe can hit before routing:
+#    rest_no_route (404 pre-routing — the RED-1 signature), rest_invalid_param
+#    and rest_missing_callback_param (request-arg validation),
+#    rest_invalid_handler / rest_forbidden / rest_not_logged_in /
+#    rest_forbidden_context (server/permission failures).
+#  * The product's own booking-envelope vocabulary reachable on the probe's two
+#    anonymous endpoints (BookingException::of(...) across src/Application/Booking,
+#    ScopeRequiredException::apiCode(), and BookingController::wrap()'s Throwable
+#    fallback): every code a healthy handler can legitimately return. Success
+#    envelopes (['data' => ...]) carry NO `code` key — `unavailable` then means
+#    "no code in the envelope", never "validation failed".
 REST_CODES = frozenset({
     'rest_no_route', 'rest_invalid_param', 'rest_missing_callback_param',
     'rest_invalid_handler', 'rest_forbidden', 'rest_not_logged_in',
     'rest_forbidden_context',
     'CLINIC_SCOPE_REQUIRED', 'CLINIC_SCOPE_UNAVAILABLE',
     'CLINIC_NOT_FOUND', 'CLINIC_PERMISSION_DENIED', 'CLINIC_UNAUTHORIZED',
+    # Source-verified product booking-envelope codes (BookingException / scope):
+    'CLINIC_VALIDATION_FAILED', 'CLINIC_INTERNAL_ERROR', 'CLINIC_HOLD_EXPIRED',
+    'CLINIC_POLICY_VIOLATION', 'CLINIC_PATIENT_SELECTION_REQUIRED',
+    'CLINIC_INVALID_TRANSITION', 'CLINIC_SLOT_AMBIGUOUS',
+    'CLINIC_DUPLICATE_IN_FLIGHT', 'CLINIC_SLOT_TAKEN', 'CLINIC_SUSPENDED',
+    'CLINIC_DUPLICATE_APPOINTMENT',
 })
 
 # PHP native + PHPUnit exception/error short names. The repository's own
@@ -555,11 +577,13 @@ def cmd_suites(args):
         print('testsuites_unavailable=1')
         return 0
     printed = 0
+    omitted = 0
     for suite in root.iter('testsuite'):
-        if printed >= MAX_SUITES:
-            break
         name = _verified_suite_name(suite.get('name'))
         if name is None:
+            continue
+        if printed >= MAX_SUITES:
+            omitted += 1
             continue
         tests = _attr_int(suite.get('tests'))
         assertions = _attr_int(suite.get('assertions'))
@@ -570,6 +594,8 @@ def cmd_suites(args):
         printed += 1
     if printed == 0:
         print('testsuites_unavailable=1')
+    if omitted:
+        print('testsuites_truncated={}'.format(omitted))
     return 0
 
 
@@ -743,10 +769,84 @@ def _verb(value):
     return candidate if candidate in SQL_VERBS else DROP
 
 
+_FUNCTION_NAME_CACHE: dict[str, bool] = {}
+
+
+def _verified_function_name(name):
+    """True when ``name`` is declared in the plugin source tree (src/ or tests/).
+
+    Bare callback identifiers are only publishable when a declaration exists in
+    this repository — a pattern-shaped name that appears nowhere in source is
+    data, not a source-controlled identifier.
+    """
+    cached = _FUNCTION_NAME_CACHE.get(name)
+    if cached is not None:
+        return cached
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]{0,127}', name):
+        _FUNCTION_NAME_CACHE[name] = False
+        return False
+    pattern = re.compile(r'function\s+' + re.escape(name) + r'\s*\(')
+    found = False
+    root = _plugin_dir()
+    for sub in ('src', 'tests'):
+        base = root / sub
+        if not base.is_dir():
+            continue
+        for path in base.rglob('*.php'):
+            text = _read_bounded(path)
+            if text and pattern.search(text):
+                found = True
+                break
+        if found:
+            break
+    if not found:
+        # Plugin entry points at the root (e.g. clinic-practice-management.php).
+        for path in root.glob('*.php'):
+            if not path.is_file():
+                continue
+            text = _read_bounded(path)
+            if text and pattern.search(text):
+                found = True
+                break
+    _FUNCTION_NAME_CACHE[name] = found
+    return found
+
+
+_CHAIN_CLASS_RE = re.compile(
+    r'([A-Za-z_][A-Za-z0-9_]*(\\[A-Za-z_][A-Za-z0-9_]*)*)::[A-Za-z_][A-Za-z0-9_]*\Z')
+_CHAIN_BARE_RE = re.compile(r'[A-Za-z_][A-Za-z0-9_]{0,127}\Z')
+_CHAIN_CLOSURE_RE = re.compile(r'closure#[0-9]{1,3}\Z')
+
+
 def _chain(item):
+    """Validate one chain entry; returns (verdict, token).
+
+    verdict: 'ok' | 'shape' | 'unverified'.
+    'shape'       — does not parse as priority:token (or exceeds bounds).
+    'unverified'  — parses, but the identifier is not declared in the source
+                    tree (PSR-4 file + declared method, or a declared bare
+                    function) and is therefore not source-controlled data.
+    'ok'          — publishable (bounded int priority + verified identifier,
+                    a closure#bounded-int token, or the fixed 'external' token
+                    for an identifier deliberately reported as unverified).
+    """
     if not isinstance(item, str) or len(item) > 160:
-        return DROP
-    return item if CHAIN_ENTRY_RE.fullmatch(item) else DROP
+        return ('shape', None)
+    if not CHAIN_ENTRY_RE.fullmatch(item):
+        return ('shape', None)
+    _priority, _, shape = item.partition(':')
+    if shape == 'external':
+        return ('ok', item)
+    if _CHAIN_CLOSURE_RE.fullmatch(shape):
+        return ('ok', item)
+    if '::' in shape:
+        cls, _, method = shape.rpartition('::')
+        if class_method_ident(cls, method) is not None:
+            return ('ok', item)
+        return ('unverified', None)
+    if _CHAIN_BARE_RE.fullmatch(shape) and _verified_function_name(shape):
+        return ('ok', item)
+    return ('unverified', None)
 
 
 def project_connection_diag(obj):
@@ -780,16 +880,31 @@ def project_connection_diag(obj):
     chain = obj.get('chain')
     if isinstance(chain, list):
         projected_chain = []
-        dropped = 0
+        dropped_shape = 0
+        dropped_unverified = 0
         for item in chain[:MAX_CHAIN]:
-            token = _chain(item)
-            if token is DROP:
-                dropped += 1
-                continue
-            projected_chain.append(token)
+            verdict, token = _chain(item)
+            if verdict == 'ok':
+                projected_chain.append(token)
+            elif verdict == 'shape':
+                dropped_shape += 1
+            else:
+                dropped_unverified += 1
         out['chain'] = projected_chain
-        if dropped:
-            out['chain_dropped'] = dropped
+        # Merge projector-side drops into the same fixed-token counters the
+        # source stage passed through (each stage counts only its own drops).
+        source_shape = obj.get('chain_dropped_shape')
+        source_unverified = obj.get('chain_dropped_unverified')
+        source_shape = source_shape if isinstance(source_shape, int) and not isinstance(source_shape, bool) else 0
+        source_unverified = source_unverified if isinstance(source_unverified, int) and not isinstance(source_unverified, bool) else 0
+        total_shape = source_shape + dropped_shape
+        total_unverified = source_unverified + dropped_unverified
+        if total_shape:
+            out['chain_dropped_shape'] = total_shape
+        if total_unverified:
+            out['chain_dropped_unverified'] = total_unverified
+        if total_shape + total_unverified:
+            out['chain_dropped'] = total_shape + total_unverified
     if len(out) > MAX_WALK_LEAVES:
         return DROP
     return out
@@ -799,6 +914,33 @@ def _rest_code(value):
     return _exact(value, REST_CODES, 48)
 
 
+_BASENAME_CACHE = None
+
+
+def _known_basenames():
+    """All .php basenames present in the checked-out plugin tree.
+
+    A published file basename must correspond to a real source file in this
+    repository — a character pattern alone is never sufficient. Bounded and
+    cached for the process.
+    """
+    global _BASENAME_CACHE
+    if _BASENAME_CACHE is not None:
+        return _BASENAME_CACHE
+    names = set()
+    root = _plugin_dir()
+    try:
+        for path in root.rglob('*.php'):
+            if path.is_file():
+                names.add(path.name)
+            if len(names) >= 20000:
+                break
+    except OSError:
+        pass
+    _BASENAME_CACHE = frozenset(names)
+    return _BASENAME_CACHE
+
+
 def _basename(value):
     if not isinstance(value, str) or not value or len(value) > 80:
         return DROP
@@ -806,7 +948,7 @@ def _basename(value):
         return DROP
     if not re.fullmatch(r'[A-Za-z0-9_.-]{1,80}', value):
         return DROP
-    return value
+    return value if value in _known_basenames() else DROP
 
 
 def _exception_class(value):

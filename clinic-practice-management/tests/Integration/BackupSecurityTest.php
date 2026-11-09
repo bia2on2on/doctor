@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Application\Backup\BackupService;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 use ClinicCore\Settings\InstallationSettings;
 use ClinicCore\Infrastructure\Backup\BackupSqlDumper;
 use ClinicCore\Infrastructure\Backup\ProtectedBackupStore;
@@ -159,7 +160,10 @@ final class BackupSecurityTest extends WP_UnitTestCase
         $verify = $this->service()->verifyBackup($backupId);
         self::assertTrue($verify['ok'], 'بکاپ سالمِ قدیمی نباید بی‌صدا غیرقابل بازیابی شود.');
         self::assertNotEmpty($verify['warnings'], 'نبودِ فایل هش باید هشدار صریح تولید کند.');
-        self::assertStringContainsString('legacy', implode(' ', $verify['warnings']));
+        self::assertSame(
+            [BackupVerificationErrorCodes::MANIFEST_AUTHENTICITY_UNVERIFIED],
+            $verify['warnings']
+        );
 
         $pre = $this->service()->restorePreflight($backupId);
         self::assertTrue($pre['restore_safe'], 'restore_safe نباید برای بکاپ legacy سالم false شود.');
@@ -182,7 +186,7 @@ final class BackupSecurityTest extends WP_UnitTestCase
 
         $verify = $this->service()->verifyBackup($backupId);
         self::assertFalse($verify['ok']);
-        self::assertContains('manifest.json tampered', $verify['errors']);
+        self::assertSame([BackupVerificationErrorCodes::MANIFEST_TAMPERED], $verify['errors']);
 
         $pre = $this->service()->restorePreflight($backupId);
         self::assertFalse($pre['restore_safe'], 'بکاپ دستکاری‌شده نباید restore_safe باشد.');

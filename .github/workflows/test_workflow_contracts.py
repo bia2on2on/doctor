@@ -38,6 +38,128 @@ def ci_job_block(text, job_key):
     return "\n".join(lines[start:end])
 
 
+def _logical_lines(text):
+    """Join shell line-continuations (trailing backslash) into logical lines.
+
+    Yields (first_line_number, logical_line). Multi-line commands in run:
+    blocks would otherwise look like unredirected writers on their first
+    physical line.
+    """
+    buffer = None
+    start = 1
+    for index, line in enumerate(text.splitlines()):
+        if buffer is None:
+            buffer = line
+            start = index + 1
+        else:
+            buffer += " " + line.strip()
+        stripped_right = line.rstrip()
+        if stripped_right.endswith("\\"):
+            buffer = buffer.rstrip()[:-1].rstrip() + " "
+            continue
+        yield start, buffer
+        buffer = None
+    if buffer is not None:
+        yield start, buffer
+
+
+def integration_raw_output_violations(slice_text):
+    """Raw-log-write violations inside the ci.yml `integration` job slice.
+
+    The Integration job's stdout/stderr is a publication surface: raw job logs
+    are mirrored into PR comments and artifacts, so only bounded projections
+    may be written there. Returns a list of (rule, line_no, text) tuples; an
+    empty list means the slice is clean.
+    """
+    violations = []
+    for line_no, line in _logical_lines(slice_text):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        # Unwrap an inline `run: <command>` step prefix so command-position
+        # rules see the command itself, not the YAML key.
+        line = re.sub(r"^\s*(- )?run:\s*", "", line)
+        stripped = line.strip()
+        # (A) `tee` (any command-position use) — raw stdout fan-out is the
+        # failure mode this contract exists to forbid.
+        if re.search(r"(^|[\s|;(])tee(\s|$)", line):
+            violations.append(("tee", line_no, stripped[:160]))
+        # (B) Dump utilities on raw capture paths (.log/.out/.err). Bounded
+        # projector outputs (/tmp/evidence/*.txt, *-pr.md, *-junit-summary.txt,
+        # summaries/*.md) are not matched because they do not end in those
+        # suffixes.
+        match = re.search(
+            r"(?:^|[|;(&]\s*)(cat|tail|head|less|more|od|xxd|strings)\s+([^;|]+)",
+            line,
+        )
+        if match and re.search(r"(^|\s)\S*\.(log|out|err)($|[^\w])", match.group(2)):
+            violations.append(("raw-log-dump", line_no, stripped[:160]))
+        # (C) Shell tracing — dumps every expanded command line (incl. env).
+        if re.search(r"(^|\s)set\s+-[A-Za-z]*x(\s|$)", line):
+            violations.append(("set-x", line_no, stripped[:160]))
+        # (D) Raw writers whose output must be redirected to a /tmp capture
+        # file or piped into a boundary projector — never straight to stdout.
+        if re.search(r"^\s*php\b", line) and "vendor/bin/phpunit" in line \
+                and not re.search(r'>\s*"?/tmp/', line) and "| python3" not in line:
+            violations.append(("phpunit-raw", line_no, stripped[:160]))
+        if re.search(r"^\s*composer\b", line) and not re.search(r'>\s*"?/tmp/', line):
+            violations.append(("composer-raw", line_no, stripped[:160]))
+        if "install-wp-tests.sh" in line and not re.search(r'>\s*"?/tmp/', line) \
+                and not stripped.startswith("run: echo"):
+            violations.append(("install-wp-tests-raw", line_no, stripped[:160]))
+        if re.search(r"^\s*php\b", line) \
+                and "multi-clinic-rest-bootstrap-probe.php" in line \
+                and not re.search(r'>\s*"?/tmp/', line):
+            violations.append(("red1-probe-raw", line_no, stripped[:160]))
+        # (E) Piping stderr into another stdout producer without a file
+        # (`2>&1 | cmd`). `2>&1 ||` (the boolean-OR idiom) is NOT flagged.
+        if re.search(r"2>&1\s*\|(?!\|)", line):
+            violations.append(("stderr-pipe-to-stdout", line_no, stripped[:160]))
+    return violations
+
+_BOUNDED_PROJECTION_TOKENS = (
+    'integration_evidence.py" junit',
+    'integration_evidence.py" suites',
+    'integration_evidence.py" evidence',
+    'integration_evidence.py" terminal',
+    "python3 - <<",
+)
+_FAILURE_EXIT_RE = re.compile(r'exit\s+"?\$?(?:\{)?(?:phpunit_status|TEST_RC|bin_tests_rc|ledger_status|result|PROBE_RC)')
+
+
+def junit_projection_before_failure_exit_violations(slice_text):
+    """A step that runs PHPUnit and exits nonzero must print a bounded JUnit
+    failure summary BEFORE the exit — never after, never raw.
+
+    Tokens that count as a bounded JUnit failure summary (fixed schema, counts
+    and source-verified identifiers only):
+      bin/integration_evidence.py junit|suites|evidence|terminal ...
+      an inline python heredoc printing JUnit counts (python3 - <<...)
+    Checks, per step block: every failure-path `exit` AFTER the first
+    `vendor/bin/phpunit` occurrence must be preceded (same step) by one of
+    those tokens.
+    """
+    violations = []
+    step_blocks = re.split(r"(?m)^      - name: ", slice_text)[1:]
+    for block in step_blocks:
+        name = block.splitlines()[0].strip() if block.splitlines() else "<unknown>"
+        phpunit_at = block.find("vendor/bin/phpunit")
+        if phpunit_at == -1:
+            continue
+        for match in _FAILURE_EXIT_RE.finditer(block):
+            if match.start() < phpunit_at:
+                continue
+            prefix = block[: match.start()]
+            if not any(token in prefix for token in _BOUNDED_PROJECTION_TOKENS):
+                line_no = prefix.count("\n") + 1
+                violations.append((
+                    "junit-projection-missing",
+                    line_no,
+                    "{0}: failure exit without a preceding bounded JUnit summary".format(name),
+                ))
+    return violations
+
+
 def ci_step_block(job_text, step_name):
     """Return the YAML block of one named step inside a ci.yml job."""
     lines = job_text.splitlines()
@@ -1708,6 +1830,85 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         self.assertNotIn("pull_request_target", events)
         self.assertRegex(events, r"(?m)^  push:\n    branches: \[main\]$")
 
+
+
+class IntegrationJobLogHygieneContractTest(unittest.TestCase):
+    """Non-vacuous static contract for the ci.yml Integration job's stdout.
+
+    The job's raw logs must never reach stdout/stderr/PR surfaces. Every raw
+    writer is redirected to /tmp; only bounded fixed-text projections may be
+    printed. These tests fail on deliberately violating fixtures, proving the
+    contract is not vacuous, and on the real workflow slice (which must stay
+    clean).
+    """
+
+    def _integration_slice(self):
+        return ci_job_block(workflow("ci.yml"), "integration")
+
+    def test_integration_job_has_no_raw_log_writes(self):
+        violations = integration_raw_output_violations(self._integration_slice())
+        self.assertEqual(
+            [],
+            violations,
+            "Integration job raw-log violations:\n"
+            + "\n".join("{0}:{1}: {2}".format(*v) for v in violations),
+        )
+
+    def test_integration_job_prints_bounded_junit_summary_before_failure_exit(self):
+        violations = junit_projection_before_failure_exit_violations(self._integration_slice())
+        self.assertEqual(
+            [],
+            violations,
+            "Integration job failure paths without preceding bounded JUnit summary:\n"
+            + "\n".join("{0}:{1}: {2}".format(*v) for v in violations),
+        )
+
+    def test_contract_fails_on_deliberately_violating_fixtures(self):
+        violating = ci_job_block(
+            workflow("ci.yml"), "integration"
+        ) + "\n"
+        # Deliberate violations are injected into a COPY of the real slice —
+        # never into the real workflow file. Each class of violation must be
+        # detected, proving the contract is not vacuous.
+        fixtures = {
+            "tee": ("tee", '      - name: Bad\n        run: php vendor/bin/phpunit > /tmp/x.log 2>&1 | tee /tmp/y.log\n'),
+            "raw-log-dump": ("raw-log-dump", '      - name: Bad\n        run: cat /tmp/x.log\n'),
+            "raw-log-dump-tail": ("raw-log-dump", '      - name: Bad\n        run: tail -n 50 /tmp/x.log\n'),
+            "set-x": ("set-x", '      - name: Bad\n        run: set -x\n'),
+            "phpunit-raw": ("phpunit-raw", '      - name: Bad\n        run: php vendor/bin/phpunit\n'),
+            "composer-raw": ("composer-raw", '      - name: Bad\n        run: composer install --prefer-dist\n'),
+            "install-wp-tests-raw": ("install-wp-tests-raw", '      - name: Bad\n        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3\n'),
+            "red1-probe-raw": ("red1-probe-raw", '      - name: Bad\n        run: php tests/bin/multi-clinic-rest-bootstrap-probe.php\n'),
+            "stderr-pipe-to-stdout": ("stderr-pipe-to-stdout", '      - name: Bad\n        run: php vendor/bin/phpunit 2>&1 | grep -E FAIL\n'),
+        }
+        for label, (expected_rule, fragment) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(violating + fragment)
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_junit_projection_contract_fails_on_deliberately_violating_fixture(self):
+        fixture = (
+            '  integration:\n'
+            '    steps:\n'
+            '      - name: Run thing\n'
+            '        run: |\n'
+            '          phpunit_status=0\n'
+            '          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \\\n'
+            '            --bootstrap tests/integration-bootstrap.php tests/Integration \\\n'
+            '            > /tmp/phpunit-int.log 2>&1 || phpunit_status=$?\n'
+            '          if [ "$phpunit_status" -ne 0 ]; then\n'
+            '            exit "$phpunit_status"\n'
+            '          fi\n'
+        )
+        violations = junit_projection_before_failure_exit_violations(fixture)
+        self.assertEqual(1, len(violations))
+        self.assertEqual("junit-projection-missing", violations[0][0])
 
 if __name__ == "__main__":
     unittest.main()
