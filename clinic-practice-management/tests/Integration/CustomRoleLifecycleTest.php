@@ -603,7 +603,7 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                         fclose($childPipe);
                         exit(0);
                     } catch (Throwable $exception) {
-                        fwrite($childPipe, 'ERROR:' . get_class($exception) . ':' . $exception->getMessage() . "\n");
+                        fwrite($childPipe, 'ERROR:' . get_class($exception) . "\n");
                         fflush($childPipe);
                         if ($wpdb2 instanceof \wpdb) {
                             $wpdb2->close();
@@ -624,21 +624,17 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
 
                 $queryLine = $this->readRaceLine($parentPipe, self::RACE_SIGNAL_TIMEOUT_SECONDS);
                 if (!is_string($queryLine)) {
+                    // Bounded diagnostics on FAIL paths only: engine transaction ids,
+                    // lock ids and lock_data (the fixture primary key) are NOT printed.
+                    $parentTxn = $this->innodbTransactionForConnection($observer, $parentConnectionId);
+                    $childTxn = $this->innodbTransactionForConnection($observer, $childConnectionId);
                     $diagnostics = [
                         'mysql_version' => $mysqlVersion,
                         'parent_connection_id' => $parentConnectionId,
                         'child_connection_id' => $childConnectionId,
-                        'parent_lock_before_child' => $parentLockBefore,
-                        'parent_transaction' => $this->innodbTransactionForConnection($observer, $parentConnectionId),
-                        'child_transaction' => $this->innodbTransactionForConnection($observer, $childConnectionId),
-                        'parent_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $parentConnectionId),
-                        'child_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $childConnectionId),
-                        'matching_wait_edge' => $this->customRoleDefinitionWaitEdge(
-                            $observer,
-                            $childConnectionId,
-                            $parentConnectionId,
-                            $definitionId
-                        ),
+                        'parent_transaction_state' => is_array($parentTxn) ? ($parentTxn['trx_state'] ?? null) : null,
+                        'child_transaction_state' => is_array($childTxn) ? ($childTxn['trx_state'] ?? null) : null,
+                        'wait_edge_observed' => $this->customRoleDefinitionWaitEdge($observer, $childConnectionId, $parentConnectionId, $definitionId) !== null,
                     ];
                     self::fail(
                         'Child B did not signal its target assignment SELECT ... FOR UPDATE within the bounded timeout. Evidence: '
@@ -750,16 +746,17 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 } while (microtime(true) < $deadline);
 
                 if ($waitEvidence === null && !$isMariaDb) {
+                    // Bounded diagnostics on FAIL paths only: engine transaction ids,
+                    // lock ids and lock_data (the fixture primary key) are NOT printed.
+                    $parentTxn = $this->innodbTransactionForConnection($observer, $parentConnectionId);
+                    $childTxn = $this->innodbTransactionForConnection($observer, $childConnectionId);
                     $diagnostics = [
                         'mysql_version' => $mysqlVersion,
                         'parent_connection_id' => $parentConnectionId,
                         'child_connection_id' => $childConnectionId,
                         'child_lock_query_sha256' => $childQueryFingerprint,
-                        'parent_lock_before_child' => $parentLockBefore,
-                        'parent_transaction' => $this->innodbTransactionForConnection($observer, $parentConnectionId),
-                        'child_transaction' => $this->innodbTransactionForConnection($observer, $childConnectionId),
-                        'parent_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $parentConnectionId),
-                        'child_definition_locks' => $this->customRoleDefinitionLocksForConnection($observer, $childConnectionId),
+                        'parent_transaction_state' => is_array($parentTxn) ? ($parentTxn['trx_state'] ?? null) : null,
+                        'child_transaction_state' => is_array($childTxn) ? ($childTxn['trx_state'] ?? null) : null,
                         'wait_edge' => null,
                     ];
                     // Sanitized, content-free tokens published by the MariaDB
@@ -905,7 +902,8 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
                 if (str_starts_with($line, 'RESULT:')) {
                     $childOutcome = substr($line, strlen('RESULT:'));
                 } elseif (str_starts_with($line, 'ERROR:')) {
-                    $childOutcome = $line;
+                    $class = trim(substr($line, strlen('ERROR:')));
+                    $childOutcome = 'ERROR:' . (preg_match('/\A[A-Za-z0-9_\\]{1,128}\z/D', $class) === 1 ? $class : 'unknown');
                 }
             }
 
@@ -938,60 +936,56 @@ final class CustomRoleLifecycleTest extends WP_UnitTestCase
             self::assertSame(0, $assignmentAuditCount, 'A denied assignment must not append a role-assigned audit event.');
             self::assertSame(1, $deactivationAuditCount, 'A must commit exactly one deactivation audit event with its status change.');
 
+            // Fail-closed publication boundary: the evidence record is projected
+            // through BoundedEvidence (fixed allow-listed keys, strictly validated
+            // bounded values). Raw SQL, schema names, fixture ids, role lists and
+            // performance_schema lock_data never reach the job log or a mirror.
+            $evidence = \ClinicCore\Tests\Support\BoundedEvidence::lifecycle([
+                'mysql_version' => $mysqlVersion,
+                // 'view' evidence comes from the InnoDB/Performance Schema
+                // views; 'statement_timeout' evidence comes from the child's
+                // own production statement. The two are never conflated.
+                'blocking_evidence_source' => $isMariaDb ? 'statement_timeout' : 'innodb_view',
+                'parent' => [
+                    'connection_id' => $parentConnectionId,
+                    'transaction_id' => $parentLockBefore['transaction_id'] ?? null,
+                    'definition_lock_id' => $parentLockBefore['lock_id'] ?? null,
+                    'lock_after_deactivation_before_commit' => $parentLockAfter['lock_id'] ?? null,
+                    'transaction_state_while_child_waited' => $parentTransactionWhileWaiting['trx_state'] ?? null,
+                    'transaction_state_after_deactivation_before_commit' => $parentTransactionAfterTransition['trx_state'] ?? null,
+                ],
+                'child' => [
+                    'connection_id' => $childConnectionId,
+                    'transaction_id' => $waitEvidence['requesting_transaction_id'] ?? null,
+                    'assignment_lock_query_sha256' => $childQueryFingerprint,
+                    'requesting_lock_id' => $waitEvidence['requesting_lock_id'] ?? null,
+                    'transaction_state_while_waiting' => $childTransactionWhileWaiting['trx_state'] ?? null,
+                    'transaction_state_after_deactivation_before_commit' => $childTransactionAfterTransition['trx_state'] ?? null,
+                    'statement_lock_timeout_errno' => $isMariaDb ? ($mariaBlocked['errno'] ?? null) : null,
+                ],
+                'wait_edge' => $isMariaDb ? null : [
+                    'requesting_connection_id' => $waitEvidence['requesting_connection_id'] ?? null,
+                    'blocking_connection_id' => $waitEvidence['blocking_connection_id'] ?? null,
+                    'requesting_lock_id' => $waitEvidence['requesting_lock_id'] ?? null,
+                    'blocking_lock_id' => $waitEvidence['blocking_lock_id'] ?? null,
+                    'requesting_lock_mode' => $waitEvidence['requesting_lock_mode'] ?? null,
+                    'requesting_lock_status' => $waitEvidence['requesting_lock_status'] ?? null,
+                    'blocking_lock_mode' => $waitEvidence['blocking_lock_mode'] ?? null,
+                    'blocking_lock_status' => $waitEvidence['blocking_lock_status'] ?? null,
+                    'table' => App::db()->table('cpms_custom_role_defs'),
+                    'index' => 'PRIMARY',
+                ],
+                'statement_block_proof' => $isMariaDb ? $mariaBlocked : null,
+                'same_wait_edge_after_deactivation_before_commit' => $isMariaDb ? null : ($waitEvidenceAfterTransition !== null),
+                'child_outcome_after_parent_commit' => $childOutcome,
+                'definition_status_after_parent_commit' => $definitionStatusAfter,
+                'assignment_audit_count_after' => $assignmentAuditCount,
+                'deactivation_audit_count_after' => $deactivationAuditCount,
+            ]);
             fwrite(
                 STDERR,
                 'CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE '
-                . json_encode(
-                    [
-                        'mysql_version' => $mysqlVersion,
-                        'mysql_schema' => DB_NAME,
-                        'assignment_lock_query' => $childLockQuery,
-                        'parent' => [
-                            'connection_id' => $parentConnectionId,
-                            'transaction_id' => $parentLockBefore['transaction_id'],
-                            'definition_lock_id' => $parentLockBefore['lock_id'],
-                            'lock_after_deactivation_before_commit' => $parentLockAfter['lock_id'],
-                            'transaction_state_while_child_waited' => $parentTransactionWhileWaiting['trx_state'],
-                            'transaction_state_after_deactivation_before_commit' => $parentTransactionAfterTransition['trx_state'],
-                        ],
-                        'child' => [
-                            'connection_id' => $childConnectionId,
-                            'transaction_id' => $waitEvidence['requesting_transaction_id'] ?? null,
-                            'assignment_lock_query_sha256' => $childQueryFingerprint,
-                            'requesting_lock_id' => $waitEvidence['requesting_lock_id'] ?? null,
-                            'transaction_state_while_waiting' => $childTransactionWhileWaiting['trx_state'] ?? null,
-                            'transaction_state_after_deactivation_before_commit' => $childTransactionAfterTransition['trx_state'] ?? null,
-                            'statement_lock_timeout_errno' => $isMariaDb ? ($mariaBlocked['errno'] ?? null) : null,
-                        ],
-                        // 'view' evidence comes from the InnoDB/Performance Schema
-                        // views; 'statement_timeout' evidence comes from the child's
-                        // own production statement. The two are never conflated.
-                        'blocking_evidence_source' => $isMariaDb ? 'statement_timeout' : 'innodb_view',
-                        'wait_edge' => $isMariaDb ? null : [
-                            'requesting_connection_id' => $waitEvidence['requesting_connection_id'] ?? null,
-                            'blocking_connection_id' => $waitEvidence['blocking_connection_id'] ?? null,
-                            'requesting_lock_id' => $waitEvidence['requesting_lock_id'] ?? null,
-                            'blocking_lock_id' => $waitEvidence['blocking_lock_id'] ?? null,
-                            'requesting_lock_mode' => $waitEvidence['requesting_lock_mode'] ?? null,
-                            'requesting_lock_status' => $waitEvidence['requesting_lock_status'] ?? null,
-                            'blocking_lock_mode' => $waitEvidence['blocking_lock_mode'] ?? null,
-                            'blocking_lock_status' => $waitEvidence['blocking_lock_status'] ?? null,
-                            'table' => App::db()->table('cpms_custom_role_defs'),
-                            'index' => 'PRIMARY',
-                            'lock_data' => $waitEvidence['requesting_lock_data'] ?? null,
-                        ],
-                        'statement_block_proof' => $isMariaDb ? $mariaBlocked : null,
-                        'same_wait_edge_after_deactivation_before_commit' => $isMariaDb ? null : ($waitEvidenceAfterTransition !== null),
-                        'child_outcome_after_parent_commit' => $childOutcome,
-                        'definition_status_after_parent_commit' => $definitionStatusAfter,
-                        'membership_role_after' => $targetRoleAfter,
-                        'wordpress_roles_before' => $targetWpRolesBefore,
-                        'wordpress_roles_after' => $targetWpRolesAfter,
-                        'assignment_audit_count_after' => $assignmentAuditCount,
-                        'deactivation_audit_count_after' => $deactivationAuditCount,
-                    ],
-                    JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
-                )
+                . json_encode($evidence, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR)
                 . PHP_EOL
             );
         } finally {

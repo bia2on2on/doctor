@@ -63,18 +63,18 @@ def sha256_file(path: Path) -> str:
 
 def read_text(path: Path, label: str) -> str:
     if not path.is_file():
-        raise GuardFailure(f"{label} is absent: {path}")
+        raise GuardFailure(f"{label} is absent")
     try:
         return path.read_text(encoding="utf-8", errors="strict")
     except (OSError, UnicodeDecodeError) as exc:
-        raise GuardFailure(f"{label} is unreadable: {exc}") from exc
+        raise GuardFailure(f"{label} is unreadable") from exc
 
 
 def check_driver(driver_json: Path) -> dict:
     try:
         info = json.loads(read_text(driver_json, "driver probe"))
     except json.JSONDecodeError as exc:
-        raise GuardFailure(f"driver probe is not valid JSON: {exc}") from exc
+        raise GuardFailure("driver probe is not valid JSON") from exc
     if info.get("pcov_loaded") is not True:
         raise GuardFailure("coverage driver unavailable: PCOV extension not loaded")
     if info.get("pcov_enabled") is not True:
@@ -89,7 +89,7 @@ def check_driver(driver_json: Path) -> dict:
 def check_phpunit(rc_file: Path, log_file: Path, version_file: Path) -> dict:
     rc_text = read_text(rc_file, "PHPUnit exit-code record").strip()
     if not re.fullmatch(r"-?\d+", rc_text):
-        raise GuardFailure(f"PHPUnit exit-code record is malformed: {rc_text!r}")
+        raise GuardFailure("PHPUnit exit-code record is malformed")
     rc = int(rc_text)
     log = read_text(log_file, "PHPUnit log")
     m = TERMINAL_RE.search(log)
@@ -110,7 +110,7 @@ def parse_clover(clover_file: Path, target: str) -> dict:
     try:
         root = ET.fromstring(raw)
     except ET.ParseError as exc:
-        raise GuardFailure(f"Clover report is malformed XML: {exc}") from exc
+        raise GuardFailure("Clover report is malformed XML") from exc
     if root.tag != "coverage":
         raise GuardFailure("Clover report root element is not <coverage>")
     project = root.find("project")
@@ -121,7 +121,7 @@ def parse_clover(clover_file: Path, target: str) -> dict:
     matches = [f for f in project.iter("file")
                if (f.get("name") or "").replace("\\", "/").endswith(needle)]
     if not matches:
-        raise GuardFailure(f"target absent from Clover report: {target}")
+        raise GuardFailure("target absent from Clover report")
     if len(matches) != 1:
         raise GuardFailure(f"target matched {len(matches)} times in Clover report (expected 1)")
     file_el = matches[0]
@@ -134,7 +134,7 @@ def parse_clover(clover_file: Path, target: str) -> dict:
             num = int(line.get("num") or "")
             count = int(line.get("count") or "")
         except ValueError as exc:
-            raise GuardFailure(f"malformed statement line record: {exc}") from exc
+            raise GuardFailure("malformed statement line record") from exc
         if count < 0:
             raise GuardFailure(f"negative hit count on line {num}")
         stmt_lines.append((num, count))
@@ -146,7 +146,7 @@ def parse_clover(clover_file: Path, target: str) -> dict:
         m_statements = int(metrics.get("statements") or "")
         m_covered = int(metrics.get("coveredstatements") or "")
     except ValueError as exc:
-        raise GuardFailure(f"malformed file-level metrics: {exc}") from exc
+        raise GuardFailure("malformed file-level metrics") from exc
 
     executable = len(stmt_lines)
     if executable == 0:
@@ -226,7 +226,7 @@ def build_summary(args: argparse.Namespace) -> tuple[dict, list[str]]:
         try:
             result["target_source_sha256"] = sha256_file(Path(args.source))
         except OSError as exc:
-            failures.append(f"target source unreadable for hash binding: {exc}")
+            failures.append("target source unreadable for hash binding")
     try:
         result["clover_sha256"] = sha256_file(Path(args.clover))
     except OSError:

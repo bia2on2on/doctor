@@ -101,7 +101,6 @@ use ClinicCore\Bootstrap\App;
 // ============================================================================
 
 $probePid      = getmypid();
-$phpBinary     = PHP_BINARY;
 $pluginRoot    = dirname(__DIR__, 2);
 $pluginFile    = $pluginRoot . '/clinic-practice-management.php';
 $testsDir      = rtrim((string) (getenv('WP_TESTS_DIR') ?: '/tmp/wordpress-test-lib'), '/');
@@ -118,30 +117,45 @@ $out = static function (string $line): void {
     fwrite(STDOUT, $line . PHP_EOL);
 };
 
+/**
+ * A REST envelope `code` is printed only if it matches a strict bounded
+ * token shape; anything else prints as `unavailable`. Never prints messages.
+ *
+ * @param mixed $data
+ */
+$boundedCode = static function ($data): string {
+    $code = is_array($data) ? ($data['code'] ?? '') : '';
+    if (!is_string($code) || preg_match('/\A[A-Za-z0-9_.-]{1,64}\z/D', $code) !== 1) {
+        return 'unavailable';
+    }
+
+    return $code;
+};
+
 $out('=== RED 1 — process-fresh multi-Clinic REST bootstrap probe ===');
-$out('process: pid=' . $probePid . ' php=' . $phpBinary . ' argv=' . implode(' ', $_SERVER['argv'] ?? []));
-$out('plugin : ' . $pluginFile);
-$out('wp     : WP_TESTS_DIR=' . $testsDir . ' WP_CORE_DIR=' . $coreDir);
-$out('db     : ' . $dbName . '@' . $dbHost . ' (isolated from the PHPUnit suite database)');
+$out('process: pid=' . (int) $probePid);
+$out('plugin : clinic-practice-management.php');
+$out('wp     : WP_TESTS_DIR/WP_CORE_DIR configured');
+$out('db     : isolated probe database (isolated from the PHPUnit suite database)');
 
 if (!is_file($pluginFile)) {
-    fwrite(STDERR, 'INVALID RED (class D): plugin main file not found at ' . $pluginFile . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): plugin main file not found' . PHP_EOL);
     exit(2);
 }
 
 $autoload = $pluginRoot . '/vendor/autoload.php';
 if (!is_file($autoload)) {
-    fwrite(STDERR, 'INVALID RED (class D): composer autoload missing at ' . $autoload . ' — run `composer install`.' . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): composer autoload missing — run `composer install`.' . PHP_EOL);
     exit(2);
 }
 require_once $autoload;
 
 if (!is_dir($testsDir . '/includes')) {
-    fwrite(STDERR, 'INVALID RED (class D): WP test library missing at ' . $testsDir . ' — run tests/bin/install-wp-tests.sh.' . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): WP test library missing — run tests/bin/install-wp-tests.sh.' . PHP_EOL);
     exit(2);
 }
 if (!is_file($coreDir . 'wp-settings.php')) {
-    fwrite(STDERR, 'INVALID RED (class D): WP core missing at ' . $coreDir . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): WP core missing' . PHP_EOL);
     exit(2);
 }
 
@@ -151,19 +165,19 @@ if (!is_file($coreDir . 'wp-settings.php')) {
 
 $mysqli = @new mysqli($dbHost, $dbUser, $dbPass);
 if ($mysqli->connect_errno !== 0) {
-    fwrite(STDERR, 'INVALID RED (class D): mysqli connect failed: ' . $mysqli->connect_error . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): mysqli connect failed (driver detail suppressed)' . PHP_EOL);
     exit(2);
 }
 if (!$mysqli->query('DROP DATABASE IF EXISTS `' . $dbName . '`')) {
-    fwrite(STDERR, 'INVALID RED (class D): DROP DATABASE failed: ' . $mysqli->error . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): DROP DATABASE failed (driver detail suppressed)' . PHP_EOL);
     exit(2);
 }
 if (!$mysqli->query('CREATE DATABASE `' . $dbName . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci')) {
-    fwrite(STDERR, 'INVALID RED (class D): CREATE DATABASE failed: ' . $mysqli->error . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): CREATE DATABASE failed (driver detail suppressed)' . PHP_EOL);
     exit(2);
 }
 $mysqli->close();
-$out('[PASS] S1 isolated probe database created (dropped + re-created): ' . $dbName);
+$out('[PASS] S1 isolated probe database created (dropped + re-created)');
 
 // ============================================================================
 // 2) Isolated wp-tests-config for this probe only.
@@ -175,7 +189,7 @@ $out('[PASS] S1 isolated probe database created (dropped + re-created): ' . $dbN
 
 $configDir = sys_get_temp_dir() . '/cpms-red1-probe-' . $probePid;
 if (!is_dir($configDir) && !@mkdir($configDir, 0777, true) && !is_dir($configDir)) {
-    fwrite(STDERR, 'INVALID RED (class D): cannot create ' . $configDir . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): cannot create probe config directory' . PHP_EOL);
     exit(2);
 }
 
@@ -206,7 +220,7 @@ $configBody = str_replace(
 );
 $configFile = $configDir . '/wp-tests-config.php';
 if (file_put_contents($configFile, $configBody) === false) {
-    fwrite(STDERR, 'INVALID RED (class D): cannot write ' . $configFile . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): cannot write probe config file' . PHP_EOL);
     exit(2);
 }
 define('WP_TESTS_CONFIG_FILE_PATH', $configFile);
@@ -225,8 +239,7 @@ try {
     require_once $testsDir . '/includes/bootstrap.php';
 } catch (Throwable $e) {
     fwrite(STDERR, 'INVALID RED (class D): WordPress/bootstrap failed before the probe could run: '
-        . get_class($e) . ': ' . $e->getMessage()
-        . ' @ ' . $e->getFile() . ':' . $e->getLine() . PHP_EOL);
+        . get_class($e) . ' @ ' . basename($e->getFile()) . ':' . (int) $e->getLine() . PHP_EOL);
     exit(3);
 }
 
@@ -243,7 +256,7 @@ try {
     App::migrations()->migrate();
 } catch (Throwable $e) {
     fwrite(STDERR, 'INVALID RED (class D): migration failed: '
-        . get_class($e) . ': ' . $e->getMessage() . PHP_EOL);
+        . get_class($e) . ' @ ' . basename($e->getFile()) . ':' . (int) $e->getLine() . PHP_EOL);
     exit(3);
 }
 
@@ -268,8 +281,8 @@ $run = static function (string $id, string $title, callable $fn) use (&$results,
         $ok     = true;
     } catch (Throwable $e) {
         $ok     = false;
-        $detail = get_class($e) . ': ' . $e->getMessage()
-            . ' @ ' . basename($e->getFile()) . ':' . $e->getLine();
+        $detail = get_class($e)
+            . ' @ ' . basename($e->getFile()) . ':' . (int) $e->getLine();
 
         // Which CONSTRUCTOR in the rest_api_init chain reached the eager ambient
         // scope dependency? The exception is always raised deep inside
@@ -305,7 +318,7 @@ $insertRow = static function (string $table, array $data, string $label): int {
 
     $ok = $wpdb->insert($wpdb->prefix . $table, $data);
     if (!$ok) {
-        throw new RuntimeException('fixture insert failed (' . $label . '): ' . $wpdb->last_error);
+        throw new RuntimeException('fixture insert failed (' . $label . ')');
     }
     $id = (int) $wpdb->insert_id;
     if ($id <= 0) {
@@ -427,11 +440,7 @@ $run('S3', 'seed two non-trivial real Clinics + persisted Clinic B clinician + f
 
     $fixture['slotB'] = ['slot_id' => $slotId, 'date' => $date, 'time' => $time];
 
-    return 'org=' . $fixture['orgId']
-        . ' clinicA=' . $fixture['clinicAId']
-        . ' clinicB=' . $fixture['clinicBId']
-        . ' clinicianB=' . $fixture['clinicianB']
-        . ' slotB=' . $slotId . ' (' . $date . ' ' . $time . ' Asia/Tehran)';
+    return 'clinics=2 (non-trivial ids) · clinicianB=1 · slotB=free-future (ids suppressed)';
 });
 
 // ============================================================================
@@ -508,19 +517,17 @@ $run('S6', 'GET /clinic/v1/health is reachable (HTTP 200)', static function () u
     $response = rest_do_request(new WP_REST_Request('GET', '/clinic/v1/health'));
     $status   = $response->get_status();
     if ($status !== 200) {
-        throw new RuntimeException(
-            'health returned HTTP ' . $status . ' — ' . wp_json_encode($response->get_data())
-        );
+        throw new RuntimeException('health returned HTTP ' . $status);
     }
 
-    return 'HTTP 200 · ' . wp_json_encode($response->get_data());
+    return 'HTTP 200';
 });
 
 // ============================================================================
 // S7 — anonymous A1 for the persisted Clinic B clinician must reach the route
 // ============================================================================
 
-$run('S7', 'anonymous A1 GET /clinic/v1/availability for the Clinic B clinician reaches the product route', static function () use ($fixture, $routeRegistered): string {
+$run('S7', 'anonymous A1 GET /clinic/v1/availability for the Clinic B clinician reaches the product route', static function () use ($fixture, $routeRegistered, $boundedCode): string {
     $routeRegistered('/clinic/v1/availability');
 
     wp_set_current_user(0);
@@ -531,7 +538,7 @@ $run('S7', 'anonymous A1 GET /clinic/v1/availability for the Clinic B clinician 
     $response = rest_do_request($request);
     $status   = $response->get_status();
     $data     = $response->get_data();
-    $code     = is_array($data) ? (string) ($data['code'] ?? '') : '';
+    $code     = $boundedCode($data);
 
     if ($status === 404 && $code === 'rest_no_route') {
         throw new RuntimeException(
@@ -539,15 +546,14 @@ $run('S7', 'anonymous A1 GET /clinic/v1/availability for the Clinic B clinician 
         );
     }
 
-    return 'HTTP ' . $status . ' · code=' . ($code === '' ? '(none — normal envelope)' : $code)
-        . ' · body=' . substr((string) wp_json_encode($data), 0, 220);
+    return 'HTTP ' . (int) $status . ' · code=' . ($code === '' ? '(none — normal envelope)' : $code);
 });
 
 // ============================================================================
 // S8 — anonymous A4 for Clinic B must reach a normal product envelope
 // ============================================================================
 
-$run('S8', 'anonymous A4 POST /clinic/v1/booking/quote for Clinic B reaches a normal product envelope', static function () use ($fixture, $routeRegistered): string {
+$run('S8', 'anonymous A4 POST /clinic/v1/booking/quote for Clinic B reaches a normal product envelope', static function () use ($fixture, $routeRegistered, $boundedCode): string {
     $routeRegistered('/clinic/v1/booking/quote');
 
     wp_set_current_user(0);
@@ -561,7 +567,7 @@ $run('S8', 'anonymous A4 POST /clinic/v1/booking/quote for Clinic B reaches a no
     $response = rest_do_request($request);
     $status   = $response->get_status();
     $data     = $response->get_data();
-    $code     = is_array($data) ? (string) ($data['code'] ?? '') : '';
+    $code     = $boundedCode($data);
 
     if ($status === 404 && $code === 'rest_no_route') {
         throw new RuntimeException(
@@ -569,8 +575,7 @@ $run('S8', 'anonymous A4 POST /clinic/v1/booking/quote for Clinic B reaches a no
         );
     }
 
-    return 'HTTP ' . $status . ' · code=' . ($code === '' ? '(none — normal envelope)' : $code)
-        . ' · body=' . substr((string) wp_json_encode($data), 0, 220);
+    return 'HTTP ' . (int) $status . ' · code=' . ($code === '' ? '(none — normal envelope)' : $code);
 });
 
 // ============================================================================
