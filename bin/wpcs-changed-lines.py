@@ -93,7 +93,7 @@ NUMSTAT_ROW_RE = re.compile(r"^(?P<added>-|\d+)\t(?:-|\d+)\t.*$")
 
 DIFF_HEADER_PREFIX = "diff --git "
 
-GIT_QUOTE_SAFE = ["-c", "core.quotePath=false"]
+GIT_STABLE_CONFIG = ["-c", "core.quotePath=false", "-c", "color.ui=false"]
 
 
 class CollectorError(RuntimeError):
@@ -103,7 +103,7 @@ class CollectorError(RuntimeError):
 def git(args: Sequence[str], cwd: Optional[str] = None, check: bool = True,
         env: Optional[dict] = None) -> subprocess.CompletedProcess:
     """Run git with a stable configuration and capture its output."""
-    cmd = ["git", *GIT_QUOTE_SAFE, *args]
+    cmd = ["git", *GIT_STABLE_CONFIG, *args]
     proc = subprocess.run(
         cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
     )
@@ -718,8 +718,43 @@ def test_root_scope_includes_php_harness(base: Path) -> None:
            "harness added lines disagree with numstat")
 
 
+def test_forced_git_color_does_not_break_diff_parsing(base: Path) -> None:
+    """Collector parsing stays stable when the caller forces colored Git output."""
+    repo = _fixture_init(base, "forced-git-color")
+    _fixture_write(repo, "plugin/src/Thing.php", "<?php\n\n$x = 1;\n")
+    baseline = _fixture_commit(repo, "baseline")
+    _fixture_write(repo, "plugin/src/Thing.php", "<?php\n\n$x = 1;\n$y = 2;\n")
+    _fixture_commit(repo, "add line under forced color config")
+
+    keys = ("GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_VALUE_0")
+    previous = {key: os.environ.get(key) for key in keys}
+    os.environ["GIT_CONFIG_COUNT"] = "1"
+    os.environ["GIT_CONFIG_KEY_0"] = "color.ui"
+    os.environ["GIT_CONFIG_VALUE_0"] = "always"
+    try:
+        rc, out = _run_cli(
+            ["--baseline", baseline,
+             "--files-out", str(base / "forced-color-files.txt"),
+             "--added-out", str(base / "forced-color-added.txt")],
+            cwd=str(repo / "plugin")
+        )
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    _check(rc == EXIT_OK, f"collector failed under forced Git color: {out.strip()[:300]}")
+    _check(_read_lines(base / "forced-color-files.txt") == ["src/Thing.php"],
+           "forced-color collector file list is wrong")
+    _check(_read_lines(base / "forced-color-added.txt") == ["src/Thing.php:4"],
+           "forced-color collector did not capture the added line")
+
+
 SELF_TESTS = (
     ("repository-root scope includes .github PHP and product violations", test_root_scope_includes_php_harness),
+    ("forced Git color does not corrupt diff-header parsing", test_forced_git_color_does_not_break_diff_parsing),
     ("corrected path handling collects the added violating line (defect reproduced in legacy form)",
      test_added_violating_line_is_collected),
     ("deletion-only / no-added-line changes never falsely fail", test_deletion_only_change_does_not_fail),

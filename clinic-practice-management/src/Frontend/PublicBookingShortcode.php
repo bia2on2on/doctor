@@ -1029,11 +1029,10 @@ final class PublicBookingShortcode
             );
             $lines[] = sprintf( '<option value="">%s</option>', esc_html( self::SPECIALTY_ALL ) );
             foreach ( $specialties as $specialty ) {
-                $specialty = (string) $specialty;
                 $lines[] = sprintf(
                     '<option value="%1$s">%2$s</option>',
-                    esc_attr( $specialty ),
-                    esc_html( self::specialty_display_label( $specialty ) )
+                    esc_attr( (string) $specialty ),
+                    esc_html( self::specialty_display_label( (string) $specialty ) )
                 );
             }
             $lines[] = '</select>';
