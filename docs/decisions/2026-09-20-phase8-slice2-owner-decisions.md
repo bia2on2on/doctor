@@ -71,7 +71,7 @@ Clinicِ نوبت گره نمی‌زند (نه mobile، نه purpose، نه Sett
   resolve/link نمی‌کند؛ پاکت یکنواخت صفردسترسی برای هر کد معتبر؛ بدون Session،
   بدون `LOGIN_SUCCESS`. `{mobile}@otp.cpms.local` هیچ مبنای هویتی ندارد.
   دسترسی فقط از طریق حساب WP صریحاً link‌شده توسط staff؛ بیمار جدید در B2
-  confirm ساخته می‌شود. موبایل مشترک هرگز مبنای ownership/access نیست.
+  confirm ساخته می‌شود. **(یادداشت اصلاحی ۲۰۲۶-۱۱-۱۰، round 9):** این جمله/بندِ تفسیرِ بالا فقط برای مسیر سازگاری Historical-NULL صداقت دارد: یعنی Hold تاریخیِ `patient_id=NULL` با مالک OTP و صفر لینک فعال در Clinic، محدود به TTL نگهداری Hold (`booking.hold_ttl_sec`، پیش‌فرض ۶۰۰ ثانیه، قابل تنظیم)؛ روی نصب‌هایی که migration `2026_09_20_0022_slot_holds_patient_binding` اعمال شده باشد، Hold جدیدِ پس از OD-A هرگز در این شکل ساخته نمی‌شود (B1 برای callerهای resolve-پذیر `patient_id` را می‌فشارد؛ callerِ صفرلینک اصلاً به INSERT نمی‌رسد). reachability این مسیر در نصب‌های pre-0022 ادعا نمی‌شود.** موبایل مشترک هرگز مبنای ownership/access نیست.
   (متن اصلی برای تاریخچه باقی ماند.)
 
 ## شمارهٔ Migration

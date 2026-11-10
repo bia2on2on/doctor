@@ -46,7 +46,7 @@
 > یابیدن/هویت نیست و fallback هویت از ایمیل پل در `BookingService::mobile_for_user_in_clinic()`
 > در ۲۰۲۶-۱۱-۱۰ حذف شد (fail-closed؛ `CLINIC_VALIDATION_FAILED`). از این پس holder_mobile در
 > Hold فقط از Patient لینک‌شدهٔ همان Clinic مشتق می‌شود؛ بیمار جدید در B2 confirm ساخته
-> می‌شود. موبایل مشترک هرگز مبنای ownership/access نیست. جدول برای حفظ تاریخچه دست‌نخورده
+> می‌شود. **(یادداشت اصلاحی ۲۰۲۶-۱۱-۱۰، round 9):** این بندِ تفسیر فقط برای مسیر سازگاری Historical-NULL صداقت دارد — یعنی Hold تاریخیِ `patient_id=NULL` با مالک OTP و صفر لینک فعال در Clinic، محدود به TTL نگهداری Hold (`booking.hold_ttl_sec`، پیش‌فرض ۶۰۰ ثانیه، قابل تنظیم)؛ روی نصب‌هایی که migration `2026_09_20_0022_slot_holds_patient_binding` اعمال شده باشد، Hold جدیدِ پس از OD-A هرگز در این شکل ساخته نمی‌شود (B1 برای callerهای resolve-پذیر `patient_id` را می‌فشارد؛ callerِ صفرلینک اصلاً به INSERT نمی‌رسد). reachability این مسیر در نصب‌های pre-0022 ادعا نمی‌شود. موبایل مشترک هرگز مبنای ownership/access نیست. جدول برای حفظ تاریخچه دست‌نخورده
 > باقی مانده است.
 
 ## GAP-2 (Note — بلاکی نیست)
