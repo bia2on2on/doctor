@@ -6,9 +6,14 @@
  * Regression coverage for the public clinician rendering:
  *  - H1: the clinician name must be published through
  *        `DoctorDisplayName::with_title_or_fallback()` so the title is the
- *        proper Persian display label (added when missing, collapsed when the
- *        stored value already carries one, never doubled). The public surface
- *        previously rendered the raw stored `full_name`.
+ *        proper Persian display label (title added when missing, collapsed when
+ *        the stored value already carries one, never doubled). The public
+ *        surface previously rendered the raw stored `full_name`. The
+ *        'پزشک' name fallback of `with_title_or_fallback()` is unreachable on
+ *        this surface because clinician rows with an empty name are filtered
+ *        before rendering (`PublicBookingShortcode::active_clinicians()` and
+ *        `PublicClinicDirectory::clinicians_by_clinic()`), so this suite does
+ *        not assert it.
  *  - H2: the clinician specialty shown in the clinician item and in the
  *        specialty filter must resolve recognised catalogue values through
  *        `MedicalSpecialtyCatalog` (canonical Persian label) while preserving
@@ -105,6 +110,24 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
             $html,
             'The doubled title must not be published.'
         );
+
+        // Latin 'Dr.' title -> titled Persian label; both raw ('dr') and
+        // titled ('دکتر') forms must be searchable through data-search.
+        self::assertStringContainsString(
+            '<span class="cpms-public-booking__clinician-name">دکتر Smith</span>',
+            $html,
+            'A Latin Dr. title must be published as the titled Persian label.'
+        );
+        self::assertStringContainsString(
+            'data-search="دکتر smith"',
+            $html,
+            'data-search must contain the normalised titled name.'
+        );
+        self::assertStringContainsString(
+            'data-search="dr. smith"',
+            $html,
+            'data-search must contain the normalised raw name so "dr" matches.'
+        );
     }
 
     // ================= H2 — specialty resolves through the catalogue =================
@@ -113,11 +136,12 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
     {
         $html = $this->render((string) $this->clinic);
 
-        // Catalogue slug -> canonical Persian label; raw key kept for filtering.
+        // Catalogue slug -> canonical Persian label; data-specialty carries the
+        // SAME resolved value as the filter option so the JS exact-match works.
         self::assertStringContainsString(
-            'data-specialty="cardiology"',
+            'data-specialty="متخصص قلب و عروق"',
             $html,
-            'The raw catalogue key must remain in data-specialty.'
+            'data-specialty carries the resolved catalogue label (same as the filter option value).'
         );
         self::assertStringContainsString(
             '<span class="cpms-public-booking__clinician-specialty">متخصص قلب و عروق</span>',
@@ -146,10 +170,30 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
 
         // Empty specialty publishes no specialty span.
         self::assertSame(
-            4,
+            5,
             preg_match_all('#cpms-public-booking__clinician-specialty#', $html),
             'Exactly the clinicians with a non-empty specialty publish a specialty span.'
         );
+
+        // F2: no two filter options share visible text (catalogue aliases
+        // 'cardiology' and 'متخصص قلب و عروق' resolve to one option).
+        $optionLabels = [];
+        preg_match_all('#<option value="([^"]+)">([^<]+)</option>#', $html, $optionMatches, PREG_SET_ORDER);
+        $labels = array_map(fn (array $m): string => $m[2], $optionMatches);
+        self::assertSame(
+            count($labels),
+            count(array_unique($labels)),
+            'No two filter options may share visible text.'
+        );
+        // Each option value equals its visible label (both resolved through
+        // the same catalogue resolver).
+        foreach ( $optionMatches as $match ) {
+            self::assertSame(
+                $match[1],
+                $match[2],
+                'Filter option value must equal its resolved visible label.'
+            );
+        }
 
         // Hostile custom text stays escaped; no raw markup leaks to the browser.
         self::assertStringContainsString(
@@ -172,11 +216,12 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
         $html = $this->render('all');
 
         self::assertStringContainsString('data-mode="discovery"', $html, 'Discovery mode must be announced.');
-        // Option value = raw key, label = resolved catalogue label.
+        // Option value = resolved catalogue label, same as data-specialty;
+        // the raw slug must not appear as the option value either.
         self::assertStringContainsString(
-            '<option value="cardiology">متخصص قلب و عروق</option>',
+            '<option value="متخصص قلب و عروق">متخصص قلب و عروق</option>',
             $html,
-            'The filter option for a catalogue slug must show the Persian label.'
+            'The filter option value and label are both the resolved catalogue label.'
         );
         // Option value = raw custom text, label unchanged.
         self::assertStringContainsString(
@@ -261,6 +306,17 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
             'clinic_id' => $this->clinic,
             'full_name' => 'امیر حسنی',
             'specialty' => 'فلوشیپ ناباروری"><script>alert(1)</script>',
+            'is_active' => 1,
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], ['%d', '%s', '%s', '%d', '%s', '%s']);
+
+        // c6: Latin 'Dr.' title, catalogue slug specialty — exercises that both
+        // the raw name ('dr') and the titled name ('دکتر') are searchable.
+        $this->insertRow('cpms_clinicians', [
+            'clinic_id' => $this->clinic,
+            'full_name' => 'Dr. Smith',
+            'specialty' => 'cardiology',
             'is_active' => 1,
             'created_at' => $now,
             'updated_at' => $now,

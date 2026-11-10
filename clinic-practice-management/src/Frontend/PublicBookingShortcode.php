@@ -828,8 +828,8 @@ final class PublicBookingShortcode
             esc_attr( self::ROOT_CLASS . '__doctor' ),
             $clinic_id,
             $id,
-            esc_attr( $specialty ),
-            esc_attr( self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) ) ),
+            esc_attr( $specialty_label ),
+            esc_attr( self::normalize_search_text( $name . ' ' . DoctorDisplayName::with_title_or_fallback( $name ) ) ),
             esc_attr( implode( ' ', array_map( 'intval', $location_ids ) ) )
         );
         $lines[] = sprintf(
@@ -1032,11 +1032,23 @@ final class PublicBookingShortcode
                 esc_attr( $specialty_id )
             );
             $lines[] = sprintf( '<option value="">%s</option>', esc_html( self::SPECIALTY_ALL ) );
+            // Derive option value AND visible label from the SAME resolver
+            // (catalog label when found, otherwise the raw value exactly as
+            // stored) so the JS exact-match on data-specialty always finds the
+            // chosen option; dedupe by resolved value and order by resolved
+            // label so catalogue aliases (e.g. 'cardiology' and
+            // 'متخصص قلب و عروق') render a single option.
+            $resolvedSpecialties = [];
             foreach ( $specialties as $specialty ) {
+                $resolvedSpecialties[] = self::specialty_display_label( (string) $specialty );
+            }
+            $resolvedSpecialties = array_values( array_unique( $resolvedSpecialties ) );
+            sort( $resolvedSpecialties, SORT_STRING );
+            foreach ( $resolvedSpecialties as $label ) {
                 $lines[] = sprintf(
                     '<option value="%1$s">%2$s</option>',
-                    esc_attr( (string) $specialty ),
-                    esc_html( self::specialty_display_label( (string) $specialty ) )
+                    esc_attr( $label ),
+                    esc_html( $label )
                 );
             }
             $lines[] = '</select>';

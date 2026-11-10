@@ -1588,7 +1588,11 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         );
         self::assertIsString($name, 'precondition: clinician ' . $clinicianId . ' must exist in the fixture.');
 
-        return (string) $name;
+        // expectation synchronised with the owner-reported defect: raw stored
+        // doctor title must not be shown (install round 11). The public surface
+        // now renders the titled display label ('دکتر ...'), so the test
+        // expectation must match the published value rather than the stored one.
+        return 'دکتر ' . preg_replace( '/^Dr\.\s+/u', '', (string) $name );
     }
 
     /**
