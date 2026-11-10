@@ -5484,3 +5484,67 @@ from the WPCS ruleset by design, and production added lines are 0). Commit basis
 origin/main..HEAD at the time this entry was written (5 from rounds 1–3 + this entry's commit).
 PR #340 remains DRAFT; merging is NOT authorized; any CI result for this round is reported in the
 round-4 report and PR body only after observation, never pre-asserted here.
+
+## 2026-11-10 — OTP slice 1, round 5: fix the one self-inflicted round-4 realignment (tests-only)
+
+Context. Round-4 CI (run 42785679740, attempt 1, sticky comment 6763281829) ended with exactly
+two Integration failures: the untouched Day2 hazard, and
+`SchedulingLocationLocalBoundaryRedTest::testRepeatedNewYorkSlotIsNeverOfferedHeldOrConfirmed` —
+an id THIS branch made red by converting its legacy zero-link actor into a FIXTURE-LINK actor.
+That fixture contradicts the test's own pinned invariants: the rejected confirm must release the
+Hold (`status='released'`, slot `held_count=0`), must create NO Patient for the previously
+unlinked actor (pin asserts 0 rows), and must leave patients/links/audits/idempotency state
+byte-equal. Round-4's assumption "hold remains active/retryable after validation failure" is true
+for the naming/duplicate-mobile gates but FALSE for the locked-DST-check failure class, whose
+established compensation releases the Hold (BookingService confirm catch → `guarded_capacity_write`
+`SET status='released'` + `release_hold`, then idem release; `BookingException
+CLINIC_VALIDATION_FAILED` is not in the SUSPENDED/LOCK_BUSY/SCOPE_REQUIRED exemption that skips
+compensation).
+
+Correction of arithmetic in the round-4 entry and report (append-only; noted here): the round-4
+classification is FIXTURE-LINK **11** (ids: BookingFlowTest::testDoubleBookingPrevented;
+BookingRaceLossAlternativesTest ×5; LicenseOrdinaryExpirationClinicalNewBusinessTest ×2;
+Phase8Slice4PublicDiscoverySharedClinicTest ×2; SchedulingLocationLocalBoundaryRedTest ×1),
+SEEDED **6** (BookingFlowTest ×3; Phase8Slice3LinkedPatientBookingSubjectRedTest ×3), HELPER **1**
+(OtpPossessionOnlyTest), NONE **1** (Day2OperationalWorkflowsTest). Round-4 text said "12 FIXTURE-LINK"
+— an arithmetic miscount of the same id list; the set 1,5–11,15–17 contains 11 ids. No behavioral
+conclusion in round 4 changes.
+
+Round-5 change (ONE file, tests-only):
+`SchedulingLocationLocalBoundaryRedTest::testRepeatedNewYorkSlotIsNeverOfferedHeldOrConfirmed` —
+the round-4 fixture-link (legacy Patient insert + link + corrected comment) is REVERTED to the
+pre-round-4 form (`git show 31553a2b:...`), and the minimal change is applied: the legacy Hold is
+seeded directly as a persisted row of the historical shape (patient_id NULL, holder = the zero-link
+OTP actor, held_count claimed=1, 600s TTL, token = bin2hex(18 bytes) fitting CHAR(36)). Every
+pinned assertion is kept at equal strictness: availability hidden; quote and hold rejected with
+CLINIC_VALIDATION_FAILED (hold via the linked-actor `makePatientUser()` branch, confirm via the
+seeded zero-link Hold); no appointment; patients/links/audits snapshot-equal before/after
+(snapshots now after the seed — no Patient exists for the seed); previously-unlinked-mobile patient
+count == 0; audit-table count equal; idempotency reservation released (count 0); hold transitioned
+to 'released'; slot booked_count=0 and held_count=0; slot_date/slot_time unchanged (ambiguous
+repeated instant persisted). The confirm exercises the fail-closed path exactly as written:
+holder/ownership check → M5 session-clinic check → status/expiry → license → frozen-null-subject
+branch → B1b/B2 … → transaction → candidate/slot locks → locked-slot revalidation →
+`BookingWindow::slotUtcInstant(...)` returns null for the repeated instant →
+CLINIC_VALIDATION_FAILED thrown at the locked DST check (pre-identity) → rollback → compensation
+releases the Hold and clears held_count → `idem->release`. No Patient can be created on this path.
+
+Nothing else changed. Specifically NOT changed: production code (empty `src` diff), `.github`,
+Day2 test, harness, other 18 realigned ids, schema/migrations/data. A re-audit of the other 16
+round-4-realigned tests (§ report C) found no additional unlinked-pin neutralization: all SEEDED
+ids preserve their confirm-side subjects by construction; the linked-Patient fixtures of the 10
+other FIXTURE-LINK ids serve race-loss arbitration, T0 licensing, slot-clinic persistence and
+capacity arbitration subjects — none pins "the previously unlinked Patient must remain nonexistent"
+or "rejected confirm releases the Hold", and none was a zero-link leg of an assertion pair. The two
+remaining round-4/round-5 facts stand as observed: Day2 unchanged (cause HYPOTHESIS), and one CI
+red id outside Day2 existed at round-4 observation.
+
+Pre-push checks re-run this round (outputs in the round-5 report): workflow contract unittest OK;
+workflow YAML OK; companion-isolation PASS; tenant-tripwire 3 pre-existing suspects, 0 hardcodes;
+changed-lines WPCS collector: 0 in-scope files; `php -l` NOT AVAILABLE. No claim is made here
+about this round's CI; CI is observed after the push and reported in the round-5 report and PR body,
+never pre-asserted.
+
+Commit basis at the time this entry was written: 7 commits on origin/main..HEAD (6 from rounds 1–4
++ this entry's commit). PR #340 stays DRAFT; merging is NOT authorized; two independent reviews and
+explicit owner approval remain required.
