@@ -5393,3 +5393,94 @@ Round-3 content (ONE commit, only item A permits production changes):
 
 NOT claimed in this entry (by design): any CI outcome, any green checkmark, any Day2 classification.
 Merging is NOT authorized; two independent reviews and explicit owner approval are required.
+
+## 2026-11-09 — OTP slice 1, round 4: realign the round-3 red suite to owner decision A (item A KEPT)
+
+Context. Round-3 CI (run 42778868016, Integration job, sticky comment 6762406288) ended red:
+tests=2782 assertions=76217 failures=9 errors=10 skipped=0, 19 ids (error_categories:
+ClinicCoreDomainBookingBookingException=10, PHPUnitFrameworkExpectationFailedException=9).
+This entry is append-only and supersedes nothing in the round-3 entry (which correctly could
+not know the blast radius). Owner decision (manager, delegated): keep item A exactly as merged
+into the working branch — the bridge-email fallback `{mobile}@otp.cpms.local` is gone from
+`mobile_for_user_in_clinic()`; a pre-OD-A marker session with zero linked active Patient in the
+booking Clinic fails closed at Hold (`CLINIC_VALIDATION_FAILED`, HTTP 400). Do not revert.
+Round-3 blast radius is therefore **Integration 1 → 19**: 17 ids from item A (the tests seeded
+zero-link bridge-email fixtures whose only mobile source WAS that fallback, or were otherwise
+built on zero-link actors originating Holds), 1 self-inflicted helper defect
+(`auditCountForMobile` — `AuditLogger::sanitize()` re-masks `mobile` to `***NNNN`, so the LIKE
+inside `after_json` could never match; round 3 already switched the measurement to that LIKE,
+which was insufficient), plus 1 Day2 id unrelated to this change.
+
+Classification of the 19 ids (full table with file:line and per-id reasoning lives in the round-4
+report; counts here are authoritative): **FIXTURE-LINK 12, SEEDED 6, HELPER 1, NONE 1. FLIP count: 0.**
+No test was deleted, skipped, weakened, or un-flipped; no acceptance harness, Day2 test, workflow,
+or production code was edited (`git diff 31553a2b… -- clinic-practice-management/src` and `-- .github`
+both empty).
+
+- FIXTURE-LINK (add an active Patient + active `cpms_patient_user_links` row in the booking
+  Clinic for the fixture actor — the access basis under OD-A; all other assertions unchanged):
+  BookingFlowTest::testDoubleBookingPrevented (test-LOCAL Patient 'MR-TEST-0002'/'09120000002',
+  linked only inside that test; the setUp `otherUserId` stays patientless because the identity
+  tests assert the new-patient flow from zero links).
+  BookingRaceLossAlternativesTest ×5 (testHoldRaceLossSuggestsUpToFiveSameDateSameLocationFreeAlternatives,
+  testConfirmFinalAtomicClaimLossSuggestsAlternativesFromPersistedLosingSlot,
+  testHoldRaceLossWithNoEligibleAlternativeYieldsEmptyAlternativesList,
+  testPositiveControlSuccessfulHoldAndConfirmRemainUnchanged,
+  testPositiveControlConfirmIdempotentReplayRemainsUnchanged): link inserted inside
+  `makePatientUser()`.
+  LicenseOrdinaryExpirationClinicalNewBusinessTest ×2 (testBookingRechecksT0AfterCapacityAndSlotLockWaits —
+  'expiry_lock_public'/09127770888; testPublicHoldAndPreT0HoldConfirmationCannotBookAfterT0 —
+  'expiry_public'/09127770999): link helper `linkBridgePatient()`.
+  Phase8Slice4PublicDiscoverySharedClinicTest ×2 (testHoldForSharedClinicianPersistsTheSlotClinic,
+  testHoldIgnoresHostileClinicClaimLikeThePinnedSlice2Contract): the shared-Clinician fixture user
+  (09121234999) is now Patient+link in Clinic B — the booking Clinic (holds persist the SLOT's
+  Clinic). The stale "email convention is the established mobile authority" fixture comment was
+  corrected to state the link-is-basis rule.
+  SchedulingLocationLocalBoundaryRedTest::testRepeatedNewYorkSlotIsNeverOfferedHeldOrConfirmed:
+  the legacy-Hold OTP actor (makeUnlinkedOtpUser() call site only) gets a test-LOCAL active
+  Patient+link before the hold, so the hold is originable while the confirm must still fail at
+  the locked DST check with ZERO side effects — the patients/links/audits snapshot assertions are
+  unchanged and still bite. The stale "deliberately has no Patient or link" comment was corrected.
+- SEEDED (persisted Hold of the historical shape — patient_id NULL, holder = the fixture bridge
+  identity, held_count claimed — seeded directly; zero-link OTP identities can no longer originate
+  Holds, and the confirm-side subject of each test is unchanged):
+  BookingFlowTest::testPatientAutoCreatedForNewUser,
+  BookingFlowTest::testBookingConfirmReusesVerifiedIdentityAndAuditsLinkage,
+  BookingFlowTest::testBookingConfirmAuditFailureRollsBackNewPatientAndIdentity
+  (new helper `seedBridgeHold()`; previously these zero-link actors reached confirm only via the
+  removed hold-side fallback);
+  Phase8Slice3LinkedPatientBookingSubjectRedTest::testUnlinkedSameMobilePatientIsNotReusedOrAutoLinked,
+  ::testZeroLinkedNewPatientRequiresNamesAtB2AndCreatesPatientInBookingClinic,
+  ::testHistoricalNullHoldCompatibilityBounded (0-linked case only; the 1-linked and >1-linked
+  cases are unchanged; new helper `seedLegacyNullHoldRow()`). What is given up, explicitly: the
+  REST B1-returns-200 precondition is unrepresentable post-OD-A by design (R5/R6-style restore).
+- HELPER (audit measurement defect, not an OTP/unit defect):
+  OtpPossessionOnlyTest::testValidCodeForSharedMobileAcrossOrganizationsYieldsZeroAccess —
+  `auditCountForMobile()` (phone-keyed LIKE that could never match the double-masked persisted
+  value) is replaced by baseline-by-row-id helpers: `auditMaxIdForAction()` (MAX(id) before the
+  action) and `auditCountActionSince()` (COUNT where id > baseline), per audit event type.
+  Non-vacuous by construction: a missing OTP_VERIFY_OK write flips the +1 expectation to red; a
+  reintroduced LOGIN_SUCCESS (session issued) flips the 0-delta expectation to red. The 503
+  control test was switched to the same mechanism (expects 0). The obsolete MobileValidator
+  import was removed.
+- NONE: Day2OperationalWorkflowsTest::testRescheduleOptionsHonorsClinicMaxFutureDaysAndLocationTimezoneBoundaries —
+  absolutely not edited, not rerun, not expected green; round-3 time-collision hypothesis (only after
+  UTC 2026-11-10 20:30) remains UNPROVEN and is reported as a hypothesis only.
+
+Two process notes. First, the full pre-edit table was built and reconciled against the 19 CI ids
+BEFORE any file changed (83 test methods reach the hold path by static scan; 17 of them are the
+CI-red item-A set; the other 66 act with linked Patients or assert fail-closed; the two remaining
+red ids are reachable only via otpService::verify (the HELPER id) and the reschedule flow (Day2)).
+Static reasoning only — PHP was NOT executed in this sandbox (no php binary; a PHP-8-aware parser
+was unavailable), so the table and all fixture reasoning are static and CI is the proof, as ever.
+Second, no FLIP-class test was needed: the removed fallback was never the subject of any test —
+it was only ever the (now removed) means by which fixtures reached the gate; every id was preserved
+by fixture repair or audit-measurement repair.
+
+NOT claimed in this entry: any CI outcome, any green checkmark, any Day2 classification, WPCS or
+PHPCS results (php-l and PHPCS were not run locally — no PHP runtime; CI is the oracle; the
+changed-lines collector reports 0 in-scope PHP files for this round because tests/ is excluded
+from the WPCS ruleset by design, and production added lines are 0). Commit basis: 6 commits on
+origin/main..HEAD at the time this entry was written (5 from rounds 1–3 + this entry's commit).
+PR #340 remains DRAFT; merging is NOT authorized; any CI result for this round is reported in the
+round-4 report and PR body only after observation, never pre-asserted here.

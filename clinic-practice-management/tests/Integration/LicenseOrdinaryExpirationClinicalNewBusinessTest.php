@@ -118,6 +118,43 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         return $id;
     }
 
+    /**
+     * owner decision A (2026-11-09): an @otp.cpms.local email is no longer an
+     * identity basis — link the fixture's OTP user to a Patient in the booking
+     * Clinic so the personal-identity path applies.
+     */
+    private function linkBridgePatient(int $userId, string $mobile, string $mrnPrefix): void
+    {
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
+                     (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
+                 VALUES (%d, %s, "Bridge", "Patient", %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
+                $mrnPrefix . '-' . bin2hex(random_bytes(3)),
+                $mobile,
+                $now,
+                $now
+            )
+        );
+        $patientId = (int) $wpdb->insert_id;
+        $this->assertGreaterThan(0, $patientId, 'fixture: bridge patient created');
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
+                     (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
+                 VALUES (%d, %d, %d, %s, 1, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
+                $patientId,
+                $userId,
+                $mobile,
+                $now
+            )
+        );
+    }
+
     private function expiredGateway(): VendorGateway
     {
         return new class($this) implements VendorGateway {
@@ -252,6 +289,9 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         );
         $slot = $this->makeSlot(2, '13:20');
         $user = (int) wp_create_user('expiry_lock_public', 'pass-12345', '09127770888@otp.cpms.local');
+        // owner decision A (2026-11-09): shared mobile is never an ownership basis —
+        // the booking actor must carry an active Patient link in the booking Clinic.
+        $this->linkBridgePatient($user, '09127770888', 'MR-EXP-LOCK');
         cpms_test_seed_patient_session($user, $this->clinicId);
         // First demonstrate a hold capacity lock returning after T0.
         $cross = function (string $sql) use (&$now): string {
@@ -321,6 +361,9 @@ final class LicenseOrdinaryExpirationClinicalNewBusinessTest extends WP_UnitTest
         $slot = $this->makeSlot(2, '11:20');
         $user = (int) wp_create_user('expiry_public', 'pass-12345', '09127770999@otp.cpms.local');
         (new \WP_User($user))->set_role('cpms_patient');
+        // owner decision A (2026-11-09): shared mobile is never an ownership basis —
+        // the booking actor must carry an active Patient link in the booking Clinic.
+        $this->linkBridgePatient($user, '09127770999', 'MR-EXP-PUB');
         cpms_test_seed_patient_session($user, $this->clinicId);
         $hold = App::bookingService()->hold($user, $this->clinicianId, $slot['date'], '11:20');
         $this->assertNotEmpty($hold['hold_token']);

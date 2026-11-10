@@ -6,7 +6,6 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Otp\OtpPolicy;
-use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
 
@@ -127,8 +126,12 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
 
         $usersBefore = $this->userCount();
         $linksBefore = $this->linkCount();
-        $loginAuditBefore = $this->auditCountForMobile('LOGIN_SUCCESS', self::MOBILE);
-        $verifyOkBefore = $this->auditCountForMobile('OTP_VERIFY_OK', self::MOBILE);
+        // Baseline-by-row-id (owner-facing audit-count defect, fixed 2026-11-10):
+        // AuditLogger::sanitize() re-masks `mobile` to '***NNNN', so a LIKE on
+        // after_json can never match what MobileValidator::mask produced.
+        // Capture the high-water mark per event type and count rows after it.
+        $loginAuditBefore = $this->auditMaxIdForAction('LOGIN_SUCCESS');
+        $verifyOkBefore = $this->auditMaxIdForAction('OTP_VERIFY_OK');
 
         $result = App::otpService()->verify(self::MOBILE, '424242', \ClinicCore\Application\Auth\OtpService::PURPOSE_LOGIN);
 
@@ -141,8 +144,8 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         self::assertSame($usersBefore, $this->userCount(), 'no wp_users row may be created.');
         self::assertSame($linksBefore, $this->linkCount(), 'no Patient link may be created in ANY clinic.');
         self::assertSame(0, $this->linksForPatientMobile(self::MOBILE), 'no link may exist for any same-mobile Patient.');
-        self::assertSame($loginAuditBefore, $this->auditCountForMobile('LOGIN_SUCCESS', self::MOBILE), 'owner decision A: no session means no LOGIN_SUCCESS.');
-        self::assertSame($verifyOkBefore + 1, $this->auditCountForMobile('OTP_VERIFY_OK', self::MOBILE), 'the mandatory possession audit is still written.');
+        self::assertSame(0, $this->auditCountActionSince('LOGIN_SUCCESS', $loginAuditBefore), 'owner decision A: no session means no LOGIN_SUCCESS is written.');
+        self::assertSame(1, $this->auditCountActionSince('OTP_VERIFY_OK', $verifyOkBefore), 'the mandatory possession audit is still written exactly once.');
     }
 
     public function testValidCodeForSharedMobileAcrossClinicsOfOneOrganizationYieldsZeroAccess(): void
@@ -240,7 +243,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
     {
         $_SERVER['REMOTE_ADDR'] = '203.0.113.99';
         $tokenId = $this->seedToken(self::MOBILE_503, '123456');
-        $verifyOkBefore = $this->auditCountForMobile('OTP_VERIFY_OK', self::MOBILE_503);
+        $verifyOkBefore = $this->auditMaxIdForAction('OTP_VERIFY_OK');
 
         Settings::flushCache();
         $this->failSettingsBulkReads();
@@ -262,8 +265,8 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
             'the challenge must NOT be consumed while settings are unreadable.'
         );
         self::assertSame(
-            $verifyOkBefore,
-            $this->auditCountForMobile('OTP_VERIFY_OK', self::MOBILE_503),
+            0,
+            $this->auditCountActionSince('OTP_VERIFY_OK', $verifyOkBefore),
             'no OTP_VERIFY_OK audit may be written while settings are unreadable.'
         );
     }
@@ -332,21 +335,34 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
     }
 
     /**
-     * Audit events for $action attributed to THIS test's phone, matched by the
-     * masked mobile inside after_json (OtpService::audit persists the mask as
-     * the `after` change-set; the mask is deterministic for a given mobile).
-     *
-     * Scoping to this phone is deliberate: the audit table is shared and
-     * append-only across the suite, so an absolute zero-count over the whole
-     * table is not a stable assertion for any single test. A phone-scoped
-     * delta cannot be polluted by other tests' phones, and it is still a
-     * strict check — a failure names this test's own audit rows.
+     * Highest audit-row id recorded for $action (0 when none). Combined with
+     * auditCountActionSince() this gives a strictly-correct before/after
+     * delta: the audit table is shared and append-only across the suite, and
+     * AuditLogger::sanitize() re-masks the `mobile` change-set to '***NNNN',
+     * so a value-scoped LIKE can never match reliably. A row-id baseline is
+     * exact and cannot be polluted by other tests' rows.
      */
-    private function auditCountForMobile(string $action, string $mobile): int
+    private function auditMaxIdForAction(string $action): int
+    {
+        $row = App::db()->fetchRow(
+            'SELECT MAX(id) AS max_id FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s',
+            [$action]
+        );
+
+        return (int) ($row['max_id'] ?? 0);
+    }
+
+    /**
+     * Number of audit rows for $action with id strictly greater than $baseline.
+     * Non-vacuous by construction: if the OTP path writes (or fails to write)
+     * the event, this delta flips from 0 to at least 1 (or stays 0), failing the
+     * caller's expectation accordingly.
+     */
+    private function auditCountActionSince(string $action, int $baseline): int
     {
         return (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s AND after_json LIKE %s',
-            [$action, '%"mobile":"' . MobileValidator::mask($mobile) . '"%']
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s AND id > %d',
+            [$action, $baseline]
         );
     }
 

@@ -570,9 +570,11 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         $this->locationB = $this->insertLocation($this->clinicB, 'Main B P8S4', 'main-b-p8s4-' . $this->uid, 1, $now);
         $this->locationInactive = $this->insertLocation($this->clinicNoLocation, 'Closed P8S4', 'closed-p8s4-' . $this->uid, 0, $now);
 
-        // The booking patient of the B1 case: an OTP-shaped account whose email
-        // embeds the verified mobile (`<mobile>@otp.cpms.local`), which is the
-        // established mobile authority used by BookingService::mobileForUser().
+        // The booking patient of the B1 case: linked to a Patient in Clinic B
+        // (the booking Clinic). owner decision A (2026-11-09) removed the
+        // bridge-email mobile fallback — a `<mobile>@otp.cpms.local` email is no
+        // longer an identity basis; the active Patient/User link in the booking
+        // Clinic is the access basis.
         $wpUserId = (int) wp_insert_user([
             'user_login' => 'p8s4-shared-' . $this->uid,
             'user_email' => '09121234999@otp.cpms.local',
@@ -581,6 +583,24 @@ final class Phase8Slice4PublicDiscoverySharedClinicTest extends WP_UnitTestCase
         ]);
         self::assertGreaterThan(0, $wpUserId, 'Fixture WordPress user must be created.');
         $this->patientUserId = $wpUserId;
+        $sharedPatientId = $this->insertRow('cpms_patients', [
+            'clinic_id' => $this->clinicB,
+            'mrn' => 'MR-P8S4-SHARED-' . bin2hex(random_bytes(3)),
+            'first_name' => 'مشترک',
+            'last_name' => 'بیمار',
+            'mobile' => '09121234999',
+            'status' => 'active',
+            'created_at' => $now,
+            'updated_at' => $now,
+        ], ['%d', '%s', '%s', '%s', '%s', '%s', '%s', '%s']);
+        $this->insertRow('cpms_patient_user_links', [
+            'clinic_id' => $this->clinicB,
+            'patient_id' => $sharedPatientId,
+            'wp_user_id' => $wpUserId,
+            'mobile_at_link' => '09121234999',
+            'is_primary' => 1,
+            'linked_at' => $now,
+        ], ['%d', '%d', '%d', '%s', '%d', '%s']);
         cpms_test_seed_patient_session($this->patientUserId, $this->clinicB);
 
         // Shared clinician: home Clinic A, ACTIVE membership in Clinic B.

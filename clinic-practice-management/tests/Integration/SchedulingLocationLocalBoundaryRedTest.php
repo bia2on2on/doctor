@@ -482,10 +482,39 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
 
         // A hold that pre-dates this policy must not be converted into an
         // appointment if its persisted slot later resolves to a repeated time.
-        // This OTP-shaped identity deliberately has no Patient or Patient/User
-        // link. Confirm would create both on a valid slot, so it exposes whether
-        // the final locked DST check happens before every identity side effect.
+        // owner decision A (2026-11-09) removed the bridge-email mobile fallback,
+        // so the booking actor must carry an active Patient link in the booking
+        // Clinic; the rejection-with-no-side-effects contract is unchanged — a
+        // confirm rejected at the locked DST check must still create nothing and
+        // mutate nothing (patients/links/audits below are snapshotted before it).
         [$patientUserId, $mobile] = $this->makeUnlinkedOtpUser();
+        $legacyNow = App::db()->nowUtcSql();
+        $legacyPatientId = (int) $wpdb->insert(
+            App::db()->table('cpms_patients'),
+            [
+                'clinic_id' => $this->clinicId,
+                'mrn' => 'MR-P6S2-LEG-' . bin2hex(random_bytes(3)),
+                'first_name' => 'Legacy',
+                'last_name' => 'Hold',
+                'mobile' => $mobile,
+                'status' => 'active',
+                'created_at' => $legacyNow,
+                'updated_at' => $legacyNow,
+            ]
+        ) ? (int) $wpdb->insert_id : 0;
+        self::assertGreaterThan(0, $legacyPatientId, 'fixture: legacy Patient created');
+        $legacyLinkId = (int) $wpdb->insert(
+            App::db()->table('cpms_patient_user_links'),
+            [
+                'clinic_id' => $this->clinicId,
+                'patient_id' => $legacyPatientId,
+                'wp_user_id' => $patientUserId,
+                'mobile_at_link' => $mobile,
+                'is_primary' => 1,
+                'linked_at' => $legacyNow,
+            ]
+        ) ? (int) $wpdb->insert_id : 0;
+        self::assertGreaterThan(0, $legacyLinkId, 'fixture: legacy link created');
         $legacyClinicianId = $this->insertClinician('Dr Legacy Hold');
         $legacySlotId = $this->insertSlot($legacyClinicianId, $this->locNewYork, $date, '03:00:00');
         $hold = $svc->hold($patientUserId, $legacyClinicianId, $date, '03:00:00', $legacySlotId);
