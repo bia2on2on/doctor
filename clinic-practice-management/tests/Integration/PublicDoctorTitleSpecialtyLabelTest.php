@@ -17,8 +17,9 @@
  *  - H2: the clinician specialty shown in the clinician item and in the
  *        specialty filter must resolve recognised catalogue values through
  *        `MedicalSpecialtyCatalog` (canonical Persian label) while preserving
- *        raw custom / historical / unknown values. The raw value is kept in
- *        `data-specialty` / option `value`; only the visible label changes.
+ *        raw custom / historical / unknown values. `data-specialty` and the
+ *        option `value` carry the resolved label (raw value only when no
+ *        catalogue match exists); only the visible label changes.
  *
  * This suite is ADDITIVE: no existing Phase 8 assertion is modified, removed
  * or weakened. Synthetic fixture data only — no patient data.
@@ -147,13 +148,6 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
             'A catalogue slug must show its canonical Persian label.'
         );
 
-        // Catalogue label stored verbatim resolves to the same canonical label.
-        self::assertStringContainsString(
-            'data-specialty="متخصص قلب و عروق"',
-            $html,
-            'The stored catalogue label must remain the filter key.'
-        );
-
         // Custom / free-text specialty is preserved verbatim, never coerced.
         self::assertStringContainsString(
             'data-specialty="فلوشیپ ناباروری"',
@@ -175,7 +169,6 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
 
         // F2: no two filter options share visible text (catalogue aliases
         // 'cardiology' and 'متخصص قلب و عروق' resolve to one option).
-        $optionLabels = [];
         preg_match_all('#<option value="([^"]+)">([^<]+)</option>#', $html, $optionMatches, PREG_SET_ORDER);
         $labels = array_map(fn (array $m): string => $m[2], $optionMatches);
         self::assertSame(

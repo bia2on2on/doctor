@@ -478,6 +478,11 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
             'Tenant safety: the Clinic A surface must never expose a Clinic B clinician name.'
         );
         self::assertStringNotContainsString(
+            $this->clinicianRawNameOf($this->clinicianB),
+            $html,
+            'Tenant safety: the Clinic A surface must never expose a Clinic B clinician raw name.'
+        );
+        self::assertStringNotContainsString(
             self::CLINICIAN_ID_ATTR . '="' . $this->clinicianB . '"',
             $html,
             'Tenant safety: the Clinic A surface must never expose a Clinic B clinician id.'
@@ -555,6 +560,11 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
             $this->clinicianNameOf($this->clinicianAInactive),
             $html,
             'An INACTIVE clinician must not be listed by name on the public surface.'
+        );
+        self::assertStringNotContainsString(
+            $this->clinicianRawNameOf($this->clinicianAInactive),
+            $html,
+            'An INACTIVE clinician raw name must not appear on the public surface.'
         );
     }
 
@@ -1144,6 +1154,13 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
                 $context . ': a fail-closed surface must not leak clinician name "' . $name . '".'
             );
         }
+        foreach ($this->allClinicianRawNames() as $name) {
+            self::assertStringNotContainsString(
+                $name,
+                $html,
+                $context . ': a fail-closed surface must not leak clinician raw name "' . $name . '".'
+            );
+        }
     }
 
     /**
@@ -1596,6 +1613,21 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
     }
 
     /**
+     * Return the raw stored clinician name (no title applied) for negative
+     * leak assertions: the raw value may still appear in data-search even
+     * when the visible name is titled.
+     */
+    private function clinicianRawNameOf( int $clinicianId ): string {
+        global $wpdb;
+        $raw = $wpdb->get_var(
+            $wpdb->prepare( 'SELECT full_name FROM ' . $wpdb->prefix . 'cpms_clinicians WHERE id = %d', $clinicianId ) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+        );
+        self::assertIsString( $raw, 'precondition: clinician ' . $clinicianId . ' must exist in the fixture.' );
+
+        return (string) $raw;
+    }
+
+    /**
      * @return list<string>
      */
     private function allClinicianNames(): array
@@ -1611,6 +1643,28 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         foreach ($ids as $id) {
             if ($id > 0) {
                 $names[] = $this->clinicianNameOf($id);
+            }
+        }
+        self::assertNotSame([], $names, 'precondition: the fixture must own clinicians.');
+
+        return $names;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function allClinicianRawNames(): array {
+        $ids = [
+            $this->clinicianA,
+            $this->clinicianANoSlots,
+            $this->clinicianAInactive,
+            $this->clinicianB,
+            $this->clinicianEmptyInactive,
+        ];
+        $names = [];
+        foreach ($ids as $id) {
+            if ($id > 0) {
+                $names[] = $this->clinicianRawNameOf($id);
             }
         }
         self::assertNotSame([], $names, 'precondition: the fixture must own clinicians.');

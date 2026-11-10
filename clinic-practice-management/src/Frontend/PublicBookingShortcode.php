@@ -818,12 +818,12 @@ final class PublicBookingShortcode
         $weekdays        = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
         // data-search: titled name plus raw name when raw adds new terms.
-        $nameRaw   = self::normalize_search_text( $name );
-        $nameTitle = self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) );
-        if ( $nameRaw === $nameTitle || str_contains( $nameTitle, $nameRaw ) ) {
-            $nameSearch = $nameTitle;
+        $name_raw   = self::normalize_search_text( $name );
+        $name_title = self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) );
+        if ( $name_raw === $name_title || str_contains( $name_title, $name_raw ) ) {
+            $name_search = $name_title;
         } else {
-            $nameSearch = $nameTitle . ' ' . $nameRaw;
+            $name_search = $name_title . ' ' . $name_raw;
         }
 
         $lines = [];
@@ -838,7 +838,7 @@ final class PublicBookingShortcode
             $clinic_id,
             $id,
             esc_attr( $specialty_label ),
-            esc_attr( $nameSearch ),
+            esc_attr( $name_search ),
             esc_attr( implode( ' ', array_map( 'intval', $location_ids ) ) )
         );
         $lines[] = sprintf(
@@ -870,8 +870,9 @@ final class PublicBookingShortcode
      * Recognised catalogue aliases resolve to their canonical Persian label;
      * any unrecognised custom or historical value is returned exactly as
      * stored so nothing is silently dropped or forced into a wrong bucket.
-     * The raw `$specialty` value itself is untouched — it remains the filter
-     * key (`data-specialty` / option `value`); only the visible label changes.
+     * `data-specialty` and the filter option `value` carry the resolved label
+     * (raw value only when no catalogue match exists); the visible label is
+     * always the resolved value.
      */
     private static function specialty_display_label( string $specialty ): string {
         $match = MedicalSpecialtyCatalog::find( $specialty );
@@ -1046,13 +1047,13 @@ final class PublicBookingShortcode
             // stored) so the JS exact-match on data-specialty always finds the
             // chosen option; dedupe by resolved value and order by resolved
             // label so catalogue aliases render a single option.
-            $resolvedSpecialties = [];
+            $resolved_specialties = [];
             foreach ( $specialties as $specialty ) {
-                $resolvedSpecialties[] = self::specialty_display_label( (string) $specialty );
+                $resolved_specialties[] = self::specialty_display_label( (string) $specialty );
             }
-            $resolvedSpecialties = array_values( array_unique( $resolvedSpecialties ) );
-            sort( $resolvedSpecialties, SORT_STRING );
-            foreach ( $resolvedSpecialties as $label ) {
+            $resolved_specialties = array_values( array_unique( $resolved_specialties ) );
+            sort( $resolved_specialties, SORT_STRING );
+            foreach ( $resolved_specialties as $label ) {
                 $lines[] = sprintf(
                     '<option value="%1$s">%2$s</option>',
                     esc_attr( $label ),
