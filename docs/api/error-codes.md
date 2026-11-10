@@ -35,7 +35,7 @@
 | `CLINIC_INVALID_TRANSITION` | 409 | Transition نامعتبر در State Machine (شامل تکرار/Double Complete) |
 | `CLINIC_POLICY_VIOLATION` | 409 | نقض Policy کسب‌وکار (لغو/جابه‌جا خارج از بازه مجاز) |
 | `CLINIC_OVERPAYMENT` | 422 | مبلغ پرداخت بیش از باقیمانده فاکتور |
-| `CLINIC_IDEMPOTENCY_REPLAY` | 200 | تکرار درخواست با `Idempotency-Key` شناخته‌شده — **پاسخ Origin** بازمی‌گردد (خطا نیست) |
+| `CLINIC_IDEMPOTENCY_REPLAY` | 200 | تکرار درخواست با `Idempotency-Key` شناخته‌شده — **پاسخ Origin** بازمی‌گردد (خطا نیست). **تفکیکِ مسیرها (۲۰۲۶-۱۱-۱۰):** در `booking/confirm`، `appointments/{id}/reschedule` و `handwriting/page` (جدولِ `cpms_idempotency_keys`) بدنهٔ ذخیره‌شده **بدونِ هیچ نشانگرِ اضافی** با 200 بازمی‌گردد؛ در D13 (ثبتِ پرداخت) بدنه **بازساخته** می‌شود و این کد به‌صورتِ `code` در سطحِ بالای یک پاسخِ موفقِ 200 همراهِ `idempotent_replay: true` می‌آید — یعنی `message`/`data` پاکتِ خطا را ندارد و مصرف‌کننده نباید آن را خطا تلقی کند. |
 | `CLINIC_FILE_INVALID` | 400 | فایل آپلود‌شده نامعتبر (MIME/اندازه/نوع) |
 | `CLINIC_CONFLICT` | 409 | Conflict نگارشی (مثلاً Handwriting: `client_revision` ≠ `version` سرور) |
 | `CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE` | 503 | سایتِ از-پیش-فعال روی موتور دیتابیسِ خارج از مجموعهٔ مجاز قرار گرفته و مهاجرتِ schema در انتظار است — فقط caller دارای capability `manage_options` این کدِ دقیق را می‌گیرد؛ مسیرهای بالینی موقتاً متوقف‌اند (پاسخ بدون دادهٔ بیمار) |

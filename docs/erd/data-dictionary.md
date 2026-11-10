@@ -111,14 +111,18 @@
 ## 7. `cpms_idempotency_keys`
 | فیلد | نوع | Null | DF | توضیح |
 |---|---|---|---|---|
-| key | VARCHAR(128) | | | **U** (کlient-generated UUID) |
-| clinic_id | BIGINT UNSIGNED | | | |
-| wp_user_id | BIGINT UNSIGNED | N | | |
-| endpoint | VARCHAR(190) | | | |
-| response_code | SMALLINT | | | |
+| key | VARCHAR(128) | | | UUID سمتِ کلاینت؛ **بخشی از UNIQUE پنج‌ستونهٔ `u_idem_scope`** (تنها یکتا نیست — تصحیح ۲۰۲۶-۱۱-۱۰) |
+| clinic_id | BIGINT UNSIGNED | | | بخشی از `u_idem_scope`؛ DEFAULT 1 در Migration `0016` حذف شد |
+| wp_user_id | BIGINT UNSIGNED | | 0 | NOT NULL DEFAULT 0 پس از Migration `0006` (NULL→0) |
+| endpoint | VARCHAR(190) | | | بخشی از `u_idem_scope` |
+| context_id | BIGINT UNSIGNED | | 0 | پس از Migration `0006`: NOT NULL DEFAULT 0؛ مثلاً PageId دست‌خط یا شناسهٔ نوبت در reschedule |
+| status | TINYINT | | 0 | `0=pending`، `1=done` (`Idempotency::STATUS_*`) |
+| response_code | SMALLINT | N | | کدِ HTTP پاسخِ ذخیره‌شده |
 | response_json | JSON | N | | برای replay دقیق |
 | created_at | DATETIME(3) | | | |
 > پاک‌سازی 90 روز.
+>
+> **یادداشت (۲۰۲۶-۱۱-۱۰؛ پایه: `main` = `643150e`):** یکتاییِ مؤثر پس از Migration `2026_09_09_0020` = `UNIQUE u_idem_scope(key, endpoint, wp_user_id, context_id, clinic_id)` — پیش از آن چهارستونه بود (`0006`) و پیش‌تر `UNIQUE(key)` (`0001`)؛ متن و تاریخچهٔ نسخه‌های قبلی در تاریخچهٔ Git حفظ شده است. `clinic_id` بخشی از دامنه است، پس همان کلید در Clinicِ دیگر مجاز است و پاسخِ Clinicِ دیگر بازپخش نمی‌شود. **شکافِ کد نسبت به تصمیمِ مالک (۲۰۲۶-۱۱-۰۸؛ `docs/status/ledger.md` §3.2):** هیچ ستونِ اثرانگشت/هشِ درخواست وجود ندارد، پس «همان کلید + مشخصاتِ متفاوت» امروز رد نمی‌شود (پاسخِ قبلی بازپخش می‌شود). ثبتِ پرداخت (D13) از این جدول استفاده نمی‌کند و یکتایی‌اش `UNIQUE(invoice_id, idempotency_key)` روی `cpms_payments` است.
 
 ## 8. `cpms_schedule` (برنامه هفتگی)
 | فیلد | نوع | Null | DF | توضیح |
@@ -574,7 +578,7 @@
 | audit_logs | append-only; 4 idx |
 | notifications | U(dedupe_key) null-able |
 | jobs | idx(status,run_after,priority) |
-| idempotency_keys | U(key) |
+| idempotency_keys | U(key,endpoint,wp_user_id,context_id,clinic_id) — پس از Migration 0020؛ پیش‌تر U(key,endpoint,wp_user_id,context_id) (0006) و U(key) (0001) |
 
 > Transactional Notes:
 > - `book_final`: BEGIN → SELECT slot FOR UPDATE → check hold+slot → INSERT appointment → UPDATE slot (convert) → UPDATE hold(converted) → COMMIT.
