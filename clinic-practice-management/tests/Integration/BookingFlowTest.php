@@ -329,6 +329,37 @@ final class BookingFlowTest extends WP_UnitTestCase
 
     public function testDoubleBookingPrevented(): void
     {
+        global $wpdb;
+        // owner decision A (2026-11-09): shared mobile is never an ownership/access
+        // basis — the bridge-email fallback is gone, so a booking actor must carry an
+        // active Patient link in the booking Clinic. Link the fixture's second user
+        // locally (this test only) so the hold reaches capacity arbitration.
+        $now = App::db()->nowUtcSql();
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
+                     (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
+                 VALUES (%d, %s, "Double", "Booking", %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
+                'MR-TEST-0002',
+                '09120000002',
+                $now,
+                $now
+            )
+        );
+        $otherPatientId = (int) $wpdb->insert_id;
+        $wpdb->query(
+            $wpdb->prepare(
+                'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
+                     (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
+                 VALUES (%d, %d, %d, %s, 1, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $this->clinicId,
+                $otherPatientId,
+                $this->otherUserId,
+                '09120000002',
+                $now
+            )
+        );
         $slot = $this->makeSlot(3, '10:00', 1);
         $this->booking()->hold($this->patientUserId, $this->clinicianId, $slot['date'], $slot['time']);
 
@@ -431,7 +462,12 @@ final class BookingFlowTest extends WP_UnitTestCase
     {
         global $wpdb;
         $slot = $this->makeSlot(3, '10:00', 1);
-        $hold = $this->booking()->hold($this->otherUserId, $this->clinicianId, $slot['date'], $slot['time']);
+        // owner decision A (2026-11-09): a zero-link OTP identity can no longer
+        // originate a Hold via hold() — under personalised-identity rules the
+        // new-patient flow starts from a persisted Hold of the historical shape.
+        // Seed it directly (patient_id NULL, holder = the bridge identity) so the
+        // confirm-side subject of this test is unchanged.
+        $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
         // Phase 8 Slice 2 (تصمیم مالک ۲): بیمارِ جدید در زمان confirm به نام/
         // نام‌خانوادگی نیاز دارد — همان قرارداد، اکنون در سطح Service.
         $result = $this->booking()->confirm($hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی');
@@ -486,7 +522,10 @@ final class BookingFlowTest extends WP_UnitTestCase
         $identityService->link_user( $organizationId, $identityId, $this->otherUserId, '09120000002' );
 
         $slot = $this->makeSlot( 3, '11:00', 1 );
-        $hold = $this->booking()->hold( $this->otherUserId, $this->clinicianId, $slot['date'], $slot['time'] );
+        // owner decision A (2026-11-09): zero-link OTP identities cannot originate a
+        // Hold anymore — seed the persisted (historical, patient_id NULL) Hold so the
+        // confirm-side subject is unchanged.
+        $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
         $this->booking()->confirm( $hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی' );
 
         $patient = $wpdb->get_row(
@@ -523,7 +562,10 @@ final class BookingFlowTest extends WP_UnitTestCase
     {
         global $wpdb;
         $slot = $this->makeSlot( 3, '12:00', 1 );
-        $hold = $this->booking()->hold( $this->otherUserId, $this->clinicianId, $slot['date'], $slot['time'] );
+        // owner decision A (2026-11-09): zero-link OTP identities cannot originate a
+        // Hold anymore — seed the persisted (historical, patient_id NULL) Hold so the
+        // confirm-side rollback subject is unchanged.
+        $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
         $beforeIdentities = (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identities' )
         );
@@ -579,6 +621,33 @@ final class BookingFlowTest extends WP_UnitTestCase
             (int) App::db()->fetchValue( "SELECT COUNT(*) FROM {$audit} WHERE action = %s", [ 'PATIENT_IDENTITY_LINKED' ] ),
             'link success evidence cannot survive the failed transaction'
         );
+    }
+
+    /**
+     * Seed a direct persistent Hold row for the bridge-email fixture user:
+     * the same column set hold() persists, with patient_id NULL (the historical
+     * shape) and the slot's held_count claimed — the exact precondition the
+     * confirm-side tests need now that the bridge-email fallback is removed
+     * (owner decision A, 2026-11-09). Returns the hold token.
+     */
+    private function seedBridgeHold(int $slotId, int $userId, string $mobile): string
+    {
+        $token = $this->uuid();
+        App::db()->insert('cpms_slot_holds', [
+            'clinic_id' => $this->clinicId,
+            'slot_id' => $slotId,
+            'holder_wp_user_id' => $userId,
+            'holder_mobile' => $mobile,
+            'token' => $token,
+            'expires_at' => gmdate('Y-m-d H:i:s.000', time() + 600),
+            'status' => 'active',
+            'created_at' => App::db()->nowUtcSql(),
+            'patient_id' => null,
+        ]);
+        // Mirror the capacity claim hold() performs atomically.
+        App::db()->update('cpms_schedule_slots', ['held_count' => 1], ['id' => $slotId]);
+
+        return $token;
     }
 
     private function failAuditInserts(): void

@@ -532,14 +532,20 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
             [self::FX_CLINICIAN_ID, self::FX_CLINIC_ID, 'Dr RaceLoss', $now, $now]
         ));
 
-        // Race winner and loser — patient identity resolved from the
-        // @otp.cpms.local email convention (mobile = local part).
+        // Race winner and loser — each carries an active Patient + link in the
+        // fixture Clinic. owner decision A (2026-11-09) removed the bridge-email
+        // mobile fallback (an @otp.cpms.local email is no longer an identity
+        // basis); the link is the access basis.
         $this->winnerUserId = $this->makePatientUser('09123140001', 'winner');
         $this->loserUserId = $this->makePatientUser('09123140002', 'loser');
     }
 
     private function makePatientUser(string $mobile, string $label): int
     {
+        global $wpdb;
+
+        $db = App::db();
+        $now = $db->nowUtcSql();
         $userId = wp_create_user(
             'raceloss_' . $label . '_' . bin2hex(random_bytes(4)),
             'pass-12345',
@@ -547,6 +553,18 @@ final class BookingRaceLossAlternativesTest extends WP_UnitTestCase
         );
         self::assertNotWPError($userId, 'fixture: patient user created');
         self::assertGreaterThan(0, (int) $userId, 'fixture: patient user created');
+        // owner decision A (2026-11-09): shared mobile is never an ownership basis —
+        // the booking actor must carry an active Patient link in the booking Clinic.
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (%d, %s, %s, %s, %s, "active", %s, %s)',
+            [self::FX_CLINIC_ID, 'MR-RL-' . strtoupper($label) . '-' . bin2hex(random_bytes(3)), 'Race', $label, $mobile, $now, $now]
+        ));
+        $patientId = (int) $wpdb->insert_id;
+        self::assertGreaterThan(0, $patientId, 'fixture: patient created');
+        $wpdb->query($wpdb->prepare(
+            'INSERT INTO ' . $db->table('cpms_patient_user_links') . ' (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at) VALUES (%d, %d, %d, %s, 1, %s)',
+            [self::FX_CLINIC_ID, $patientId, (int) $userId, $mobile, $now]
+        ));
         cpms_test_seed_patient_session((int) $userId, self::FX_CLINIC_ID);
 
         return (int) $userId;

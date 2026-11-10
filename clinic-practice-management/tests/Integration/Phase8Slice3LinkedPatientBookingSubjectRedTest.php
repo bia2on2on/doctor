@@ -364,14 +364,11 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
 
         $slot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '12:00:00', 1);
 
-        $hold = $this->restPost(self::NS . self::HOLD_PATH, [
-            'clinician_id' => $this->clinicianA,
-            'slot_date' => $slot['date'],
-            'slot_time' => $slot['time'],
-            'slot_id' => $slot['slot_id'],
-        ], asUserId: $userId, withNonce: true);
-        self::assertSame(200, $hold->get_status(), 'B1 for 0-linked should succeed (Hold with no bound Patient). Body: ' . wp_json_encode($hold->get_data()));
-        $holdToken = (string) ($hold->get_data()['data']['hold_token'] ?? '');
+        // owner decision A (2026-11-09): a zero-link OTP identity cannot originate a Hold
+        // via B1 anymore, so this test's subject (the confirm-side same-mobile non-reuse
+        // rule) starts from a persisted Hold of the historical shape (patient_id NULL) —
+        // seed it directly.
+        $holdToken = $this->seedLegacyNullHoldRow($this->clinicA, $slot['slot_id'], $userId, $mobile);
         self::assertNotSame('', $holdToken);
 
         // B2 with valid names — DB uniqueness would prevent creating another patient with same mobile.
@@ -556,14 +553,11 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
 
         $slot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '16:00:00', 1);
 
-        $hold = $this->restPost(self::NS . self::HOLD_PATH, [
-            'clinician_id' => $this->clinicianA,
-            'slot_date' => $slot['date'],
-            'slot_time' => $slot['time'],
-            'slot_id' => $slot['slot_id'],
-        ], asUserId: $userId, withNonce: true);
-        self::assertSame(200, $hold->get_status(), 'B1 for 0 linked must create Hold with unbound/new subject. Body: ' . wp_json_encode($hold->get_data()));
-        $holdToken = (string) ($hold->get_data()['data']['hold_token'] ?? '');
+        // owner decision A (2026-11-09): a zero-link OTP identity cannot originate a Hold
+        // via B1 anymore, so this test's subject (B2 new-patient flow, names required,
+        // Patient created in the booking Clinic) starts from a persisted Hold of the
+        // historical shape (patient_id NULL) — seed it directly.
+        $holdToken = $this->seedLegacyNullHoldRow($this->clinicA, $slot['slot_id'], $userId, $mobile);
         self::assertNotSame('', $holdToken);
         // Subject remains unbound/new — if column exists, it should be NULL.
         if ($this->slotHoldsHasPatientIdColumn()) {
@@ -1078,14 +1072,10 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $this->setRole($user0, 'cpms_patient');
         cpms_test_seed_patient_session($user0, $this->clinicA);
         $slot0 = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '07:00:00', 1);
-        $hold0 = $this->restPost(self::NS . self::HOLD_PATH, [
-            'clinician_id' => $this->clinicianA,
-            'slot_date' => $slot0['date'],
-            'slot_time' => $slot0['time'],
-            'slot_id' => $slot0['slot_id'],
-        ], asUserId: $user0, withNonce: true);
-        self::assertSame(200, $hold0->get_status(), 'Historical 0 linked: B1 succeeds.');
-        $token0 = (string) ($hold0->get_data()['data']['hold_token'] ?? '');
+        // owner decision A (2026-11-09): B1 for a zero-link identity cannot succeed
+        // anymore; the "historical 0 linked" case is by definition a Hold persisted
+        // before that rule — seed the row of the historical shape directly.
+        $token0 = $this->seedLegacyNullHoldRow($this->clinicA, $slot0['slot_id'], $user0, $mobile0);
         // B2 without names must fail validation (new patient path).
         $c0 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $token0,
@@ -1518,6 +1508,32 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $table = $wpdb->prefix . 'cpms_slot_holds';
         $col = $wpdb->get_row("SHOW COLUMNS FROM {$table} LIKE 'patient_id'", ARRAY_A); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
         return $col !== null;
+    }
+
+    /**
+     * Seed a direct persistent Hold row of the historical (pre-B1-binding) shape:
+     * patient_id NULL with the slot's held_count claimed — what a Hold created before
+     * owner decision A (2026-11-09) looks like today. Zero-link OTP identities can no
+     * longer create Holds via hold(), so confirm-side fixtures start here.
+     */
+    private function seedLegacyNullHoldRow(int $clinicId, int $slotId, int $userId, string $mobile): string
+    {
+        $token = $this->uuid();
+        App::db()->insert('cpms_slot_holds', [
+            'clinic_id' => $clinicId,
+            'slot_id' => $slotId,
+            'holder_wp_user_id' => $userId,
+            'holder_mobile' => $mobile,
+            'token' => $token,
+            'expires_at' => gmdate('Y-m-d H:i:s.000', time() + 600),
+            'status' => 'active',
+            'created_at' => App::db()->nowUtcSql(),
+            'patient_id' => null,
+        ]);
+        // Mirror the capacity claim hold() performs atomically.
+        App::db()->update('cpms_schedule_slots', ['held_count' => 1], ['id' => $slotId]);
+
+        return $token;
     }
 
     /**

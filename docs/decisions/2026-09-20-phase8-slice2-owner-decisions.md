@@ -65,11 +65,14 @@ Clinicِ نوبت گره نمی‌زند (نه mobile، نه purpose، نه Sett
   Challenge مرجعِ سیاست OTP، جست‌وجوی Patient و Clinicِ لینک است. ردیفِ
   تاریخی NULL: تک-Clinic = resolver تثبیت‌شده؛ چند-Clinic = fail-closed
   صریح. کلیدهای cooldown/lockout هویت‌سطح می‌مانند.
-- **بازاستفاده هویت:** پیش از ساخت کاربر، `{mobile}@otp.cpms.local`
-  جست‌وجو و در صورت وجود بازاستفاده می‌شود (همان user_id،
-  `is_new_user=false`، بدون ردیف wp_users تکراری؛ بدون جدول هویت جدید؛
-  بدون merge تخریبی Patient). لینک بیمار فقط اگر Patient در Clinicِ Challenge
-  وجود داشته باشد.
+- **بازاستفاده هویت:** ~~پیش از ساخت کاربر، `{mobile}@otp.cpms.local`
+  جست‌وجو و در صورت وجود بازاستفاده می‌شود~~ **منسوخ — تصمیم مالک ۲۰۲۶-۱۱-۰۹
+  (OD-A، Option A):** تأیید OTP هیچ کاربری نمی‌سازد/نمی‌یابد و هیچ Patientی را
+  resolve/link نمی‌کند؛ پاکت یکنواخت صفردسترسی برای هر کد معتبر؛ بدون Session،
+  بدون `LOGIN_SUCCESS`. `{mobile}@otp.cpms.local` هیچ مبنای هویتی ندارد.
+  دسترسی فقط از طریق حساب WP صریحاً link‌شده توسط staff؛ بیمار جدید در B2
+  confirm ساخته می‌شود. **(یادداشت اصلاحی ۲۰۲۶-۱۱-۱۰ — round 9 منتشر شد، متن همان annotation در round 10 با توصیف راستی‌آزمایی‌شده تصحیح شد):** این جمله/بندِ تفسیرِ بالا فقط برای مسیر سازگاری Historical-NULL صداقت دارد: یعنی دو گروه ردیف: (i) ردیفی که روی نصبی درج شد که در همان لحظه ستونِ `patient_id` در `cpms_slot_holds` وجود نداشت (migration `2026_09_20_0022_slot_holds_patient_binding` اعمال نشده بود — در آن نصب ستون وجود ندارد و هیچ Holdی آن ستون را درج نمی‌کند)، و (ii) ردیفِ legacy که **پیش از اعمال** آن migration درج شد و NULL باقی ماند — migration **بدون backfill** است (ستون BIGINT UNSIGNED NULL + FK؛ پیش‌بررسیِ orphan با abort)؛ هر Holdِ تازه روی نصبی که migration را اعمال کرده باشد برای callerِ لینک‌دار `patient_id` را persist می‌کند. سازندهٔ نمای (i): هر کاربرِ احرازشدهٔ WP با نقش `cpms_patient` که **≥۱ Patientِ فعالِ لینک‌شده در Clinicِ نوبت** داشته باشد — این شرط لازم است ولی کافی نیست (مسیر REST به گیت RuntimeSchemaGate، nonce معتبر و کاربر موجود و نقش `cpms_patient`، rate limit، مجوز `OP_APPOINTMENT_BOOK`، clinician/slot/Location و Organization فعال، همخوانی session scope، پنجرهٔ زمانی، ظرفیت آزاد و audit موفق نیاز دارد) — و صفرلینک‌ها پیش از INSERT رد می‌شوند: یا زودتر با `CLINIC_SCOPE_REQUIRED`/۴۰۰ در گیت scope (نبودِ markerِ current یا ناهم‌خوانی Clinic)، یا با markerِ current در گیت پروفایل با `CLINIC_VALIDATION_FAILED`/۴۰۰ (`BookingService.php:567`)؛ هیچ‌کدام به INSERT نمی‌رسند. پس این ردیف‌ها نه «مالکِ OTP» دارند و نه الزامیِ «صفر لینک». پنجرهٔ فعالِ این Hold با انقضای `booking.hold_ttl_sec` (پیش‌فرض ۶۰۰ ثانیه، قابل تنظیم) بسته می‌شود — ردیف از جدول حذف نمی‌شود (`HoldsExpireHandler` فقط `status='expired'` می‌کند، `src/Application/Jobs/HoldsExpireHandler.php:48-50`). در confirm، وقتی `patient_id` ردیف Hold پوچ باشد، resolver سازگاری Historical-NULL لینک‌های فعالِ **callerِ تأییدکننده (= نگه‌دارندهٔ Hold)** را در Clinicِ Hold می‌شمرد (`linkedActivePatientsForClinic`, `BookingService.php` ~L3079، فراخوانی ~L897): صفر → New-Patient (نام‌ها الزامی؛ برخورد موبایل هم‌نام → 400)، یکی → همان هویت، بیش از یکی → 422 `CLINIC_PATIENT_SELECTION_REQUIRED`. روی نصب‌هایی که migration `2026_09_20_0022_slot_holds_patient_binding` اعمال شده باشد، Hold جدیدِ پس از OD-A هرگز در این شکل ساخته نمی‌شود (B1 برای callerهای resolve-پذیر `patient_id` را می‌فشارد؛ callerِ صفرلینک اصلاً به INSERT نمی‌رسد). reachability این مسیر در نصب‌های pre-0022 ادعا نمی‌شود.** موبایل مشترک هرگز مبنای ownership/access نیست.
+  (متن اصلی برای تاریخچه باقی ماند.)
 
 ## شمارهٔ Migration
 
