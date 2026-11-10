@@ -39,5 +39,15 @@
 | N-7 | **Audit**: PHI (name/mobile/nid) در **AuditLog محافظت‌شده** ثبت می‌شود (کارکرد ذاتی Audit — ADR-0008)؛ **OpLog/خطای REST**: فقط Masked (mobile = ۴ رقم آخر) — **بدون PHI در Log عملیاتی/پاسخ خطا** | الزام کارفرما F3: «Audit/Operational logging without PHI leakage» |
 | N-8 | **Deadline لغو/جابه‌جا** از Settings خوانده می‌شود **در لحظه تصمیم** (`booking.cancel_deadline_hours` / `reschedule_deadline_hours`، Default 24h) — تغییر Setting **Retroactive نیست**: روی نوبت‌های ثبت‌شده یا تصمیمات قبلی اثر ندارد (هیچ رکوردی Deadline ذخیره نمی‌کند) | تأیید کارفرما 2026-09-05 |
 
+> **یادداشت (۲۰۲۶-۱۱-۱۰ — تصمیم مالک OD-A، ۲۰۲۶-۱۱-۰۹):** ردیف **N-5** مرحلهٔ (۲)
+> («Email کلاینت OTP به‌عنوان مبنای هویت Hold») و فرضیه‌های «ساخت خودکار حساب/Patient بر
+> پایهٔ موبایل در `otp/verify`» (شامل بند F2 در همین سند و GAP-2 پایین) **منسوخ**‌اند.
+> تأیید OTP فقط possession موبایل است؛ `{mobile}@otp.cpms.local` هیچ مبنایی برای ساخت/
+> یابیدن/هویت نیست و fallback هویت از ایمیل پل در `BookingService::mobile_for_user_in_clinic()`
+> در ۲۰۲۶-۱۱-۱۰ حذف شد (fail-closed؛ `CLINIC_VALIDATION_FAILED`). از این پس holder_mobile در
+> Hold فقط از Patient لینک‌شدهٔ همان Clinic مشتق می‌شود؛ بیمار جدید در B2 confirm ساخته
+> می‌شود. موبایل مشترک هرگز مبنای ownership/access نیست. جدول برای حفظ تاریخچه دست‌نخورده
+> باقی مانده است.
+
 ## GAP-2 (Note — بلاکی نیست)
 Contract §1 Note به «A5/A6» (ساخت اکانت + تکمیل Profile) ارجاع دارد که در جدول Contract تعریف نشده. در F2، ساخت اکانت WP داخل `otp/verify` انجام می‌شود (پترن موجود) و تکمیل Profile = C2 (`PUT /patient/me`). **اثر:** بدون؛ پیشنهاد: Note Contract در باند مستندات F3 تصحیح شود (فقط سند).

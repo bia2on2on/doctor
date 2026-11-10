@@ -5265,3 +5265,131 @@ stays DRAFT. Integration is NOT green: 8 of 9 required contexts are green and th
 the Day2 date hazard, which this slice must not touch. Do not merge on a red required context; do not
 treat the red harness lanes as product defects; the owner must reconcile the doc conflicts and decide the
 Slice-2 harness redesign before any merge consideration.
+### OTP SAFETY SLICE 1 — review round 3: bridge-email identity fallback removed (production); residual legacy-marker coverage restored; truthfulness corrections (branch `arena/711a94ea-doctor`)
+
+Round-3 resolution of an independent read-only review (items A–G). Owner decision A (2026-11-09
+Option A) is unchanged; nothing here re-scopes the slice. Head is not claimed in this entry; the
+round-3 content push is the only push of this round and its CI outcome is reported separately
+after the fact, never from within the entry that rides along with it.
+Commit basis: `git log --oneline origin/main..HEAD` showed 4 commits at round start
+(`9e3ace7f`, `37cda9c`, `9cb2605c`, `53708e3`; only `53708e3` docs-only). This round adds exactly
+ONE content commit (production + tests + docs + this entry) → 5 commits total on `origin/main..HEAD`.
+
+Corrections to earlier entries/claims (this entry is the only place they are corrected; history is
+not rewritten):
+1. Round-1's description of the `Phase8Slice2OtpHoldConfirmRedTest` `provisionOtpUser` fixture as
+   "bare-user" (no Patient/link) is STALE as of round 2 (`9cb2605c`): the fixture now creates a
+   Patient in clinicA plus an active `cpms_patient_user_links` row by default, with an explicit
+   `linked: false` bare mode. The PR body carries the same stale line (~body line 43) and is
+   corrected via REST PATCH in this round.
+2. "No test was weakened" (rounds 1–2) is RETRACTED. The T14/T16 fail-closed flips, and the 503
+   absolute-zero→baseline-delta relaxation, are exactly test weakenings in the strict sense. What
+   remains true: no test was deleted, no skip/suppression/baseline was added, and the flipped
+   envelopes pin a strictly tighter contract. Round 3 re-justifies the audit assertions this round
+   (phone-scoped baseline delta — see below) and RESTORES expressible confirmation-side coverage.
+3. "18 non-required red lanes" (round 2) is corrected to: 17 non-required red lanes + 1 REQUIRED red
+   lane (Integration, Day2 date hazard) = 18 red contexts. The required/non-required split had been
+   misreported.
+4. The observed Staging/Pilot red→green transition (round 2, run-level FAILURE → job-level SUCCESS)
+   is recorded as a JOB-level observation ONLY; the runs themselves remain run-level failures. No
+   statement is made about which sub-jobs failed or why.
+5. `b48fd688…` printed by the sticky evidence comments is GitHub's temporary test-merge commit
+   (`refs/pull/340/merge`) for the pull_request event — NOT the branch head. Branch head is
+   `9cb2605` until this round's push and the new SHA thereafter.
+6. The Day2 failure (`Day2OperationalWorkflowsTest::testRescheduleOptionsHonorsClinicMaxFutureDaysAndLocationTimezoneBoundaries`,
+   422≠200 at the max_future_days boundary; duplicate-slot fixture collision at 2026-11-12) is an
+   OBSERVED fact only. Cause is a HYPOTHESIS (Tehran 2026-11-10 local date colliding with the
+   fixture's future-days boundary), NOT established; it was NOT edited, NOT rerun, and is not a
+   signal about this slice. It is EXPECTED (hypothesis, not promise) to clear after UTC
+   2026-11-10 20:30; if it does not, it is reported as still red.
+7. Round 1's validation claim ("parse clean under the PHP 8 grammar of the npm php-parser") is a
+   syntax check, not a test run; CI remains the sole executable proof. PHPStan/WPCS/PHPUnit are
+   CI-only; no local pass is claimed for any round.
+
+Round-3 content (ONE commit, only item A permits production changes):
+
+- ITEM A (HIGH, production): closed a mobile-derived identity source that survived owner decision A.
+  `BookingService::mobile_for_user_in_clinic()` no longer falls back to the pre-OD-A bridge email
+  `{mobile}@otp.cpms.local` when no linked active Patient exists in the booking Clinic. Pre-fix, a
+  PRE-OD-A stamped OTP session (marker `cpms_clinic_id` + `cpms_clinic_links` snapshot in
+  `WP_Session_Tokens`) whose link set was unchanged (e.g. empty snapshot with zero links, or
+  snapshot == live == [clinic B] while the marker names clinic A) passed the session-clinic check
+  (`PatientSessionScope::stamped_marker_is_current()`), and the fallback fed `holder_mobile` from
+  the WP account email — a mobile-derived identity as sole ownership/access basis, against the owner
+  rule for shared mobiles. Post-fix the function returns the linked-Patient mobile only, else null;
+  `hold()` then fails closed with `CLINIC_VALIDATION_FAILED` (HTTP 400, established profile gate;
+  no new error code, no schema change, no migration, no data cleanup). No behavior changed for any
+  caller with a live linked active Patient in the booking Clinic. Consequence accepted and disclosed:
+  zero-link bridge-email accounts can no longer create Holds via the public path; new-patient
+  self-service was already out of scope for this slice post-OD-A.
+- ITEM B (tests): new "AREA 14 — LEGACY STAMPED OTP SESSIONS" in
+  `tests/Integration/Phase8Slice2OtpHoldConfirmRedTest.php` (7 tests, R1–R7; fresh mobiles
+  09129981040–046):
+  R1/R2 — item-A regression pins (zero-link bridge-email and linked-only-in-another-Clinic legacy
+  marker callers fail closed at Hold time with CLINIC_VALIDATION_FAILED 400; nothing is created).
+  R3 — control: legacy marker + live linked Patient in booking Clinic still Holds (200).
+  R4 — control: stale marker (link revoked after stamping) fails closed with CLINIC_SCOPE_REQUIRED.
+  R5 — T14 CONFIRM-side coverage restored expressibly: seeded persistent Hold (holder_mobile,
+  patient_id NULL, marker bound in-process, slot held_count claimed) reaches the new-Patient names
+  gate; missing/whitespace/empty names → CLINIC_VALIDATION_FAILED (400) with nothing created and the
+  Hold active/retryable; then valid names + hostile identity claims (patient_id/is_new_user/mobile/
+  clinic_id) → 200 with a NEW Patient created in the booking Clinic from the validated names; the
+  claim never selects identity; the decoy same-clinic Patient is untouched; one link for the caller.
+  R6 — T16 CONFIRM-side coverage restored expressibly: same fixture with the caller linked ONLY in
+  the other Clinic (marker snapshot == live == [other]); names required; valid names → NEW Patient
+  in the booking Clinic; the other-Clinic row untouched; the user ends with two links.
+  R7 — REST-path pin: linked-only-in-another-Clinic caller (no marker) gets the uniform
+  CLINIC_SCOPE_REQUIRED 400; no Hold/Appointment/Patient; no capacity consumed.
+  INEXPRESSIBLE, stated precisely (not restored, with reason): the T14/T16 LIVE-HOLD premise. After
+  OD-A, no session basis exists for a possession-only caller to reach `hold()`'s new-patient path,
+  and after the item-A fix a legacy bridge-email session cannot reach it either; the flipped
+  fail-closed T14/T16 stay in force and were never un-flipped. What remains is exactly the seeded-
+  hold confirm window, which R5/R6 restore. The HOLD-side new-Patient creation path itself is NOT
+  restorable (no mobile source for zero-link callers), by design.
+  AUDIT ASSERTIONS (`tests/Integration/OtpPossessionOnlyTest.php`): the shared-across-tests table-wide
+  `auditCount()` is replaced by `auditCountForMobile()` — phone-scoped baseline delta keyed on the
+  masked mobile inside `after_json` (`LIKE '%"mobile":"<mask>"%'`). This re-justifies item B(4):
+  the delta remains specific to the event type AND this test's phone/actor path; OTP_VERIFY_OK is
+  written exactly once per successful verify for that mobile, so the +1 delta cannot pass vacuously,
+  and the count can only move for rows attributable to this phone. LOGIN_SUCCESS is asserted as an
+  unchanged baseline (0-delta), never an absolute table-wide zero. The "shared mobile is never an
+  ownership/access basis" class comments stay in place.
+  FAILS-on-main labels (static reasoning against main `643150e4`; no PHP locally — CI is the proof):
+  R1 FAILS-on-main (main resolves bridge-email mobile → 200 + Hold; assertion expects fail-closed).
+  R2 FAILS-on-main (same fallback with marker kept current by snapshot == live == [other clinic]).
+  R3 PASSES-on-main (control; linked-Patient path unchanged by the fix).
+  R4 PASSES-on-main (control; marker staleness pre-exists and fails closed identically).
+  R5 PASSES-on-main (control; the confirm-side names gate, decoy-ignore and claim-inertness
+  pre-exist — this is restored coverage, not new behavior).
+  R6 PASSES-on-main (control; same).
+  R7 PASSES-on-main (control; uniform CLINIC_SCOPE_REQUIRED pre-exists for unresolvable sessions).
+  OtpPossessionOnlyTest shared-mobile test: FAILS-on-main (OD-A flip; unchanged semantics — only the
+  audit measurement was phone-scoped this round). 503 control test: PASSES-on-main (asserts only the
+  neutral 503 + unconsumed challenge + this phone's OTP_VERIFY_OK delta; no new behavior asserted).
+  Round-3 added NO new assertions to any pre-existing failing test and did not un-flip T14/T16.
+- ITEM C (docs, OTP/patient-identity scope only): stale OTP-identity statements annotated as
+  SUPERSEDED with dated notes (repo convention: dated docs are annotated, never silently rewritten):
+  `docs/srs/SRS.md` FR-1.6/FR-1.7 (+ a dated superseding note under §3.1), `docs/adr/ADR-0006-otp.md`
+  (top superseding note), `docs/decisions/2026-09-05-f3-booking-gaps.md` (note ahead of GAP-2 covering
+  N-5 and the F2/GAP-2 account-creation premise), `docs/decisions/2026-09-20-phase8-slice2-owner-decisions.md`
+  (identity-reuse bullet superseded), `docs/project-current-state.md` (identity-reuse clause only).
+  `docs/api/api-contract.md` already carried the superseding note (verified, unchanged). NOT touched,
+  by instruction: finance/refund/no-show/idempotency docs (no OTP-identity statements found in them),
+  and every other conflict found is listed in the round-3 report without editing (e.g. the Slice-2
+  scope note's "PR #89" reference, which is historical and not OTP-identity scope).
+  `docs/agent-log.md` is append-only; this entry is its only change.
+- ITEM D (truthfulness): corrections 1–7 above; PR body updated via REST PATCH (`gh api --input`,
+  JSON file, read-back verified) stating: 12 non-required red checks plausibly caused by this PR,
+  5 unclassified, NONE claimed pre-existing, acceptance-harness alignment NOT part of this round
+  (separate plan; requires owner/manager decision).
+- ITEM E: no acceptance harness, Day2 test, workflow, or CI configuration was edited.
+- ITEM F (pre-push): workflow contract unittest, check-workflow-yaml, companion-isolation,
+  tenant-tripwire, changed-line WPCS, camelCase grep — outputs pasted into the round-3 report;
+  `php -l` NOT AVAILABLE in this sandbox (labeled as such; grammar sanity was done with a
+  string/comment-aware bracket-balance scan instead).
+- ITEM G: ONE content push of this round; CI observed after push; all 9 required contexts
+  re-verified via the effective-rules API of repo ruleset 22393801 ("Protect main", strict policy);
+  Integration block quoted verbatim in the round-3 report; PR #340 stays DRAFT; NO second push.
+
+NOT claimed in this entry (by design): any CI outcome, any green checkmark, any Day2 classification.
+Merging is NOT authorized; two independent reviews and explicit owner approval are required.

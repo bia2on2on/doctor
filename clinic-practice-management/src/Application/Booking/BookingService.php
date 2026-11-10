@@ -3045,14 +3045,16 @@ final class BookingService
             return (string) $primary['mobile'];
         }
 
-        $email = $this->db->fetchValue(
-            'SELECT user_email FROM ' . $this->db->dbPrefix() . 'users WHERE ID = %d LIMIT 1',
-            [ $wp_user_id ]
-        );
-        if ( is_string( $email ) && str_ends_with( $email, '@otp.cpms.local' ) ) {
-            return substr( $email, 0, -strlen( '@otp.cpms.local' ) );
-        }
-
+        // owner decision A (2026-11-09) + review round 3 (2026-11-10):
+        // the historical bridge-email fallback ({mobile}@otp.cpms.local) is
+        // REMOVED. It was the last path deriving a booking-relevant identity
+        // (a mobile) from a mobile-derived artifact, which let a pre-OD-A
+        // stamped OTP session with no Patient link in the booking Clinic book
+        // as a "new patient" with mobile-derived identity — a shared mobile
+        // is never an ownership/access basis. Callers with no linked active
+        // Patient in the Clinic fail closed below (null -> CLINIC_VALIDATION_FAILED)
+        // before any capacity or Patient/Appointment write. Callers holding a
+        // link reach the primary branch above (unchanged).
         return null;
     }
 

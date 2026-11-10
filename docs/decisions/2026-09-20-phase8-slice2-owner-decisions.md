@@ -65,11 +65,14 @@ Clinicِ نوبت گره نمی‌زند (نه mobile، نه purpose، نه Sett
   Challenge مرجعِ سیاست OTP، جست‌وجوی Patient و Clinicِ لینک است. ردیفِ
   تاریخی NULL: تک-Clinic = resolver تثبیت‌شده؛ چند-Clinic = fail-closed
   صریح. کلیدهای cooldown/lockout هویت‌سطح می‌مانند.
-- **بازاستفاده هویت:** پیش از ساخت کاربر، `{mobile}@otp.cpms.local`
-  جست‌وجو و در صورت وجود بازاستفاده می‌شود (همان user_id،
-  `is_new_user=false`، بدون ردیف wp_users تکراری؛ بدون جدول هویت جدید؛
-  بدون merge تخریبی Patient). لینک بیمار فقط اگر Patient در Clinicِ Challenge
-  وجود داشته باشد.
+- **بازاستفاده هویت:** ~~پیش از ساخت کاربر، `{mobile}@otp.cpms.local`
+  جست‌وجو و در صورت وجود بازاستفاده می‌شود~~ **منسوخ — تصمیم مالک ۲۰۲۶-۱۱-۰۹
+  (OD-A، Option A):** تأیید OTP هیچ کاربری نمی‌سازد/نمی‌یابد و هیچ Patientی را
+  resolve/link نمی‌کند؛ پاکت یکنواخت صفردسترسی برای هر کد معتبر؛ بدون Session،
+  بدون `LOGIN_SUCCESS`. `{mobile}@otp.cpms.local` هیچ مبنای هویتی ندارد.
+  دسترسی فقط از طریق حساب WP صریحاً link‌شده توسط staff؛ بیمار جدید در B2
+  confirm ساخته می‌شود. موبایل مشترک هرگز مبنای ownership/access نیست.
+  (متن اصلی برای تاریخچه باقی ماند.)
 
 ## شمارهٔ Migration
 

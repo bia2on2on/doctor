@@ -6,6 +6,7 @@ namespace ClinicCore\Tests\Integration;
 
 use ClinicCore\Bootstrap\App;
 use ClinicCore\Domain\Otp\OtpPolicy;
+use ClinicCore\Domain\Validators\MobileValidator;
 use ClinicCore\Settings\Settings;
 use WP_UnitTestCase;
 
@@ -126,8 +127,8 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
 
         $usersBefore = $this->userCount();
         $linksBefore = $this->linkCount();
-        $loginAuditBefore = $this->auditCount('LOGIN_SUCCESS');
-        $verifyOkBefore = $this->auditCount('OTP_VERIFY_OK');
+        $loginAuditBefore = $this->auditCountForMobile('LOGIN_SUCCESS', self::MOBILE);
+        $verifyOkBefore = $this->auditCountForMobile('OTP_VERIFY_OK', self::MOBILE);
 
         $result = App::otpService()->verify(self::MOBILE, '424242', \ClinicCore\Application\Auth\OtpService::PURPOSE_LOGIN);
 
@@ -140,8 +141,8 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         self::assertSame($usersBefore, $this->userCount(), 'no wp_users row may be created.');
         self::assertSame($linksBefore, $this->linkCount(), 'no Patient link may be created in ANY clinic.');
         self::assertSame(0, $this->linksForPatientMobile(self::MOBILE), 'no link may exist for any same-mobile Patient.');
-        self::assertSame($loginAuditBefore, $this->auditCount('LOGIN_SUCCESS'), 'owner decision A: no session means no LOGIN_SUCCESS.');
-        self::assertSame($verifyOkBefore + 1, $this->auditCount('OTP_VERIFY_OK'), 'the mandatory possession audit is still written.');
+        self::assertSame($loginAuditBefore, $this->auditCountForMobile('LOGIN_SUCCESS', self::MOBILE), 'owner decision A: no session means no LOGIN_SUCCESS.');
+        self::assertSame($verifyOkBefore + 1, $this->auditCountForMobile('OTP_VERIFY_OK', self::MOBILE), 'the mandatory possession audit is still written.');
     }
 
     public function testValidCodeForSharedMobileAcrossClinicsOfOneOrganizationYieldsZeroAccess(): void
@@ -239,7 +240,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
     {
         $_SERVER['REMOTE_ADDR'] = '203.0.113.99';
         $tokenId = $this->seedToken(self::MOBILE_503, '123456');
-        $verifyOkBefore = $this->auditCount('OTP_VERIFY_OK');
+        $verifyOkBefore = $this->auditCountForMobile('OTP_VERIFY_OK', self::MOBILE_503);
 
         Settings::flushCache();
         $this->failSettingsBulkReads();
@@ -262,7 +263,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         );
         self::assertSame(
             $verifyOkBefore,
-            $this->auditCount('OTP_VERIFY_OK'),
+            $this->auditCountForMobile('OTP_VERIFY_OK', self::MOBILE_503),
             'no OTP_VERIFY_OK audit may be written while settings are unreadable.'
         );
     }
@@ -330,11 +331,22 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         return (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->users); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
     }
 
-    private function auditCount(string $action): int
+    /**
+     * Audit events for $action attributed to THIS test's phone, matched by the
+     * masked mobile inside after_json (OtpService::audit persists the mask as
+     * the `after` change-set; the mask is deterministic for a given mobile).
+     *
+     * Scoping to this phone is deliberate: the audit table is shared and
+     * append-only across the suite, so an absolute zero-count over the whole
+     * table is not a stable assertion for any single test. A phone-scoped
+     * delta cannot be polluted by other tests' phones, and it is still a
+     * strict check — a failure names this test's own audit rows.
+     */
+    private function auditCountForMobile(string $action, string $mobile): int
     {
         return (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s',
-            [$action]
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE action = %s AND after_json LIKE %s',
+            [$action, '%"mobile":"' . MobileValidator::mask($mobile) . '"%']
         );
     }
 
