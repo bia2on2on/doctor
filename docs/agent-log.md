@@ -5631,3 +5631,83 @@ Pre-push checks this round will be recorded in the round-6 report and summarized
 CI outcome is claimed only after observation, never pre-asserted. Commit basis at the time this entry was written: 8 commits on
 origin/main..HEAD (7 from rounds 1–5 + this entry's commit). PR #340 stays DRAFT; merging is NOT authorized; two independent
 reviews and explicit owner approval remain required.
+
+## 2026-11-11 — OTP slice 1, round 7: fix one FALSE statement found by an independent reader (Round-6 L6); verification disclosure; append-only
+
+Context. Head at entry `608e4f3a5c28fe38ab5fc03bb787b68c328979fb` (round-6 close). An independent reader reviewing the
+Round-6 delta found a false statement and stopped. Every item was re-verified from the code before any edit; the reader's
+finding is CONFIRMED for R1 and PARTIALLY imprecise for R2/R4 as described below. Text/comment/ledger only — no production
+logic, test logic, workflow, harness, Day2, schema or migration changes.
+
+R1 (MEDIUM — FALSE statement in Round 6). The Round-6 L6 ledger entry and the PR body said
+`tests/bin/wp-production-race-proof.php` is "NOT in CI — unreferenced by any workflow". **That statement is false as written.**
+It was produced by grepping workflow TEXT; the PHP worker is reached INDIRECTLY, and a workflow grep cannot see an indirect call.
+Verified chain, file:line for each hop:
+1. `.github/workflows/facility-matrix-acceptance.yml` step **"Stress real OTP and production booking services"** — line ~389-398
+   (`python3 clinic-practice-management/tests/bin/production-race-proof.py`), matrix `Facility matrix (mysql)` /
+   `Facility matrix (mariadb)` (`name:` at line ~48) — the two **non-required** Facility Onboarding Matrix check-runs.
+2. `clinic-practice-management/tests/bin/production-race-proof.py:24` — `WORKER = HERE / "wp-production-race-proof.php"` —
+   i.e. the PHP worker IS the worker of the harness the workflow runs.
+3. `production-race-proof.py:36` — `wp_command()` returns `["wp", "eval-file", str(WORKER), "--path=" + WP_ROOT, "--allow-root"]`;
+   workers spawned at `:116`; setup/boundaries/rollback subprocesses at `:165`/`:206`/`:215`; audit-chain exporter also via
+   `wp eval-file` at `:88-90`.
+4. `tests/bin/wp-production-race-proof.php` — the WP-CLI eval-file target (checks `WP_CLI` + `CPMS_PROOF_DIR`; drives
+   `OtpService`/`BookingService` service races on the disposable Facility Matrix site).
+**What this entry claims, and nothing more:** the PHP worker is REACHABLE from the two Facility matrix lanes (currently RED,
+non-required). **Nothing is claimed about whether the worker itself passes, nor about what causes the red** — the red could be
+entirely consistent with the bridge-email fallback removal in round 3 (the worker exercises the synthetic-OTP service chain in a
+site affected by it), but that is a hypothesis, not an established fact, and is not asserted here. Wrong/over-broad statements in
+immutable round-1-era entries (line ~5080, ~5106) are likewise corrected only by this entry — old entries are never edited.
+**Corrected everywhere this PR states the claim:** the PR body (NON-scope bullet, Debt item 3, and the round-6 L6 bullet
+annotated as superseded by Round 7 — round-7 does not rewrite the round-6 record silently). No other doc in this PR carries the
+claim (grep over `docs/` and all touched files: only `docs/agent-log.md` old entries + the PR body did).
+This round changes NOTHING about the facility lanes, the harness, or the worker; the two Facility matrix check-runs are still
+expected red; nothing is claimed about their cause.
+
+R2 (LOW — disclosure, no CHANGELOG change this round). The Round-6 spec description "annotation only, no deletion" for CHANGELOG
+was not literally accurate. Verified via `git show 608e4f3a -- CHANGELOG.md`: the round-6 hunk is `@@ -742,6 +742,6 @@` with
+exactly one line removed and one added (`index 879ff823..07b33f8b`) — the original `[Unreleased]` Slice-2 line was REPLACED by a
+line carrying strikethrough around the stale identity-reuse clause plus the dated SUPERSEDED annotation. The original text is
+preserved inline inside the replaced line, but the change is a 1+/1- replacement of ONE whole bullet line, not a pure addition,
+and the round-6 "No line deleted" description for that file was imprecise. The block is left byte-identical to `608e4f3a` in this
+round (no second change to CHANGELOG); the body now carries the precise description.
+
+R3 (LOW → verification result). Exhaustive enumeration of cpms_slot_holds INSERT/creation paths in this tree:
+- Production src (`grep -rn "cpms_slot_holds" src/` + inserts): exactly ONE `INSERT INTO cpms_slot_holds` —
+  `src/Application/Booking/BookingService.php:664` (inside `hold()`'s transaction). Its `patient_id` is set only under
+  `if ($has_patient_col)` from `resolveBookingPatientForHold` (`:3110`), which returns a non-null id when ≥1 linked active
+  Patient exists (caller-requested id asserted owned+active first) — a resolvable caller with 1 link persists that id; a caller
+  with >1 links and no selection throws 422 BEFORE the insert; a 0-link caller reaches `mobile_for_user_in_clinic` (`:3036`),
+  which returns null (bridge-email fallback deleted in round 3) ⇒ `hold()` throws `CLINIC_VALIDATION_FAILED` BEFORE the atomic
+  capacity claim and BEFORE the insert at :664. ⇒ **No production path creates a `patient_id`-NULL Hold after this behavior
+  change, given the 0022 column exists** (migration `2026_09_20_0022_slot_holds_patient_binding` — `BIGINT UNSIGNED NULL`, FK, no
+  backfill). Footnote for precision: (a) an install mid-upgrade that has NOT yet applied 0022 has no column at all — the hold row
+  then carries no `patient_id` key — an upgrade-in-flight state, not a new behavior; (b) `holdsHasPatientIdColumn()` is the guard
+  used consistently at hold/confirm.
+- **Test-support paths DO create `patient_id`-NULL Holds deliberately as fixtures** — the whole SEEDED approach of rounds 4/5 —
+  e.g. `tests/Integration/BookingFlowTest.php:636`, `Phase8Slice2OtpHoldConfirmRedTest.php:2790`,
+  `Phase8Slice3LinkedPatientBookingSubjectRedTest.php:1522`, `SchedulingLocationLocalBoundaryRedTest.php:497`. These are synthetic
+  legacy-shape seeds in the harness, not production behavior; removing them would delete the very fail-closed subjects the tests
+  pin.
+- `tests/bin/wp-production-race-proof.php` does NOT insert holds directly (1 mention; it drives production services via
+  `App::bookingService()->hold()/confirm()`, e.g. lines ~322 and ~514-517).
+- Tools (`tools/disposable-demo-installer/…`): `cpms_slot_holds` appears only in read/delete/isolation listings
+  (`class-cpms-demo-preflight.php:38,155`, `class-cpms-demo-scoped-teardown.php:187,322,528`, `class-cpms-demo-teardown.php:73,316`,
+  `tools/disposable-demo-installer/tests/scoped-recovery.php:252,688`, `tests/disposable-site/wp-cli/common.php:186`) — no INSERT.
+- Migrations: `0001` CREATE TABLE, `0017` FK, `0022` ADD COLUMN (no data write); `HoldsExpireHandler.php:37,48` UPDATE-only;
+  Staff/admin booking creates appointments directly (no hold insert); CLI jobs operate on the job queue (no hold INSERTs found).
+**Conclusion:** no OTHER production path can create a `patient_id`-NULL Hold after this PR. The body/ledger wording is accurate
+for production and remains; this entry records the full enumerated list including the fixture and mid-upgrade footnotes. No code
+change was made in either direction.
+
+R4 (LOW — cleanliness, verified). Current PR body (read live, v7): zero 40-hex strings (`grep -cE '\b[0-9a-f]{40}\b'` = 0) and no
+"commit count" phrasing found (grep for `commit count`, `commits on origin/main`, `commits\b` → no matches). Round-7 will re-state
+this after its body PATCH; the ledger keeps whatever earlier entries already say (this entry included) as-is, append-only.
+
+Items verified NOT to be wrong this round (left unchanged): the Round-6 M1 statement structure (conditions hold); the L2/L3/L5
+figures; the scheduling-test SEEDED fix; Day2 (untouched absolutely); all required-context mappings.
+
+Ledger/commit discipline: exactly ONE entries-commit appended this round; zero deletions; old entries untouched anywhere. No CI
+outcome is asserted at ledger write time; CI is reported only in the round-7 PR body and report AFTER observation. Commit basis at
+the time this entry was written: 9 commits on origin/main..HEAD (8 from rounds 1–6 + this entry's commit). PR #340 stays DRAFT;
+merging is NOT authorized; two independent reviews and explicit owner approval remain required.
