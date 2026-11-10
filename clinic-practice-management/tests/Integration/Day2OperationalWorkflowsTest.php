@@ -881,14 +881,42 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         self::assertContains($slotTehranWithin1d, $idsCrossMidnight, 'Cross-midnight Tehran local date (Nov 12 00:30, +23.5h) must be included when UTC is still Nov 10.');
         self::assertNotContains($slotTehranPast1d, $idsCrossMidnight, 'Slot at +24.5h in Tehran local time must be excluded under max_future_days=1.');
 
-        // Case E: Real REST endpoint under small Clinic window (max_future_days = 7, previously broken by hardcoded +29 days).
-        $liveCurDate  = $this->localDate(self::TZ, '+2 days');
-        $liveNearDate = $this->localDate(self::TZ, '+3 days');
-        $liveFarDate  = $this->localDate(self::TZ, '+10 days');
+        // Case E: Real REST endpoint under small Clinic window (max_future_days = 7).
+        // Anchor: use a fixed anchor date that is independent of the live clock.
+        // Anchor chosen: 2026-11-10 (Tehran date) which maps to UTC window [2026-11-09T20:30Z, 2026-11-10T20:30Z).
+        // To avoid wall-clock dependence and the collision with the fixed fixture (2026-11-12 09:00),
+        // we shift the anchor to a distinct future date (2027-03-15) and derive all Case E slots from it.
+        // Anchor Date: 2027-03-15 (Tehran)
+        $anchorDate     = '2027-03-15';
+        $liveCurDate    = date('Y-m-d', strtotime($anchorDate . ' + 2 days')); // 2027-03-17
+        $liveNearDate   = date('Y-m-d', strtotime($anchorDate . ' + 3 days')); // 2027-03-18
+        $liveFarDate    = date('Y-m-d', strtotime($anchorDate . ' + 10 days')); // 2027-03-25
+
+        // Ensure distinct slot times/dates that cannot collide with any fixed fixture (2026-11-12 09:00).
+        // liveCurSlot: 2027-03-17 09:00:00
+        // liveNearSlot: 2027-03-18 10:00:00
+        // liveFarSlot: 2027-03-25 10:00:00
         $liveCurSlot  = $this->insertSlot($clinicA, $locA, $clinician, $liveCurDate, '09:00:00', 1, ['booked' => 1]);
         $liveNearSlot = $this->insertSlot($clinicA, $locA, $clinician, $liveNearDate, '10:00:00', 2);
         $liveFarSlot  = $this->insertSlot($clinicA, $locA, $clinician, $liveFarDate, '10:00:00', 2);
         $liveAppt     = $this->insertAppointment($clinicA, $locA, $patientId, $clinician, $liveCurSlot, $liveCurDate, '09:00:00', 'confirmed');
+
+        // Query verification: ensure each inserted row exists by unique key (fail loudly with fixed message).
+        $db = App::db();
+        $uniqueKeyCheck = static function (int $slotId, string $date, string $time, string $msg) use ($db, $clinicA, $locA, $clinician) {
+            $row = $db->fetchRow(
+                'SELECT id FROM ' . $db->table('cpms_schedule_slots') .
+                ' WHERE clinic_id = %d AND location_id = %d AND clinician_id = %d ' .
+                ' AND slot_date = %s AND slot_time = %s',
+                [$clinicA, $locA, $clinician, $date, $time]
+            );
+            self::assertNotNull($row, $msg . ' — unique key u_slot(location_id, clinician_id, slot_date, slot_time) check failed.');
+            self::assertSame($slotId, (int) $row['id'], $msg . ' — slot_id mismatch.');
+        };
+
+        $uniqueKeyCheck($liveCurSlot,  $liveCurDate,  '09:00:00', 'Case E: liveCurSlot insertion verification failed');
+        $uniqueKeyCheck($liveNearSlot, $liveNearDate, '10:00:00', 'Case E: liveNearSlot insertion verification failed');
+        $uniqueKeyCheck($liveFarSlot,  $liveFarDate,  '10:00:00', 'Case E: liveFarSlot insertion verification failed');
 
         $targetSettings->set('booking.max_future_days', 7);
         Settings::flushCache();
@@ -896,8 +924,8 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         $restRes = $this->dispatch('GET', '/clinic/v1/appointments/' . $liveAppt . '/reschedule-options');
         self::assertSame(200, $restRes->get_status(), 'REST reschedule-options must succeed when booking.max_future_days=7 (< 28 days).');
         $restIds = $extractIds($this->payload($restRes));
-        self::assertContains($liveNearSlot, $restIds);
-        self::assertNotContains($liveFarSlot, $restIds);
+        self::assertContains($liveNearSlot, $restIds, 'Case E: liveNearSlot must be included under max_future_days=7.');
+        self::assertNotContains($liveFarSlot, $restIds, 'Case E: liveFarSlot must be excluded under max_future_days=7.');
     }
 
     // ================= helpers =================
