@@ -118,15 +118,13 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
             $html,
             'A Latin Dr. title must be published as the titled Persian label.'
         );
+        // data-search publishes the titled name first, then the raw name
+        // when the raw contributes search terms not already in the titled
+        // form (e.g. 'dr' is not contained in 'دکتر smith').
         self::assertStringContainsString(
-            'data-search="دکتر smith"',
+            'data-search="دکتر smith dr. smith"',
             $html,
-            'data-search must contain the normalised titled name.'
-        );
-        self::assertStringContainsString(
-            'data-search="dr. smith"',
-            $html,
-            'data-search must contain the normalised raw name so "dr" matches.'
+            'data-search must contain both the normalised titled name and the normalised raw name so "dr" and "دکتر smith" both match.'
         );
     }
 

@@ -818,15 +818,20 @@ final class PublicBookingShortcode
         $weekdays        = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
         // data-search must be searchable by both the stored name and the
-        // titled display name (e.g. 'dr' and 'دکتر'), but when they normalize
-        // to the same value (e.g. a Persian name that already carries a title)
-        // publish a single value so exact-match assertions stay stable.
+        // titled display name (e.g. 'dr' and 'دکتر'), but when the raw name
+        // normalizes to a value already contained in the titled name (e.g.
+        // 'سارا احمدی' inside 'دکتر سارا احمدی') publish just the titled
+        // value so exact-match assertions and exact JS lookups stay stable.
+        // When they differ meaningfully (e.g. 'dr. smith' vs 'دکتر smith')
+        // publish both so both search terms work. A doubled stored title
+        // (e.g. 'دکتر Doktor علی حسینی') collapses via with_title(), so the
+        // raw defective value is never published.
         $nameRawNormalized   = self::normalize_search_text( $name );
         $nameTitledNormalized = self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) );
-        if ( $nameRawNormalized === $nameTitledNormalized ) {
-            $nameSearch = $nameRawNormalized;
+        if ( $nameRawNormalized === $nameTitledNormalized || str_contains( $nameTitledNormalized, $nameRawNormalized ) ) {
+            $nameSearch = $nameTitledNormalized;
         } else {
-            $nameSearch = $nameRawNormalized . ' ' . $nameTitledNormalized;
+            $nameSearch = $nameTitledNormalized . ' ' . $nameRawNormalized;
         }
 
         $lines = [];
