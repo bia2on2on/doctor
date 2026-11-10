@@ -5181,3 +5181,87 @@ check-runs metadata, annotations and the sanitized sticky evidence comments — 
 Push of this fix round triggers a full CI re-run; this entry deliberately claims no CI outcome.
 Required contexts will be re-verified from the GitHub check state of the new head and reported.
 Merging is NOT authorized; PR #340 stays DRAFT.
+### OTP SAFETY SLICE 1 — CI round 2: slice-1 test defects fixed; T14/T16 flipped fail-closed (branch `arena/711a94ea-doctor`)
+
+Follow-up on round 1 (`37cda9b`). Nothing here re-scopes the slice; owner decision A (2026-11-09
+Option A) is unchanged. Head `9cb2605ca7e43c3980495f44244732c6905a3a49` pushed 2026-11-10T06:16Z;
+PR #340 remains DRAFT. Merging is NOT authorized.
+
+Round-1 required Integration failure (run 42762572435, step 21, Errors 6 / Failures 7, tests 2775 /
+assertions 75942) root-caused via check-run annotations and the sanitized PR sticky evidence comments
+(no raw log text read into this entry): 12 of 13 failing tests were slice-1 TEST defects, not
+production defects — production fails closed exactly as owner decision A intends:
+
+- `tests/Integration/OtpPossessionOnlyTest.php` (6 of the 13): the seeded challenges were stamped
+  `clinic_id = NULL` (legacy), and a multi-Clinic fixture has no ambient scope, so `OtpService::verify()`
+  failed closed with CLINIC_SCOPE_REQUIRED (OtpException at the historical-NULL-challenge branch) BEFORE
+  the OTP policy/settings step — i.e. before any code path the tests were written to observe. Seeding
+  through the public A2 request route fails closed by design in the same fixture (no bookable selection;
+  no client Clinic authority) — that is why the REST-envelope test's seed assertion got 400. Fix:
+  `issueKnownCode()` now stamps `clinic_id = 1` explicitly (the fixture's own Clinic; migration-verified
+  default), `restVerifyWithFreshToken()` seeds through the same helper, and the 503 test now asserts the
+  OTP_VERIFY_OK count is unchanged from a captured baseline instead of an absolute zero (the audit table
+  is shared across tests). The 503 path itself was source-verified: `verify()` resolves settings BEFORE
+  the transactional boundary; `otpPolicy()` forces a verified snapshot; on bulk-read fault `Settings`
+  throws `SettingsUnavailableException` (Settings.php, strict load) and `OtpController::verifyCode` maps it
+  to the neutral 503 `CLINIC_SERVICE_UNAVAILABLE` with the challenge unconsumed — consistent with the fix.
+- `tests/Integration/Phase8Slice2OtpHoldConfirmRedTest.php` (6 of the 13): the round-1 bare-user
+  `provisionOtpUser` (no Patient/link) could not satisfy the booking contract's session-clinic
+  prerequisite post-OD-A, so `assert_patient_session_matches_clinic` threw before any booking logic
+  (CLINIC_SCOPE_REQUIRED at booking Service hold preflight; Surfaced as 400 at REST). Fix:
+  `provisionOtpUser($mobile, bool $linked = true)` now creates a Patient in clinicA plus an active
+  `cpms_patient_user_links` row (Slice-2 staff-linked world, exactly the passing T15 inline pattern) and
+  keeps a bare-caller mode (`linked: false`). Call sites all preceded `buildTwoClinicFixture()`; T19 was
+  additionally changed to link its two accounts explicitly to its pre-inserted same-mobile Patients
+  (the default fixture would have created colliding second Patients). No other caller was affected.
+- T14 (`testNewPatientRequiresFirstAndLastNameBeforeConfirmAndHoldStaysRetryable`) and T16
+  (`testPatientExistingOnlyInAnotherClinicIsTreatedAsNewInBookingClinic`) were UNREPRESENTABLE
+  post-OD-A (any link configuration yields either the existing-Patient path — e.g. a clinicA link, names
+  not required — or CLINIC_SCOPE_REQUIRED; no session stamp exists to scope a possession-only caller).
+  They were FLIPPED, never deleted and never weakened: chaste fail-closed contract pinned instead —
+  bare / cross-clinic-only callers get 400 CLINIC_SCOPE_REQUIRED, no Hold/Appointment/Patient is created,
+  no capacity is consumed, and decoy / other-Clinic rows are untouched. The deleted new-Patient
+  names-gate coverage is disclosed in both docblocks; T15 still pins the existing-Patient contract.
+  Renamed (honestly reflecting the new contract) to
+  `testCallerWithoutResolvableSessionClinicCannotHoldConfirmOrCreateAnythingUnderOwnerDecision` and
+  `testSameMobilePatientInAnotherClinicGrantsNoScopeNorBookingUnderOwnerDecision`. If Slice 2 re-opens
+  new-Patient booking it must bring its own gate tests by owner approval.
+- Dead helper `assertHoldUntouchedAndNothingCreated()` removed; class docblock records the round-1
+  inspection-only non-vacuity miss honestly. No test was deleted; no skip/suppression/baseline added;
+  assertions were not weakened (the two flips pin a STRICTLY tighter fail-closed envelope with the same
+  fixture costs).
+
+Validation: no native PHP/MySQL/WordPress in this sandbox; both files parse clean under the PHP 8 grammar
+of the npm `php-parser` (3.7.0, scratch-installed, not committed). PHPStan/WPCS/PHPUnit are CI-only; no
+test was executed locally and no local pass is claimed. `git diff --check` clean.
+
+CI round 2 (run 42767473463, attempt 1, event pull_request) on `9cb2605` — 13 runs, all terminal:
+- REQUIRED Integration (WP 7.1 + MySQL 8): FAILURE with testsuite summary
+  `tests=2775 assertions=76088 failures=1 errors=0 time≈227s`;
+  `failing_tests_capped_20=ClinicCoreTestsIntegrationDay2OperationalWorkflowsTest::testRescheduleOptionsHonorsClinicMaxFutureDaysAndLocationTimezoneBoundaries`.
+  That is the ONLY remaining failing test. It is the documented 2026-11-10 Tehran date hazard from
+  rounds 0/1 (422≠200 at the max_future_days boundary; duplicate-slot fixture collision at 2026-11-12);
+  it was NOT edited, NOT rerun, and is NOT a signal about OTP slice 1 — OTP paths are not on its call graph.
+  All twelve round-1 slice-1 failures/errors are GREEN on CI.
+- REQUIRED Unit Tests (PHP 8.1/8.2/8.3/8.4): SUCCESS. REQUIRED Closure — PHP 8.1/8.3/8.4 runtime and
+  destructive restoreApply (isolated): SUCCESS. Static Analysis, WPCS (changed code), Tenant Tripwire,
+  Release Artifact, Upgrade path, WordPress Compatibility, First-practice browser, Regressions,
+  Compatibility gate, A–J teardown: SUCCESS.
+- Non-required red lanes (18) are the SAME pre-OD-A guest-OTP harness family as round 1
+  (browser acceptance / production-race proofs asserting `session_issued === true`, cookie presence,
+  OTP-derived accounts): Real WP Acceptance (wp_/clinic_ + coexistence ×5 + Persian WooCommerce A/B),
+  Real WordPress integration (mysql-8 / mariadb-11.4.13), Facility matrix (mysql / mariadb), Disposable
+  external tool (wp_ / clinic_), Standalone on a non-empty site (mysql-8 / mariadb-11.4.13), Responsive
+  smoke (Chromium ×4). NO NEW failing non-required lane appeared; NONE was weakened, rewritten or
+  re-scoped; ALL remain red BY DESIGN pending the owner's Slice-2 harness redesign decision.
+  Staging Gate (fresh install → restore drill): FAILURE on `37cda9b` → SUCCESS on `9cb2605` (recorded as
+  observed; no statement is made about flakiness either way beyond the two observed runs).
+- The sticky evidence comments print head `b48fd688…` = GitHub's temporary merge ref for the pull_request
+  event — same log-meta mismatch class as round 1 (`b663f4b…` vs branch head `37cda9b`); not a different
+  revision. Branch head is `9cb2605`.
+
+Merging is NOT authorized; two independent reviews and explicit owner approval are required. PR #340
+stays DRAFT. Integration is NOT green: 8 of 9 required contexts are green and the ninth fails solely on
+the Day2 date hazard, which this slice must not touch. Do not merge on a red required context; do not
+treat the red harness lanes as product defects; the owner must reconcile the doc conflicts and decide the
+Slice-2 harness redesign before any merge consideration.
