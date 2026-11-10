@@ -122,6 +122,9 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
         // data-search publishes the titled name first, then the raw name
         // when the raw contributes search terms not already in the titled
         // form (e.g. 'dr' is not contained in 'دکتر smith').
+        // Known debt F5 / F3 side effect: because data-search includes the
+        // titled form, searching "دکتر" matches every clinician; current
+        // behaviour, not a desired design.
         self::assertStringContainsString(
             'data-search="دکتر smith dr. smith"',
             $html,
@@ -148,11 +151,25 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
             'A catalogue slug must show its canonical Persian label.'
         );
 
-        // Custom / free-text specialty is preserved verbatim, never coerced.
+        // Unknown / non-catalogue specialty key retains its raw stored value
+        // in data-specialty (no catalogue match exists).
         self::assertStringContainsString(
             'data-specialty="فلوشیپ ناباروری"',
             $html,
-            'A custom specialty must keep its raw stored value.'
+            'Unknown specialty key retains its raw stored value in data-specialty.'
+        );
+
+        // Catalogue key "cardiology" must not leak as the raw key; the
+        // resolved Persian label is used instead.
+        self::assertStringNotContainsString(
+            'data-specialty="cardiology"',
+            $html,
+            'Catalogue key "cardiology" must not appear as data-specialty raw key.'
+        );
+        self::assertStringContainsString(
+            'data-specialty="متخصص قلب و عروق"',
+            $html,
+            'Catalogue key "cardiology" resolves to the Persian label in data-specialty.'
         );
         self::assertStringContainsString(
             '<span class="cpms-public-booking__clinician-specialty">فلوشیپ ناباروری</span>',
@@ -220,11 +237,17 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
             $html,
             'The filter option for a custom specialty must keep its raw value and label.'
         );
-        // The raw catalogue slug must not leak into the visible label.
+        // Catalogue key "cardiology" must not appear as a filter option
+        // value; the resolved Persian label is used instead.
         self::assertStringNotContainsString(
             '<option value="cardiology">cardiology</option>',
             $html,
-            'A catalogue slug must not be shown as the visible filter label.'
+            'Catalogue key "cardiology" must not appear as a filter option value.'
+        );
+        self::assertStringContainsString(
+            '<option value="متخصص قلب و عروق">متخصص قلب و عروق</option>',
+            $html,
+            'Catalogue key "cardiology" resolves to the Persian label as the filter option value.'
         );
     }
 
