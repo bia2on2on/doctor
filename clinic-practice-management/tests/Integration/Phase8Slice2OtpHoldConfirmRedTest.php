@@ -194,7 +194,7 @@
  *       (no nonce / hold / confirm / OTP verify markers)
  *
  * POST-GREEN SECURITY REGRESSION GUARD — added after GREEN, passes on the
- * GREEN head and must keep passing (1 method; total suite = 26 tests):
+ * GREEN head and must keep passing (1 method; total suite = 34 tests):
  *
  *   T26 A3 fails closed when the deterministic bridge email
  *       {mobile}@otp.cpms.local is held by a NON-patient WP account: owner

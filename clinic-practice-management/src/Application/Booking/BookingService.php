@@ -3030,7 +3030,8 @@ final class BookingService
 
     /**
      * Mobile بیمار برای Hold درونِ همان Clinicِ معتبر: (1) پیوند فعالِ همان Clinic
-     * با تطابق clinic_id دوطرفه → (2) ایمیل هویتِ قطعیِ OTP (F2) → (3) null.
+     * با تطابق clinic_id دوطرفه → (2) null. (Fallback «ایمیل هویتِ قطعیِ OTP (F2)»
+     * در دور ۳ حذف شد — تصمیم مالک A، ۲۰۲۶-۱۱-۰۹.)
      */
     private function mobile_for_user_in_clinic( int $wp_user_id, int $clinic_id ): ?string {
         $primary = $this->db->fetchRow(

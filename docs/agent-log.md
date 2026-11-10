@@ -5548,3 +5548,86 @@ never pre-asserted.
 Commit basis at the time this entry was written: 7 commits on origin/main..HEAD (6 from rounds 1–4
 + this entry's commit). PR #340 stays DRAFT; merging is NOT authorized; two independent reviews and
 explicit owner approval remain required.
+
+## 2026-11-11 — OTP slice 1, round 6: fix two independent reviewers' text/count findings (no production logic change)
+
+Context. Head at entry time `0831ce93fa25d9cb7d596d5f0393199f6d945663` (round-5 close). Two independent
+readers reviewed that exact head: **no HIGH finding; one MEDIUM and several LOW** text/count findings.
+This entry fixes exactly those findings. **No production behavior changes; no test-logic change; no
+workflow, harness, Day2, schema or migration change.** Each finding was verified from the code/docs
+before any edit; where a reader's claim was imprecise, the correction is recorded rather than the text
+edited silently.
+
+M1 (MEDIUM — wording/claim only, NO code change). Reader: the PR body/ledger say "no auto-link" and
+"the legacy Hold path is inert" — imprecise. Verified from code
+(`src/Application/Booking/BookingService.php`):
+- `confirm()` B2 subject resolution (~L878): hold.patient_id !== null → frozen subject (revalidate + link check; names ignored).
+  hold.patient_id === null → **"Historical NULL" compat resolver**: 0 linked active Patients in the Clinic → names REQUIRED
+  (requirement `requireNewPatientNames`, ~L3254) → at confirm, `createMinimalPatient` (~L3179) creates a NEW Patient row
+  **plus an automatic Patient↔User link (`cpms_patient_user_links`, is_primary=1)** inside the same transaction — the
+  organization identity is activated with it. Never reuses/binds an existing same-mobile Patient (duplicate-mobile →
+  `CLINIC_VALIDATION_FAILED` 400 at the pre-check). Exactly 1 linked active Patient → that single caller-linked identity is
+  reused (names ignored). >1 linked → `CLINIC_PATIENT_SELECTION_REQUIRED` 422, fail-closed.
+- Only reachable by Holds persisted with `patient_id` NULL — which post-owner-decision-A cannot be created through B1
+  (`resolveBookingPatientForHold` → `linkedActivePatientsForClinic`: 0 link → null mobile reaches the Hold gate in
+  `mobile_for_user_in_clinic` (bridge-email fallback REMOVED in round 3) → `CLINIC_VALIDATION_FAILED` before any capacity
+  claim; ≥1 link → non-NULL patient_id persisted, or 422 for >1). Column `patient_id` exists (migration
+  `2026_09_20_0022_slot_holds_patient_binding`, present under `src/Migrations/`).
+- Bound: the Hold TTL — `booking.hold_ttl_sec`, **default 600 s**, configurable (`Settings.php` defaults map;
+  `SettingsAdmin` exposes it). The reader's "≤600 s" is therefore NOT exact — bounded by the configured TTL, default 600.
+- PINNED DELIBERATELY by named tests: `Phase8Slice3LinkedPatientBookingSubjectRedTest::testUnlinkedSameMobilePatientIsNotReusedOrAutoLinked`,
+  `…::testZeroLinkedNewPatientRequiresNamesAtB2AndCreatesPatientInBookingClinic`,
+  `…::testHistoricalNullHoldCompatibilityBounded` (B2-side), and round-3's `Phase8Slice2OtpHoldConfirmRedTest` AREA 14 (R5/R6, confirm-side, via seeded legacy-shape Holds).
+- **THIS PATH IS NOT DEAD AND NOT FIXED IN THIS SLICE.** Its removal (or migration of pre-deployment Holds) is deferred to
+  Slice 2 (owner decision pending). The PR body/top-summary wording is corrected accordingly in round 6; nothing in the
+  code paths changed.
+
+L1 (LOW — comment only; production code untouched). `BookingService.php` docblock of
+`mobile_for_user_in_clinic` still listed "(2) ایمیل هویتِ قطعیِ OTP (F2)" as a step. Corrected to "(2) null" with a
+dated note (fallback removed in round 3, OD-A 2026-11-09). The `git diff --` for `src/` contains ONLY `/** … */` comment
+lines; no non-comment line changed; the comment terminator `*/` is intact.
+
+L2 (LOW — count figures). Docblock at `Phase8Slice2OtpHoldConfirmRedTest.php:~197` said "total suite = 26 tests" —
+verified 34 `public function test*` methods via `grep -nE 'public function test' | wc -l` → **34** (and again as
+`grep -cE 'public function test(\w*)'` → 34). Corrected that docblock line and the twin occurrence in
+`docs/project-current-state.md` (Slice-2 checkpoint block, "(26 tests)" → "(34 tests)"). Comment/doc text only; no test
+logic touched.
+
+L3 (LOW — figures in the PR body). Round-5 text said "Re-audit of the other 16 realigned tests (10 other FIXTURE-LINK + 6 SEEDED)".
+Verified from the code: the re-audit's covered set (excluding the round-5 scheduling fix) is 10 FIXTURE-LINK + 6 SEEDED (16 — as written);
+counting that fix as SEEDED, the branch's realigned totals are **10 FIXTURE-LINK + 7 SEEDED**:
+`seedBridgeHold` × 3 (BookingFlowTest confirm-side: PatientAutoCreatedForNewUser / BookingConfirmReusesVerifiedIdentityAndAuditsLinkage /
+BookingConfirmAuditFailureRollsBackNewPatientAndIdentity) + `seedLegacyNullHoldRow` × 3 (Phase8Slice3LinkedPatientBookingSubjectRedTest) +
+seeded legacy Hold × 1 (SchedulingLocationLocalBoundaryRedTest, round 5). The 10 FIXTURE-LINK: BookingFlowTest::testDoubleBookingPrevented (1),
+BookingRaceLossAlternativesTest (5), LicenseOrdinaryExpirationClinicalNewBusinessTest (2), Phase8Slice4PublicDiscoverySharedClinicTest (2).
+PR body round-5 re-audit sentence reworded to carry both figures precisely.
+
+L4 (LOW — stale round-3 claim). The round-3 bullet presented `auditCountForMobile` (masked-mobile `LIKE` on `after_json`)
+as current. Verified that helper does not exist in `OtpPossessionOnlyTest.php` in this tree; round 4 replaced it with
+row-id baselines (`auditMaxIdForAction` pre-action baseline + `auditCountActionSince`, helper ~L345/361). Round-3 body
+bullet annotated in round 6 as SUPERSEDED (2026-11-10), pointing at the round-4 section. Body text only; test file untouched.
+
+L5 (LOW — missing dated annotation). `CHANGELOG.md` "[Unreleased]" Phase-8-Slice-2 bullet still carried
+`بازاستفادهٔ هویت قطعی {mobile}@otp.cpms.local` as a current decision. Added a dated, annotation-only SUPERSEDED marker
+(strikethrough + bold منسوخ — تصمیم مالک ۲۰۲۶-۱۱-۰۹ (OD-A) + pointers to `docs/adr/ADR-0006-otp.md` and the
+2026-09-20 slice-2 owner-decisions doc). No line deleted; no rewrite of the block.
+
+L6 (LOW — race-proof wording). The claim "`tests/bin/wp-production-race-proof.php` … not in CI" is verified TRUE for that
+file: 34,065 B, NOT referenced by any workflow (`grep -rn 'wp-production-race-proof' .github/` → zero hits); debt unchanged.
+**But** the blanket "production race proof is not in CI" reading is FALSE and is corrected: the separate Python helper
+`clinic-practice-management/tests/bin/production-race-proof.py` (18,885 B) IS wired into CI via the Facility Onboarding Matrix
+workflow (`.github/workflows/facility-matrix-acceptance.yml`), step **"Stress real OTP and production booking services"**
+(`python3 clinic-practice-management/tests/bin/production-race-proof.py`), i.e. inside the two matrix legs — the two
+**non-required** check-runs `Facility matrix (mysql)` and `Facility matrix (mariadb)` (observed RED at rounds 4 and 5; this
+round changes neither the harness nor those lanes). Separately: the body/OTP docs' unqualified "بیمار جدید در B2 confirm ساخته می‌شود"
+statement risked being read as live-reachable for new Holds; the `docs/project-current-state.md` Slice-2 checkpoint clause is
+annotated (round 6) to bound it to historical `patient_id`-NULL Holds (M1 wording), as is the PR body. Nothing claims the race proof passes.
+
+Items verified NOT wrong (and left unchanged): facility/CI wiring for production-race-proof.py above; the 19-id round-4/5
+classification figures otherwise stand as in the round-5 ledger; the scheduling-test SEEDED fix (round 5) is not re-examined here
+(it is the subject of this round's M1 TTL/precision notes, not re-litigated).
+
+Pre-push checks this round will be recorded in the round-6 report and summarized in the PR body/report only AFTER they run;
+CI outcome is claimed only after observation, never pre-asserted. Commit basis at the time this entry was written: 8 commits on
+origin/main..HEAD (7 from rounds 1–5 + this entry's commit). PR #340 stays DRAFT; merging is NOT authorized; two independent
+reviews and explicit owner approval remain required.
