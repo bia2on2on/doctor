@@ -291,7 +291,7 @@ Section 54 Master Prompt → پوشه‌های /docs: SRS(1)، Use Cases(2)، Pe
 >
 > ۱) **ثبت پرداخت (D13 / FR-14.4):** یکتاییِ دیتابیسی `UNIQUE(invoice_id, idempotency_key)` روی `cpms_payments` (Migration `0001`)؛ کتابخانهٔ عمومیِ Idempotency در این مسیر استفاده نمی‌شود. این بند با کد می‌خواند و تغییر نمی‌کند.
 >
-> ۲) **جدولِ عمومیِ `cpms_idempotency_keys`** (مسیرهای `booking/confirm`، `appointments/{id}/reschedule`، `handwriting/page`): دامنهٔ یکتاییِ مؤثر پس از Migration `2026_09_09_0020` = `UNIQUE(key, endpoint, wp_user_id, context_id, clinic_id)` — یعنی `clinic_id` بخشی از دامنه است و همان کلید در Clinicِ دیگر برخورد/replay نمی‌کند (متن‌های قدیمی‌ترِ اسناد که دامنه را چهارستونه یا `U(key)` می‌نویسند به‌روزرسانی شده‌اند).
+> ۲) **جدولِ عمومیِ `cpms_idempotency_keys`** (مسیرهای `POST /booking/confirm`، `POST /appointments/{id}/reschedule` و ذخیرهٔ صفحهٔ دست‌خط؛ مقادیرِ ذخیره‌شدهٔ `endpoint` به‌ترتیب `booking/confirm`، `booking/reschedule`، `handwriting/page`): دامنهٔ یکتاییِ مؤثر پس از Migration `2026_09_09_0020` = `UNIQUE(key, endpoint, wp_user_id, context_id, clinic_id)` — یعنی `clinic_id` بخشی از دامنه است و همان کلید در Clinicِ دیگر برخورد/replay نمی‌کند (متن‌های قدیمی‌ترِ اسناد که دامنه را چهارستونه یا `U(key)` می‌نویسند به‌روزرسانی شده‌اند).
 >
 > ۳) **تصمیمِ مالک دربارهٔ کلیدِ Idempotency (۲۰۲۶-۱۱-۰۸؛ ثبت‌شده در `docs/status/ledger.md` §3.2، که آن را در بسترِ کلیدِ بازپرداخت ثبت کرده است):** کلید **یکتا در هر Clinic** با یکتاییِ دیتابیسی و رفتارِ اتمیک؛ همان کلید + همان مشخصات ⇒ نتیجهٔ قبلی؛ همان کلید + **مشخصاتِ متفاوت ⇒ رد**؛ همان کلید در Clinicِ دیگر مجاز.
 >
