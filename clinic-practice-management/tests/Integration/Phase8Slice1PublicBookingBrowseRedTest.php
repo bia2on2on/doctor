@@ -1636,8 +1636,8 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
      */
     private function assertRawNameNotLeaked( string $raw_name, string $html, string $message ): void {
         self::assertStringNotContainsString(
-            mb_strtolower( $raw_name ),
-            mb_strtolower( $html ),
+            mb_strtolower( $raw_name, 'UTF-8' ),
+            mb_strtolower( $html, 'UTF-8' ),
             $message
         );
     }

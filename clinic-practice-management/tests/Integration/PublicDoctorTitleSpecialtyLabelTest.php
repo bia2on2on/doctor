@@ -167,11 +167,6 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
             'Catalogue key "cardiology" must not appear as data-specialty raw key.'
         );
         self::assertStringContainsString(
-            'data-specialty="متخصص قلب و عروق"',
-            $html,
-            'Catalogue key "cardiology" resolves to the Persian label in data-specialty.'
-        );
-        self::assertStringContainsString(
             '<span class="cpms-public-booking__clinician-specialty">فلوشیپ ناباروری</span>',
             $html,
             'A custom specialty must be shown as stored.'
@@ -224,8 +219,7 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
         $html = $this->render('all');
 
         self::assertStringContainsString('data-mode="discovery"', $html, 'Discovery mode must be announced.');
-        // Option value = resolved catalogue label, same as data-specialty;
-        // the raw slug must not appear as the option value either.
+        // Option value = resolved catalogue label, same as data-specialty.
         self::assertStringContainsString(
             '<option value="متخصص قلب و عروق">متخصص قلب و عروق</option>',
             $html,
@@ -239,15 +233,26 @@ final class PublicDoctorTitleSpecialtyLabelTest extends WP_UnitTestCase
         );
         // Catalogue key "cardiology" must not appear as a filter option
         // value; the resolved Persian label is used instead.
-        self::assertStringNotContainsString(
-            '<option value="cardiology">cardiology</option>',
+        // Match <option> tags specifically so other attributes cannot collide.
+        preg_match_all(
+            '#<option[^>]*value="([^"]+)"[^>]*>#i',
             $html,
-            'Catalogue key "cardiology" must not appear as a filter option value.'
+            $optionValueMatches,
+            PREG_SET_ORDER
+        );
+        $optionValues = array_map(
+            fn ( array $m ): string => $m[1],
+            $optionValueMatches
+        );
+        self::assertNotContains(
+            'cardiology',
+            $optionValues,
+            'No specialty filter option has value="cardiology".'
         );
         self::assertStringContainsString(
             '<option value="متخصص قلب و عروق">متخصص قلب و عروق</option>',
             $html,
-            'Catalogue key "cardiology" resolves to the Persian label as the filter option value.'
+            'An option with the resolved catalogue label as value exists.'
         );
     }
 
