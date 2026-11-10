@@ -817,21 +817,13 @@ final class PublicBookingShortcode
         $specialty_label = self::specialty_display_label( $specialty );
         $weekdays        = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
-        // data-search must be searchable by both the stored name and the
-        // titled display name (e.g. 'dr' and 'دکتر'), but when the raw name
-        // normalizes to a value already contained in the titled name (e.g.
-        // 'سارا احمدی' inside 'دکتر سارا احمدی') publish just the titled
-        // value so exact-match assertions and exact JS lookups stay stable.
-        // When they differ meaningfully (e.g. 'dr. smith' vs 'دکتر smith')
-        // publish both so both search terms work. A doubled stored title
-        // (e.g. 'دکتر Doktor علی حسینی') collapses via with_title(), so the
-        // raw defective value is never published.
-        $nameRawNormalized   = self::normalize_search_text( $name );
-        $nameTitledNormalized = self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) );
-        if ( $nameRawNormalized === $nameTitledNormalized || str_contains( $nameTitledNormalized, $nameRawNormalized ) ) {
-            $nameSearch = $nameTitledNormalized;
+        // data-search: titled name plus raw name when raw adds new terms.
+        $nameRaw   = self::normalize_search_text( $name );
+        $nameTitle = self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) );
+        if ( $nameRaw === $nameTitle || str_contains( $nameTitle, $nameRaw ) ) {
+            $nameSearch = $nameTitle;
         } else {
-            $nameSearch = $nameTitledNormalized . ' ' . $nameRawNormalized;
+            $nameSearch = $nameTitle . ' ' . $nameRaw;
         }
 
         $lines = [];
@@ -1053,8 +1045,7 @@ final class PublicBookingShortcode
             // (catalog label when found, otherwise the raw value exactly as
             // stored) so the JS exact-match on data-specialty always finds the
             // chosen option; dedupe by resolved value and order by resolved
-            // label so catalogue aliases (e.g. 'cardiology' and
-            // 'متخصص قلب و عروق') render a single option.
+            // label so catalogue aliases render a single option.
             $resolvedSpecialties = [];
             foreach ( $specialties as $specialty ) {
                 $resolvedSpecialties[] = self::specialty_display_label( (string) $specialty );
