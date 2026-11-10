@@ -5711,3 +5711,75 @@ Ledger/commit discipline: exactly ONE entries-commit appended this round; zero d
 outcome is asserted at ledger write time; CI is reported only in the round-7 PR body and report AFTER observation. Commit basis at
 the time this entry was written: 9 commits on origin/main..HEAD (8 from rounds 1–6 + this entry's commit). PR #340 stays DRAFT;
 merging is NOT authorized; two independent reviews and explicit owner approval remain required.
+
+## 2026-11-10 — OTP slice 1, round 8: correct two Round-6 wording/figure findings (N1 migration-qualification; N2 historical figure) — text/ledger only
+
+Context. Head at entry `40b34955e3cfc0a4502e3d8cac3b3babe5a037d0` (round-7 close). Two findings from an independent reader were
+reviewed. **NO production logic, NO test-logic, NO workflow, NO harness, NO Day2, NO schema, NO migration change in this round** —
+`src/` and `tests/` deltas vs the round-7 head are empty; docs + this ledger entry only. Each finding was verified BEFORE any edit.
+
+N1 (MEDIUM — wording/claims only). Reader: the body/docs claim `patient_id`-NULL Holds can exist **only** pre-behaviour-change /
+pre-deployment — wrong for installs that have NOT applied migration `2026_09_20_0022_slot_holds_patient_binding`. Verified from the
+code as it exists at the entry head, file:line:
+- Hold INSERT path — `src/Application/Booking/BookingService.php`: `$has_patient_col = $this->holdsHasPatientIdColumn();` at
+  `hold()` (~L588); the row is built at ~L649–665; `'patient_id'` is added to the INSERT **only** inside
+  `if ( $has_patient_col ) { $row['patient_id'] = $patient_id_to_persist; }` (~L659–662); the insert executes at ~L664.
+- `holdsHasPatientIdColumn()` (~L3087–3103): information_schema probe (`table_schema = DATABASE()`, `table_name = 'cpms_slot_holds'`,
+  `column_name = 'patient_id'`), cached (`$this->holdsPatientIdColCache`); returns **false** when the column is absent.
+- `resolveBookingPatientForHold()` (~L3110–3113): `if ( ! $this->holdsHasPatientIdColumn() ) { return null; }` — on a pre-0022
+  install EVERY Hold resolves `patient_id` → null, linked callers included, and the row persists with **no** `patient_id` key.
+- Confirm resolver (~L823–825): `$holdPatientId = $hasPatientCol && array_key_exists( 'patient_id', $hold ) &&
+  $hold['patient_id'] !== null && (string) $hold['patient_id'] !== '' ? (int) $hold['patient_id'] : null;` — absent/NULL/'' are ALL
+  treated as the Historical-NULL compat shape.
+- Migration apply mechanism: `src/Migrations/MigrationRunner.php` `migrate()` (~L68) — transactional, recorded in
+  `cpms_schema_migrations`, fail-loud. It is invoked (a) at plugin activation after the DB-compatibility gate (`App.php` ~L548), and
+  (b) on `admin_init` (~L474–476) and `rest_api_init` (~L477–479) via `ensureMigrated()` (~L933). `ensureMigrated()` takes a 30 s
+  transient lock (`cpms_migrate_lock`, ~L935) and calls `migrate()` **only** when
+  `runtime_evidence_status() === RUNTIME_EVIDENCE_SUPPORTED` (~L949–950); on evidence UNSUPPORTED (~L952–954) or unreadable
+  (~L955–957) it logs/throttles and **does not run** `migrate()` — fail-closed — so migration 0022 may never apply on such installs
+  (not merely "before deployment"). Front-end requests (no admin/REST/activation path) never run `migrate()` either; PHP is re-read
+  per request, so updated code can serve requests before 0022 lands and, on fail-closed installs, indefinitely.
+
+**Verdict: the reader's N1 finding is CONFIRMED.** Any wording restricted to "pre-deployment / pre-behaviour-change rows only" is
+incomplete: on installs that have not applied migration 0022 (fail-closed unsupported/unreadable DB-engine evidence, or the
+code-deployed-but-migration-pending window), newly persisted Holds carry no `patient_id` and confirm treats them as Historical-NULL.
+Round-7's R3 footnote (a) recorded the mid-upgrade window but the PR body and the docs clause were not corrected to the
+migration-qualified statement, and Round-7's "accurate for production and remains" restatement overstated it — recorded here, not
+re-litigated silently.
+
+Corrected wording (this round): `docs/project-current-state.md` (Slice-2 checkpoint clause, annotation-style, adjacent text
+preserved) and the PR body (top summary + Round-6 M1 recap + Round-7 conclusion) now state the migration-0022-qualified bound:
+post-0022, B1 persists `patient_id` for resolvable callers so new Holds cannot enter the shape; pre-0022 (column absent — fail-closed
+or upgrade-in-flight), B1 cannot persist `patient_id` at all and confirm treats the rows as Historical-NULL. Bounded by the Hold TTL
+(`booking.hold_ttl_sec`, default **600 s**, `Settings.php` L48; consumed at `BookingService.php` ~L584). **NOT claimed:** reachability
+of the zero-link new-Patient leg of the compat resolver on pre-0022 installs (the OD-A Hold gate still requires a mobile proven from
+the caller's linked active Patient in the booking Clinic, so zero-link actors cannot persist Holds regardless of column presence —
+no new reachability is asserted). **NOT claimed:** anything is fixed — nothing is fixed; the compat path remains, deferred to Slice 2
+(owner decision pending). The Round-6 M1 text in this ledger is history and remains unedited; this entry supersedes its
+"pre-deployment Holds" phrasing as the current wording.
+
+N2 (LOW — historical figure). Reader: PR #89's accepted head and merge contain **26** tests; Round 6 changed the Slice-2 checkpoint
+to 34. Verified via git objects:
+- PR #89 head `70d033cc3121519e882e2b18d4ada8ac1a303f81` (gh api pulls/89 → `.head.sha`):
+  `tests/Integration/Phase8Slice2OtpHoldConfirmRedTest.php` contains **26** `public function test*` methods; its docblock said 26.
+- PR #89 merge commit `440ba7e7d07579036128f288f502d390d27c98d3` (`.merge_commit_sha`): **26** methods (same file).
+- `main` at `643150e4095d8d313ce84550a719931b9412023d` (this PR's base): **27** methods (docblock stale at 26 there).
+- HEAD `40b34955e3cfc0a4502e3d8cac3b3babe5a037d0` (round-7 head): **34** methods; the test docblock's "total suite = 34" describes
+  the CURRENT class and is accurate there (the test file was NOT touched this round — tests delta must stay empty).
+
+**Round-6's edit of the Slice-2 historical checkpoint figure (26 → 34) was WRONG** and is corrected this round: the checkpoint in
+`docs/project-current-state.md` states 26 at PR #89 (verified at head and merge), with 34 noted as the CURRENT class at this
+branch's HEAD. The Round-6 ledger L2 text remains as history.
+
+Other historical checkpoint figures altered by this PR — enumerated across the whole `origin/main...HEAD` diff: exactly one was found,
+the Slice-2 figure above. Verified NOT altered elsewhere (minus-lines carrying digits, whole diff): `CHANGELOG.md` (OD-A annotation;
+no metric), `docs/srs/SRS.md` (FR-1.6/1.7 annotation; requirement ids/dates only), `docs/api/api-contract.md` (A3 row + OD-A note;
+no metric), `docs/decisions/2026-09-05-f3-booking-gaps.md` and `docs/decisions/2026-09-20-phase8-slice2-owner-decisions.md`
+(annotation-only, zero metric figures), `docs/adr/ADR-0006-otp.md` (notes; no metric figure), `docs/agent-log.md` (append-only; zero
+deletions pre-round-8). Numeric churn in PHP source/tests (fixture phones/ids, assertion
+counters) contains no historical checkpoint figures; ledger-internal figures (2775/76088, 2782/76217, 19 ids, …) all live inside
+newly appended entries, not in altered history. Test-file numeric churn was checked for checkpoint semantics and contains none.
+
+Ledger/commit discipline: exactly ONE entry appended this round; ZERO deletions; no prior entry edited anywhere in this diff. No CI
+outcome is asserted at ledger write time; CI is reported only in the round-8 PR body and report AFTER observation. PR #340 stays
+DRAFT; merging is NOT authorized; two independent reviews and explicit owner approval remain required.
