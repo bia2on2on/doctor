@@ -817,6 +817,18 @@ final class PublicBookingShortcode
         $specialty_label = self::specialty_display_label( $specialty );
         $weekdays        = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
 
+        // data-search must be searchable by both the stored name and the
+        // titled display name (e.g. 'dr' and 'دکتر'), but when they normalize
+        // to the same value (e.g. a Persian name that already carries a title)
+        // publish a single value so exact-match assertions stay stable.
+        $nameRawNormalized   = self::normalize_search_text( $name );
+        $nameTitledNormalized = self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) );
+        if ( $nameRawNormalized === $nameTitledNormalized ) {
+            $nameSearch = $nameRawNormalized;
+        } else {
+            $nameSearch = $nameRawNormalized . ' ' . $nameTitledNormalized;
+        }
+
         $lines = [];
         // `data-locations` = only the Locations the SERVER found eligible for
         // this clinician. The Location-first order filters on this value alone;
@@ -829,7 +841,7 @@ final class PublicBookingShortcode
             $clinic_id,
             $id,
             esc_attr( $specialty_label ),
-            esc_attr( self::normalize_search_text( $name . ' ' . DoctorDisplayName::with_title_or_fallback( $name ) ) ),
+            esc_attr( $nameSearch ),
             esc_attr( implode( ' ', array_map( 'intval', $location_ids ) ) )
         );
         $lines[] = sprintf(
