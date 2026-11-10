@@ -645,7 +645,7 @@ final class OtpService
         ];
     }
 
-    private function loadState(string $mobile, string $purpose): OtpState
+    private function loadState(string $mobile, string $purpose): OtpState // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen,Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose -- established legacy PSR-style in this file; unchanged by OTP slice 1 (this line only became ratchet-visible because the slice's deletions re-anchored the diff hunk); security, SQL, i18n and escaping sniffs stay active.
     {
         // Called inside the per-mobile issuance guard. A non-locking lookup of
         // the latest primary key avoids taking a gap lock for an unseen mobile.

@@ -5104,3 +5104,80 @@ Docs: `docs/api/api-contract.md` minimal annotations (A3 row, GAP-2 note, Phase 
 Validation: no native PHP, MySQL or WordPress runtime exists in this sandbox. PHP-WASM (`@php-wasm/cli` 3.1.63, PHP 8.5.12, label: PHP-WASM, NOT native PHP) `php -l` reports NO syntax errors on all six changed/new PHP files; this proves only parseability, NOT behavior — no unit or integration test was executed locally, and the new tests' non-vacuity (fail on main, pass on this change) is argued by source inspection only and MUST be proven by CI. `python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py'` => 98 tests OK (skipped=1). `bin/check-workflow-yaml.py` => `WORKFLOW_YAML_OK files=17` (PyYAML provided via a scratch venv on PYTHONPATH; system python3 lacks PyYAML). `companion-isolation.py --changed-files` => PASS (production-only lane). `bin/tenant-tripwire.py` => rc 0 (0 hardcodes; 3 pre-existing suspects in files untouched by this change). `git diff --check` clean. One environment note: the authoring session's separate scratch clone vanished mid-task (sandbox persistence); all work was re-applied inside this repository on the same branch and re-verified file-by-file; only non-repo scratch dirs were lost.
 
 Known hazards/debts: Tehran 2026-11-10 (`Day2OperationalWorkflowsTest::testRescheduleOptionsHonorsClinicMaxFutureDaysAndLocationTimezoneBoundaries`) suspected time-related and unproven; if it is the ONLY failure, it will be reported, not rerun/edited. BookingService bridge-email fallback, portal guest-OTP inertness, PatientPortalOtpLoginTest (source-contract test pinning the dead session branch) and wp-production-race-proof.php: documented debt. CI claims are made ONLY from the GitHub run/check state after push; merging is NOT authorized — two independent reviews and explicit owner approval are required.
+### OTP SAFETY SLICE 1 — fix round on CI findings; second sandbox re-clone incident (branch `arena/711a94ea-doctor`)
+
+Follow-up on the pushed slice-1 head `9e3ace7fed2aa0c0daa810cea08365d1fe777f39` (PR #340, draft).
+Nothing in this entry weakens, deletes, or re-scopes the slice; the owner decision (2026-11-09,
+Option A) is unchanged. This entry records (i) an environment incident, (ii) how every failing
+check on the pushed head was root-caused using sanitized evidence and annotations only (no raw
+log text is reproduced here), and (iii) the one code change made in response.
+
+Environment incident (second occurrence): at 2026-11-10T05:27:32Z the sandbox re-created the
+repository from a fresh clone (reflog: `clone` then `checkout: moving from main to
+arena/711a94ea-doctor`); all non-repo scratch state (scratch venvs, the watcher script and its
+outputs, PR payload scratch files) was lost again. The fresh clone pointed the branch at the
+base commit `643150e` with the slice-1 changes present only as UNCOMMITTED files in the working
+tree. Recovery verified before touching anything: `git diff FETCH_HEAD` after fetching
+`origin/arena/711a94ea-doctor` showed the working tree byte-identical to the pushed commit
+`9e3ace7f` (the single `OtpPossessionOnlyTest.php` copy verified via `cmp`), then
+`git reset --hard FETCH_HEAD` restored a clean tree at `9e3ace7f`. Nothing was lost; no change
+was re-derived by hand. The pushed head, PR #340 and its CI runs are unaffected by this incident.
+
+CI root-cause (head `9e3ace7f`, merge ref `d9f6105e`, workflow event `pull_request`; evidence via
+check-runs metadata, annotations and the sanitized sticky evidence comments — no raw log text):
+
+- Unit Tests (PHP 8.1) FAILED at the "Locked production install / platform / built-ZIP SDK smoke"
+  step (exit 100) with `curl error 28 ... packagist.org/api/security-advisories/: Connection timed
+  out after 10006 milliseconds`. The same `composer audit` succeeded in the preceding step of the
+  same run (sanitized family `ci-composer-lock-audit`: advisories=[]). Unit Tests (PHP
+  8.2/8.3/8.4/8.5) PASSED, Static Analysis PASSED. Classification: transient external network
+  failure inside the build script, not a code defect; nothing was edited to mask it. Integration
+  (WP 7.1 + MySQL 8) was SKIPPED because the CI `integration` job has `needs: unit` and the unit
+  job failed; it is not a product signal either. Both will re-run on the next push.
+- WPCS (changed code) FAILED with exactly 3 violations, all on `OtpService.php:648` (the legacy
+  `loadState` signature): `WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid`,
+  `Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingAfterOpen`,
+  `Squiz.Functions.FunctionDeclarationArgumentSpacing.SpacingBeforeClose`. Root cause verified
+  locally: the gate diffs against the fixed ratchet baseline `2263ed673a8fdf4ab91e6a7fffae6d82252e4324`
+  (2026-09-20); the slice's large deletion above that line re-anchored xdiff's hunk alignment, so
+  the line became an added line in the merge view. The line's content is byte-identical on `main`
+  and in the Sep-20 baseline; in `main`'s own accumulated diff the same line is NOT in the added
+  set (verified locally by diffing the fetched baseline against `origin/main`), which is why main
+  is green. The violations are pre-existing legacy style, not slice-1 semantics. Fix (this
+  commit): one inline `phpcs:ignore` on that signature line naming the three sniffs and the
+  legacy-preservation reason, mirroring the established pattern in this file (`patientLinks`
+  precedent and the scoped `phpcs:disable ... -- established PSR-style in this file` block used
+  for the `audit()` legacy signature). Comment-only change; no behavior, no renamed symbols, no
+  weakened test.
+- Browser-acceptance family (NOT required contexts): Real WP Acceptance (prefix wp_ and clinic_),
+  Real WordPress Acceptance within Phase 18 coexistence lanes, Real WP Integration (mysql-8 and
+  mariadb-11.4.13), Facility matrix (mysql/mariadb — "Stress real OTP and production booking
+  services"), External Disposable Site (wp_ and clinic_ prefixes — all staff/portal checks PASS,
+  then a `Locator.wait_for` timeout at stage "public booking normal OTP hold confirm" after the
+  OTP request route succeeded and the test fixture code was retrieved), Scoped demo and
+  Standalone demo (Chromium persona journeys), Responsive smoke, and the Pilot/Staging Readiness
+  Gate's Slice-2 OTP journey (`otp-mobile-390-a3` / `otp-laptop-1366-a3` — `page.expect_navigation`
+  timeout; the journey also hard-asserts `session_issued is True`, `user_id > 0` and
+  `is_new_user is True`, all false by design under owner decision A). Root cause: every one of
+  these harnesses encodes the PRE-OD-A guest-OTP path (silent mobile-derived WP account +
+  `wordpress_logged_in` cookie + reload into a patient session), which owner decision A removes.
+  These harnesses CANNOT pass under OD-A and were not weakened, rewritten or re-scoped in this
+  fix round. The PR body (unchanged) documents this exact accepted consequence: patient-side
+  booking via OTP and portal self-service do not function in this slice; the owner explicitly has
+  no patient self-service until Slice 2. Deciding HOW public booking/portal access should work
+  post-OD-A (and rewriting those acceptance harnesses against the slice-2 staff-link design) is
+  an owner decision, not a CI fix.
+- Closure — PHP 8.1/8.3/8.4 runtime (WP 7.1.3): SUCCESS. Closure — destructive restoreApply
+  (isolated): SUCCESS. Classic V1 remediation evidence, Companion compatibility gate, First-Practice
+  Browser Acceptance, WordPress Compatibility: SUCCESS. Pilot/Staging Readiness Gate: FAILED —
+  its only failures are the two OTP-journey a3 timeouts above (sanitized `pilot-debug-dump`
+  evidence lists exactly those two FAIL lines); the gate is not a required context.
+- Day2OperationalWorkflowsTest hazard: NOT observed — no workflow failed on it (the Day-2 browser
+  evidence in the pilot gate is "log missing" because its job failed earlier; no PHPUnit Day2
+  failure appeared in any required-suite result; Unit Tests passed on PHP 8.2/8.3/8.4/8.5 and on
+  8.1 the job failed at the build step BEFORE discovery of a test result, so a Day2 failure is
+  neither observed nor excluded). Still UNPROVEN either way; not rerun, not edited.
+
+Push of this fix round triggers a full CI re-run; this entry deliberately claims no CI outcome.
+Required contexts will be re-verified from the GitHub check state of the new head and reported.
+Merging is NOT authorized; PR #340 stays DRAFT.
