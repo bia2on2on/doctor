@@ -36,10 +36,18 @@ use WP_UnitTestCase;
  *
  * NON-VACUITY (owner decision A): every test in this class FAILS on live
  * main (pre-change verify() created/resolved/linked from the mobile, wrote
- * LOGIN_SUCCESS and could issue a session) and PASSES on this change.
- * PHP is not available in the authoring sandbox, so this was verified by
- * source inspection only; CI is the executable proof (do not merge on a
- * red or unrun suite).
+ * LOGIN_SUCCESS and could issue a session) and is intended to PASS on this
+ * change. PHP is not available in the authoring sandbox, so the first
+ * committed round was written by source inspection only — CI round 1
+ * (2026-11-09, run 42762572435) then showed 6 of the failures here were
+ * slice-1 TEST defects, not production defects: the seeded challenges were
+ * stamped clinic_id=NULL (legacy) and a multi-Clinic fixture has no ambient
+ * scope, so verify() failed closed with CLINIC_SCOPE_REQUIRED before any
+ * setting/policy logic and before the uniform envelope could be produced;
+ * the 503 path likewise asserted an absolute OTP_VERIFY_OK count of 0 even
+ * though the audit table is shared across tests. Both were corrected in the
+ * follow-up commit (clinic-stamped seeds; baseline-delta audit assertion).
+ * Do not merge on a red or unrun suite; CI is the executable proof.
  */
 final class OtpPossessionOnlyTest extends WP_UnitTestCase
 {
@@ -231,6 +239,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
     {
         $_SERVER['REMOTE_ADDR'] = '203.0.113.99';
         $tokenId = $this->seedToken(self::MOBILE_503, '123456');
+        $verifyOkBefore = $this->auditCount('OTP_VERIFY_OK');
 
         Settings::flushCache();
         $this->failSettingsBulkReads();
@@ -252,7 +261,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
             'the challenge must NOT be consumed while settings are unreadable.'
         );
         self::assertSame(
-            0,
+            $verifyOkBefore,
             $this->auditCount('OTP_VERIFY_OK'),
             'no OTP_VERIFY_OK audit may be written while settings are unreadable.'
         );
@@ -329,6 +338,16 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         );
     }
 
+    /**
+     * Seed a login-purpose challenge stamped to the default Clinic (id=1).
+     *
+     * owner decision A (2026-11-09): a challenge stamped to a Clinic resolves
+     * the OTP policy from that Clinic alone — no ambient scope and no client
+     * authority involved. A LEGACY NULL-clinic challenge in a multi-Clinic
+     * fixture without ambient scope fails closed with CLINIC_SCOPE_REQUIRED
+     * by design (see OtpService::verify()); this test suite therefore stamps
+     * clinic_id=1 explicitly instead of relying on implicit resolution.
+     */
     private function issueKnownCode(string $mobile, string $code, int $ttlSec = 120): void
     {
         $pepper = defined('CPMS_PEPPER') && (string) CPMS_PEPPER !== ''
@@ -339,6 +358,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
             update_option('cpms_otp_pepper', $pepper, 'no');
         }
         App::db()->insert('cpms_otp_tokens', [
+            'clinic_id' => 1,
             'mobile' => $mobile,
             'purpose' => 'login',
             'code_hash' => OtpPolicy::hashCode($code, $pepper),
@@ -370,26 +390,13 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
 
     private function restVerifyWithFreshToken(string $mobile, string $code): array
     {
-        // seed through the public request route so the pepper and rate
-        // limiting behave exactly as in production, then patch the hash to
-        // the known code (same technique as Phase8Slice2OtpHoldConfirmRedTest).
-        $request = new \WP_REST_Request('POST', '/clinic/v1/otp/request');
-        $request->set_param('mobile', $mobile);
-        $request->set_param('purpose', 'login');
-        $requested = rest_get_server()->dispatch($request);
-        self::assertSame(200, $requested->get_status(), 'the A2 request must succeed to seed the challenge.');
-
-        $pepper = defined('CPMS_PEPPER') && (string) CPMS_PEPPER !== ''
-            ? (string) CPMS_PEPPER
-            : (string) get_option('cpms_otp_pepper', '');
-        $rowId = (int) App::db()->fetchValue(
-            'SELECT id FROM ' . App::db()->table('cpms_otp_tokens') . ' WHERE mobile = %s ORDER BY id DESC LIMIT 1',
-            [$mobile]
-        );
-        App::db()->update('cpms_otp_tokens', [
-            'code_hash' => OtpPolicy::hashCode($code, $pepper),
-        ], ['id' => $rowId]);
-
+        // Seed a clinic-stamped challenge directly. The public A2 route in a
+        // multi-Clinic fixture without an explicit bookable selection fails
+        // closed with CLINIC_SCOPE_REQUIRED by design (no client-supplied
+        // Clinic authority); the envelope property under test does not depend
+        // on A2 mechanics, so both sides of the comparison use the same
+        // seeding as the rest of this class.
+        $this->issueKnownCode($mobile, $code, 120);
         $response = $this->dispatch('/clinic/v1/otp/verify', [
             'mobile' => $mobile,
             'code' => $code,
