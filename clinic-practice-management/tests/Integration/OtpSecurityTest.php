@@ -89,7 +89,9 @@ final class OtpSecurityTest extends WP_UnitTestCase
         $result = $this->service()->verify(self::MOBILE, '424242', OtpService::PURPOSE_LOGIN, '203.0.113.9');
 
         self::assertIsInt($result['user_id']);
-        self::assertGreaterThan(0, $result['user_id']);
+        // owner decision A: the shape is the uniform zero-access envelope (no TypeError, no resolution).
+        self::assertSame(0, (int) $result['user_id']);
+        self::assertFalse($result['session_issued']);
     }
 
     /**
@@ -157,13 +159,19 @@ final class OtpSecurityTest extends WP_UnitTestCase
         self::assertFalse($result['session_issued'], 'verify_mobile نباید کوکی احراز هویت بسازد.');
     }
 
-    public function testLoginPurposeIssuesSession(): void
+    /**
+     * owner decision A (2026-11-09 — Option A): حتی Purpose ورود
+     * Session صادر نمی‌کند؛ OTP فقط possession را اثبات می‌کند.
+     */
+    public function testLoginPurposeIssuesNoSessionUnderOwnerDecision(): void
     {
         $this->seedToken('246810', OtpService::PURPOSE_LOGIN);
 
         $result = $this->service()->verify(self::MOBILE, '246810', OtpService::PURPOSE_LOGIN, '203.0.113.13');
 
-        self::assertTrue($result['session_issued']);
+        self::assertFalse($result['session_issued'], 'owner decision A: OTP never issues a session.');
+        self::assertSame(0, (int) $result['user_id']);
+        self::assertSame(0, get_current_user_id(), 'no account may be authenticated.');
     }
 
     // ---------------------------------------------------------------
@@ -329,9 +337,11 @@ final class OtpSecurityTest extends WP_UnitTestCase
     }
 
     /**
-     * OD-8 نباید ورود را بشکند — LOGIN همچنان کاربر و Session می‌سازد.
+     * owner decision A (2026-11-09 — Option A): حتی Purpose ورود هیچ
+     * حسابی نمی‌سازد و Session نمی‌دهد — پاسخ همیشه zero-access است.
+     * owner decision: shared mobile is never an ownership/access basis.
      */
-    public function testLoginStillProvisionsUserAndIssuesSession(): void
+    public function testLoginCreatesNoAccountAndIssuesNoSessionUnderOwnerDecision(): void
     {
         $mobile = '09121110003';
         $this->seedFor($mobile, '111003', OtpService::PURPOSE_LOGIN);
@@ -339,22 +349,18 @@ final class OtpSecurityTest extends WP_UnitTestCase
 
         $result = $this->service()->verify($mobile, '111003', OtpService::PURPOSE_LOGIN);
 
-        self::assertGreaterThan(0, (int) $result['user_id'], 'ورود باید کاربر بسازد/بیابد.');
-        self::assertTrue($result['is_new_user']);
-        self::assertTrue($result['session_issued'], 'ورود باید Session بدهد.');
-        self::assertSame($before + 1, $this->userCount());
+        self::assertSame(0, (int) $result['user_id'], 'owner decision A: no mobile-derived account resolution.');
+        self::assertFalse($result['is_new_user']);
+        self::assertFalse($result['session_issued'], 'owner decision A: OTP never issues a session.');
+        self::assertSame($before, $this->userCount(), 'owner decision A: no wp_users row may be created.');
     }
 
     /**
-     * معناشناسی واقعی Resolution: `resolveUser()` کاربر را **از مسیر رکورد
-     * بیمار** پیدا می‌کند (`cpms_patients` → `cpms_patient_user_links`).
-     * `createWpUser()` هیچ رکورد بیماری نمی‌سازد، پس کاربری که با ورود ساخته
-     * شده ولی رکورد بیمار ندارد، از این مسیر قابل بازیابی نیست.
-     *
-     * این عمدی است و با AD-14/Q2 هم‌راستاست: شمارهٔ موبایل به‌تنهایی کلید
-     * هویت نیست و Resolution هویت باید صریح باشد، نه ضمنی. بنابراین
-     * `verify_mobile` در این حالت `0` می‌دهد — و مهم‌تر: **باز هم چیزی
-     * نمی‌سازد**، که دقیقاً هدف OD-8 است.
+     * معناشناسی واقعی Resolution (تصمیم مالک ۲۰۲۶-۱۱-۰۹ — Option A): هیچ
+     * Resolution هویتی از موبایل انجام نمی‌شود — نه برای ورود، نه برای تأیید.
+     * پاسخ همیشه `user_id = 0` است و **باز هم چیزی ساخته نمی‌شود**؛ شمارهٔ
+     * موبایل به‌تنهایی کلید هویت نیست و Resolution باید صریح باشد، نه ضمنی
+     * (هم‌سو با AD-14/Q2 و OD-8).
      */
     public function testVerifyMobileWithoutPatientRecordResolvesToZeroAndStillCreatesNothing(): void
     {
@@ -362,7 +368,9 @@ final class OtpSecurityTest extends WP_UnitTestCase
 
         $this->seedFor($mobile, '111004', OtpService::PURPOSE_LOGIN);
         $login = $this->service()->verify($mobile, '111004', OtpService::PURPOSE_LOGIN);
-        self::assertGreaterThan(0, (int) $login['user_id']);
+        // owner decision A: حتی login هم user resolve/provision نمی‌کند.
+        self::assertSame(0, (int) $login['user_id'], 'owner decision A: no mobile-derived resolution for login either.');
+        self::assertFalse($login['session_issued']);
 
         $before = $this->userCount();
 
@@ -370,16 +378,18 @@ final class OtpSecurityTest extends WP_UnitTestCase
         $verify = $this->service()->verify($mobile, '111005', OtpService::PURPOSE_VERIFY_MOBILE);
 
         self::assertSame($before, $this->userCount(), 'نباید کاربر تازه‌ای ساخته شود.');
-        self::assertSame(0, (int) $verify['user_id'], 'بدون رکورد بیمار، Resolution به کاربر نمی‌رسد.');
+        self::assertSame(0, (int) $verify['user_id'], 'بدون Resolution هویتی، خروجی همیشه 0 است.');
         self::assertFalse($verify['is_new_user']);
         self::assertFalse($verify['session_issued']);
     }
 
     /**
-     * و وقتی زنجیرهٔ بیمار⇄کاربر واقعاً وجود دارد، `verify_mobile` باید همان
-     * کاربر موجود را بیابد — بدون ساخت هیچ چیز.
+     * owner decision A (2026-11-09 — Option A): حتی وقتی زنجیرهٔ بیمار⇄کاربر
+     * با روشِ دیگری از قبل برقرار است، OTP روی آن مبنا Session صادر نمی‌کند؛
+     * هیچ جست‌وجوی موبایلی انجام نمی‌شود و لینک دست‌نخورده می‌ماند.
+     * owner decision: shared mobile is never an ownership/access basis.
      */
-    public function testVerifyMobileResolvesTheLinkedUserOfAnExistingPatient(): void
+    public function testVerifyMobileFindsNothingAndLeavesPreExistingLinkUntouched(): void
     {
         $mobile = '09121110006';
         $db = $this->dbh();
@@ -414,7 +424,7 @@ final class OtpSecurityTest extends WP_UnitTestCase
         $this->seedFor($mobile, '111006', OtpService::PURPOSE_VERIFY_MOBILE);
         $verify = $this->service()->verify($mobile, '111006', OtpService::PURPOSE_VERIFY_MOBILE);
 
-        self::assertSame($userId, (int) $verify['user_id'], 'باید همان کاربر متصل پیدا شود.');
+        self::assertSame(0, (int) $verify['user_id'], 'owner decision A: no mobile lookup — the pre-existing link grants nothing via OTP.');
         self::assertFalse($verify['is_new_user']);
         self::assertFalse($verify['session_issued'], 'verify_mobile هرگز Session نمی‌دهد.');
         self::assertSame($before, $this->userCount(), 'نباید کاربری ساخته شود.');
@@ -427,8 +437,11 @@ final class OtpSecurityTest extends WP_UnitTestCase
 
     /**
      * OTP possession must never turn a durable Patient↔Staff link into Staff
-     * authentication. The failure is intentionally indistinguishable from an
-     * invalid code and must not change the staff role, account count, or links.
+     * authentication. Under owner decision A the zero-access response is
+     * UNIFORMLY the same envelope for every number (staff-linked, patient-
+     * linked, or nonexistent) — non-disclosure is exact, not statistical —
+     * and the staff role, account count and links must remain unchanged.
+     * owner decision: shared mobile is never an ownership/access basis.
      */
     public function testLoginOtpCannotAuthenticateStaffLinkedToPatientRecord(): void
     {
@@ -460,13 +473,12 @@ final class OtpSecurityTest extends WP_UnitTestCase
         $linksBefore = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links'));
         wp_set_current_user(0);
 
-        try {
-            $this->service()->verify($mobile, '111007', OtpService::PURPOSE_LOGIN);
-            self::fail('A linked staff account must not receive a Patient OTP session.');
-        } catch (OtpException $exception) {
-            self::assertSame('CLINIC_OTP_INVALID', $exception->apiCode());
-            self::assertSame(400, $exception->httpStatus());
-        }
+        // owner decision A: valid code, possession proven — yet ZERO access:
+        // same uniform zero-access envelope as every other number.
+        $result = $this->service()->verify($mobile, '111007', OtpService::PURPOSE_LOGIN);
+        self::assertSame(0, (int) $result['user_id']);
+        self::assertFalse($result['session_issued'], 'owner decision A: OTP never authenticates the staff account.');
+        self::assertSame([], $result['patient_links']);
 
         self::assertSame($usersBefore, $this->userCount(), 'OTP denial must not create another account.');
         self::assertSame($linksBefore, (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links')));

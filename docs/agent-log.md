@@ -5052,3 +5052,55 @@ Annotations on the current head's run (workflow source analysis; metadata only, 
 Tests (PyYAML-equipped interpreter: Python 3.11 + PyYAML in a venv, matching CI; system `python3` lacks PyYAML): `python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py'` — 98 tests OK, 0 skips (95 before, +3 new methods executing the REAL extracted blocks: orphan failure/error/skipped/warning, bare testcase and result element under the root, nested-plus-orphan, canary orphan, producer-shaped healthy nested documents including a declared-warning case, and the evidence block rejecting orphans identically with correct exit codes). Non-vacuity (OBSERVED): against a temp copy of the `8e21abd5` workflow (`git show`, non-destructive, under `/home/user/oldwf4`) the orphan tests fail (9 failures) while the other tests pass there. A static contract test cannot prove the absence of all leaks, and no such claim is made.
 
 Required restatement about PR #334 figures: the "13/13 push workflows and 64/64 check runs green" figures recorded after the #334 merge come from the **owner-relayed API report** in that session, main Integration totals were **NOT retrieved**, and CI green was not — and is not — product acceptance. Historical exposure (reviewer-observed, counts only): 14 raw-prefixed notices plus one raw JSON summary notice on each of three sampled older heads; those annotations remain public, nothing was removed and nothing can be retracted, and the count does not prove sensitive content. Local validation: `bin/check-workflow-yaml.py` => `WORKFLOW_YAML_OK files=17`; `companion-isolation.py --changed-files` => PASS; `bin/tenant-tripwire.py` => rc 0. CI results for the pushed head are claimed only from the GitHub run/check pages after the push; merging is NOT authorized.
+### OTP SAFETY SLICE 1 — owner decision A: OTP proves phone possession only (branch `arena/711a94ea-doctor`)
+
+Owner decision (2026-11-09, Option A), recorded by the owner, supersedes all prior designs:
+the OTP channel proves possession of the mobile number ONLY. Shared mobile is never an
+identity/ownership/merge/access basis; no auto-link; no backfill; BookingService and staff
+flows that need Patient access require the slice-2 staff-link flow (not built here).
+Option B (e.g. a distinct error envelope for valid-but-unlinked codes) was NOT approved and
+is deliberately not designed here. Design note: a valid-but-unlinked number receives the
+SAME uniform 200 zero-access envelope as every other valid code — `user_id=0`,
+`patient_links=[]`, `is_new_user=false`, `session_issued=false` — the strongest
+non-enumeration property (no existing/non-existing signal, no session for any number,
+no LOGIN_SUCCESS). Fail-closed on unreadable OTP settings (503) is unchanged.
+
+Scope (minimal, reviewable): `OtpService::verify()` now performs NO identity resolution of
+any kind — no Patient lookup by mobile, no patient_user_links read/write, no mobile-derived
+WP account creation/reuse (`{mobile}@otp.cpms.local` has no authority), no session, no
+LOGIN_SUCCESS; OTP_VERIFY_OK is still written (`user_id=0`). Dead identity machinery
+(8 private methods + 3 consts + one import) was deleted; request-path, rate limits,
+lockout, quota, hash/TTL, the consume/audit transaction boundary and the 503 fail-closed
+path are unchanged. `OtpController` unchanged. `assets/js/cpms-public-booking.js`: the
+OTP-verify success branch that expected a session now shows a generic Persian
+fail-closed message instead of reloading the page into a session that will never come.
+`assets/js/cpms-patient-portal.js` already fails generically and is unchanged.
+BookingService's bridge-email fallback (`mobile_for_user_in_clinic`, branch 2, ~L3046-3055)
+is UNCHANGED this slice (listed as debt — it is unreachable without a session).
+`tests/bin/wp-production-race-proof.php` is not in CI and is listed as debt, not rewritten.
+The Classic Patient Portal guest OTP login is now inert (no session path exists); this is a
+deliberate, loud consequence of owner decision A, not an accidental regression. There is no
+staff-link tool in this slice; a pre-existing explicit Patient↔User link grants nothing via OTP.
+
+Changed tests (expectations replaced by owner decision A; unrelated assertions not weakened;
+each carries an owner-decision comment):
+- `OtpFlowTest::testVerifySuccessCreatesUserAndLogsIn` → `testVerifySucceedsAsPossessionProofWithoutCreatingUserOrSession` (zero-access shape + users-count unchanged).
+- `OtpFlowTest::testVerifyLinksExistingPatient` → `testVerifyDoesNotLinkPatientByMobile` (zero links, no user).
+- `OtpFlowTest::testVerifyResolvesPatientInConfiguredClinicNotHardcodedDefault` → `testVerifyIssuesNoSessionAndNoLinkInAnyClinicUnderOwnerDecision`.
+- `OtpFlowTest::testAuditEventsRecordedWithoutCode` — LOGIN_SUCCESS now asserted ABSENT.
+- `OtpSecurityTest::testLoginPurposeIssuesSession` → `testLoginPurposeIssuesNoSessionUnderOwnerDecision`.
+- `OtpSecurityTest::testLoginStillProvisionsUserAndIssuesSession` → `testLoginCreatesNoAccountAndIssuesNoSessionUnderOwnerDecision`.
+- `OtpSecurityTest::testVerifyMobileWithoutPatientRecordResolvesToZeroAndStillCreatesNothing` — login part now expects zero-access.
+- `OtpSecurityTest::testVerifyMobileResolvesTheLinkedUserOfAnExistingPatient` → `testVerifyMobileFindsNothingAndLeavesPreExistingLinkUntouched`.
+- `OtpSecurityTest::testLoginOtpCannotAuthenticateStaffLinkedToPatientRecord` — exception expectation replaced by the uniform 200 zero-access envelope (exact non-disclosure).
+- `OtpSecurityTest::testVerifyAcceptsStringClientIpWithoutTypeError` — now asserts the zero-access shape.
+- `OtpAuditAtomicityTest::testVerifyAuditFailureRollsBackConsumeAndProvisioning` — fault part: user-cache ghost assertions replaced by zero-eviction/zero-flush assertions; retry part: zero-access shape, LOGIN_SUCCESS count 0, token durably consumed.
+- `Phase8Slice2OtpHoldConfirmRedTest` — `provisionOtpUser` fixture now creates ONLY a patient-role wp_users row (no Patient/link); T09/T10/T11/T12/T15/T26 flipped to the uniform zero-access contract; class docblock and AREA 6 header updated; T15 establishes its pre-existing link inline; T26 and the staff-collision guard now pin the uniform envelope.
+- NEW `tests/Integration/OtpPossessionOnlyTest.php` (6 tests): cross-organization and same-organization shared-mobile Patients → zero links/no session/OTP_VERIFY_OK written; non-existing number → identical envelope; REST-level envelope byte-identical for existing vs non-existing numbers; explicit pre-existing link grants nothing; unreadable OTP settings → 503 without consuming the challenge. NOTE: same-Clinic duplicate mobile is impossible at schema level (`u_pat_mobile` unique key) and is intentionally not tested.
+- NEW file/test comments cite the owner decision (2026-11-09, Option A). No test was deleted; no skip/suppression/baseline added; raw tests not weakened.
+
+Docs: `docs/api/api-contract.md` minimal annotations (A3 row, GAP-2 note, Phase 8 Slice 2 A3/identity-reuse notes, dated 2026-11-09). Doc CONFLICTS LISTED, NOT decided by this change: `docs/decisions/2026-09-20-phase8-slice2-owner-decisions.md` (reuse-identity paragraph), `docs/decisions/2026-09-05-f3-booking-gaps.md` (N-1/N-3), `docs/security/auth-authorization.md` §1.1/§3, `docs/security/phase1-current-security-model.md`, `docs/security/security-drift-register.md` (unread). The owner must reconcile those documents separately.
+
+Validation: no native PHP, MySQL or WordPress runtime exists in this sandbox. PHP-WASM (`@php-wasm/cli` 3.1.63, PHP 8.5.12, label: PHP-WASM, NOT native PHP) `php -l` reports NO syntax errors on all six changed/new PHP files; this proves only parseability, NOT behavior — no unit or integration test was executed locally, and the new tests' non-vacuity (fail on main, pass on this change) is argued by source inspection only and MUST be proven by CI. `python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py'` => 98 tests OK (skipped=1). `bin/check-workflow-yaml.py` => `WORKFLOW_YAML_OK files=17` (PyYAML provided via a scratch venv on PYTHONPATH; system python3 lacks PyYAML). `companion-isolation.py --changed-files` => PASS (production-only lane). `bin/tenant-tripwire.py` => rc 0 (0 hardcodes; 3 pre-existing suspects in files untouched by this change). `git diff --check` clean. One environment note: the authoring session's separate scratch clone vanished mid-task (sandbox persistence); all work was re-applied inside this repository on the same branch and re-verified file-by-file; only non-repo scratch dirs were lost.
+
+Known hazards/debts: Tehran 2026-11-10 (`Day2OperationalWorkflowsTest::testRescheduleOptionsHonorsClinicMaxFutureDaysAndLocationTimezoneBoundaries`) suspected time-related and unproven; if it is the ONLY failure, it will be reported, not rerun/edited. BookingService bridge-email fallback, portal guest-OTP inertness, PatientPortalOtpLoginTest (source-contract test pinning the dead session branch) and wp-production-race-proof.php: documented debt. CI claims are made ONLY from the GitHub run/check state after push; merging is NOT authorized — two independent reviews and explicit owner approval are required.

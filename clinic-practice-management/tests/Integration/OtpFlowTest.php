@@ -10,7 +10,10 @@ use WP_UnitTestCase;
 
 /**
  * TP-05/TP-17 — جریان کامل Mobile+OTP (F2):
- * request → verify (موفق/ناموفق/منقضی/قفل/لیمیت روزانه) + ساخت کاربر + لینک بیمار.
+ * request → verify (موفق/ناموفق/منقضی/قفل/لیمیت روزانه).
+ *
+ * owner decision A (2026-11-09 — Option A): verify «ساخت کاربر + لینک بیمار»
+ * دیگر انجام نمی‌دهد؛ پاسخ همیشه zero-access و non-enumerating است.
  */
 final class OtpFlowTest extends WP_UnitTestCase
 {
@@ -85,30 +88,27 @@ final class OtpFlowTest extends WP_UnitTestCase
         $this->assertStringNotContainsString('کد', (string) $row['code_hash']);
     }
 
-    public function testVerifySuccessCreatesUserAndLogsIn(): void
+    /**
+     * owner decision A (2026-11-09 — Option A): a valid code is possession
+     * proof only — no user resolution, no session, no patient links, no
+     * provisioning, ever. owner decision: shared mobile is never an
+     * ownership/access basis.
+     */
+    public function testVerifySucceedsAsPossessionProofWithoutCreatingUserOrSession(): void
     {
         $this->issueKnownCode('424242');
 
+        // users-count unchanged (single-use assert below retained).
+        global $wpdb;
+        $usersBefore = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->users); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+
         $result = $this->service()->verify(self::MOBILE, '424242');
 
-        $this->assertGreaterThan(0, $result['user_id']);
-        $this->assertTrue($result['is_new_user']);
-        $this->assertSame([], $result['patient_links'], 'بیماری با این موبایل هنوز نیست');
-
-        // کاربر در wp_users با نقش بیمار
-        global $wpdb;
-        $role = $wpdb->get_var(
-            $wpdb->prepare(
-                'SELECT meta_value FROM ' . $wpdb->prefix . 'usermeta um
-                 JOIN ' . $wpdb->prefix . 'users u ON u.ID = um.user_id
-                 WHERE um.meta_key = %s AND u.ID = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $wpdb->prefix . 'capabilities',
-                $result['user_id']
-            )
-        );
-        $caps = unserialize((string) $role, ['allowed_classes' => ['array']]);
-        $this->assertIsArray($caps);
-        $this->assertArrayHasKey('cpms_patient', $caps);
+        $this->assertSame(0, (int) $result['user_id'], 'owner decision A: no user resolution from mobile.');
+        $this->assertFalse($result['is_new_user']);
+        $this->assertSame([], $result['patient_links'], 'owner decision A: no patient resolution from mobile.');
+        $this->assertFalse($result['session_issued'], 'owner decision A: OTP never issues a patient session.');
+        $this->assertSame($usersBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->users), 'owner decision A: no wp_users row may be created.'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         // Token مصرف شده (تک‌بار)
         $consumed = $wpdb->get_var(
@@ -255,7 +255,13 @@ final class OtpFlowTest extends WP_UnitTestCase
         }
     }
 
-    public function testVerifyLinksExistingPatient(): void
+    /**
+     * owner decision A (2026-11-09 — Option A): no auto-link — a same-mobile
+     * Patient is NOT linked merely by possession of the number; the response
+     * carries no Patient data. (Owner decision: shared mobile is never an
+     * ownership/access basis.)
+     */
+    public function testVerifyDoesNotLinkPatientByMobile(): void
     {
         // بیمار موجود با این موبایل
         $now = App::db()->nowUtcSql();
@@ -279,30 +285,28 @@ final class OtpFlowTest extends WP_UnitTestCase
         $this->issueKnownCode('135790');
         $result = $this->service()->verify(self::MOBILE, '135790');
 
-        $this->assertSame(1, count($result['patient_links']));
-        $this->assertSame((string) $patientId, (string) $result['patient_links'][0]['id']);
-        $this->assertSame('P-000999', $result['patient_links'][0]['mrn']);
+        $this->assertSame(0, (int) $result['user_id']);
+        $this->assertSame([], $result['patient_links'], 'owner decision A: no Patient data may be returned.');
+        $this->assertFalse($result['session_issued']);
 
-        // لینک ساخته شده
+        // هیچ لینکی ساخته نشده
         $link = $wpdb->get_var(
             $wpdb->prepare(
-                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d AND wp_user_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $patientId,
-                $result['user_id']
+                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                $patientId
             )
         );
-        $this->assertSame(1, (int) $link);
+        $this->assertSame(0, (int) $link, 'owner decision A: no Patient link may be created from mobile.');
     }
 
     /**
-     * AD-13 regression guard (تصحیح Pre-Phase-2 Gate): جست‌وجوی بیمار در
-     * جریان OTP باید از Clinicِ پیکربندی‌شدهٔ سرویس بخواند، نه literal «1».
-     * رانش Phase 1A (کامیت 4c16009) یک نسخهٔ کپی‌شده از کوئری با
-     * `clinic_id = 1` سخت‌کدشده اضافه کرده بود؛ این تست قفل می‌کند که
-     * resolution بیمار تابع Clinic فعال است — حتی وقتی Clinic دیگری
-     * بیمارِ هم‌موبایل دارد.
+     * owner decision A (2026-11-09 — Option A): verify performs NO Patient
+     * resolution in ANY Clinic — not the configured one, not a second one —
+     * and issues NO session: same-mobile Patients (one per Clinic) both stay
+     * unlinked and the response is the uniform zero-access envelope.
+     * owner decision: shared mobile is never an ownership/access basis.
      */
-    public function testVerifyResolvesPatientInConfiguredClinicNotHardcodedDefault(): void
+    public function testVerifyIssuesNoSessionAndNoLinkInAnyClinicUnderOwnerDecision(): void
     {
         global $wpdb;
         $now = App::db()->nowUtcSql();
@@ -373,29 +377,21 @@ final class OtpFlowTest extends WP_UnitTestCase
         $this->issueKnownCode('246810');
         $result = $otp->verify(self::MOBILE, '246810');
 
-        // بیمارِ کلینیکِ پیکربندی‌شده وصل شد — نه بیمار Clinic 1
-        $this->assertSame(1, count($result['patient_links']));
-        $this->assertSame((string) $inSecondClinic, (string) $result['patient_links'][0]['id']);
-        $this->assertSame('P-OD13-C2', $result['patient_links'][0]['mrn']);
+        $this->assertSame(0, (int) $result['user_id']);
+        $this->assertSame([], $result['patient_links'], 'owner decision A: no Patient resolution in any Clinic.');
+        $this->assertFalse($result['session_issued']);
+        $this->assertFalse($result['is_new_user']);
 
-        // لینک ساخته‌شده هم به Clinic 2 مهر خورده (نه literal 1)
-        $linkClinic = (int) $wpdb->get_var(
-            $wpdb->prepare(
-                'SELECT clinic_id FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d AND wp_user_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $inSecondClinic,
-                $result['user_id']
-            )
-        );
-        $this->assertSame(2, $linkClinic, 'لینک بیمار⇄کاربری باید به کلینیکِ پیکربندی‌شده مهر بخورد.');
-
-        // بیمارِ Clinic 1 با همین موبایل نباید لینک بگیرد
-        $defaultLink = $wpdb->get_var(
-            $wpdb->prepare(
-                'SELECT id FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $inDefaultClinic
-            )
-        );
-        $this->assertNull($defaultLink, 'بیمار کلینیک دیگر نباید در این نصبِ مقید لینک بخورد.');
+        // هیچ لینکی برای هیچ‌کدام از دو بیمار ساخته نشده — نه در کلینیک مقید، نه در Clinic 1
+        foreach ([$inDefaultClinic, $inSecondClinic] as $pid) {
+            $link = $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE patient_id = %d', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $pid
+                )
+            );
+            $this->assertSame(0, (int) $link, 'owner decision A: no auto-link in any Clinic.');
+        }
     }
 
     public function testCooldownReturnsPersianMessageRetryAfterAndTtl(): void
@@ -453,7 +449,9 @@ final class OtpFlowTest extends WP_UnitTestCase
             )
         );
         $this->assertContains('OTP_VERIFY_OK', $actions);
-        $this->assertContains('LOGIN_SUCCESS', $actions);
+        // owner decision (Option A، ۲۰۲۶-۱۱-۰۹): هیچ Sessionی صادر نمی‌شود، پس LOGIN_SUCCESS
+        // نباید نوشته شود. (قبل: verify ورودی، LOGIN_SUCCESS می‌نوشت.)
+        $this->assertNotContains('LOGIN_SUCCESS', $actions, 'owner decision A: no session means no LOGIN_SUCCESS audit.');
 
         // هیچ کد در Audit نباشد
         $all = (string) $wpdb->get_var(

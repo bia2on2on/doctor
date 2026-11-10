@@ -20,10 +20,12 @@ use WP_UnitTestCase;
  *  - request(): the challenge token row and its mandatory OTP_REQUEST audit
  *    share one boundary — a failed audit leaves no un-audited token and the
  *    SMS side effect is never reached;
- *  - verify(): single-use consumption, identity provisioning (wp_users /
- *    patient links) and the mandatory OTP_VERIFY_OK / LOGIN_SUCCESS audits
+ *  - verify(): single-use consumption and the mandatory OTP_VERIFY_OK audit
  *    share one boundary — a failed audit rolls the consume back, so the same
- *    code remains valid for the authorized retry;
+ *    code remains valid for the authorized retry.
+ *    owner decision A (2026-11-09): the boundary performs NO identity
+ *    provisioning anymore (no wp_users / patient-link writes); LOGIN_SUCCESS
+ *    is never written because no session is issued.
  *  - a failed-attempt counter update and its mandatory audit also roll back
  *    together when the audit insert is fault-injected.
  * Also asserts: no false success, zero partial audit rows, restored SAVEPOINT
@@ -113,42 +115,37 @@ final class OtpAuditAtomicityTest extends WP_UnitTestCase
         }
         $this->restoreAuditInserts();
 
-        // D7 — production cache rollback evidence (no test-side flush, which
-        // the independent auditor rejected as it masks stale ghost identities):
-        // UserCacheRollback must evict exactly the WP-owned user cache keys
-        // after the confirmed ROLLBACK and must never global-flush the cache.
-        $loginKeys = $recorder->deletedKeysForGroup('userlogins');
-        $emailKeys = $recorder->deletedKeysForGroup('useremail');
+        // owner decision A — the boundary provisions no identity, so there is
+        // NO ghost identity to evict: the recorder must observe ZERO deletes
+        // in the user cache groups and ZERO flushes. (D7 evidence retained in
+        // the strongest remaining form: any deletion of user cache keys or
+        // any global flush would be a false signal of provisioning.)
         self::assertSame(0, $recorder->flushCount(), 'production rollback must never call wp_cache_flush()');
-        self::assertNotEmpty($loginKeys, 'the provisioned login slug key must be evicted after rollback');
-        self::assertContains($email, $emailKeys, 'the provisioned email key must be evicted after rollback');
-        $userCacheIds = $recorder->deletedKeysForGroup('users');
-        self::assertNotEmpty($userCacheIds, 'the users group entry for the ghost identity must be evicted');
-        foreach ($userCacheIds as $evictedId) {
-            self::assertTrue($recorder->deleted($evictedId, 'user_meta'), 'the matching user_meta key must be evicted too');
-        }
-        // End-to-end evidence WITHOUT any flush: the ghost is unresolvable
-        // through WordPress' normal cache-backed lookup paths.
-        self::assertFalse(get_user_by('email', $email), 'ghost identity must not resolve by email after rollback');
-        self::assertFalse(get_user_by('login', $loginKeys[0]), 'ghost identity must not resolve by login after rollback');
+        self::assertSame([], $recorder->deletedKeysForGroup('userlogins'), 'no user-cache eviction may happen: nothing is provisioned');
+        self::assertSame([], $recorder->deletedKeysForGroup('useremail'), 'no user-cache eviction may happen: nothing is provisioned');
+        self::assertSame([], $recorder->deletedKeysForGroup('users'), 'no user-cache eviction may happen: nothing is provisioned');
+        self::assertSame(0, $this->usersWithEmail($email), 'no wp_users row may exist for the mobile-derived email, ever');
         $recorder->restore();
 
         self::assertTrue($threw, 'a failed mandatory OTP_VERIFY_OK audit must propagate, never report false success');
         self::assertNull($this->tokenConsumedAt(), 'the single-use consume must roll back — the code stays valid');
-        self::assertSame(0, $this->usersWithEmail($email), 'provisioned wp_users row must roll back with its audit');
+        self::assertSame(0, $this->usersWithEmail($email), 'owner decision A: no wp_users row may ever exist for the mobile-derived email (nothing is provisioned)');
         self::assertSame(0, $this->tableCount('cpms_patient_user_links'), 'no patient link may survive the rolled-back verify');
         self::assertSame(0, $this->auditCount('OTP_VERIFY_OK'), 'no audit evidence may survive the failed boundary');
         self::assertSame(0, $this->auditCount('LOGIN_SUCCESS'));
         self::assertSame($depth_before, $this->savepointDepth(), 'SAVEPOINT depth must be restored after rollback');
 
-        // Authorized retry with the SAME code now succeeds (consume was rolled back).
+        // Authorized retry with the SAME code succeeds as a possession proof
+        // (consume was rolled back) — but owner decision A: NO user_id, NO
+        // session, NO LOGIN_SUCCESS; the response is the OD-8 zero-access shape.
         $result = App::otpService()->verify(self::MOBILE, '424242');
-        self::assertGreaterThan(0, $result['user_id']);
-        self::assertTrue($result['is_new_user']);
-        self::assertTrue($result['session_issued']);
+        self::assertSame(0, (int) $result['user_id'], 'owner decision A: no mobile-derived resolution.');
+        self::assertFalse($result['is_new_user']);
+        self::assertFalse($result['session_issued'], 'owner decision A: no session is issued.');
+        self::assertSame([], $result['patient_links']);
         self::assertNotNull($this->tokenConsumedAt(), 'the retry must durably consume the token');
         self::assertSame(1, $this->auditCount('OTP_VERIFY_OK'));
-        self::assertSame(1, $this->auditCount('LOGIN_SUCCESS'));
+        self::assertSame(0, $this->auditCount('LOGIN_SUCCESS'), 'owner decision A: no session means no LOGIN_SUCCESS.');
         self::assertSame(1, $this->latestAuditClinicId('OTP_VERIFY_OK'), 'tenant attribution must name the trusted Clinic');
     }
 
