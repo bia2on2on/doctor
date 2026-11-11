@@ -5,48 +5,71 @@ declare(strict_types=1);
 namespace ClinicCore\Tests\Support;
 
 /**
- * دفترِ تشخیصیِ خطاهای SQL برای اجرای Integration — **فقط تست، هرگز production**.
+ * Fail-closed SQL failure ledger for Integration runs — TEST-ONLY, never production.
  *
- * چرا لازم است (شاهدِ کد، نه حدس):
- *  ۱) `CpmsDb::$strict` پیش‌فرض `false` است و `setStrict(true)` تنها داخل
- *     `MigrationRunner` روشن/خاموش می‌شود؛ پس `ensureNoSqlError()` بیرون از
- *     migration عملاً هیچ‌چیز را منتشر نمی‌کند و `insert()` فقط `false`
- *     برمی‌گرداند.
- *  ۲) `CustomRoleRepository::define()` در این حالت هر INSERT ناموفق را با پیام
- *     عمومی «custom role key already defined…» گزارش می‌کند — یعنی متن/کدِ خطای
- *     واقعیِ MySQL دور ریخته می‌شود.
- *  ۳) WordPress خودش منبعِ کاملِ این خطاها را نگه می‌دارد:
- *     `wpdb::query()` هنگام شکست `$this->last_error` را از `mysqli_error()`
- *     پر می‌کند و `print_error()` **پیش از** بررسی `suppress_errors` رکورد
- *     `{query, error_str}` را به `$GLOBALS['EZSQL_ERROR']` اضافه می‌کند
- *     (سورس 6.7.2 — verify شد). پس حتی با suppression، متنِ خطا موجود است و
- *     فقط چاپ نمی‌شود.
+ * Why it exists (code evidence, not speculation):
+ *  1) `CpmsDb::$strict` defaults to `false` and `setStrict(true)` is toggled only
+ *     inside `MigrationRunner`; outside migrations `ensureNoSqlError()` publishes
+ *     nothing and `insert()` merely returns `false`.
+ *  2) `CustomRoleRepository::define()` then reports every failed INSERT with a
+ *     generic "custom role key already defined…" message — the real MySQL error
+ *     text/code is discarded.
+ *  3) WordPress keeps a complete copy of these errors anyway: `wpdb::query()`
+ *     fills `$this->last_error` from `mysqli_error()` on failure, and
+ *     `print_error()` records `{query, error_str}` into
+ *     `$GLOBALS['EZSQL_ERROR']` *before* checking `suppress_errors`.
  *
- * این کلاس همان داده را بدون تغییر هیچ معنایی از محصول/تست، در پایانِ فرآیند
- * به STDERR می‌ریزد تا در لاگِ CI و mirror کامنت PR خواندنی شود. هیچ انتظار
- * تست، هیچ مجوزدهی، هیچ اسکیمایی و هیچ رفتار محصولی تغییر نمی‌کند:
- *  • فیلتر `query` فقط *تماشا* می‌کند و کوئری را دست‌نخورده برمی‌گرداند؛
- *  • هستهٔ دفتر (dump در shutdown) مستقل از فیلترهاست، چون `EZSQL_ERROR` را
- *    می‌خواند؛ بعضی تست‌های هم‌روندی `remove_all_filters('query')` می‌زنند و
- *    نباید شاهدِ خطا را از دست بدهیم.
+ * PUBLICATION CONTRACT (fail-closed — the only thing this class may publish):
+ *  Every byte this class writes to STDERR (or any other capture) is built from
+ *  FIXED allow-listed categories and STRICTLY VALIDATED, BOUNDED fields:
+ *    • `category`  — one of CATEGORIES (fixed internal vocabulary).
+ *    • `table`     — one of KNOWN_TABLES, otherwise `unknown`. Never any other
+ *                    identifier, never a prefixed table name, never a value.
+ *    • `op`        — one of OPERATIONS, otherwise `OTHER`.
+ *    • `mysql_errno` — a positive int or the literal `unavailable`.
+ *    • `count`/`seq`/`dropped` — ints derived from counters only.
+ *    • `test`/`product` — `Class::method` identifiers, SOURCE-VERIFIED against
+ *                    this repository (PSR-4 file resolution + declared method
+ *                    in the resolved file), otherwise `(unknown)`. A character
+ *                    pattern alone is never sufficient.
+ *    • `focus`     — bool.
+ *    • table facts — the allow-listed short table name, `real_exists` and
+ *                    `name_visible` (both bools). Row counts are NOT published.
  *
- * داده‌های منتشرشده عمداً محدود و sanitize شده‌اند: عملیات + نام جدول (بدون
- * VALUES)، متنِ خطای درایور (فقط شناسه‌های مصنوعیِ fixture)، و برای INSERTِ
- * نقش‌ها فقط دو فیلدِ درخواستیِ `clinic_id`/`role_key`. هیچ اعتبارنامه، توکن،
- * دادهٔ بیمار یا SQL کاملِ دارای مقدار چاپ نمی‌شود.
+ * NEVER published: raw driver text, exception messages, SQL text or fragments,
+ * VALUES, fixture values (ids, keys, names, addresses), engine dumps,
+ * performance_schema `lock_data`, `SHOW ENGINE INNODB STATUS` output, stack
+ * traces or any free-text fallback. There is deliberately no "message" field,
+ * no `clean()`/pattern-redaction step and no free-text path: a field that does
+ * not pass its validator is DROPPED, never rewritten into "safe-ish" text.
+ *
+ * The signature used to de-duplicate repeated failures is an internal SHA-256
+ * fingerprint of the driver message. It is used ONLY as an in-process map key
+ * and is never printed, so it reveals nothing and is not a redaction boundary.
+ *
+ * Test expectations, permissions, schema and product behaviour are unchanged:
+ *  • the `query` filter only *observes* and returns the query untouched;
+ *  • the shutdown dump is fork-guarded (children must not run it);
+ *  • phpunit's own output is untouched; this class only reads and appends.
  */
 final class WpSqlFailureLedger
 {
     /** سقفِ امضاهای نگه‌داشته‌شده (بالاتر از سقفِ چاپ، برای انتخابِ اولویت‌دار). */
     private const MAX_SIGNATURES = 60;
 
-    /** سقفِ خطوطِ چاپ‌شده در بلوکِ پایانی (mirror کامنت PR فقط tail را می‌خواند). */
+    /** سقفِ خطوطِ چاپ‌شده در بلوکِ پایانی. */
     private const MAX_PRINTED = 14;
 
-    /** سقفِ طولِ متنِ خطای درایور. */
-    private const MESSAGE_LIMIT = 200;
+    /** دسته‌بندیِ ثابت — تنها واژه‌نامهٔ داخلی که منتشر می‌شود. */
+    private const CATEGORIES = ['duplicate_entry', 'foreign_key', 'missing_table', 'lock', 'check_constraint', 'other'];
 
-    /** @var array<string, array<string, mixed>> امضا → نخستین رخداد + شمارش */
+    /** افعالِ ثابت — تنها عملیاتِ منتشرشده. */
+    private const OPERATIONS = ['INSERT', 'UPDATE', 'DELETE', 'REPLACE', 'SELECT', 'CREATE', 'ALTER', 'DROP', 'START', 'COMMIT', 'ROLLBACK', 'OTHER'];
+
+    /** تنها نام‌های کوتاهِ جدول که منتشر می‌شوند. */
+    private const KNOWN_TABLES = ['cpms_custom_role_defs', 'cpms_custom_role_capabilities', 'cpms_clinics'];
+
+    /** @var array<string, array<string, mixed>> امضای داخلی → نخستین رخداد + شمارش */
     private static array $signatures = [];
 
     /** @var int شمارندهٔ کلِ شکست‌های مشاهده‌شده */
@@ -80,7 +103,6 @@ final class WpSqlFailureLedger
         self::$ownerPid   = (int) getmypid();
 
         // اولویت بسیار بالا: پیش از اجرای کوئریِ بعدی، نتیجهٔ کوئریِ قبلی را می‌بیند
-        // (wpdb::query() مقدار last_error را برای هر دستور، بعد از اجرا، بازنویسی می‌کند).
         add_filter('query', [self::class, 'observe'], PHP_INT_MAX);
         register_shutdown_function([self::class, 'flush']);
     }
@@ -111,7 +133,7 @@ final class WpSqlFailureLedger
     }
 
     /**
-     * ثبتِ یک شکست، در لحظه‌ای که متنِ خطا و (در صورت امکان) کد/SQLSTATE و بافتِ تست در دسترس‌اند.
+     * ثبتِ یک شکست با فیدهای ثابت و اعتبارسنجی‌شده.
      */
     private static function record(object $wpdb, string $lastError): void
     {
@@ -119,21 +141,31 @@ final class WpSqlFailureLedger
         $entry = $ledgers === [] ? null : end($ledgers);
 
         $statement = '';
-        $message = $lastError;
-        if (is_array($entry)) {
-            $statement = isset($entry['query']) && is_string($entry['query']) ? $entry['query'] : '';
-            $message = isset($entry['error_str']) && is_string($entry['error_str']) && $entry['error_str'] !== ''
-                ? $entry['error_str']
-                : $lastError;
+        if (is_array($entry) && isset($entry['query']) && is_string($entry['query'])) {
+            $statement = $entry['query'];
         }
         if ($statement === '' && isset($wpdb->last_query) && is_string($wpdb->last_query)) {
             $statement = $wpdb->last_query;
         }
 
-        $table = self::table_of($statement);
+        $message = $lastError;
+        if (is_array($entry)
+            && isset($entry['error_str'])
+            && is_string($entry['error_str'])
+            && $entry['error_str'] !== '') {
+            $message = $entry['error_str'];
+        }
+
+        $driver = self::driver_facts($wpdb);
         $category = self::categorize($message);
-        $shaped = self::shape($statement, $message);
-        $signature = $category . '|' . $table . '|' . $shaped;
+        $table = self::table_of($statement);
+        $op = self::operation_of($statement);
+
+        // امضای داخلی برای ادغامِ تکرارها؛ هرگز چاپ نمی‌شود.
+        $fingerprint = substr(hash('sha256', $message), 0, 16);
+        $signature = $category . '|' . $table . '|' . $op . '|'
+            . (is_int($driver['errno']) ? (string) $driver['errno'] : 'unavailable') . '|'
+            . $fingerprint;
 
         self::$failures++;
 
@@ -149,37 +181,28 @@ final class WpSqlFailureLedger
             return;
         }
 
-        $driver = self::driver_facts($wpdb);
-        $focus = self::is_focus($table, $message, $statement);
-
+        $context = self::context();
         self::$signatures[$signature] = [
             'seq' => ++self::$sequence,
             'count' => 1,
             'category' => $category,
             'table' => $table,
-            'op' => self::operation_of($statement),
+            'op' => $op,
             'mysql_errno' => $driver['errno'],
-            'sqlstate' => $driver['sqlstate'],
-            'message' => self::clean($message, self::MESSAGE_LIMIT),
-            'clinic_id' => self::insert_field($statement, 'clinic_id'),
-            'role_key' => self::insert_field($statement, 'role_key'),
-            'test' => self::context(),
-            'focus' => $focus,
+            'test' => $context['test'],
+            'product' => $context['product'],
+            'focus' => self::is_focus($table, $message, $statement),
         ];
 
-        // رخدادهای مرتبط با نقش‌های سفارشی فوراً چاپ می‌شوند تا حتی اگر لاگ بریده شد موجود باشند.
-        if ($focus) {
-            fwrite(STDERR, PHP_EOL . 'CPMS_SQL_FAILURE_EVIDENCE ' . json_encode(
-                self::$signatures[$signature],
-                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
-            ) . PHP_EOL);
+        // رخدادهای مرتبط با نقش‌های سفارشی فوراً چاپ می‌شوند (همیشه از همان مرزِ اعتبارسنجی عبور می‌کنند).
+        $row = self::publishableRow(self::$signatures[$signature]);
+        if ($row['focus']) {
+            fwrite(STDERR, PHP_EOL . 'CPMS_SQL_FAILURE_EVIDENCE ' . self::encodeJson($row) . PHP_EOL);
         }
     }
 
     /**
-     * بلوکِ پایانی: خواندنِ کلِ `EZSQL_ERROR` (مستقل از فیلترها) + واقعیتِ جداول.
-     *
-     * این بلوک آخرین خطوطِ لاگ است و توسط mirror کامنت PR (بخش tail) خوانده می‌شود.
+     * بلوکِ پایانی: خواندنِ `EZSQL_ERROR` برای شمارش + واقعیتِ جداول (فقط بولین).
      */
     public static function flush(): void
     {
@@ -187,12 +210,7 @@ final class WpSqlFailureLedger
          * Parent-process-only. Every pcntl_fork() child inherits this shutdown
          * callback; running it there would execute table_facts() queries on the
          * inherited WordPress connection, i.e. a child process writing statements
-         * to and reading responses from a session owned by the parent. Two
-         * independently observed consequences of that shape are exactly the two
-         * long-standing failures: the parent turning an OK packet of a child
-         * statement into its own `insert_id = 0` (patient identity lost) and the
-         * parent reading a child's COUNT(*) result as its own scalar value ("1").
-         * The owning process needs no database failure ledger of a child's making.
+         * to and reading responses from a session owned by the parent.
          */
         if (null !== self::$ownerPid && getmypid() !== self::$ownerPid) {
             return;
@@ -201,81 +219,202 @@ final class WpSqlFailureLedger
         try {
             global $wpdb;
 
-            // تلاش برای اینکه این بلوک آخرین خطوطِ لاگ باشد (mirror فقط tail را می‌خواند).
             if (defined('STDOUT')) {
                 @fflush(STDOUT);
             }
 
-            $lines = [];
-            $lines[] = 'CPMS_SQL_FAILURE_LEDGER_BEGIN failures=' . self::$failures
-                . ' distinct=' . count(self::$signatures)
-                . ' dropped=' . self::$dropped
-                . ' ezsql=' . (isset($GLOBALS['EZSQL_ERROR']) && is_array($GLOBALS['EZSQL_ERROR']) ? count($GLOBALS['EZSQL_ERROR']) : 0);
-
-            $ordered = self::$signatures;
-            uasort($ordered, static function (array $a, array $b): int {
-                if ($a['focus'] !== $b['focus']) {
-                    return $a['focus'] ? -1 : 1;
-                }
-
-                return $a['seq'] <=> $b['seq'];
-            });
-
-            $printed = 0;
-            $byCategory = [];
-            foreach ($ordered as $row) {
-                $byCategory[$row['category']] = ($byCategory[$row['category']] ?? 0) + $row['count'];
-                if ($printed >= self::MAX_PRINTED) {
-                    continue;
-                }
-                $printed++;
-                $lines[] = 'CPMS_SQL_FAILURE_LEDGER ' . json_encode($row, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-            }
-
-            $lines[] = 'CPMS_SQL_FAILURE_LEDGER_SUMMARY ' . json_encode([
-                'by_category' => $byCategory,
-                'printed' => $printed,
-                'kept' => count(self::$signatures),
-                'dropped' => self::$dropped,
-            ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-            if (is_object($wpdb)) {
-                foreach (self::table_facts($wpdb) as $fact) {
-                    $lines[] = 'CPMS_SQL_FAILURE_LEDGER_TABLE ' . json_encode($fact, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-                }
-            }
-
-            $lines[] = 'CPMS_SQL_FAILURE_LEDGER_END';
-
-            fwrite(STDERR, PHP_EOL . implode(PHP_EOL, $lines) . PHP_EOL);
+            fwrite(STDERR, PHP_EOL . implode(PHP_EOL, self::buildLines(is_object($wpdb) ? $wpdb : null)) . PHP_EOL);
         } catch (\Throwable $ignored) {
             // در shutdown هرگز نباید استثنا بالا برود.
         }
     }
 
     /**
-     * errno / SQLSTATE درایور در همان لحظه (best-effort).
+     * ساختِ همهٔ خطوطِ بلوکِ پایانی — خالص و بدونِ نوشتن (برای تست‌های مرزِ انتشار).
      *
-     * @return array{errno: int|string, sqlstate: string|null}
+     * @return list<string>
+     */
+    private static function buildLines($wpdb): array
+    {
+        $lines = [];
+        $lines[] = 'CPMS_SQL_FAILURE_LEDGER_BEGIN failures=' . (int) self::$failures
+            . ' distinct=' . (int) count(self::$signatures)
+            . ' dropped=' . (int) self::$dropped
+            . ' ezsql=' . (isset($GLOBALS['EZSQL_ERROR']) && is_array($GLOBALS['EZSQL_ERROR']) ? (int) count($GLOBALS['EZSQL_ERROR']) : 0);
+
+        $ordered = self::$signatures;
+        uasort($ordered, static function (array $a, array $b): int {
+            $aFocus = !empty($a['focus']);
+            $bFocus = !empty($b['focus']);
+            if ($aFocus !== $bFocus) {
+                return $aFocus ? -1 : 1;
+            }
+
+            return (int) ($a['seq'] ?? 0) <=> (int) ($b['seq'] ?? 0);
+        });
+
+        $printed = 0;
+        $byCategory = [];
+        foreach ($ordered as $row) {
+            $safe = self::publishableRow($row);
+            $byCategory[$safe['category']] = ($byCategory[$safe['category']] ?? 0) + $safe['count'];
+            if ($printed >= self::MAX_PRINTED) {
+                continue;
+            }
+            $printed++;
+            $lines[] = 'CPMS_SQL_FAILURE_LEDGER ' . self::encodeJson($safe);
+        }
+
+        $lines[] = 'CPMS_SQL_FAILURE_LEDGER_SUMMARY ' . self::encodeJson([
+            'by_category' => $byCategory,
+            'printed' => (int) $printed,
+            'kept' => (int) count(self::$signatures),
+            'dropped' => (int) self::$dropped,
+        ]);
+
+        if (is_object($wpdb)) {
+            foreach (self::table_facts($wpdb) as $fact) {
+                $lines[] = 'CPMS_SQL_FAILURE_LEDGER_TABLE ' . self::encodeJson($fact);
+            }
+        }
+
+        $lines[] = 'CPMS_SQL_FAILURE_LEDGER_END';
+
+        return $lines;
+    }
+
+    /**
+     * تنها مرزِ انتشار فیدها: هر فیلد اعتبارسنجی می‌شود؛ هر نامعتبر حذف می‌شود.
+     *
+     * @param array<string, mixed> $row
+     * @return array<string, mixed>
+     */
+    private static function publishableRow(array $row): array
+    {
+        $errno = $row['mysql_errno'] ?? 'unavailable';
+        if (!is_int($errno) || $errno <= 0 || $errno > 4294967295) {
+            $errno = 'unavailable';
+        }
+
+        $category = $row['category'] ?? 'other';
+        if (!is_string($category) || !in_array($category, self::CATEGORIES, true)) {
+            $category = 'other';
+        }
+
+        $op = $row['op'] ?? 'OTHER';
+        if (!is_string($op) || !in_array($op, self::OPERATIONS, true)) {
+            $op = 'OTHER';
+        }
+
+        $table = $row['table'] ?? 'unknown';
+        $table = is_string($table) ? self::tableName($table) : 'unknown';
+
+        $seq = $row['seq'] ?? 0;
+        $count = $row['count'] ?? 1;
+
+        return [
+            'seq' => is_numeric($seq) ? max(0, (int) $seq) : 0,
+            'count' => is_numeric($count) ? max(1, (int) $count) : 1,
+            'category' => $category,
+            'table' => $table,
+            'op' => $op,
+            'mysql_errno' => $errno,
+            'test' => self::identifier($row['test'] ?? null),
+            'product' => self::identifier($row['product'] ?? null),
+            'focus' => !empty($row['focus']),
+        ];
+    }
+
+    /**
+     * شناسهٔ `Class::method` — SOURCE-VERIFIED against this repository: the
+     * class resolves through the PSR-4 mapping (ClinicCore\Tests\ → tests/,
+     * ClinicCore\ → src/) to a real file and the method is declared there.
+     * Anything else — including valid-shaped canary identifiers — is
+     * `(unknown)`. A character pattern alone is never sufficient.
+     *
+     * @param mixed $value
+     */
+    private static function identifier($value): string
+    {
+        if (!is_string($value)) {
+            return '(unknown)';
+        }
+        $value = trim($value);
+        if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]*(\\\\[A-Za-z_][A-Za-z0-9_]*)*::[A-Za-z_][A-Za-z0-9_]{0,127}\z/D', $value) !== 1) {
+            return '(unknown)';
+        }
+        [$class, $method] = explode('::', $value, 2);
+
+        static $cache = [];
+        $key = $value;
+        if (!array_key_exists($key, $cache)) {
+            $cache[$key] = self::source_verified_method($class, $method);
+        }
+
+        return $cache[$key] ? $value : '(unknown)';
+    }
+
+    /**
+     * PSR-4 file resolution + declared-method check against this repository.
+     */
+    private static function source_verified_method(string $class, string $method): bool
+    {
+        $root = dirname(__DIR__, 2);
+        $prefixes = ['ClinicCore\\Tests\\' => 'tests/', 'ClinicCore\\' => 'src/'];
+        foreach ($prefixes as $prefix => $sub) {
+            if (strncmp($class, $prefix, strlen($prefix)) !== 0) {
+                continue;
+            }
+            $rel = str_replace('\\', '/', substr($class, strlen($prefix))) . '.php';
+            $candidate = $root . '/' . $sub . $rel;
+            $real = realpath($candidate);
+            if ($real === false || !is_file($real) || strncmp($real, $root, strlen($root)) !== 0) {
+                return false;
+            }
+            $text = @file_get_contents($real);
+
+            return is_string($text)
+                && preg_match('/function\s+' . preg_quote($method, '/') . '\s*\(/', $text) === 1;
+        }
+
+        return false;
+    }
+
+    /**
+     * JSON با تنها فیدهای اعتبارسنجی‌شده — همیشه تک‌خط و ASCII-امن.
+     *
+     * @param mixed $value
+     */
+    private static function encodeJson($value): string
+    {
+        $json = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+
+        return is_string($json) ? $json : '{}';
+    }
+
+    /**
+     * errno درایور در همان لحظه (best-effort).
+     *
+     * SQLSTATE is deliberately NOT published: it is a 5-char pattern-only
+     * field (no fixed vocabulary is enforceable across MySQL 8 / MariaDB 11.4),
+     * and errno + category already carry the same diagnostic class.
+     *
+     * @return array{errno: int|string}
      */
     private static function driver_facts(object $wpdb): array
     {
         $dbh = $wpdb->dbh ?? null;
         if (!($dbh instanceof \mysqli)) {
-            return ['errno' => 'unavailable', 'sqlstate' => null];
+            return ['errno' => 'unavailable'];
         }
 
-        $errno = mysqli_errno($dbh);
-        $sqlstate = mysqli_sqlstate($dbh);
+        $errno = (int) mysqli_errno($dbh);
 
-        return [
-            'errno' => $errno > 0 ? $errno : 'unavailable',
-            'sqlstate' => is_string($sqlstate) && $sqlstate !== '00000' ? $sqlstate : null,
-        ];
+        return ['errno' => $errno > 0 ? $errno : 'unavailable'];
     }
 
     /**
-     * دستهٔ خطا — فقط برای خوانایی گزارش؛ ملاک، متنِ خودِ درایور است.
+     * دستهٔ خطا — از واژه‌نامهٔ ثابت CATEGORIES (ملاک، متنِ خودِ درایور است).
      */
     private static function categorize(string $message): string
     {
@@ -299,44 +438,56 @@ final class WpSqlFailureLedger
         return 'other';
     }
 
+    /**
+     * فعلِ کوئری — تنها از OPERATIONS؛ هر چیز دیگر `OTHER`.
+     */
     private static function operation_of(string $statement): string
     {
-        $op = strtoupper((string) preg_replace('/^\s*([a-z]+)\b.*/is', '$1', trim($statement)));
+        $first = '';
+        if (preg_match('/^\s*([a-z]{2,12})\b/i', trim($statement), $m) === 1) {
+            $first = strtoupper($m[1]);
+        }
 
-        return $op === '' ? 'unknown' : substr($op, 0, 12);
+        return in_array($first, self::OPERATIONS, true) ? $first : 'OTHER';
     }
 
     /**
-     * نام جدولِ هدف — تنها بخشی از SQL که منتشر می‌شود (بدون هیچ مقداری).
+     * نامِ جدول — تنها از KNOWN_TABLES؛ هر چیز دیگر `unknown`.
      */
     private static function table_of(string $statement): string
     {
-        if (preg_match('/^\s*(?:insert\s+into|replace\s+into|update|delete\s+from|select\s+.+?\s+from)\s+`?([a-z0-9_]+)`?/is', $statement, $m)) {
-            $table = strtolower($m[1]);
-            if (str_contains($table, 'custom_role') || str_contains($table, 'cpms_')) {
-                return $table;
-            }
-
-            return preg_replace('/^[a-z0-9]*_/', '', $table) ?: $table;
+        if (preg_match('/^\s*(?:insert\s+into|replace\s+into|update|delete\s+from|select\s+.+?\s+from)\s+`?([A-Za-z0-9_]+)`?/is', $statement, $m) === 1) {
+            return self::tableName($m[1]);
         }
 
         return 'unknown';
     }
 
     /**
-     * امضای شکلِ خطا (بدون مقدار): برای ادغامِ تکرارها.
+     * نرمال‌سازی به یک نامِ کوتاهِ ثابت؛ هر چیز دیگر `unknown`.
      */
-    private static function shape(string $statement, string $message): string
+    private static function tableName(string $raw): string
     {
-        $op = self::operation_of($statement);
-        $shape = (string) preg_replace("/'[^']*'/", "'?'", $message);
-        $shape = (string) preg_replace('/\d+/', 'N', $shape);
+        $t = strtolower(trim($raw));
+        if ($t === '') {
+            return 'unknown';
+        }
+        foreach (self::KNOWN_TABLES as $short) {
+            if ($t === $short) {
+                return $short;
+            }
+            $suffix = '_' . $short;
+            $length = strlen($suffix);
+            if (strlen($t) > $length && substr($t, -$length) === $suffix) {
+                return $short;
+            }
+        }
 
-        return $op . '::' . substr($shape, 0, 120);
+        return 'unknown';
     }
 
     /**
-     * آیا این رخداد به موضوعِ پروندهٔ جاری مربوط است؟ (اولویتِ چاپ)
+     * آیا این رخداد به موضوعِ پروندهٔ جاری مربوط است؟ (فقط بولین — فید منتشر نمی‌شود)
      */
     private static function is_focus(string $table, string $message, string $statement): bool
     {
@@ -346,98 +497,38 @@ final class WpSqlFailureLedger
     }
 
     /**
-     * مقدارِ یک ستونِ INSERT — فقط برای دو فیلدِ مصنوعیِ خواسته‌شده (clinic_id/role_key).
-     * هیچ ستونِ دیگری استخراج نمی‌شود و SQL کامل هرگز چاپ نمی‌شود.
-     */
-    private static function insert_field(string $statement, string $field): ?string
-    {
-        if (!preg_match('/^\s*insert\s+into\s+`?([a-z0-9_]+)`?\s*\(([^)]*)\)\s*values\s*\(([^)]*)\)/is', $statement, $m)) {
-            return null;
-        }
-        if (!str_contains(strtolower($m[1]), 'custom_role')) {
-            return null;
-        }
-
-        $columns = array_map(static fn(string $c): string => trim($c, " \t\n`'"), explode(',', $m[2]));
-        $values = self::split_values($m[3]);
-        $index = array_search($field, $columns, true);
-        if ($index === false || !isset($values[$index])) {
-            return null;
-        }
-
-        $value = trim($values[$index]);
-        $value = trim($value, "'");
-
-        return $value === '' && $field === 'role_key' ? null : substr($value, 0, 64);
-    }
-
-    /**
-     * جداکردنِ مقادیرِ VALUES با احترام به رشته‌های نقل‌قولی.
+     * بافت: نامِ تستِ در حال اجرا + نخستین قابِ محصول — هر دو اعتبارسنجی می‌شوند.
      *
-     * @return list<string>
-     */
-    private static function split_values(string $values): array
-    {
-        $out = [];
-        $buffer = '';
-        $quoted = false;
-        $length = strlen($values);
-        for ($i = 0; $i < $length; $i++) {
-            $char = $values[$i];
-            if ($char === "'") {
-                $quoted = !$quoted;
-            }
-            if ($char === ',' && !$quoted) {
-                $out[] = $buffer;
-                $buffer = '';
-                continue;
-            }
-            $buffer .= $char;
-        }
-        $out[] = $buffer;
-
-        return $out;
-    }
-
-    /**
-     * بافت: نامِ تستِ در حال اجرا + نخستین قابِ محصول (کمک به attribution، نه حکم).
+     * @return array{test: string, product: string}
      */
     private static function context(): array
     {
         $frames = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 96);
         $test = '(unknown)';
-        $product = null;
+        $product = '(unknown)';
 
         foreach ($frames as $frame) {
             $class = isset($frame['class']) ? (string) $frame['class'] : '';
             $function = isset($frame['function']) ? (string) $frame['function'] : '';
-            if ($class === '' ) {
+            if ($class === '') {
                 continue;
             }
             $isTestClass = str_starts_with($class, 'ClinicCore\\Tests\\');
             if ($test === '(unknown)' && $isTestClass && str_starts_with($function, 'test')) {
-                $test = $class . '::' . $function;
+                $test = self::identifier($class . '::' . $function);
             }
-            if ($product === null && str_starts_with($class, 'ClinicCore\\') && !$isTestClass) {
-                $product = $class . '::' . $function;
+            if ($product === '(unknown)' && str_starts_with($class, 'ClinicCore\\') && !$isTestClass) {
+                $product = self::identifier($class . '::' . $function);
             }
         }
 
         return ['test' => $test, 'product' => $product];
     }
 
-    private static function clean(string $message, int $limit): string
-    {
-        $message = (string) preg_replace('/\s+/', ' ', $message);
-
-        return substr($message, 0, $limit);
-    }
-
     /**
-     * واقعیتِ جداولِ کلیدی در پایانِ اجرا: جدولِ واقعی موجود است؟ سایهٔ موقت هست؟
-     * (SHOW TABLES جدول موقت را هم فهرست می‌کند؛ information_schema فقط واقعی را.)
+     * واقعیتِ جداولِ کلیدی در پایانِ اجرا — فقط بولین وجود/دیده‌شدن (بدون شمارشِ ردیف).
      *
-     * @return list<array<string, mixed>>
+     * @return list<array{table: string, real_exists: bool, name_visible: bool}>
      */
     private static function table_facts(object $wpdb): array
     {
@@ -447,28 +538,19 @@ final class WpSqlFailureLedger
         }
 
         $facts = [];
-        foreach (['cpms_custom_role_defs', 'cpms_custom_role_capabilities', 'cpms_clinics'] as $short) {
+        foreach (self::KNOWN_TABLES as $short) {
             $table = (string) $wpdb->prefix . $short;
-            // واقعیتِ جدول از information_schema (که جدول موقت را نشان نمی‌دهد) و
-            // دیده‌شدنِ نام در SHOW TABLES (که جدول موقت را هم فهرست می‌کند) — دو
-            // مشاهدهٔ مستقل؛ نتیجه‌گیریِ «سایه» به خواننده واگذار می‌شود.
+            $table = str_replace(["'", "\\", "\n", "\r"], '', $table);
             $real = self::scalar($dbh, "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '" . $table . "'");
             $visible = 0;
-            $rows = 'unavailable';
             if ($result = mysqli_query($dbh, 'SHOW TABLES LIKE ' . "'" . $table . "'")) {
                 $visible = (int) mysqli_num_rows($result);
                 mysqli_free_result($result);
             }
-            if ($result = mysqli_query($dbh, 'SELECT COUNT(*) FROM `' . $table . '`')) {
-                $row = mysqli_fetch_row($result);
-                $rows = isset($row[0]) ? (string) $row[0] : 'unavailable';
-                mysqli_free_result($result);
-            }
             $facts[] = [
-                'table' => $table,
+                'table' => $short,
                 'real_exists' => ((int) $real) > 0,
                 'name_visible' => $visible > 0,
-                'rows_resolved_on_connection' => $rows,
             ];
         }
 

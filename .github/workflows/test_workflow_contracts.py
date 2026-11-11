@@ -38,6 +38,451 @@ def ci_job_block(text, job_key):
     return "\n".join(lines[start:end])
 
 
+def _logical_lines(text):
+    """Join shell line-continuations (trailing backslash) into logical lines.
+
+    Yields (first_line_number, logical_line). Multi-line commands in run:
+    blocks would otherwise look like unredirected writers on their first
+    physical line.
+    """
+    buffer = None
+    start = 1
+    for index, line in enumerate(text.splitlines()):
+        if buffer is None:
+            buffer = line
+            start = index + 1
+        else:
+            buffer += " " + line.strip()
+        stripped_right = line.rstrip()
+        if stripped_right.endswith("\\"):
+            buffer = buffer.rstrip()[:-1].rstrip() + " "
+            continue
+        yield start, buffer
+        buffer = None
+    if buffer is not None:
+        yield start, buffer
+
+
+def _yaml_parser():
+    global _YAML_PARSER
+    parser = globals().get("_YAML_PARSER")
+    if parser is None:
+        try:
+            import yaml  # noqa: PLC0415 - optional dependency, imported lazily.
+        except ImportError as exc:
+            raise AssertionError(
+                "PyYAML is required for the Integration raw-output guard; "
+                "install it (`python3 -m pip install pyyaml`)."
+            ) from exc
+        _YAML_PARSER = yaml
+        return yaml
+    return parser
+
+
+def _ci_document(text):
+    document = _yaml_parser().safe_load(text)
+    if not isinstance(document, dict):
+        raise AssertionError("ci.yml did not parse to a mapping")
+    return document
+
+
+def integration_job_document(text):
+    """Return the parsed `integration` job mapping from ci.yml text."""
+    jobs = _ci_document(text).get("jobs") or {}
+    job = jobs.get("integration")
+    if not isinstance(job, dict):
+        raise AssertionError("job not found in ci.yml: integration")
+    return job
+
+
+# --- Integration raw-output guard -------------------------------------------
+#
+# Scope: the ci.yml `integration` job ONLY. Unit/build/WPCS/release jobs are
+# known, pre-existing raw-output surfaces and are deliberately out of scope
+# for this guard (they are reported as open security debt, not fixed here).
+#
+# The guard parses ci.yml as YAML first: every `run` string — inline or
+# block scalar — is dedented by the parser, so block-scalar lines, bash -c /
+# sh -c bodies and python -c / heredoc bodies are all examined as real
+# command text (the previous line-oriented guard missed them whenever the
+# YAML key prefixing was absent).
+#
+# A static guard cannot prove absence of all leaks. Known limitations,
+# deliberately accepted and disclosed:
+#   * a variable holding raw content (`LOG=/tmp/x.log; cat "$LOG"`) — taint is
+#     not tracked across expansions or logical lines;
+#   * a python file read through a variable path (`open(path)`) — only raw
+#     literals are matched;
+#   * `ET.parse(...)`/counts-only gates cannot be distinguished from
+#     publishers by a regex and are allowed (they print fixed counts only, by
+#     construction and by review; this guard does not verify it);
+#   * a python expression without `print`/`write` emits nothing and is not a
+#     publication, so the rules key on read/print primitives;
+#   * quoted bodies cannot contain the enclosing quote character, so chunk
+#     boundaries are quote-bounded;
+#   * wrapper commands (sudo/command/exec/env/nice/time) are unwrapped with
+#     a bounded skip of their option words — nested/value-taking long
+#     options outside the known set are not tracked;
+#   * since Round 51 also detected: `$(<file)` reads, encoders/transformers
+#     of raw paths (base64/gzip/zcat/tar/sort/uniq/cut/diff; xxd/od/strings
+#     were already dump utilities) and cp/mv/ln of a raw path;
+#   * since Round 52 also detected: install of a raw path, dd with a raw
+#     if=/of= operand, and openssl base64/enc with a raw path.
+#
+# Anything not enumerated below is not claimed to be checked. Violations are
+# (rule, step_name, excerpt); an empty list means the job is clean under the
+# enumerated rules only.
+
+_RAW_LITERAL_RE = re.compile(
+    r"/tmp/[^\s'\";|()]*(?:\.(?:log|out|err)\b|"
+    r"[^\s'\";|()]*junit[^\s'\";|()]*\.xml\b)")
+# Command position: line start, after a shell separator, after a reserved
+# word (then/do/else/if/!/while/until), after `$(`, after `-exec`, after
+# `xargs`. Deliberately does NOT treat every whitespace as command position
+# (that would flag `echo cat x` arguments).
+_CMD_POS = r"(?:^|[|;(&]\s*|\b(?:then|do|else|if|while|until)\s+!?\s*|!\s*|\$\(\s*|-exec\s+|xargs\s+)"
+_DUMP_UTIL_RE = re.compile(
+    _CMD_POS + r"(cat|tail|head|less|more|od|xxd|strings|nl|tac)(?:\s|$)")
+_GREP_RAW_RE = re.compile(_CMD_POS + r"grep\b")
+_SED_RAW_RE = re.compile(_CMD_POS + r"sed\b")
+_AWK_RAW_RE = re.compile(_CMD_POS + r"awk\b")
+_QUIET_RE = re.compile(r"(?:^|\s)(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=\s|$)")
+_REDIRECT_TMP_RE = re.compile(r'>\s*"?/tmp/')
+_PY_READ_PRIMITIVE_RE = re.compile(r"\.read\s*\(|read_text\s*\(|readlines\s*\(|writelines\s*\(")
+_PY_ITER_OPEN_RE = re.compile(r"(?m)^\s*for\s+\w+\s+in\s+open\s*\(")
+_PY_PRINT_RE = re.compile(r"print\s*\(|sys\.stdout\.write\s*\(|sys\.stderr\.write\s*\(")
+# A shell/python option word: short or long, with an optional value either
+# attached via '=' or as the following non-dash word (e.g. `-o pipefail`).
+_OPT = r"--?[A-Za-z][A-Za-z0-9_-]*(?:\s+(?!-)[^\s'\"]+|=[^\s'\"]+)?"
+_BASH_C_RE = re.compile(
+    r"(?:bash|sh)(?:\s+" + _OPT + r")*\s+-[A-Za-z0-9]*c[A-Za-z0-9]*\s*(['\"])(.*?)\1",
+    re.DOTALL)
+_PY_C_RE = re.compile(
+    r"python[0-9.]*(?:\s+" + _OPT + r")*\s+-c\s*(['\"])(.*?)\1",
+    re.DOTALL)
+# Encoders/transformers that read their raw file argument and emit transformed
+# bytes (base64 of a raw capture is still raw content). od/xxd/strings are
+# already dump utilities.
+_TRANSFORM_UTIL_RE = re.compile(
+    _CMD_POS + r"(base64|gzip|zcat|tar|sort|uniq|cut|diff)(?:\s|$)")
+# cp/mv/ln/install of a raw capture path to another path defeats the
+# raw-class naming boundary (the copy is no longer matched by
+# _RAW_LITERAL_RE). dd with a raw if=/of= operand and openssl base64/enc
+# with a raw path are the same class: bytes of the raw capture end up in
+# a new file. Conservative flagging; no completeness claim.
+_RAW_PATH_CMD_RE = re.compile(
+    _CMD_POS + r"(cp|mv|ln|install)(?:\s|$)")
+_DD_CMD_RE = re.compile(_CMD_POS + r"dd(?:\s|$)")
+_DD_OPERAND_RE = re.compile(r"(?:if|of)=" + _RAW_LITERAL_RE.pattern)
+_OPENSSL_RAW_RE = re.compile(
+    _CMD_POS + r"openssl\s+(?:base64|enc)(?:\s|$)")
+# bash $(<file) is a read of the file's full contents.
+_RAW_SUBSHELL_READ_RE = re.compile(
+    r"\$\(\s*<\s*" + _RAW_LITERAL_RE.pattern)
+_PY_HEREDOC_RE = re.compile(
+    r"python[0-9.]*\s+(?:-[A-Za-z]+\s+)*-\s*<<\s*(?:-\s*)?(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+# Wrapper commands that exec their arguments transparently: the wrapped
+# command is where publication happens, so the wrappers are unwrapped before
+# the per-command rules are applied (bounded: at most 4 nesting levels).
+_WRAP_HEAD_RE = re.compile(r"^\s*(sudo|command|exec|env|nice|time)\b")
+_WRAP_OPT_WITH_VALUE = frozenset(
+    ['-n', '-u', '-g', '-C', '-D', '-T', '-o', '-a',
+     '--user', '--group', '--chdir', '--adjustment', '--unset'])
+_WRAP_ASSIGN_RE = re.compile(r"^\s+[A-Za-z_][A-Za-z0-9_]*=[^\s]*")
+_WRAP_WORD_RE = re.compile(r"^\s+(-{1,2}[A-Za-z0-9][^\s]*)")
+_WRAP_VALUE_RE = re.compile(r"^\s+(?!-)[^\s]+")
+_WRAP_DDASH_RE = re.compile(r"^\s+--(?:\s|$)")
+
+
+def _unwrap_wrapped_command(cmd):
+    """Strip leading wrapper commands (sudo/command/exec/env/nice/time).
+
+    Skips each wrapper's option words and (for env/sudo) VAR=value words,
+    and a bare `--` end-of-options word. Returns the innermost command.
+    Blind spots retained deliberately: `env` reading a script file,
+    `sudo -E`-style flags are skipped fine, but long options whose separate
+    value is not in _WRAP_OPT_WITH_VALUE leave the value word in place
+    (which simply fails to match any raw rule) — disclosed, not chased.
+    """
+    for _ in range(4):
+        head = _WRAP_HEAD_RE.match(cmd)
+        if head is None:
+            return cmd
+        rest = cmd[head.end():]
+        while True:
+            dash = _WRAP_DDASH_RE.match(rest)
+            if dash:
+                rest = rest[dash.end():]
+                continue
+            word = _WRAP_WORD_RE.match(rest)
+            if word:
+                rest = rest[word.end():]
+                if word.group(1) in _WRAP_OPT_WITH_VALUE:
+                    value = _WRAP_VALUE_RE.match(rest)
+                    if value:
+                        rest = rest[value.end():]
+                continue
+            if head.group(1) in ('env', 'sudo'):
+                assign = _WRAP_ASSIGN_RE.match(rest)
+                if assign:
+                    rest = rest[assign.end():]
+                    continue
+            break
+        cmd = rest.strip()
+    return cmd.strip()
+
+
+def _python_chunks(run_text):
+    """Yield the bodies of python -c scripts and python heredocs in a run
+    string, as single multi-line chunks."""
+    for match in _PY_C_RE.finditer(run_text):
+        yield match.group(2)
+    for match in _PY_HEREDOC_RE.finditer(run_text):
+        tag = match.group(2)
+        closing = re.compile(r"(?m)^[ \t]*" + re.escape(tag) + r"[ \t]*$")
+        end = closing.search(run_text, match.end())
+        if end is not None:
+            yield run_text[match.end():end.start()]
+
+
+def _shell_chunks(run_text):
+    """Yield the bodies of bash -c / sh -c scripts as shell text."""
+    for match in _BASH_C_RE.finditer(run_text):
+        yield match.group(2)
+
+
+def _split_quote_aware(text, pipelines):
+    """Split shell text on top-level separators (outside quotes).
+
+    pipelines=True splits on `;`, `&&`, `||` and newlines (pipeline
+    boundaries). pipelines=False splits only on `|` (command boundaries
+    inside one pipeline).
+    """
+    parts, buf, quote = [], "", None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            buf += char
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            buf += char
+            index += 1
+            continue
+        two = text[index:index + 2]
+        if pipelines and two in ("&&", "||"):
+            parts.append(buf)
+            buf = ""
+            index += 2
+            continue
+        if pipelines and char in ";\n":
+            parts.append(buf)
+            buf = ""
+            index += 1
+            continue
+        if not pipelines and char == "|":
+            parts.append(buf)
+            buf = ""
+            index += 1
+            continue
+        buf += char
+        index += 1
+    parts.append(buf)
+    return [part for part in parts if part.strip()]
+
+
+def _cmd_violations(command_text, step_name):
+    """Apply every shell rule to one run string or subshell body.
+
+    Raw-capture content flows down a pipeline (`grep ... /tmp/x.log | tail`),
+    so tool rules are evaluated per pipeline: a raw literal anywhere in the
+    pipeline reaches every consumer in it. Redirection and quiet exemptions
+    are evaluated on the individual command, never on a neighbour.
+    """
+    violations = []
+    for line_no, line in _logical_lines(command_text):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if re.search(r"(^|\s)set\s+-[A-Za-z]*x(\s|$)", line):
+            violations.append(("set-x", step_name, stripped[:160]))
+        if _RAW_SUBSHELL_READ_RE.search(line):
+            violations.append(("raw-subshell-read", step_name, stripped[:160]))
+        # (E) Piping stderr into another stdout producer without a file
+        # (`2>&1 | cmd`). `2>&1 ||` (the boolean-OR idiom) is NOT flagged.
+        if re.search(r"2>&1\s*\|(?!\|)", line):
+            violations.append(("stderr-pipe-to-stdout", step_name, stripped[:160]))
+        for pipeline in _split_quote_aware(line, pipelines=True):
+            commands = _split_quote_aware(pipeline, pipelines=False)
+            pipe_raw = _RAW_LITERAL_RE.search(pipeline) is not None
+            for index, command in enumerate(commands):
+                cmd = _unwrap_wrapped_command(command.strip())
+                excerpt = cmd[:160]
+                raw_in_cmd = _RAW_LITERAL_RE.search(cmd) is not None
+                redirect = _REDIRECT_TMP_RE.search(cmd) is not None
+                downstream = commands[index + 1:]
+                piped_to_python = any(
+                    re.match(r"python[0-9.]*\b", later.strip()) for later in downstream
+                )
+                # (A) `tee` (any use) — raw stdout fan-out is the failure
+                # mode this contract exists to forbid. No exceptions.
+                if re.search(r"(^|[\s|;(])tee(\s|$)", cmd):
+                    violations.append(("tee", step_name, excerpt))
+                # (A2) Encoders/transformers of a raw capture path: the
+                # output still contains raw bytes (base64 is encoding, not
+                # redaction). No exceptions.
+                if _TRANSFORM_UTIL_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-transform", step_name, excerpt))
+                # (A3) cp/mv/ln/install of a raw capture path: the copy
+                # leaves the raw-class naming boundary. No exceptions.
+                if _RAW_PATH_CMD_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
+                # (A3b) dd with a raw if=/of= operand: raw bytes are copied.
+                # if= read side leaks the raw capture; of= of a raw path is
+                # flagged conservatively (it names a raw-class file).
+                if _DD_CMD_RE.search(cmd) and _DD_OPERAND_RE.search(cmd):
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
+                # (A3c) openssl base64/enc with a raw path: encoding is not
+                # redaction; the output still carries (encoded or encrypted)
+                # copies of the raw bytes. No exceptions.
+                if _OPENSSL_RAW_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
+                # (B) Dump utilities on raw capture paths (.log/.out/.err or
+                # junit-named .xml). No exceptions.
+                if _DUMP_UTIL_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-log-dump", step_name, excerpt))
+                # (B2) grep/sed/awk reading a raw path. Allowed only when the
+                # output is suppressed (grep -q / --quiet) or redirected to a
+                # file — never when it reaches stdout.
+                if _GREP_RAW_RE.search(cmd) and pipe_raw:
+                    if not _QUIET_RE.search(cmd) and not redirect:
+                        violations.append(("grep-raw", step_name, excerpt))
+                if _SED_RAW_RE.search(cmd) and pipe_raw:
+                    if not redirect:
+                        violations.append(("sed-raw", step_name, excerpt))
+                if _AWK_RAW_RE.search(cmd) and pipe_raw:
+                    if not redirect:
+                        violations.append(("awk-raw", step_name, excerpt))
+                # (D) Raw writers that must be redirected to a /tmp capture
+                # file or piped into a boundary projector.
+                if re.match(r"php\b", cmd) and "vendor/bin/phpunit" in cmd \
+                        and not redirect and not piped_to_python:
+                    violations.append(("phpunit-raw", step_name, excerpt))
+                if re.match(r"composer\b", cmd) and not redirect:
+                    violations.append(("composer-raw", step_name, excerpt))
+                if "install-wp-tests.sh" in cmd and not redirect \
+                        and not cmd.startswith("echo"):
+                    violations.append(("install-wp-tests-raw", step_name, excerpt))
+                if re.match(r"php\b", cmd) \
+                        and "multi-clinic-rest-bootstrap-probe.php" in cmd \
+                        and not redirect:
+                    violations.append(("red1-probe-raw", step_name, excerpt))
+                # (D2) php -r scripts that open a raw capture path print
+                # captured output to stdout; no bounded-projection exception.
+                if re.match(r"php\s+-r\b", cmd) and raw_in_cmd:
+                    violations.append(("php-r-raw", step_name, excerpt))
+    return violations
+
+
+def _python_violations(chunk, step_name):
+    """Python-specific rules: no printing captured raw content."""
+    violations = []
+    raw = _RAW_LITERAL_RE.search(chunk)
+    if raw is None:
+        return violations
+    excerpt = " ".join(chunk.split())[:160]
+    # (P1) Full-content read of a raw capture path (open(...).read(),
+    # read_text(), readlines(), writelines()) — never publishable.
+    if _PY_READ_PRIMITIVE_RE.search(chunk):
+        violations.append(("python-raw-read", step_name, excerpt))
+    # (P2) Line-iteration over an open() raw literal with a print of what was
+    # iterated — the classic full-dump shape.
+    if _PY_ITER_OPEN_RE.search(chunk) and _PY_PRINT_RE.search(chunk):
+        violations.append(("python-raw-iter-print", step_name, excerpt))
+    return violations
+
+
+def integration_raw_output_violations(ci_yml_text):
+    """Raw-log-write violations inside the ci.yml `integration` job.
+
+    Parses the workflow as YAML and examines every `run` script in every
+    step of the Integration job: block scalars and inline `run:` commands are
+    both dedented by the parser; bash -c / sh -c bodies are analyzed as
+    shell; python -c bodies and python heredocs are analyzed as python.
+    The Integration job is the only scope — Unit/build/WPCS/release jobs carry
+    known pre-existing debt that is deliberately out of scope here.
+
+    Returns a list of (rule, step_name, excerpt) tuples; an empty list means
+    the job is clean under the enumerated rules (not proof of no leaks).
+    """
+    job = integration_job_document(ci_yml_text)
+    violations = []
+    for step in job.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        step_name = str(step.get("name") or "<unnamed>")
+        violations.extend(_cmd_violations(run, step_name))
+        for chunk in _python_chunks(run):
+            violations.extend(_python_violations(chunk, step_name))
+        for sub in _shell_chunks(run):
+            violations.extend(_cmd_violations(sub, step_name))
+            for chunk in _python_chunks(sub):
+                violations.extend(_python_violations(chunk, step_name))
+    return violations
+
+
+_BOUNDED_PROJECTION_TOKENS = (
+    'integration_evidence.py" junit',
+    'integration_evidence.py" suites',
+    'integration_evidence.py" evidence',
+    'integration_evidence.py" terminal',
+    "python3 - <<",
+)
+_FAILURE_EXIT_RE = re.compile(r'exit\s+"?\$?(?:\{)?(?:phpunit_status|TEST_RC|bin_tests_rc|ledger_status|result|PROBE_RC)')
+
+
+def junit_projection_before_failure_exit_violations(slice_text):
+    """A step that runs PHPUnit and exits nonzero must print a bounded JUnit
+    failure summary BEFORE the exit — never after, never raw.
+
+    Tokens that count as a bounded JUnit failure summary (fixed schema, counts
+    and source-verified identifiers only):
+      bin/integration_evidence.py junit|suites|evidence|terminal ...
+      an inline python heredoc printing JUnit counts (python3 - <<...)
+    Checks, per step block: every failure-path `exit` AFTER the first
+    `vendor/bin/phpunit` occurrence must be preceded (same step) by one of
+    those tokens.
+    """
+    violations = []
+    step_blocks = re.split(r"(?m)^      - name: ", slice_text)[1:]
+    for block in step_blocks:
+        name = block.splitlines()[0].strip() if block.splitlines() else "<unknown>"
+        phpunit_at = block.find("vendor/bin/phpunit")
+        if phpunit_at == -1:
+            continue
+        for match in _FAILURE_EXIT_RE.finditer(block):
+            if match.start() < phpunit_at:
+                continue
+            prefix = block[: match.start()]
+            if not any(token in prefix for token in _BOUNDED_PROJECTION_TOKENS):
+                line_no = prefix.count("\n") + 1
+                violations.append((
+                    "junit-projection-missing",
+                    line_no,
+                    "{0}: failure exit without a preceding bounded JUnit summary".format(name),
+                ))
+    return violations
+
+
 def ci_step_block(job_text, step_name):
     """Return the YAML block of one named step inside a ci.yml job."""
     lines = job_text.splitlines()
@@ -1196,6 +1641,158 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
 _MIGRATION_VERSION_RE = re.compile(r"^(\d{4}_\d{2}_\d{2}_\d{4})_")
 
 
+class IntegrationPublicationBoundaryTests(unittest.TestCase):
+    """Static contracts pinning the Integration job's publication boundary.
+
+    These tests pin the SHAPES of the publication boundary after the
+    adversarial review: raw probe output is never echoed or mirrored, idents
+    reach PR annotations only through the source-verified projector, coverage
+    guard summaries carry fixed tokens only, and no artifact path ships a raw
+    log. They intentionally do not re-derive behavior the Python contract
+    suite (bin/test_integration_evidence.py) already executes.
+    """
+
+    def setUp(self):
+        self.ci = workflow("ci.yml")
+        self.integration = ci_job_block(self.ci, "integration")
+
+    # --- RED-1 probe publication boundary ---
+
+    def test_red1_step_never_echoes_raw_probe_output(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        self.assertNotIn("cat /tmp/red1-probe.log", step)
+        self.assertNotIn("tee /tmp/red1-probe.log", step)
+        # The fixed-schema projection is the only thing published.
+        self.assertIn("red1-probe /tmp/red1-probe.log", step)
+
+    def test_red1_probe_source_emits_fixed_schema_lines_and_fatal_handler(self):
+        probe = (ROOT / "clinic-practice-management" / "tests" / "bin"
+                 / "multi-clinic-rest-bootstrap-probe.php").read_text(encoding="utf-8")
+        self.assertIn("RED1_PROBE v1 ", probe)
+        self.assertIn("register_shutdown_function", probe)
+        self.assertIn("event=fatal", probe)
+        # INVALID-exit paths carry a fixed reason token.
+        for token in ("plugin_file", "autoload", "test_library", "core", "database",
+                      "bootstrap", "migration", "precondition"):
+            self.assertIn("'reason' => '{0}'".format(token), probe)
+
+    def test_red1_projection_is_the_only_pr_mirror_of_the_probe(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        body = step.split("red1-probe-comment.md")[0]
+        self.assertIn("red1-probe /tmp/red1-probe.log", body)
+        self.assertNotIn("cat ", body.split("echo '```'", 1)[-1])
+
+    # --- GitHub annotations: source-verified idents only ---
+
+    def test_failure_annotations_use_the_source_verified_projector(self):
+        part1 = ci_step_block(self.integration, "Surface test failures (part 1)")
+        part2 = ci_step_block(self.integration, "Surface test failures (part 2)")
+        for block in (part1, part2):
+            self.assertIn("annotate /tmp/phpunit-int-junit.xml", block)
+        self.assertNotIn("grep -oE", part1)
+        self.assertNotIn("grep -oE", part2)
+
+    # --- Coverage guard: mandatory JUnit cross-check, fixed tokens only ---
+
+    def test_coverage_guard_invocation_passes_the_junit_cross_check(self):
+        step = ci_step_block(self.integration,
+                             "AuthorizationService coverage guard (fail-closed; includes negative-control self-test)")
+        self.assertIn("--phpunit-junit /tmp/authz-coverage/junit.xml", step)
+
+    def test_coverage_guard_publishes_no_raw_summary_token(self):
+        guard = (ROOT / "clinic-practice-management" / "bin"
+                 / "authorization-coverage-guard.py").read_text(encoding="utf-8")
+        # Dict-key emission of the raw summary line must not exist; the
+        # positive control already asserts the key is absent from results.
+        self.assertNotIn('"terminal_summary":', guard)
+        self.assertIn("terminal_verdict", guard)
+        self.assertIn("check_junit", guard)
+
+    # --- No raw logs in artifacts ---
+
+    def test_no_uploaded_artifact_path_is_a_raw_log(self):
+        raw_paths = ("/tmp/phpunit-int.log", "/tmp/red1-probe.log",
+                     "/tmp/cpms-conn-diag.jsonl", "/tmp/custom-role-race.log",
+                     "/tmp/custom-role-archive-race.log", "/tmp/heartbeat-recovery-mysql.log",
+                     "/tmp/authz-coverage/phpunit.log", "/tmp/authz-coverage/clover.xml",
+                     "/tmp/custom-role-mariadb.log", "/tmp/custom-role-archive-migration.log",
+                     "/tmp/custom-role-archive.log", "/tmp/first-practice-mariadb.log")
+        # Split the job into step blocks and inspect upload-artifact steps only.
+        step_blocks = re.split(r"(?m)^      - name: ", self.integration)[1:]
+        uploads = [b for b in step_blocks if "uses: actions/upload-artifact" in b]
+        self.assertTrue(uploads, "expected at least one upload-artifact step in the Integration job")
+        for block in uploads:
+            for raw in raw_paths:
+                self.assertNotIn(raw, block, raw + " must never be uploaded")
+            # Inspect only the `path: |` payload lines, not comments.
+            lines = block.splitlines()
+            for index, line in enumerate(lines):
+                if line.strip() == "path: |":
+                    indent = len(line) - len(line.lstrip())
+                    for payload in lines[index + 1:]:
+                        payload_indent = len(payload) - len(payload.lstrip())
+                        if payload.strip() and payload_indent <= indent:
+                            break
+                        self.assertNotIn(".log", payload)
+                        self.assertNotIn(".jsonl", payload)
+                        self.assertNotIn("clover.xml", payload)
+                        self.assertNotIn(".junit", payload)
+
+    # --- Source emitters: hashing removed, fixed vocabularies ---
+
+    def test_bounded_evidence_publishes_no_hashes_and_exact_vocab(self):
+        text = (ROOT / "clinic-practice-management" / "tests" / "Support"
+                / "BoundedEvidence.php").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "sha256" in line.lower() or "sha-256" in line.lower():
+                self.assertIn("NOT published", line)
+        self.assertNotIn("hash(", text)
+        # FD vocabulary is exactly the four categories.
+        self.assertIn("'dev-null', 'pipe', 'socket', 'other'", text)
+        # Race outcome vocabulary is source-exact: the 16 reason codes only.
+        self.assertNotIn("CUSTOM_ROLE_MUTATION_FAILED", text)
+        self.assertNotIn("CUSTOM_ROLE_ARCHIVED", text)
+        self.assertNotIn("CUSTOM_ROLE_DEACTIVATED", text)
+        self.assertNotIn("CUSTOM_ROLE_REACTIVATED", text)
+        self.assertIn("CUSTOM_ROLE_ASSIGNMENT_DEFINITION_NOT_ACTIVE", text)
+        self.assertIn("CUSTOM_ROLE_MEMBERSHIP_REFERENCES", text)
+
+    def test_projector_has_no_hashing_and_no_sha256_fields(self):
+        text = (ROOT / "bin" / "integration_evidence.py").read_text(encoding="utf-8")
+        self.assertNotIn("hashlib", text)
+        self.assertNotIn("statement_sha256'", text)
+        self.assertNotIn("assignment_lock_query_sha256'", text)
+        self.assertNotIn("waiter_lock_query_sha256'", text)
+
+    def test_connection_diagnostics_emits_only_bounded_chain_shapes(self):
+        text = (ROOT / "clinic-practice-management" / "tests" / "Support"
+                / "ConnectionDiagnostics.php").read_text(encoding="utf-8")
+        self.assertIn("is_int($priority)", text)
+        self.assertIn("closure#", text)
+        self.assertNotIn("get_debug_type($fn)", text)
+
+    # --- Table-facts test lives on the real database ---
+
+    def test_table_facts_test_is_integration_not_unit(self):
+        integration = ROOT / "clinic-practice-management" / "tests" / "Integration" / "WpSqlFailureLedgerIntegrationTest.php"
+        unit = ROOT / "clinic-practice-management" / "tests" / "Unit" / "Support" / "WpSqlFailureLedgerTest.php"
+        self.assertTrue(integration.is_file())
+        self.assertIn("WP_UnitTestCase", integration.read_text(encoding="utf-8"))
+        self.assertNotIn("127.0.0.1", unit.read_text(encoding="utf-8"))
+        self.assertNotIn("wordpress_test", unit.read_text(encoding="utf-8"))
+
+    # --- Verdict semantics preserved (fail-closed, no gate weakening) ---
+
+    def test_red1_step_still_exits_with_the_probe_rc(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        self.assertIn('exit "${PROBE_RC:-1}"', step)
+
+    def test_full_suite_step_still_requires_terminal_summary(self):
+        step = ci_step_block(self.integration, "Run integration tests")
+        self.assertIn("terminal summary", step)
+        self.assertIn("phpunit_status", step)
+
+
 def link_production_at_baseline(source: Path, target: Path, baseline: str) -> None:
     """Symlink a production tree with its migrations truncated at `baseline`.
 
@@ -1557,6 +2154,240 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         self.assertRegex(events, r"(?m)^  push:\n    branches: \[main\]$")
 
 
+
+class IntegrationJobLogHygieneContractTest(unittest.TestCase):
+    """Non-vacuous static contract for the ci.yml Integration job's stdout.
+
+    The job's raw logs must never reach stdout/stderr/PR surfaces. Every raw
+    writer is redirected to /tmp; only bounded fixed-text projections may be
+    printed. These tests fail on deliberately violating fixtures, proving the
+    contract is not vacuous, and on the real workflow slice (which must stay
+    clean).
+    """
+
+    def _integration_slice(self):
+        return ci_job_block(workflow("ci.yml"), "integration")
+
+    def test_integration_job_has_no_raw_log_writes(self):
+        violations = integration_raw_output_violations(workflow("ci.yml"))
+        self.assertEqual(
+            [],
+            violations,
+            "Integration job raw-log violations:\n"
+            + "\n".join("{0}:{1}: {2}".format(*v) for v in violations),
+        )
+
+    def test_integration_job_prints_bounded_junit_summary_before_failure_exit(self):
+        violations = junit_projection_before_failure_exit_violations(self._integration_slice())
+        self.assertEqual(
+            [],
+            violations,
+            "Integration job failure paths without preceding bounded JUnit summary:\n"
+            + "\n".join("{0}:{1}: {2}".format(*v) for v in violations),
+        )
+
+    def test_contract_fails_on_deliberately_violating_fixtures(self):
+        # Deliberate violations are injected into a PARSED COPY of the real
+        # ci.yml — never into the real workflow file. Each class of violation
+        # must be detected, proving the contract is not vacuous. The injected
+        # steps exercise the shapes a line-oriented guard misses: indented
+        # block-scalar lines, bash -c bodies and python -c / heredoc bodies.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
+        fixtures = {
+            "tee": ("tee", 'php vendor/bin/phpunit > /tmp/x.log 2>&1 | tee /tmp/y.log'),
+            "raw-log-dump-inline": ("raw-log-dump", 'cat /tmp/x.log'),
+            "raw-log-dump-tail": ("raw-log-dump", 'tail -n 50 /tmp/x.log'),
+            "raw-log-dump-block-scalar": ("raw-log-dump",
+                'cat /tmp/x.log\n'),
+            "raw-log-dump-indented": ("raw-log-dump",
+                'tail -n 240 /tmp/x.log\ngrep -E "^Tests:" /tmp/x.log\n'),
+            "raw-log-dump-after-then": ("raw-log-dump",
+                'if [ -s /tmp/x.log ]; then cat /tmp/x.log; fi'),
+            "bash-c-raw-dump": ("raw-log-dump",
+                "bash -c 'cat /tmp/x.log'"),
+            "bash-c-tail": ("raw-log-dump",
+                'bash -ec "tail -n 20 /tmp/x.log"'),
+            "sh-c-raw-dump": ("raw-log-dump",
+                "sh -c 'head -5 /tmp/x.log'"),
+            "grep-raw": ("grep-raw", 'grep -E "^Tests:" /tmp/x.log'),
+            "grep-raw-after-semicolon": ("grep-raw",
+                'php vendor/bin/phpunit > /tmp/x.log 2>&1; grep -E "^OK" /tmp/x.log'),
+            "sed-raw": ("sed-raw", "sed -n '1,40p' /tmp/x.log"),
+            "awk-raw": ("awk-raw", "awk '{print}' /tmp/x.log"),
+            "set-x": ("set-x", 'set -x'),
+            "phpunit-raw": ("phpunit-raw", 'php vendor/bin/phpunit'),
+            "composer-raw": ("composer-raw", 'composer install --prefer-dist'),
+            "install-wp-tests-raw": ("install-wp-tests-raw",
+                'bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3'),
+            "red1-probe-raw": ("red1-probe-raw",
+                'php tests/bin/multi-clinic-rest-bootstrap-probe.php'),
+            "stderr-pipe-to-stdout": ("stderr-pipe-to-stdout",
+                'php vendor/bin/phpunit 2>&1 | grep -E FAIL'),
+            "python-c-raw-dump": ("python-raw-read",
+                'python3 -c "print(open(\'/tmp/x.log\').read())"'),
+            "python-c-multiline-raw-dump": ("python-raw-read",
+                "python3 -c 'import sys\ndata = open(\"/tmp/x.out\").read()\nprint(data)'"),
+            "python-c-raw-iter-print": ("python-raw-iter-print",
+                "python3 -c 'for line in open(\"/tmp/x.log\"):\n    print(line)'"),
+            "python-heredoc-raw-dump": ("python-raw-read",
+                "python3 - <<'EOF'\ndata = open('/tmp/x.err').read()\nprint(data)\nEOF"),
+            "python-heredoc-raw-iter-print": ("python-raw-iter-print",
+                "python3 - <<'EOF'\nfor line in open('/tmp/x.log'):\n    print(line)\nEOF"),
+            "php-r-raw": ("php-r-raw",
+                'php -r "var_export(file_get_contents(\'/tmp/x.log\'));"'),
+        }
+        for label, (expected_rule, run) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_round51_guard_additions_fail_on_deliberately_violating_fixtures(self):
+        # Round 51 reviewer LOW 4b: options before -c, wrapper commands
+        # (sudo/command/exec/env/nice/time) and the encoder/duplicate raw
+        # classes. Each fixture must be rejected; the real workflow file is
+        # never modified. Not a completeness claim: the guard is static and
+        # cannot prove absence of all leaks.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
+        fixtures = {
+            "bash-o-pipefail-c": ("raw-log-dump",
+                "bash -o pipefail -c 'cat /tmp/x.log'"),
+            "bash-long-opt-c": ("raw-log-dump",
+                "bash --noprofile -c 'cat /tmp/x.log'"),
+            "sh-o-pipefail-c": ("raw-log-dump",
+                "sh -o pipefail -c 'tail /tmp/a.log'"),
+            "python-dash-I-c": ("python-raw-read",
+                'python3 -I -c "print(open(\'/tmp/y.log\').read())"'),
+            "python-dash-W-c": ("python-raw-read",
+                'python3 -W ignore -c "print(open(\'/tmp/y.log\').read())"'),
+            "sudo-cat": ("raw-log-dump", "sudo cat /tmp/x.log"),
+            "sudo-ddash-cat": ("raw-log-dump", "sudo -- cat /tmp/x.log"),
+            "sudo-user-cat": ("raw-log-dump", "sudo --user deploy cat /tmp/x.log"),
+            "command-cat": ("raw-log-dump", "command cat /tmp/x.log"),
+            "exec-cat": ("raw-log-dump", "exec cat /tmp/x.log"),
+            "env-cat": ("raw-log-dump", "env cat /tmp/x.log"),
+            "env-assign-grep": ("grep-raw", "env FOO=bar grep pat /tmp/x.log"),
+            "env-i-cat": ("raw-log-dump", "env -i cat /tmp/x.log"),
+            "nice-cat": ("raw-log-dump", "nice cat /tmp/x.log"),
+            "nice-n-cat": ("raw-log-dump", "nice -n 5 cat /tmp/x.log"),
+            "nice-adjustment-cat": ("raw-log-dump",
+                "nice --adjustment 5 cat /tmp/x.log"),
+            "time-cat": ("raw-log-dump", "time cat /tmp/x.log"),
+            "time-p-cat": ("raw-log-dump", "time -p cat /tmp/x.log"),
+            "nested-wrap-cat": ("raw-log-dump", "sudo nice -n 5 cat /tmp/x.log"),
+            "raw-subshell-read": ("raw-subshell-read",
+                'leak=$(</tmp/x.log); echo "$leak"'),
+            "base64-raw": ("raw-transform", "base64 /tmp/x.log"),
+            "gzip-raw": ("raw-transform", "gzip -dc /tmp/x.log"),
+            "zcat-raw": ("raw-transform", "zcat /tmp/x.log"),
+            "tar-raw": ("raw-transform", "tar -cf - /tmp/x.log"),
+            "sort-raw": ("raw-transform", "sort /tmp/x.log"),
+            "uniq-raw": ("raw-transform", "uniq /tmp/x.log"),
+            "cut-raw": ("raw-transform", "cut -d: -f1 /tmp/x.log"),
+            "diff-raw": ("raw-transform", "diff /tmp/x.log /tmp/y.log"),
+            "cp-raw": ("raw-path-duplicate", "cp /tmp/x.log /tmp/copy.txt"),
+            "mv-raw": ("raw-path-duplicate", "mv /tmp/x.log /tmp/moved.txt"),
+            "ln-raw": ("raw-path-duplicate", "ln -s /tmp/x.log /tmp/link.txt"),
+        }
+        for label, (expected_rule, run) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_round52_raw_path_duplicate_additions_fail_on_deliberately_violating_fixtures(self):
+        # Round 52 LOW-5.1: install, dd (raw if=/of= operands) and openssl
+        # base64/enc extend the raw-path-duplicate class. Each fixture must
+        # be rejected; the real workflow file is never modified. Not a
+        # completeness claim.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
+        fixtures = {
+            "install-raw": ("raw-path-duplicate",
+                "install /tmp/x.log /tmp/installed.txt"),
+            "install-flags-raw": ("raw-path-duplicate",
+                "install -m 644 /tmp/x.log /tmp/installed.txt"),
+            "install-d-raw": ("raw-path-duplicate",
+                "install -D /tmp/a.log /dest/x.log"),
+            "dd-if-raw": ("raw-path-duplicate",
+                "dd if=/tmp/x.log of=/tmp/blob.bin"),
+            "dd-if-raw-bs": ("raw-path-duplicate",
+                "dd if=/tmp/x.log of=/tmp/blob.bin bs=4k"),
+            "dd-of-raw-conservative": ("raw-path-duplicate",
+                "dd if=/dev/zero of=/tmp/x.log bs=1M count=1"),
+            "openssl-base64-raw": ("raw-path-duplicate",
+                "openssl base64 -in /tmp/x.log"),
+            "openssl-base64-out-raw": ("raw-path-duplicate",
+                "openssl base64 -in /tmp/x.log -out /tmp/enc.txt"),
+            "openssl-enc-raw": ("raw-path-duplicate",
+                "openssl enc -aes-256-cbc -in /tmp/x.log -out /tmp/enc.bin -pass pass:dummy"),
+            "openssl-enc-decode-raw": ("raw-path-duplicate",
+                "openssl enc -d -in /tmp/enc.bin -out /tmp/y.log -pass pass:dummy"),
+        }
+        for label, (expected_rule, run) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_junit_projection_contract_fails_on_deliberately_violating_fixture(self):
+        fixture = (
+            '  integration:\n'
+            '    steps:\n'
+            '      - name: Run thing\n'
+            '        run: |\n'
+            '          phpunit_status=0\n'
+            '          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \\\n'
+            '            --bootstrap tests/integration-bootstrap.php tests/Integration \\\n'
+            '            > /tmp/phpunit-int.log 2>&1 || phpunit_status=$?\n'
+            '          if [ "$phpunit_status" -ne 0 ]; then\n'
+            '            exit "$phpunit_status"\n'
+            '          fi\n'
+        )
+        violations = junit_projection_before_failure_exit_violations(fixture)
+        self.assertEqual(1, len(violations))
+        self.assertEqual("junit-projection-missing", violations[0][0])
 CLASSIC_V1 = "classic-v1-remediation.yml"
 PROJECTION_MARKER = "# cpms-fixed-schema-projection"
 CANARY = "CANARY9f8a87af"
