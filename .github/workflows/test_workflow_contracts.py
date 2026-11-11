@@ -3225,18 +3225,23 @@ _PILOT_EXPECTED_JOBS = {
     "responsive": {"release-artifact"},
 }
 
-_PILOT_EVIDENCE_FAMILIES = frozenset({
-    "pilot-inner-zip",
-    "pilot-benchmark",
-    "pilot-responsive-evidence",
-    "pilot-otp-journey",
-    "pilot-slice3-chooser",
-    "pilot-portal-cancel",
-    "pilot-portal-profile",
-    "pilot-doctor-portal",
-    "pilot-reception",
-    "pilot-day2-workflows",
-})
+_PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY = {
+    "/tmp/cpms-inner-zip-evidence.md": "pilot-inner-zip",
+    "/tmp/pilot-benchmark-status.md": "pilot-benchmark",
+    "/tmp/resp-evidence.md": "pilot-responsive-evidence",
+    "/tmp/journey-evidence.md": "pilot-otp-journey",
+    "/tmp/slice3-evidence.md": "pilot-slice3-chooser",
+    "/tmp/portal-cancel-evidence.md": "pilot-portal-cancel",
+    "/tmp/portal-profile-evidence.md": "pilot-portal-profile",
+    "/tmp/doctor-portal-evidence.md": "pilot-doctor-portal",
+    "/tmp/reception-evidence.md": "pilot-reception",
+    "/tmp/day2-workflows-evidence.md": "pilot-day2-workflows",
+}
+
+_PILOT_EVIDENCE_FAMILIES = frozenset(_PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY.values())
+_PILOT_EVIDENCE_BODY_BASENAME_TO_PATH = {
+    path.rsplit("/", 1)[-1]: path for path in _PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY
+}
 
 _PILOT_ALLOWED_GITHUB_ENV_FILES = frozenset({
     "/tmp/resp-public-page.env",
@@ -3250,6 +3255,11 @@ _PILOT_ALLOWED_GITHUB_ENV_FILES = frozenset({
     "/tmp/reports.env",
     "/tmp/day2-workflows.env",
 })
+
+_PILOT_ALLOWED_LOCAL_REDIRECT_VARS = {
+    "MANIFEST": '"$BENCH/manifest.jsonl"',
+    "log": '"/tmp/resp-${engine}.log"',
+}
 
 _PILOT_EVIDENCE_CLOSED_TOKENS = frozenset({
     "PASS",
@@ -3282,24 +3292,63 @@ _PILOT_POST_CALL_RE = re.compile(
     r'^bash "\$GITHUB_WORKSPACE/\.github/scripts/post-pr-evidence\.sh" '
     r'(/tmp/[A-Za-z0-9._-]+\.md) "([a-z0-9-]+)"$'
 )
+_PILOT_DIRECT_EVIDENCE_COMMENT_RE = re.compile(r"pr-evidence-comment(?:\.sh)?\b")
 _PILOT_EVIDENCE_READER_RE = re.compile(
     _CMD_POS + r"(cat|grep|egrep|fgrep|tail|head|sed|awk|cut|paste|sort|uniq|jq|curl)(?:\s|$)"
 )
 _PILOT_PRINTF_CALL_RE = re.compile(
-    r"^printf '([^']*)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
+    r"^printf '([^'\r\n]+)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
 )
 _PILOT_ECHO_CALL_RE = re.compile(
-    r"^echo '([^']*)'\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
+    r"^echo '([^'\r\n]+)'\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
 )
 _PILOT_SUMMARY_ECHO_RE = re.compile(
-    r"^echo '([^']*)'\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
+    r"^echo '([^'\r\n]+)'\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
 )
 _PILOT_SUMMARY_PRINTF_RE = re.compile(
-    r"^printf '([^']*)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
+    r"^printf '([^'\r\n]+)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
 )
-_PILOT_ANNOTATION_TOKEN_RE = re.compile(r"::(?:error|warning|notice)::")
-_PILOT_LITERAL_ANNOTATION_FRAGMENT_RE = re.compile(
-    r"echo '::(?:error|warning|notice)::[^']*'"
+_PILOT_WORKFLOW_CMD_NAMES = (
+    "error",
+    "warning",
+    "notice",
+    "debug",
+    "group",
+    "endgroup",
+    "add-mask",
+    "set-output",
+    "save-state",
+    "stop-commands",
+)
+_PILOT_WORKFLOW_CMD_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z0-9_\\])::(?:" + "|".join(_PILOT_WORKFLOW_CMD_NAMES) + r")\b"
+)
+_PILOT_FIXED_WORKFLOW_CMD_SEGMENT_RE = re.compile(
+    r"""(?:^|(?:&&|\|\||[|;(])\s*|\{\s*)(?:echo\s+'::(?:error|warning|notice)::[^'\r\n]+'|printf\s+'::(?:error|warning|notice)::[^'%\r\n\\]+(?:\\n)?')(?=\s*(?:$|(?:&&|\|\||[;)}])))"""
+)
+_PILOT_SHELL_EVAL_RE = re.compile(
+    _CMD_POS
+    + r"(?:(?:command|builtin|env|sudo|exec)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;|&]+\s+)*eval(?:\s|$)"
+)
+_PILOT_VAR_INDIRECTION_RE = re.compile(
+    r"(?:\$\{![A-Za-z_][A-Za-z0-9_]*|"
+    r"\b(?:declare|typeset|local|export|readonly)\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*n\b|"
+    r"\bprintf\s+(?:-[A-Za-z]+\s+)*-v\b)"
+)
+_PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE = re.compile(
+    r"\bGITHUB_(?:OUTPUT|STATE|PATH)\b"
+)
+_PILOT_GITHUB_ALIAS_ENV_RE = re.compile(
+    r"\bGITHUB_(?:STEP_SUMMARY|ENV|OUTPUT|STATE|PATH)\b"
+)
+_PILOT_BARE_VAR_REDIRECT_RE = re.compile(
+    r'(?<![=-])(?:\d*>>?)\s*(?:"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)(?=\s|$|[;|&)])'
+)
+_PILOT_CMD_SUB_REDIRECT_RE = re.compile(
+    r'(?<![=-])(?:\d*>>?)\s*["\']?(?:\$\(|`)'
+)
+_PILOT_BARE_VAR_TEE_RE = re.compile(
+    r'\btee\b(?:\s+-[A-Za-z]+)*\s+(?:"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)(?=\s|$|[;|&)])'
 )
 _PILOT_GITHUB_ENV_APPEND_RE = re.compile(
     r"^cat (/tmp/[A-Za-z0-9._-]+\.env) >> \"\$GITHUB_ENV\"$"
@@ -3312,16 +3361,19 @@ _PILOT_FIXTURE_LOG_READ_RE = re.compile(
 )
 
 
-def _extract_var_assignments(var_name, run_text):
-    """Return every RHS assigned to `var_name` at command position in `run_text`."""
-    assignments = []
-    # Mask comment lines and single-line single-quoted literals with equal-length
-    # spaces so apostrophes in comments or `printf 'foo var=%s'` format text
-    # neither cross lines nor look like shell assignments.
+def _mask_shell_comments_and_single_quotes(run_text):
+    """Mask comment lines and single-line single-quoted strings with equal-length spaces."""
     no_comments = re.sub(r"(?m)^\s*#[^\n]*", lambda m: " " * len(m.group(0)), run_text)
-    masked = re.sub(r"'[^'\n]*'", lambda m: "'" + (" " * (len(m.group(0)) - 2)) + "'", no_comments)
+    return re.sub(r"'[^'\n]*'", lambda m: "'" + (" " * (len(m.group(0)) - 2)) + "'", no_comments)
+
+
+def _extract_var_assignments_with_spans(var_name, run_text):
+    """Return `(assign_start, rhs_end, rhs_str)` for every assignment to `var_name` in `run_text`."""
+    assignments = []
+    masked = _mask_shell_comments_and_single_quotes(run_text)
     pattern = re.compile(
-        r"(?:^|[;|&\n]|\)\s*|\b(?:then|else|do)\s+)\s*"
+        r"(?:^|[;|&\n{]|\)\s*|\b(?:then|else|do)\s+)\s*"
+        r"(?:(?:export|declare|typeset|local|readonly)(?:\s+-[A-Za-z]+)*\s+)?"
         + re.escape(var_name)
         + r"=(?!=)",
         re.MULTILINE,
@@ -3334,43 +3386,94 @@ def _extract_var_assignments(var_name, run_text):
             tail_real,
         )
         if rhs_match:
-            assignments.append(rhs_match.group(1).strip())
+            assignments.append((match.start(), start + rhs_match.end(), rhs_match.group(1).strip()))
     return assignments
 
 
-def _has_digit_only_case_guard(src_var, run_text):
-    case_re = re.compile(
-        r'case\s+"\$' + re.escape(src_var) + r'"\s+in\b.*?\besac\b',
-        re.DOTALL,
-    )
-    for match in case_re.finditer(run_text):
-        if "''|*[!0-9]*)" in match.group(0):
-            return True
+def _extract_var_assignments(var_name, run_text):
+    """Return every RHS assigned to `var_name` at command position in `run_text`."""
+    return [rhs for _, _, rhs in _extract_var_assignments_with_spans(var_name, run_text)]
+
+
+def _has_non_simple_var_mutation(var_name, run_text):
+    """Detect `+=`, `read`, `for`, `let`, or `((...))` mutations of `var_name`."""
+    masked = _mask_shell_comments_and_single_quotes(run_text)
+    esc = re.escape(var_name)
+    if re.search(rf"(?<![A-Za-z0-9_]){esc}\+=", masked):
+        return True
+    if re.search(rf"\b(?:read\s+(?:-[A-Za-z]+\s+)*|for\s+){esc}\b", masked):
+        return True
+    if re.search(rf"\(\([^)]*\b{esc}\s*(?:[+\-*/%&|^]?=|\+\+|--)", masked):
+        return True
+    if re.search(rf"\blet\b[^\n;]*\b{esc}\b", masked):
+        return True
     return False
 
 
-def _verify_pilot_var_allowlist(var_name, run_text, step_env, closed_tokens, allow_int_arith):
+def _is_strictly_digit_guarded_copy(src_var, copy_start, copy_end, run_text, inherited_env):
+    """Verify `target="$src_var"` lies inside the post-digit-check arm of an immutable `src_var`."""
+    if src_var in inherited_env or _has_non_simple_var_mutation(src_var, run_text):
+        return False
+    src_assignments = _extract_var_assignments_with_spans(src_var, run_text)
+    if len(src_assignments) != 1:
+        return False
+    _, src_assign_end, _ = src_assignments[0]
+
+    masked = _mask_shell_comments_and_single_quotes(run_text)
+    case_re = re.compile(
+        r'case\s+"\$' + re.escape(src_var) + r'"\s+in\b(.*?)\besac\b',
+        re.DOTALL,
+    )
+    case_matches = list(case_re.finditer(masked))
+    if len(case_matches) != 1:
+        return False
+    case_match = case_matches[0]
+    if src_assign_end >= case_match.start():
+        return False
+
+    body_start, body_end = case_match.span(1)
+    real_body = run_text[body_start:body_end]
+    masked_body = masked[body_start:body_end]
+    if re.search(r"\bcase\b", masked_body):
+        return False
+
+    first_terminator = masked_body.find(";;")
+    if first_terminator < 0:
+        return False
+    first_arm_real = real_body[:first_terminator]
+    if not re.match(r"^\s*''\|\*\[!0-9\]\*\)", first_arm_real):
+        return False
+    if re.search(rf"\$\{{?{re.escape(src_var)}\b", first_arm_real):
+        return False
+
+    validated_region_start = body_start + first_terminator + 2
+    return validated_region_start <= copy_start and copy_end <= body_end
+
+
+def _verify_pilot_var_allowlist(var_name, run_text, inherited_env, closed_tokens, allow_int_arith):
     """Verify every assignment to `var_name` in `run_text` is allow-listed.
 
     Returns a list of reason strings (empty when safe).
     """
     reasons = []
-    if var_name in step_env:
-        reasons.append(f"variable ${var_name} comes from step env without closed mapping")
-    if re.search(rf"\b(?:read|for)\s+{re.escape(var_name)}\b", run_text):
-        reasons.append(f"variable ${var_name} populated by read/for loop")
-    assignments = _extract_var_assignments(var_name, run_text)
+    if var_name in inherited_env:
+        reasons.append(f"variable ${var_name} comes from workflow/job/step env without closed mapping")
+    if _has_non_simple_var_mutation(var_name, run_text):
+        reasons.append(f"variable ${var_name} mutated via +=, read, for, let, or ((...))")
+    assignments = _extract_var_assignments_with_spans(var_name, run_text)
     if not assignments:
         reasons.append(f"variable ${var_name} has no local allowlisted assignment")
         return reasons
-    for rhs in assignments:
+    for assign_start, rhs_end, rhs in assignments:
         unquoted = rhs[1:-1] if (len(rhs) >= 2 and rhs[0] == rhs[-1] == "'") else rhs
         if unquoted in closed_tokens and "$" not in rhs and "`" not in rhs:
             continue
         if allow_int_arith and re.fullmatch(r"\$\(\([A-Za-z0-9_ +*/%-]+\)\)", rhs):
             continue
         src_match = re.fullmatch(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', rhs)
-        if src_match and _has_digit_only_case_guard(src_match.group(1), run_text):
+        if src_match and _is_strictly_digit_guarded_copy(
+            src_match.group(1), assign_start, rhs_end, run_text, inherited_env
+        ):
             continue
         reasons.append(f"variable ${var_name} assigned non-allowlisted RHS: {rhs}")
     return reasons
@@ -3380,37 +3483,58 @@ def pilot_gate_public_output_violations(text):
     """Structural YAML guard for public output surfaces in `.github/workflows/pilot-gate.yml`.
 
     Surfaces checked after parsing YAML (`yaml.safe_load`):
-      1. `post-pr-evidence.sh` steps: exact 10 families; body path must be a
-         literal `/tmp/*.md` written only by single-quoted `printf`/`echo`
-         whose interpolated variables come exclusively from closed token sets
-         or POSIX digit-validated `case` guards; no `cat`/`grep`/`tail`/`head`/
-         `sed`/`awk`/`cut` inside any `post-pr-evidence.sh` step.
+      1. PR evidence comments (`post-pr-evidence.sh` & `pr-evidence-comment.sh`):
+         zero direct references to `pr-evidence-comment.sh` anywhere; exact 10
+         `(body_path, family)` pairs; each evidence body file may appear ONLY
+         inside its owning `post-pr-evidence.sh` step on exactly two lines (one
+         single-line single-quoted truncating `printf`/`echo > <body_path>`
+         with closed-token or strictly digit-guarded variables, followed by one
+         `post-pr-evidence.sh <body_path> "<family>"` call); no `cat`/`grep`/
+         `tail`/`head`/`sed`/`awk`/`cut` inside any `post-pr-evidence.sh` step.
       2. `$GITHUB_STEP_SUMMARY`: no compound `{ ... } >> "$GITHUB_STEP_SUMMARY"`;
-         every write is a single-quoted `echo` or `printf` with closed-token,
-         arithmetic-integer, or digit-validated variables only.
-      3. `::error::` / `::warning::` / `::notice::`: single-quoted fixed literal
-         `echo '::...::...'` only; no variable or command interpolation.
-      4. `$GITHUB_ENV` & fixture `.env`/log echoes: `GITHUB_ENV` receives only
-         `cat /tmp/<allowed>.env >> "$GITHUB_ENV"`; no `echo`/`printf` to
-         `$GITHUB_ENV`; no stdout dump or non-quiet `grep` of `/tmp/*.env` or
-         `/tmp/*fixture*.log`.
+         every write is a single-line single-quoted `echo` or `printf` with
+         closed-token, arithmetic-integer, or strictly digit-guarded variables.
+      3. Workflow commands (`::error`, `::warning`, `::notice`, `::debug`,
+         `::group`, `::endgroup`, `::add-mask`, `::set-output`, `::save-state`,
+         `::stop-commands`, with or without `file=/line=/title=/name=` params):
+         every command must be a standalone single-quoted fixed literal
+         `echo`/`printf` of parameterless `::(error|warning|notice)::...` with
+         zero concatenation, `${{ ... }}` expressions, `%` format specifiers,
+         or trailing arguments. Fixed annotations with `file=/line=/title=`
+         parameters, an 11th evidence family, or a 5th job are intentionally
+         rejected as conscious friction requiring explicit guard review.
+      4. `$GITHUB_ENV`, `$GITHUB_OUTPUT`, dynamic indirection & fixture echoes:
+         `GITHUB_OUTPUT`/`GITHUB_STATE`/`GITHUB_PATH` forbidden; `eval`,
+         `${!var}`, `declare -n`, `printf -v`, `env:` aliases of GitHub command
+         files, command-substitution redirects, bare-variable `tee`, and
+         unallowlisted bare-variable shell redirects rejected; `GITHUB_ENV`
+         receives only `cat /tmp/<allowed>.env >> "$GITHUB_ENV"`; no stdout
+         dump or non-quiet `grep` of `/tmp/*.env` or `/tmp/*fixture*.log`.
 
     Known static-analysis blind spots (disclosed, not claimed covered):
       - Indirect scripts invoked from `run:` (`php ...`, `python3 ...`,
-        `bash ...`, composite actions) are not parsed by this YAML guard; a
-        script that itself writes to `$GITHUB_STEP_SUMMARY`, `$GITHUB_ENV`,
-        annotations, or PR comments would bypass workflow-level inspection.
-      - Dynamic command construction (`eval`, variable-held command names or
-        variable-held file paths such as `OUT=$GITHUB_STEP_SUMMARY; cat x >> "$OUT"`)
-        is not taint-tracked across arbitrary aliases.
+        `bash ...`, composite actions) inherit runner environment variables and
+        are not parsed by this YAML guard.
+      - Split-string or computed lookups that never spell the target token
+        contiguously and do not redirect through shell `>`/`>>`/`tee` (for
+        example `open(os.environ["GITHUB_" + "STEP_SUMMARY"], "a")` in inline
+        Python/PHP, or quote-split stdout prefixes such as `echo ':'':error::...'`)
+        are not statically detectable here.
       - Raw workflow job logs remain public on a public repository (including
-        runner-rendered step `env:` headers populated via `$GITHUB_ENV` and
-        stdout from helper scripts).
+        `tee` / `cat` / `head` stdout lines and runner-rendered step `env:`
+        headers populated via `$GITHUB_ENV`).
     """
     violations = []
     doc = _yaml_parser().safe_load(text)
     if not isinstance(doc, dict):
         return [("YAML_ROOT", "<document>", "pilot-gate.yml did not parse to a mapping")]
+
+    workflow_env = doc.get("env") if isinstance(doc.get("env"), dict) else {}
+    workflow_env_dump = _yaml_parser().safe_dump(workflow_env, allow_unicode=True)
+    if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(workflow_env_dump):
+        violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", "<workflow-env>", workflow_env_dump[:160]))
+    if _PILOT_GITHUB_ALIAS_ENV_RE.search(workflow_env_dump):
+        violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", "<workflow-env>", workflow_env_dump[:160]))
 
     jobs = doc.get("jobs") or {}
     if set(jobs.keys()) != set(_PILOT_EXPECTED_JOBS.keys()):
@@ -3442,16 +3566,73 @@ def pilot_gate_public_output_violations(text):
     for job_name, job_obj in jobs.items():
         if not isinstance(job_obj, dict):
             continue
+        job_env = job_obj.get("env") if isinstance(job_obj.get("env"), dict) else {}
+        job_env_dump = _yaml_parser().safe_dump(job_env, allow_unicode=True)
+        if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(job_env_dump):
+            violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", job_name, job_env_dump[:160]))
+        if _PILOT_GITHUB_ALIAS_ENV_RE.search(job_env_dump):
+            violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", job_name, job_env_dump[:160]))
+
         steps = job_obj.get("steps") or []
         for index, step in enumerate(steps):
             if not isinstance(step, dict):
                 continue
             step_label = f"{job_name}:{step.get('name') or f'step#{index}'}"
+            step_env = step.get("env") if isinstance(step.get("env"), dict) else {}
+            step_meta = {k: v for k, v in step.items() if k != "run"}
+            step_meta_dump = _yaml_parser().safe_dump(step_meta, allow_unicode=True)
+            if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(step_meta_dump):
+                violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", step_label, step_meta_dump[:160]))
+            if _PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE.search(step_meta_dump):
+                violations.append(("GITHUB_OUTPUT_FORBIDDEN", step_label, step_meta_dump[:160]))
+            elif _PILOT_GITHUB_ALIAS_ENV_RE.search(step_meta_dump):
+                violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", step_label, step_meta_dump[:160]))
+
+            for basename, owned_path in _PILOT_EVIDENCE_BODY_BASENAME_TO_PATH.items():
+                if owned_path in step_meta_dump or basename in step_meta_dump:
+                    violations.append(("EVIDENCE_BODY_FOREIGN_STEP", step_label, owned_path))
+
             run_text = step.get("run")
             if not isinstance(run_text, str):
                 continue
-            step_env = step.get("env") or {}
+
+            inherited_env = {}
+            inherited_env.update(workflow_env)
+            inherited_env.update(job_env)
+            inherited_env.update(step_env)
+
             logical = [(ln, line.strip()) for ln, line in _logical_lines(run_text) if line.strip()]
+            owned_body_path = None
+
+            # --- Surface 0: direct pr-evidence-comment.sh & dynamic indirection
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(line):
+                    violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", step_label, line[:160]))
+                if _PILOT_SHELL_EVAL_RE.search(line):
+                    violations.append(("DYNAMIC_SHELL_EVAL", step_label, line[:160]))
+                if _PILOT_VAR_INDIRECTION_RE.search(line):
+                    violations.append(("DYNAMIC_VAR_INDIRECTION", step_label, line[:160]))
+                if _PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE.search(line):
+                    violations.append(("GITHUB_OUTPUT_FORBIDDEN", step_label, line[:160]))
+                if "${{" in line and _PILOT_GITHUB_ALIAS_ENV_RE.search(line):
+                    violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", step_label, line[:160]))
+                if _PILOT_CMD_SUB_REDIRECT_RE.search(line):
+                    violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                if _PILOT_BARE_VAR_TEE_RE.search(line):
+                    violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                for redir_match in _PILOT_BARE_VAR_REDIRECT_RE.finditer(line):
+                    redir_var = redir_match.group(1) or redir_match.group(2)
+                    if redir_var in ("GITHUB_STEP_SUMMARY", "GITHUB_ENV"):
+                        continue
+                    expected_rhs = _PILOT_ALLOWED_LOCAL_REDIRECT_VARS.get(redir_var)
+                    if expected_rhs is None or redir_var in inherited_env or _has_non_simple_var_mutation(redir_var, run_text):
+                        violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                        continue
+                    local_assigns = _extract_var_assignments(redir_var, run_text)
+                    if local_assigns != [expected_rhs]:
+                        violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
 
             # --- Surface 1: post-pr-evidence.sh steps ------------------------
             if "post-pr-evidence.sh" in run_text:
@@ -3462,24 +3643,38 @@ def pilot_gate_public_output_violations(text):
                             step_label,
                             line[:160],
                         ))
-                post_lines = [line for _, line in logical if "post-pr-evidence.sh" in line]
-                if len(post_lines) != 1:
+                post_indexed = [
+                    (idx, line)
+                    for idx, (_, line) in enumerate(logical)
+                    if not line.startswith("#") and "post-pr-evidence.sh" in line
+                ]
+                if len(post_indexed) != 1:
                     violations.append((
                         "EVIDENCE_CALL_COUNT",
                         step_label,
-                        f"expected 1 post-pr-evidence.sh logical line, got {len(post_lines)}",
+                        f"expected 1 post-pr-evidence.sh logical line, got {len(post_indexed)}",
                     ))
                 else:
-                    call_match = _PILOT_POST_CALL_RE.fullmatch(post_lines[0])
+                    post_idx, post_line = post_indexed[0]
+                    call_match = _PILOT_POST_CALL_RE.fullmatch(post_line)
                     if not call_match:
                         violations.append((
                             "EVIDENCE_CALL_SHAPE",
                             step_label,
-                            post_lines[0][:160],
+                            post_line[:160],
                         ))
                     else:
                         body_path, family = call_match.group(1), call_match.group(2)
                         seen_families.append(family)
+                        if _PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY.get(body_path) != family:
+                            violations.append((
+                                "EVIDENCE_BODY_FAMILY_MISMATCH",
+                                step_label,
+                                f"{body_path} -> {family}",
+                            ))
+                        else:
+                            owned_body_path = body_path
+                        body_basename = body_path.rsplit("/", 1)[-1]
                         if re.search(r"[};)]\s*>>?\s*" + re.escape(body_path) + r"\b", run_text):
                             violations.append((
                                 "EVIDENCE_COMPOUND_REDIRECT",
@@ -3487,8 +3682,11 @@ def pilot_gate_public_output_violations(text):
                                 body_path,
                             ))
                         body_refs = [
-                            line for _, line in logical
-                            if body_path in line and line != post_lines[0] and not line.startswith("#")
+                            (idx, line)
+                            for idx, (_, line) in enumerate(logical)
+                            if not line.startswith("#")
+                            and idx != post_idx
+                            and (body_path in line or body_basename in line)
                         ]
                         if not body_refs:
                             violations.append((
@@ -3496,16 +3694,35 @@ def pilot_gate_public_output_violations(text):
                                 step_label,
                                 body_path,
                             ))
-                        for ref_line in body_refs:
+                        elif len(body_refs) > 1:
+                            violations.append((
+                                "EVIDENCE_BODY_WRITER",
+                                step_label,
+                                f"expected exactly 1 writer line for {body_path}, got {len(body_refs)}",
+                            ))
+                        for ref_idx, ref_line in body_refs:
+                            if ref_idx > post_idx:
+                                violations.append((
+                                    "EVIDENCE_BODY_WRITER",
+                                    step_label,
+                                    f"writer/reference after post-pr-evidence.sh: {ref_line[:120]}",
+                                ))
                             p_match = _PILOT_PRINTF_CALL_RE.fullmatch(ref_line)
                             e_match = _PILOT_ECHO_CALL_RE.fullmatch(ref_line)
                             if p_match and p_match.group(3) == body_path:
+                                fmt_text = p_match.group(1)
+                                if "\\n" in fmt_text[:-2]:
+                                    violations.append((
+                                        "EVIDENCE_BODY_WRITER",
+                                        step_label,
+                                        f"multi-line printf format forbidden: {ref_line[:120]}",
+                                    ))
                                 var_names = re.findall(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', p_match.group(2))
                                 for var_name in var_names:
                                     for reason in _verify_pilot_var_allowlist(
                                         var_name,
                                         run_text,
-                                        step_env,
+                                        inherited_env,
                                         _PILOT_EVIDENCE_CLOSED_TOKENS,
                                         allow_int_arith=False,
                                     ):
@@ -3523,6 +3740,21 @@ def pilot_gate_public_output_violations(text):
                                     ref_line[:160],
                                 ))
 
+            # Exclusive evidence-body ownership across ALL steps: no step may
+            # reference any evidence body file other than its own owned_body_path.
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                for basename, candidate_path in _PILOT_EVIDENCE_BODY_BASENAME_TO_PATH.items():
+                    if candidate_path == owned_body_path:
+                        continue
+                    if candidate_path in line or basename in line:
+                        violations.append((
+                            "EVIDENCE_BODY_FOREIGN_STEP",
+                            step_label,
+                            line[:160],
+                        ))
+
             # --- Surface 2: $GITHUB_STEP_SUMMARY -----------------------------
             if "GITHUB_STEP_SUMMARY" in run_text:
                 if re.search(r"[};)]\s*>>?\s*\"?\$GITHUB_STEP_SUMMARY\"?", run_text):
@@ -3539,12 +3771,19 @@ def pilot_gate_public_output_violations(text):
                     if s_echo:
                         continue
                     if s_printf:
+                        fmt_text = s_printf.group(1)
+                        if "\\n" in fmt_text[:-2]:
+                            violations.append((
+                                "SUMMARY_WRITER_SHAPE",
+                                step_label,
+                                f"multi-line summary printf forbidden: {line[:120]}",
+                            ))
                         var_names = re.findall(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', s_printf.group(2))
                         for var_name in var_names:
                             for reason in _verify_pilot_var_allowlist(
                                 var_name,
                                 run_text,
-                                step_env,
+                                inherited_env,
                                 _PILOT_SUMMARY_CLOSED_TOKENS,
                                 allow_int_arith=True,
                             ):
@@ -3560,18 +3799,24 @@ def pilot_gate_public_output_violations(text):
                             line[:160],
                         ))
 
-            # --- Surface 3: ::error:: / ::warning:: / ::notice:: -------------
-            for raw_line in run_text.splitlines():
-                stripped = raw_line.strip()
-                if stripped.startswith("#"):
+            # --- Surface 3: all workflow commands (::name:: / ::name params::)
+            for _, line in logical:
+                if line.startswith("#"):
                     continue
-                if "::error" in stripped or "::warning" in stripped or "::notice" in stripped:
-                    scrubbed = _PILOT_LITERAL_ANNOTATION_FRAGMENT_RE.sub("", stripped)
-                    if "::error" in scrubbed or "::warning" in scrubbed or "::notice" in scrubbed or not _PILOT_ANNOTATION_TOKEN_RE.search(stripped):
+                if _PILOT_WORKFLOW_CMD_TOKEN_RE.search(line):
+                    if "${{" in line:
                         violations.append((
                             "ANNOTATION_NON_LITERAL",
                             step_label,
-                            stripped[:160],
+                            line[:160],
+                        ))
+                        continue
+                    remainder = _PILOT_FIXED_WORKFLOW_CMD_SEGMENT_RE.sub(" ", line)
+                    if _PILOT_WORKFLOW_CMD_TOKEN_RE.search(remainder):
+                        violations.append((
+                            "ANNOTATION_NON_LITERAL",
+                            step_label,
+                            line[:160],
                         ))
 
             # --- Surface 4: $GITHUB_ENV & fixture .env / fixture.log echoes --
@@ -3707,6 +3952,237 @@ class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
         )
         codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env_echo)}
         self.assertIn("GITHUB_ENV_WRITER_SHAPE", codes_env)
+
+    def test_guard_workflow_commands_reject_concat_params_and_non_annotation_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        # Single-quoted fixed printf literal (no % format, no dynamic text) is accepted.
+        accepted_printf = base.replace(
+            anchor,
+            "            printf '::notice::doctor-portal-browser: fixed literal notice\\n'",
+            1,
+        )
+        self.assertEqual(pilot_gate_public_output_violations(accepted_printf), [])
+
+        rejected_mutations = [
+            "            echo '::error::fixed-prefix'\"$SECRET\"",
+            "            echo '::error::fixed-prefix'$SECRET",
+            "            echo '::error::fixed'; echo \"::error::$SECRET\"",
+            "            printf '::error::%s\\n' \"$SECRET\"",
+            "            echo '::error::${{ github.actor }}'",
+            "            echo \"::error file=foo.php,line=1::$SECRET\"",
+            "            echo '::error file=foo.php,line=1::fixed message'",
+            "            echo \"::warning title=leak::$SECRET\"",
+            "            echo \"::notice file=bar.php::$SECRET\"",
+            "            echo \"::debug::$SECRET\"",
+            "            echo \"::group::$SECRET\"",
+            "            echo \"::endgroup::$SECRET\"",
+            "            echo \"::add-mask::$SECRET\"",
+            "            echo \"::set-output name=leak::$SECRET\"",
+            "            echo \"::save-state name=leak::$SECRET\"",
+            "            echo \"::stop-commands::$SECRET\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_rejects_direct_pr_evidence_comment_calls_anywhere(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # 1. Direct call added in an arbitrary non-evidence step.
+        non_evidence_anchor = "          echo 'synthetic-seed: PASS' >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(non_evidence_anchor, base)
+        mutated_run = base.replace(
+            non_evidence_anchor,
+            non_evidence_anchor
+            + '\n          bash "$GITHUB_WORKSPACE/.github/scripts/pr-evidence-comment.sh" --marker pilot-extra --body-file /tmp/raw.md',
+            1,
+        )
+        codes_run = {code for code, _, _ in pilot_gate_public_output_violations(mutated_run)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_run)
+
+        # 2. Direct call replacing post-pr-evidence.sh inside an evidence step.
+        evidence_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(evidence_anchor, base)
+        mutated_replace = base.replace(
+            evidence_anchor,
+            '          bash "$GITHUB_WORKSPACE/.github/scripts/pr-evidence-comment.sh" --marker pilot-doctor-portal --body-file /tmp/doctor-portal-evidence.md',
+            1,
+        )
+        codes_replace = {code for code, _, _ in pilot_gate_public_output_violations(mutated_replace)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_replace)
+
+        # 3. Reference hidden in step env metadata.
+        env_anchor = "          FIXTURE_OUTCOME: ${{ steps.doctor_portal_fixture.outcome }}"
+        self.assertIn(env_anchor, base)
+        mutated_env = base.replace(
+            env_anchor,
+            env_anchor + "\n          COMMENT_HELPER: .github/scripts/pr-evidence-comment.sh",
+            1,
+        )
+        codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_env)
+
+    def test_guard_rejects_foreign_step_or_extra_line_writing_evidence_body(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # 1. Foreign step writing or appending to an evidence body path.
+        foreign_anchor = "          python3 bin/pilot-doctor-portal.py | tee /tmp/doctor-portal.log"
+        self.assertIn(foreign_anchor, base)
+        for foreign_write in (
+            "          echo 'pilot-doctor-portal: PASS' > /tmp/doctor-portal-evidence.md",
+            "          printf 'extra\\n' >> /tmp/resp-evidence.md",
+        ):
+            with self.subTest(foreign_write=foreign_write.strip()):
+                mutated_foreign = base.replace(foreign_anchor, foreign_anchor + "\n" + foreign_write, 1)
+                codes_foreign = {code for code, _, _ in pilot_gate_public_output_violations(mutated_foreign)}
+                self.assertIn("EVIDENCE_BODY_FOREIGN_STEP", codes_foreign)
+
+        # 2. Owning step appending or writing a second line to its own body path.
+        post_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(post_anchor, base)
+        mutated_extra_before = base.replace(
+            post_anchor,
+            "          echo 'pilot-doctor-portal: PASS' >> /tmp/doctor-portal-evidence.md\n" + post_anchor,
+            1,
+        )
+        codes_before = {code for code, _, _ in pilot_gate_public_output_violations(mutated_extra_before)}
+        self.assertIn("EVIDENCE_BODY_WRITER", codes_before)
+
+        mutated_after = base.replace(
+            post_anchor,
+            post_anchor + "\n          echo 'pilot-doctor-portal: PASS' > /tmp/doctor-portal-evidence.md",
+            1,
+        )
+        codes_after = {code for code, _, _ in pilot_gate_public_output_violations(mutated_after)}
+        self.assertIn("EVIDENCE_BODY_WRITER", codes_after)
+
+    def test_guard_rejects_eval_and_detectable_dynamic_github_file_redirection(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "          echo 'synthetic-seed: PASS' >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(anchor, base)
+
+        cases = [
+            ('          eval \'cat /tmp/seed.json >> "$GITHUB_STEP_SUMMARY"\'', "DYNAMIC_SHELL_EVAL"),
+            ('          target_var=GITHUB_STEP_SUMMARY\n          echo \'ok\' >> "${!target_var}"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          declare -n out_ref=GITHUB_ENV\n          echo "X=1" >> "$out_ref"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          printf -v dyn_target \'%s\' "/tmp/out"\n          echo \'ok\' >> "$dyn_target"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          echo "leak=1" >> "$GITHUB_OUTPUT"', "GITHUB_OUTPUT_FORBIDDEN"),
+            ('          OUT=/tmp/alias\n          echo \'ok\' >> "$OUT"', "DYNAMIC_REDIRECT_TARGET"),
+            ('          echo \'ok\' >> "$(printf /tmp/alias)"', "DYNAMIC_REDIRECT_TARGET"),
+            ('          OUT=/tmp/alias\n          echo \'ok\' | tee -a "$OUT"', "DYNAMIC_REDIRECT_TARGET"),
+        ]
+        for snippet, expected_code in cases:
+            with self.subTest(expected_code=expected_code, snippet=snippet.strip()):
+                mutated = base.replace(anchor, anchor + "\n" + snippet, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn(expected_code, codes)
+
+        env_anchor = "          SMOKE_OUTCOME: ${{ steps.workflow_smokes.outcome }}"
+        self.assertIn(env_anchor, base)
+        mutated_step_env_alias = base.replace(
+            env_anchor,
+            env_anchor + "\n          SUMMARY_ALIAS: ${{ env.GITHUB_STEP_SUMMARY }}",
+            1,
+        )
+        codes_alias = {code for code, _, _ in pilot_gate_public_output_violations(mutated_step_env_alias)}
+        self.assertIn("DYNAMIC_GITHUB_FILE_ALIAS", codes_alias)
+
+    def test_guard_rejects_numeric_case_reassignment_after_digit_check(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # Reproduce the exact case-branch reassignment bypass on `bytes` -> `safe_bytes`.
+        case_arm_anchor = (
+            "            *)\n"
+            "              if [ \"${#bytes}\" -le 10 ]; then\n"
+            "                safe_bytes=\"$bytes\""
+        )
+        self.assertIn(case_arm_anchor, base)
+        for reassign_stmt in (
+            '              bytes="$(head -n1 /tmp/raw.log)"',
+            '              export bytes="$(head -n1 /tmp/raw.log)"',
+            '              { bytes="$(head -n1 /tmp/raw.log)"; }',
+            '              bytes+="-leak"',
+        ):
+            with self.subTest(reassign_stmt=reassign_stmt.strip()):
+                mutated_reassign = base.replace(
+                    case_arm_anchor,
+                    "            *)\n"
+                    f"{reassign_stmt}\n"
+                    "              if [ \"${#bytes}\" -le 10 ]; then\n"
+                    "                safe_bytes=\"$bytes\"",
+                    1,
+                )
+                codes_reassign = {code for code, _, _ in pilot_gate_public_output_violations(mutated_reassign)}
+                self.assertIn("EVIDENCE_VAR_TAINTED", codes_reassign)
+                self.assertIn("SUMMARY_VAR_TAINTED", codes_reassign)
+
+        # Reject copying `$bytes` inside the non-digit rejection arm `''|*[!0-9]*)`.
+        reject_arm_anchor = (
+            "            ''|*[!0-9]*)\n"
+            "              safe_bytes=unavailable"
+        )
+        self.assertIn(reject_arm_anchor, base)
+        mutated_wrong_arm = base.replace(
+            reject_arm_anchor,
+            "            ''|*[!0-9]*)\n"
+            "              safe_bytes=\"$bytes\"",
+            1,
+        )
+        codes_wrong_arm = {code for code, _, _ in pilot_gate_public_output_violations(mutated_wrong_arm)}
+        self.assertIn("EVIDENCE_VAR_TAINTED", codes_wrong_arm)
+        self.assertIn("SUMMARY_VAR_TAINTED", codes_wrong_arm)
+
+        # Reject copying `$N` outside `case "$N" in ... esac`.
+        audit_anchor = "          printf 'audit-verification: PASS chain_verify=OK rows=%s\\n' \"$audit_rows\" >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(audit_anchor, base)
+        mutated_outside_case = base.replace(
+            audit_anchor,
+            "          audit_rows=\"$N\"\n" + audit_anchor,
+            1,
+        )
+        codes_outside = {code for code, _, _ in pilot_gate_public_output_violations(mutated_outside_case)}
+        self.assertIn("SUMMARY_VAR_TAINTED", codes_outside)
+
+    def test_guard_conscious_friction_rejects_extra_evidence_family_and_extra_job(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # Conscious friction: an 11th evidence family requires explicit guard review.
+        day2_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md "pilot-day2-workflows"'
+        self.assertIn(day2_anchor, base)
+        extra_family_step = (
+            day2_anchor
+            + "\n      - name: Unreviewed 11th evidence family\n"
+            + "        run: |\n"
+            + "          echo 'pilot-eleventh: PASS' > /tmp/eleventh-evidence.md\n"
+            + '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/eleventh-evidence.md "pilot-eleventh"'
+        )
+        codes_family = {
+            code for code, _, _ in pilot_gate_public_output_violations(base.replace(day2_anchor, extra_family_step, 1))
+        }
+        self.assertIn("EVIDENCE_BODY_FAMILY_MISMATCH", codes_family)
+        self.assertIn("EVIDENCE_FAMILY_SET", codes_family)
+
+        # Conscious friction: a 5th job in pilot-gate.yml requires explicit guard review.
+        extra_job_yaml = (
+            base
+            + "\n  extra-unreviewed-job:\n"
+            + "    runs-on: ubuntu-24.04\n"
+            + "    steps:\n"
+            + "      - run: echo ok\n"
+        )
+        codes_job = {code for code, _, _ in pilot_gate_public_output_violations(extra_job_yaml)}
+        self.assertIn("JOB_SET", codes_job)
 
 
 
