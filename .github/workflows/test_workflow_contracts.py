@@ -3324,12 +3324,33 @@ _PILOT_WORKFLOW_CMD_RAW_RE = re.compile(
     r"::(" + "|".join(_PILOT_WORKFLOW_CMD_NAMES) + r")\b",
     re.IGNORECASE,
 )
-# Intentional friction: only lowercase fixed single-quoted ::(error|warning|notice)::
-# literals (matching the 43 existing annotations in pilot-gate.yml) are exempted;
+# Intentional friction: only lowercase standalone fixed single-quoted
+# ::(error|warning|notice):: literals (matching the 43 existing annotations in
+# pilot-gate.yml, plus newline-terminated single-quoted printf) are exempted;
 # uppercase/mixed-case fixed literals (e.g. echo '::ERROR::fixed') are rejected.
-_PILOT_FIXED_WORKFLOW_CMD_SEGMENT_RE = re.compile(
-    r"""(?:^|(?:&&|\|\||[|;(])\s*|\{\s*)(?:echo\s+'(::(?:error|warning|notice)::[^'\r\n]+)'|printf\s+'(::(?:error|warning|notice)::[^'%\r\n\\]+(?:\\n)?)')(?=\s*(?:$|(?:&&|\|\||[;)}])))"""
+_PILOT_STANDALONE_FIXED_ECHO_PRINTF_RE = re.compile(
+    r"(?:echo[ \t]+'(::(?:error|warning|notice)::[^'\r\n]+)'"
+    r"|printf[ \t]+'(::(?:error|warning|notice)::[^'%\r\n\\]+\\n)')"
+    r"(?=[ \t]*(?:$|&&|\|\||[;\}])|[ \t]+#)"
 )
+_PILOT_SHELL_CONTROL_KW_RE = re.compile(
+    r"(?:then|do|else|elif|if|while|until)(?=[ \t])"
+)
+_PILOT_SHELL_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PILOT_ANSIC_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "e": "\x1b",
+    "E": "\x1b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+}
 # Runner internal ##[command] syntax (ActionCommand.TryParse matches IndexOf("##[")
 # anywhere on a line, dispatching commands with OrdinalIgnoreCase) and Azure-inherited
 # ##vso[...] syntax, rejected conservatively (including fixed ##[group] markers).
@@ -3367,89 +3388,596 @@ def _iter_yaml_strings(node):
         yield node
 
 
-_PILOT_HEREDOC_OP_RE = re.compile(
-    r"<<(-?)\s*(?:\\?([A-Za-z_][A-Za-z0-9_-]*)|'([^'\r\n]+)'|\"([^\"\r\n]+)\")"
-)
+def _is_shell_word_boundary(line, start_idx, end_idx):
+    before_ok = start_idx == 0 or line[start_idx - 1] in " \t|&;(){}"
+    after_ok = end_idx == len(line) or line[end_idx] in " \t|&;()#"
+    return before_ok and after_ok
 
 
-def _non_comment_physical_lines(run_text):
-    """Yield stripped executable/data lines in `run_text`, including heredoc and multi-line quote bodies."""
-    heredoc_delims = []
-    quote_char = None
-
-    def _advance_line(line, start_idx, qchar):
-        idx = start_idx
-        length = len(line)
-        while idx < length:
-            ch = line[idx]
-            if qchar == "'":
-                if ch == "'":
-                    qchar = None
-                idx += 1
-            elif qchar == '"':
-                if ch == "\\" and idx + 1 < length:
-                    idx += 2
-                    continue
-                if ch == '"':
-                    qchar = None
-                idx += 1
-            else:
-                if ch == "\\" and idx + 1 < length:
-                    idx += 2
-                    continue
-                if ch in ("'", '"'):
-                    qchar = ch
+def _parse_heredoc_delimiter(line, start_idx):
+    """Parse a Bash heredoc delimiter word starting at `start_idx`, applying Bash quote removal."""
+    idx = start_idx
+    length = len(line)
+    while idx < length and line[idx] in " \t":
+        idx += 1
+    if idx >= length or line[idx] in "|&;()<>#":
+        return None
+    word_start = idx
+    chars = []
+    while idx < length:
+        ch = line[idx]
+        if ch in " \t|&;()<>":
+            break
+        if ch == "$" and idx + 1 < length and line[idx + 1] == "'":
+            idx += 2
+            while idx < length and line[idx] != "'":
+                if line[idx] == "\\" and idx + 1 < length:
+                    esc = line[idx + 1]
+                    if esc in _PILOT_ANSIC_ESCAPES:
+                        chars.append(_PILOT_ANSIC_ESCAPES[esc])
+                        idx += 2
+                    elif (
+                        esc == "x"
+                        and idx + 3 < length
+                        and all(c in "0123456789abcdefABCDEF" for c in line[idx + 2 : idx + 4])
+                    ):
+                        chars.append(chr(int(line[idx + 2 : idx + 4], 16)))
+                        idx += 4
+                    else:
+                        chars.append(esc)
+                        idx += 2
+                else:
+                    chars.append(line[idx])
                     idx += 1
-                    continue
-                if ch == "#" and (idx == 0 or line[idx - 1] in " \t;|&()"):
-                    break
-                if (
-                    ch == "<"
-                    and line[idx : idx + 2] == "<<"
-                    and line[idx : idx + 3] != "<<<"
-                    and (idx == 0 or line[idx - 1] != "<")
-                ):
-                    match = _PILOT_HEREDOC_OP_RE.match(line, idx)
-                    if match:
-                        heredoc_delims.append(
-                            match.group(2) or match.group(3) or match.group(4)
-                        )
-                        idx = match.end()
-                        continue
+            if idx < length and line[idx] == "'":
                 idx += 1
-        return qchar
+            continue
+        if ch == "'":
+            idx += 1
+            while idx < length and line[idx] != "'":
+                chars.append(line[idx])
+                idx += 1
+            if idx < length and line[idx] == "'":
+                idx += 1
+            continue
+        if ch == '"':
+            idx += 1
+            while idx < length and line[idx] != '"':
+                if line[idx] == "\\" and idx + 1 < length and line[idx + 1] in '"\\$`':
+                    chars.append(line[idx + 1])
+                    idx += 2
+                else:
+                    chars.append(line[idx])
+                    idx += 1
+            if idx < length and line[idx] == '"':
+                idx += 1
+            continue
+        if ch == "\\":
+            if idx + 1 < length:
+                chars.append(line[idx + 1])
+                idx += 2
+            else:
+                idx += 1
+            continue
+        chars.append(ch)
+        idx += 1
+    if idx == word_start:
+        return None
+    return "".join(chars), idx
 
-    for raw_line in run_text.splitlines():
+
+def _advance_shell_line(raw_line, ctx_stack, pending_heredocs):
+    """Advance `ctx_stack` (`[kind, case_depth]`) and `pending_heredocs` across `raw_line`."""
+    idx = 0
+    length = len(raw_line)
+    while idx < length:
+        top = ctx_stack[-1][0] if ctx_stack else None
+        ch = raw_line[idx]
+        if top == "'":
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+        elif top == "$'":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+        elif top == '"':
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if raw_line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if raw_line[idx : idx + 2] == "$(":
+                ctx_stack.append(["$(", 0])
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == '"':
+                ctx_stack.pop()
+            idx += 1
+        elif top == "`":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.pop()
+            idx += 1
+        elif top in ("$((", "arith_("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["arith_(", 0])
+                idx += 1
+                continue
+            if raw_line[idx : idx + 2] == "))" and top == "$((":
+                ctx_stack.pop()
+                idx += 2
+                continue
+            if ch == ")" and top == "arith_(":
+                ctx_stack.pop()
+            idx += 1
+        else:
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if raw_line[idx : idx + 2] == "$'":
+                ctx_stack.append(["$'", 0])
+                idx += 2
+                continue
+            if ch in ("'", '"'):
+                ctx_stack.append([ch, 0])
+                idx += 1
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == "#" and (idx == 0 or raw_line[idx - 1] in " \t|&;()"):
+                return True
+            if raw_line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if raw_line[idx : idx + 2] in ("$(", "<(", ">("):
+                ctx_stack.append([raw_line[idx : idx + 2], 0])
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["(", 0])
+                idx += 1
+                continue
+            if ch == ")" and top in ("$(", "<(", ">(", "("):
+                if ctx_stack[-1][1] == 0:
+                    ctx_stack.pop()
+                idx += 1
+                continue
+            if (
+                ch == "<"
+                and raw_line[idx : idx + 2] == "<<"
+                and raw_line[idx : idx + 3] != "<<<"
+                and (idx == 0 or raw_line[idx - 1] != "<")
+            ):
+                strip_tabs = raw_line[idx : idx + 3] == "<<-"
+                op_end = idx + (3 if strip_tabs else 2)
+                parsed = _parse_heredoc_delimiter(raw_line, op_end)
+                if parsed is not None:
+                    delim, next_idx = parsed
+                    pending_heredocs.append((delim, strip_tabs))
+                    idx = next_idx
+                    continue
+            if top in ("$(", "<(", ">(", "("):
+                word_m = _PILOT_SHELL_WORD_RE.match(raw_line, idx)
+                if word_m and _is_shell_word_boundary(raw_line, idx, word_m.end()):
+                    word = word_m.group(0)
+                    if word == "case":
+                        ctx_stack[-1][1] += 1
+                    elif word == "esac" and ctx_stack[-1][1] > 0:
+                        ctx_stack[-1][1] -= 1
+                    idx = word_m.end()
+                    continue
+            idx += 1
+    return False
+
+
+def _scan_run_units(run_text):
+    """Classify LF-delimited lines of `run_text` into `('payload' | 'code_top' | 'code_nested', line)`.
+
+    Splits on `\\n` (preserving `\\r` so `EOF\\r` does not match `EOF`) and matches
+    heredoc terminators with exact Bash semantics (`raw_line == delim` for `<<`,
+    `raw_line.lstrip('\\t') == delim` for `<<-`). Unterminated heredocs leave
+    remaining lines classified as `'payload'` so they are scanned with
+    `allow_fixed_echo=False` rather than skipped.
+    """
+    if not run_text:
+        return []
+    body = run_text[:-1] if run_text.endswith("\n") else run_text
+    raw_lines = body.split("\n")
+    ctx_stack = []
+    pending_heredocs = []
+    active_heredocs = []
+    units = []
+    prev_continued_nested = False
+    prev_continued_after_pipe = False
+
+    for raw_line in raw_lines:
+        if active_heredocs:
+            delim, strip_tabs = active_heredocs[0]
+            candidate = raw_line.lstrip("\t") if strip_tabs else raw_line
+            if candidate == delim:
+                active_heredocs.pop(0)
+            else:
+                units.append(("payload", raw_line))
+            continue
+
+        entry_top = (
+            len(ctx_stack) == 0
+            and not prev_continued_nested
+            and not prev_continued_after_pipe
+        )
         stripped = raw_line.strip()
-        if heredoc_delims:
-            if stripped == heredoc_delims[0]:
-                heredoc_delims.pop(0)
-            elif stripped:
-                yield stripped
+        if len(ctx_stack) == 0 and (not stripped or stripped.startswith("#")) and not prev_continued_nested:
+            if pending_heredocs:
+                active_heredocs.extend(pending_heredocs)
+                pending_heredocs.clear()
+            prev_continued_after_pipe = False
             continue
-        if quote_char is not None:
-            if stripped:
-                yield stripped
-            quote_char = _advance_line(raw_line, 0, quote_char)
-            continue
-        if not stripped or stripped.startswith("#"):
-            continue
-        yield stripped
-        quote_char = _advance_line(raw_line, 0, None)
+
+        if entry_top:
+            units.append(("code_top", stripped))
+        elif stripped:
+            if ctx_stack and ctx_stack[-1][0] in ("$(", "<(", ">(", "(") and stripped.startswith("#"):
+                continue
+            units.append(("code_nested", stripped))
+
+        ended_in_comment = _advance_shell_line(raw_line, ctx_stack, pending_heredocs)
+        trailing_bs = len(raw_line) - len(raw_line.rstrip("\\"))
+        top_after = ctx_stack[-1][0] if ctx_stack else None
+        continues = (
+            not ended_in_comment
+            and top_after not in ("'", "$'")
+            and trailing_bs % 2 == 1
+        )
+        if continues:
+            before_bs = raw_line[:-1].rstrip(" \t")
+            prev_continued_after_pipe = (
+                before_bs.endswith("|") and not before_bs.endswith("||")
+            ) or before_bs.endswith("|&")
+            prev_continued_nested = len(ctx_stack) > 0
+        else:
+            prev_continued_after_pipe = False
+            prev_continued_nested = False
+            if pending_heredocs:
+                active_heredocs.extend(pending_heredocs)
+                pending_heredocs.clear()
+    return units
 
 
-def _elided_backslash_continuation_lines(run_text):
-    """Join non-comment trailing-backslash lines without inserting spaces."""
-    buf = ""
-    for stripped in _non_comment_physical_lines(run_text):
-        if stripped.endswith("\\"):
-            buf += stripped[:-1]
+def _strip_standalone_fixed_workflow_commands(line):
+    """Mask approved standalone top-level fixed single-quoted `echo`/`printf` notices only.
+
+    Never masks inside quotes (`'...'`, `"..."`, `$'...'`), command substitutions
+    (`$(...)`, backticks), process substitutions (`<(...)`, `>(...)`), subshells
+    (`(...)`), pipelines (`|`, `|&`), redirections (`>`, `<`), or piped/redirected
+    `{ ... }` brace groups.
+    """
+    idx = 0
+    length = len(line)
+    ctx_stack = []
+    brace_stack = []
+    piped_or_redirected_braces = set()
+    next_brace_id = 0
+    candidate_spans = []
+    at_cmd_start = True
+
+    while idx < length:
+        top = ctx_stack[-1][0] if ctx_stack else None
+        ch = line[idx]
+        if top == "'":
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
             continue
-        buf += stripped
-        yield buf
-        buf = ""
-    if buf:
-        yield buf
+        if top == "$'":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top == '"':
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if line[idx : idx + 2] == "$(":
+                ctx_stack.append(["$(", 0])
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == '"':
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top == "`":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top in ("$((", "arith_("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["arith_(", 0])
+                idx += 1
+                continue
+            if line[idx : idx + 2] == "))" and top == "$((":
+                ctx_stack.pop()
+                idx += 2
+                continue
+            if ch == ")" and top == "arith_(":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top in ("$(", "<(", ">(", "("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if line[idx : idx + 2] == "$'":
+                ctx_stack.append(["$'", 0])
+                idx += 2
+                continue
+            if ch in ("'", '"'):
+                ctx_stack.append([ch, 0])
+                idx += 1
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if line[idx : idx + 2] in ("$(", "<(", ">("):
+                ctx_stack.append([line[idx : idx + 2], 0])
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["(", 0])
+                idx += 1
+                continue
+            if ch == ")":
+                if ctx_stack[-1][1] == 0:
+                    ctx_stack.pop()
+                idx += 1
+                continue
+            word_m = _PILOT_SHELL_WORD_RE.match(line, idx)
+            if word_m and _is_shell_word_boundary(line, idx, word_m.end()):
+                word = word_m.group(0)
+                if word == "case":
+                    ctx_stack[-1][1] += 1
+                elif word == "esac" and ctx_stack[-1][1] > 0:
+                    ctx_stack[-1][1] -= 1
+                idx = word_m.end()
+                continue
+            idx += 1
+            continue
+
+        if ch in " \t":
+            idx += 1
+            continue
+        if ch == "#" and (idx == 0 or line[idx - 1] in " \t|&;()"):
+            break
+        if ch == ";":
+            at_cmd_start = True
+            idx += 1
+            continue
+        if line[idx : idx + 2] in ("&&", "||"):
+            at_cmd_start = True
+            idx += 2
+            continue
+        if ch == "|":
+            at_cmd_start = False
+            idx += 2 if line[idx : idx + 2] == "|&" else 1
+            continue
+        if ch == "&":
+            at_cmd_start = False
+            idx += 1
+            continue
+        if ch == "{" and at_cmd_start and (idx + 1 == length or line[idx + 1] in " \t"):
+            brace_stack.append(next_brace_id)
+            next_brace_id += 1
+            at_cmd_start = True
+            idx += 1
+            continue
+        if ch == "}" and brace_stack:
+            bid = brace_stack.pop()
+            rest = line[idx + 1 :].lstrip(" \t")
+            if (rest.startswith("|") and not rest.startswith("||")) or re.match(r"^(?:\d*[<>]|&>)", rest):
+                piped_or_redirected_braces.add(bid)
+            at_cmd_start = False
+            idx += 1
+            continue
+
+        if at_cmd_start:
+            kw_m = _PILOT_SHELL_CONTROL_KW_RE.match(line, idx)
+            if kw_m and (idx == 0 or not (line[idx - 1].isalnum() or line[idx - 1] == "_")):
+                idx = kw_m.end()
+                at_cmd_start = True
+                continue
+            fixed_m = _PILOT_STANDALONE_FIXED_ECHO_PRINTF_RE.match(line, idx)
+            if fixed_m:
+                literal = fixed_m.group(1) or fixed_m.group(2)
+                body = literal.split("::", 2)[2]
+                if not (_PILOT_WORKFLOW_CMD_RAW_RE.search(body) or _PILOT_HASH_BRACKET_CMD_RE.search(body)):
+                    candidate_spans.append((idx, fixed_m.end(), tuple(brace_stack)))
+                    idx = fixed_m.end()
+                    at_cmd_start = False
+                    continue
+
+        at_cmd_start = False
+        if ch == "\\" and idx + 1 < length:
+            idx += 2
+            continue
+        if line[idx : idx + 2] == "$'":
+            ctx_stack.append(["$'", 0])
+            idx += 2
+            continue
+        if ch in ("'", '"'):
+            ctx_stack.append([ch, 0])
+            idx += 1
+            continue
+        if ch == "`":
+            ctx_stack.append(["`", 0])
+            idx += 1
+            continue
+        if line[idx : idx + 3] == "$((":
+            ctx_stack.append(["$((", 0])
+            idx += 3
+            continue
+        if line[idx : idx + 2] in ("$(", "<(", ">("):
+            ctx_stack.append([line[idx : idx + 2], 0])
+            idx += 2
+            continue
+        if ch == "(":
+            ctx_stack.append(["(", 0])
+            idx += 1
+            continue
+        idx += 1
+
+    chars = list(line)
+    for start, end, enclosing_braces in candidate_spans:
+        if any(bid in piped_or_redirected_braces for bid in enclosing_braces):
+            continue
+        for pos in range(start, end):
+            chars[pos] = " "
+    return "".join(chars)
+
+
+def _has_piped_compound_or_captured_fn_workflow_cmd(run_text, units):
+    """Return offending snippet if a workflow-command token sits inside a piped/redirected compound block or captured/piped function."""
+    if not (_PILOT_WORKFLOW_CMD_RAW_RE.search(run_text) or _PILOT_HASH_BRACKET_CMD_RE.search(run_text)):
+        return None
+
+    open_blocks = []
+    close_for_open = {"{": "}", "if": "fi", "for": "done", "while": "done", "until": "done", "case": "esac"}
+    token_re = re.compile(r"(?:\{|\}|\b(?:if|fi|for|while|until|done|case|esac)\b)")
+    for kind, text_line in units:
+        line_has_cmd = bool(
+            _PILOT_WORKFLOW_CMD_RAW_RE.search(text_line)
+            or _PILOT_HASH_BRACKET_CMD_RE.search(text_line)
+        )
+        if kind != "code_top":
+            if line_has_cmd:
+                for blk in open_blocks:
+                    blk[1] = True
+            continue
+        masked = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", lambda m: " " * len(m.group(0)), text_line)
+        masked = re.sub(r"(?:^|[ \t|&;()])#.*$", "", masked)
+        for tm in token_re.finditer(masked):
+            tok = tm.group(0)
+            if tok in close_for_open:
+                if tok == "{":
+                    after = masked[tm.end() :]
+                    if after and after[0] not in " \t":
+                        continue
+                open_blocks.append([close_for_open[tok], line_has_cmd])
+            elif tok in ("}", "fi", "done", "esac"):
+                for b_idx in range(len(open_blocks) - 1, -1, -1):
+                    if open_blocks[b_idx][0] == tok:
+                        _, blk_has_cmd = open_blocks.pop(b_idx)
+                        has_any = blk_has_cmd or line_has_cmd
+                        rest = masked[tm.end() :].lstrip(" \t")
+                        if has_any and (
+                            (rest.startswith("|") and not rest.startswith("||"))
+                            or re.match(r"^(?:\d*[<>]|&>)", rest)
+                        ):
+                            return text_line[:160]
+                        break
+        if line_has_cmd:
+            for blk in open_blocks:
+                blk[1] = True
+
+    fn_def_re = re.compile(
+        r"(?:^|[;\n{])[ \t]*(?:function[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\(\))?[ \t]*\{",
+        re.MULTILINE,
+    )
+    fn_bodies = {}
+    fn_spans = {}
+    for fm in fn_def_re.finditer(run_text):
+        fname = fm.group(1)
+        brace_idx = fm.end() - 1
+        depth = 0
+        end_idx = len(run_text)
+        pos = brace_idx
+        while pos < len(run_text):
+            if run_text[pos] == "'":
+                end_q = run_text.find("'", pos + 1)
+                pos = (end_q + 1) if end_q != -1 else len(run_text)
+                continue
+            if run_text[pos] == "{":
+                depth += 1
+            elif run_text[pos] == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = pos + 1
+                    break
+            pos += 1
+        fn_bodies[fname] = run_text[brace_idx:end_idx]
+        fn_spans[fname] = (fm.start(), end_idx)
+
+    tainted_fns = {
+        fname
+        for fname, body in fn_bodies.items()
+        if _PILOT_WORKFLOW_CMD_RAW_RE.search(body) or _PILOT_HASH_BRACKET_CMD_RE.search(body)
+    }
+    changed = True
+    while changed and tainted_fns:
+        changed = False
+        for fname, body in fn_bodies.items():
+            if fname in tainted_fns:
+                continue
+            if any(re.search(r"\b" + re.escape(tf) + r"\b", body) for tf in tainted_fns):
+                tainted_fns.add(fname)
+                changed = True
+
+    nested_lines = [line for kind, line in units if kind == "code_nested"]
+    for fname in tainted_fns:
+        span_start, span_end = fn_spans[fname]
+        outside = run_text[:span_start] + "\n" + run_text[span_end:]
+        fn_call_pat = re.compile(
+            r"(?:\$\([^)\n]*\b" + re.escape(fname) + r"\b"
+            r"|`[^`\n]*\b" + re.escape(fname) + r"\b"
+            r"|[<>]\([^)\n]*\b" + re.escape(fname) + r"\b"
+            r"|\b" + re.escape(fname) + r"\b[^\n;|&]*?(?:\|(?!\|)|\d*>>?|&>))"
+        )
+        m_call = fn_call_pat.search(outside)
+        if m_call:
+            return m_call.group(0)[:160]
+        for nline in nested_lines:
+            if re.search(r"\b" + re.escape(fname) + r"\b", nline):
+                return nline[:160]
+    return None
 
 
 def _has_unapproved_workflow_command(line, *, allow_fixed_echo=True):
@@ -3461,18 +3989,7 @@ def _has_unapproved_workflow_command(line, *, allow_fixed_echo=True):
     if "${{" in line:
         return True
 
-    if allow_fixed_echo:
-        def _strip_approved_fixed_segment(match):
-            literal = match.group(1) or match.group(2)
-            body = literal.split("::", 2)[2]
-            if _PILOT_WORKFLOW_CMD_RAW_RE.search(body) or _PILOT_HASH_BRACKET_CMD_RE.search(body):
-                return match.group(0)
-            return " " * len(match.group(0))
-
-        remainder = _PILOT_FIXED_WORKFLOW_CMD_SEGMENT_RE.sub(_strip_approved_fixed_segment, line)
-    else:
-        remainder = line
-
+    remainder = _strip_standalone_fixed_workflow_commands(line) if allow_fixed_echo else line
     if not _PILOT_WORKFLOW_CMD_RAW_RE.search(remainder):
         return False
 
@@ -3645,7 +4162,12 @@ def _verify_pilot_var_allowlist(var_name, run_text, inherited_env, closed_tokens
 
 
 def pilot_gate_public_output_violations(text):
-    r"""Structural YAML guard for public output surfaces in `.github/workflows/pilot-gate.yml`.
+    r"""Static regression tripwire for public output surfaces in `.github/workflows/pilot-gate.yml`.
+
+    IMPORTANT SCOPE NOTE: This guard is a static REGRESSION tripwire against
+    accidental reintroduction of untrusted/dynamic data on public GitHub output
+    surfaces in `pilot-gate.yml`. It is NOT a security boundary and NOT a proof
+    of absence of leaks.
 
     Surfaces checked after parsing YAML (`yaml.safe_load`):
       1. PR evidence comments (`post-pr-evidence.sh` & `pr-evidence-comment.sh`):
@@ -3661,20 +4183,30 @@ def pilot_gate_public_output_violations(text):
          closed-token, arithmetic-integer, or strictly digit-guarded variables.
       3. Workflow commands (`::error`, `::warning`, `::notice`, `::debug`,
          `::group`, `::endgroup`, `::add-mask`, `::set-output`, `::save-state`,
-         `::stop-commands`, with or without `file=/line=/title=/name=` params):
-         detected wherever `::<name>` appears (including after `\n`/`\r`/`\t`/
-         hex/octal escapes, `printf` format specifiers, `${VAR}`/`$VAR`/`$(...)`
-         expansions, `$'...'` ANSI-C strings, here-strings/here-docs, and inline
-         `cat`/`tee`/`sed`/`awk`/`python3 -c`/`php -r` statements), excluding
-         only real PHP `Class::member` / `\Ns\Class::member` scope-resolution
-         tokens whose left side is a genuine class identifier path (after
-         neutralising escapes, `printf` formats, and `$` expansions) and whose
-         right side has no workflow-command `::` delimiter. Every workflow
-         command must be a standalone single-quoted fixed literal `echo`/`printf`
-         of parameterless `::(error|warning|notice)::...`. Fixed annotations
-         with `file=/line=/title=` parameters, an 11th evidence family, or a
-         5th job are intentionally rejected as conscious friction requiring
-         explicit guard review.
+         `::stop-commands`, case-insensitively, plus `##[...]` and `##vso[...]`):
+         detected across `run:` steps and non-`run` YAML string keys/values
+         (including workflow/job/step `env:`, `name:`, `with:`), excluding only
+         real PHP `Class::member` / `\Ns\Class::member` scope-resolution tokens
+         whose left side is a genuine class identifier path (after neutralising
+         escapes, `printf` formats, and `$` expansions) and whose right side has
+         no workflow-command `::` delimiter. Fixed-literal exemption applies
+         ONLY to standalone top-level simple-command single-quoted lowercase
+         `echo '::(error|warning|notice)::...'` or newline-terminated
+         `printf '::(error|warning|notice)::...\n'` at top-level statement
+         boundaries (`;`, `&&`, `||`, unpiped/unredirected `{ `, or shell
+         control keywords `if`/`then`/`else`/`elif`/`do`/`while`/`until`) —
+         NEVER inside `$(...)`, backticks, `<(...)`, `>(...)`, subshells `(...)`,
+         enclosing quotes, pipelines (`|`/`|&`), redirections (`>`/`<`),
+         piped/redirected compound blocks, functions captured in substitutions
+         or pipelines, heredoc bodies, or non-`run` YAML strings. Heredocs use
+         Bash delimiter quote removal (`<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF`,
+         `<<$'EOF'`, mixed quotes, multiple heredocs per line, ignoring `<<` in
+         quotes and `<<<` here-strings) and exact LF-line terminator matching
+         (`raw_line == delim` for `<<`, `raw_line.lstrip('\t') == delim` for
+         `<<-`, preserving `\r` so `EOF `, `EOF\r`, `EOF\u00a0`, leading spaces
+         on `<<` or `<<-`, and case mismatches do not terminate); heredoc
+         payload lines (including `#`-leading lines and unterminated heredoc
+         bodies) are scanned with `allow_fixed_echo=False`.
       4. `$GITHUB_ENV`, `$GITHUB_OUTPUT`, dynamic indirection & fixture echoes:
          `GITHUB_OUTPUT`/`GITHUB_STATE`/`GITHUB_PATH` forbidden; `eval`,
          `${!var}`, `declare -n`, `printf -v`, `env:` aliases of GitHub command
@@ -3697,9 +4229,16 @@ def pilot_gate_public_output_violations(text):
         `open(os.environ["GITHUB_" + "STEP_SUMMARY"], "a")` in inline
         Python/PHP), as well as whole-command execution via a shell variable
         (`$CMD`) without `eval`, are not statically detectable here.
+      - Multi-statement file-descriptor plumbing (`exec > /tmp/file` / `exec 3>&1`
+        or background FIFO co-processes) that diverts stdout of a standalone
+        fixed `echo '::error::...'` across separate statements and later
+        concatenates it with dynamic data via `paste`/`tr` is not tracked across
+        statements (steps such as `Restore Drill` legitimately redirect whole
+        step logs via `exec > >(tee -i /tmp/restore.log) 2>&1`).
       - Intentional friction: fixed single-quoted uppercase/mixed-case
-        `::ERROR::`/`::Error::` literals and fixed `##[group]`/`##[...]`
-        markers are rejected unless explicitly approved in a future PR.
+        `::ERROR::`/`::Error::` literals, fixed annotations with `file=/line=/title=`
+        parameters, fixed `##[group]`/`##[...]` markers, an 11th evidence family,
+        or a 5th job are rejected unless explicitly reviewed and updated.
       - Raw workflow job logs remain public on a public repository (including
         `tee` / `cat` / `head` stdout lines and runner-rendered step `env:`
         headers populated via `$GITHUB_ENV`).
@@ -3995,19 +4534,60 @@ def pilot_gate_public_output_violations(text):
                         ))
 
             # --- Surface 3: all workflow commands (::name::, ##[, ##vso[) ----
-            surface3_lines = [line for _, line in logical if not line.startswith("#")]
-            for phys_line in _non_comment_physical_lines(run_text):
-                surface3_lines.append(phys_line)
-            for joined_line in _elided_backslash_continuation_lines(run_text):
-                if joined_line:
-                    surface3_lines.append(joined_line)
-            for candidate_line in dict.fromkeys(surface3_lines):
-                if _has_unapproved_workflow_command(candidate_line):
+            units = _scan_run_units(run_text)
+            surface3_candidates = []
+            elided_buf = ""
+            elided_allow = True
+            spaced_buf = ""
+            spaced_allow = True
+            for kind, unit_line in units:
+                allow_fixed = kind == "code_top"
+                surface3_candidates.append((unit_line, allow_fixed))
+                if unit_line.endswith("\\"):
+                    before_bs = unit_line[:-1]
+                    elided_buf += before_bs
+                    elided_allow = (
+                        elided_allow
+                        and allow_fixed
+                        and before_bs.endswith((" ", "\t"))
+                    )
+                    piece = before_bs.rstrip()
+                    spaced_buf = f"{spaced_buf} {piece}".strip() if spaced_buf else piece
+                    spaced_allow = spaced_allow and allow_fixed
+                else:
+                    if elided_buf:
+                        elided_buf += unit_line
+                        surface3_candidates.append((elided_buf, elided_allow and allow_fixed))
+                        elided_buf = ""
+                        elided_allow = True
+                    if spaced_buf:
+                        joined_sp = f"{spaced_buf} {unit_line}".strip()
+                        surface3_candidates.append((joined_sp, spaced_allow and allow_fixed))
+                        spaced_buf = ""
+                        spaced_allow = True
+            if elided_buf:
+                surface3_candidates.append((elided_buf, False))
+            if spaced_buf:
+                surface3_candidates.append((spaced_buf, False))
+
+            dedup_surface3 = {}
+            for cand_line, cand_allow in surface3_candidates:
+                if cand_line:
+                    dedup_surface3[cand_line] = dedup_surface3.get(cand_line, True) and cand_allow
+            for cand_line, cand_allow in dedup_surface3.items():
+                if _has_unapproved_workflow_command(cand_line, allow_fixed_echo=cand_allow):
                     violations.append((
                         "ANNOTATION_NON_LITERAL",
                         step_label,
-                        candidate_line[:160],
+                        cand_line[:160],
                     ))
+            wrapped_hit = _has_piped_compound_or_captured_fn_workflow_cmd(run_text, units)
+            if wrapped_hit is not None:
+                violations.append((
+                    "ANNOTATION_NON_LITERAL",
+                    step_label,
+                    wrapped_hit,
+                ))
 
             # --- Surface 4: $GITHUB_ENV & fixture .env / fixture.log echoes --
             for _, line in logical:
@@ -4652,6 +5232,277 @@ class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
 
         yaml_comment_mutated = "# YAML comment mentioning ##[error] and ##vso[task.logissue type=error]\n" + base
         self.assertEqual(pilot_gate_public_output_violations(yaml_comment_mutated), [])
+
+    def test_guard_rejects_nested_and_quoted_fixed_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        accepted_standalone = [
+            "          printf '::notice::fixed notice line\\n'\n",
+            "          printf '::warning::fixed warning line\\n'\n",
+            "          printf '::error::fixed error line\\n'\n",
+            "          if true; then echo '::notice::fixed conditional notice'; fi\n",
+        ]
+        for snippet in accepted_standalone:
+            with self.subTest(scope="accepted_standalone", snippet=snippet.strip()):
+                mutated = base.replace(anchor, anchor_block + snippet, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated), [])
+
+        nested_forms = [
+            ("cmdsub_echo", 'echo "$(echo \'::error::fixed\')$VAR"'),
+            ("backtick_echo", 'echo "`echo \'::error::fixed\'`$VAR"'),
+            ("printf_cmdsub_echo", 'printf \'%s\\n\' "$(echo \'::error::fixed\')"'),
+            ("var_capture_echo", 'x=$(echo \'::error::fixed\'); echo "$x$VAR"'),
+            ("cmdsub_printf_notice", 'echo "$(printf \'::notice::fixed\\n\')$VAR"'),
+            ("cmdsub_hash_bracket", 'echo "x$(echo \'##[error]fixed\')"'),
+        ]
+
+        for label, expr in nested_forms:
+            with self.subTest(scope="run", case=label):
+                mutated_run = base.replace(anchor, anchor_block + f"          {expr}\n", 1)
+                codes_run = {code for code, _, _ in pilot_gate_public_output_violations(mutated_run)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_run)
+
+            with self.subTest(scope="heredoc", case=label):
+                heredoc_block = (
+                    "          cat <<EOF >/dev/null\n"
+                    f"          {expr}\n"
+                    "          EOF\n"
+                )
+                mutated_hd = base.replace(anchor, anchor_block + heredoc_block, 1)
+                codes_hd = {code for code, _, _ in pilot_gate_public_output_violations(mutated_hd)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_hd)
+
+        for label, expr in nested_forms:
+            with self.subTest(scope="step.env", case=label):
+                yaml_safe = expr.replace("\\", "\\\\").replace('"', '\\"')
+                mutated_env = base.replace(
+                    anchor,
+                    "      - name: Runtime SDK contract (built ZIP, no network)\n"
+                    f'        env:\n          STEP_NESTED: "{yaml_safe}"\n'
+                    "        run: python3 tests/bin/release-runtime-contract.py\n",
+                    1,
+                )
+                codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_env)
+
+    def test_guard_heredoc_exact_bash_terminators_and_quotes(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        rejected_blocks = [
+            (
+                "trailing_space_hash_bracket",
+                "cat <<EOF\nEOF \n##[error]$VAR\nEOF\n",
+            ),
+            (
+                "trailing_space_hash_comment_payload",
+                "cat <<EOF\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "leading_spaces_on_no_dash_heredoc",
+                "cat <<EOF\n  EOF\n::error::$VAR\nEOF\n",
+            ),
+            (
+                "leading_spaces_hash_payload_on_no_dash_heredoc",
+                "cat <<EOF\n  EOF\n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "single_quoted_delim_trailing_space",
+                "cat <<'EOF'\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "double_quoted_delim_trailing_space",
+                'cat <<"EOF"\nEOF \n# ::error::$VAR\nEOF\n',
+            ),
+            (
+                "backslash_delim_trailing_space",
+                "cat <<\\EOF\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "ansic_delim_trailing_space",
+                "cat <<$'EOF'\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "two_heredocs_one_line_second_payload",
+                "cat <<EOF1 >/dev/null; cat <<'EOF2'\nok\nEOF1\n# ::error::$VAR\nEOF2\n",
+            ),
+            (
+                "unterminated_heredoc_uppercase_error",
+                "cat <<EOF\n::ERROR::$VAR\n",
+            ),
+        ]
+        for label, block_lines in rejected_blocks:
+            indented = "".join(
+                f"          {line}" for line in block_lines.splitlines(keepends=True)
+            )
+            with self.subTest(kind="rejected", case=label):
+                mutated = base.replace(anchor, anchor_block + indented, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        for cr_label, cr_payload in (
+            ("trailing_cr_hash_bracket", "##[error]$VAR"),
+            ("trailing_cr_hash_prefixed_v2", "# ::error::$VAR"),
+        ):
+            with self.subTest(kind="rejected", case=cr_label):
+                cr_step_new = (
+                    "      - name: Runtime SDK contract (built ZIP, no network)\n"
+                    '        run: "python3 tests/bin/release-runtime-contract.py\\n'
+                    f'cat <<EOF\\nEOF\\r\\n{cr_payload}\\nEOF\\n"\n'
+                )
+                mutated_cr = base.replace(anchor, cr_step_new, 1)
+                codes_cr = {code for code, _, _ in pilot_gate_public_output_violations(mutated_cr)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_cr)
+
+        accepted_blocks = [
+            (
+                "dash_heredoc_tab_indented_terminator",
+                "          cat <<-EOF >/dev/null\n"
+                "          \thello\n"
+                "          \tEOF\n"
+                "          # real shell comment after terminator: ##[error]$VAR\n",
+            ),
+            (
+                "single_quoted_delim_exact",
+                "          cat <<'EOF' >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "double_quoted_delim_exact",
+                '          cat <<"EOF" >/dev/null\n'
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "backslash_delim_exact",
+                "          cat <<\\EOF >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "ansic_delim_exact",
+                "          cat <<$'EOF' >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "two_heredocs_one_line_clean",
+                "          cat <<EOF1 >/dev/null; cat <<'EOF2' >/dev/null\n"
+                "          first body\n"
+                "          EOF1\n"
+                "          second body\n"
+                "          EOF2\n"
+                "          # real shell comment after both: ##[error]$VAR\n",
+            ),
+            (
+                "double_lt_inside_quotes_not_heredoc",
+                '          echo "bitshift <<EOF inside quotes" >/dev/null\n'
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "real_shell_comment_hash_bracket",
+                "          # shell comment with ##[error] and ::ERROR:: markers\n",
+            ),
+        ]
+        for label, block_text in accepted_blocks:
+            with self.subTest(kind="accepted", case=label):
+                mutated_ok = base.replace(anchor, anchor_block + block_text, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated_ok), [])
+
+        with self.subTest(kind="accepted", case="yaml_comment_hash_bracket"):
+            yaml_comment_doc = "# YAML comment with ##[error] marker\n" + base
+            self.assertEqual(pilot_gate_public_output_violations(yaml_comment_doc), [])
+
+    def test_guard_round5_red_team_nesting_wrappers_and_heredoc_edge_cases(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        red_team_probes = [
+            ("RT01_procsub_in", 'cat <(echo \'::error::fixed\') <(echo "$VAR") | tr -d \'\\n\''),
+            ("RT02_procsub_out", 'echo \'::error::fixed\' > >(sed "s/fixed/$VAR/")'),
+            ("RT03_subshell_pipe", '(echo \'::error::fixed\'; echo "$VAR") | tr -d \'\\n\''),
+            ("RT04_brace_pipe_single_line", '{ echo \'::error::fixed\'; echo "$VAR"; } | tr -d \'\\n\''),
+            ("RT05_brace_pipe_multiline", "{\n  echo '::error::fixed'\n  echo \"$VAR\"\n} | tr -d '\\n'"),
+            ("RT06_if_pipe_multiline", "if true; then\n  echo '::error::fixed'\nfi | tr -d '\\n'"),
+            ("RT07_pipe_xargs", 'echo \'::error::fixed\' | xargs -I{} echo "{}$VAR"'),
+            ("RT08_pipe_tee", "echo '::error::fixed' | tee /tmp/p.txt"),
+            ("RT09_pipe_cat", "echo '::error::fixed' | cat - /tmp/s.txt"),
+            ("RT10_printf_no_newline_concat", 'printf \'::error::fixed\'; echo "$VAR"'),
+            ("RT11_echo_minus_n_concat", 'echo -n \'::error::fixed\'; echo "$VAR"'),
+            ("RT12_fn_captured_in_cmdsub", "emit_p() {\n  echo '::error::fixed'\n}\necho \"$(emit_p)$VAR\""),
+            ("RT13_fn_piped", "emit_p() {\n  echo '::error::fixed'\n}\nemit_p | tr -d '\\n'"),
+            ("RT14_multiline_cmdsub", "x=$(\n  echo '::error::fixed'\n)\necho \"$x$VAR\""),
+            ("RT15_cmdsub_case_arm_paren", "x=$(case a in a) true; echo '::error::fixed';; esac)\necho \"$x$VAR\""),
+            ("RT16_adjacent_hash_not_comment", 'echo \'::error::fixed\'#"$VAR"'),
+            ("RT17_heredoc_after_and_list", "true && cat <<EOF\nEOF \n##[error]$VAR\nEOF"),
+            ("RT18_heredoc_before_pipe", "cat <<EOF | cat\nEOF \n##[error]$VAR\nEOF"),
+            ("RT19_heredoc_inside_cmdsub", 'x="$(cat <<EOF\nEOF \n##[error]$VAR\nEOF\n)"\necho "$x"'),
+            ("RT20_heredoc_nbsp_terminator", "cat <<EOF\nEOF\u00a0\n##[error]$VAR\nEOF"),
+            ("RT21_dash_heredoc_trailing_tab", "cat <<-EOF\n\tEOF\t\n##[error]$VAR\nEOF"),
+            ("RT22_dash_heredoc_leading_spaces", "cat <<-EOF\n  EOF\n##[error]$VAR\nEOF"),
+            ("RT23_heredoc_case_mismatch_terminator", "cat <<EOF\neof\n##[error]$VAR\nEOF"),
+            ("RT24_heredoc_punct_delim", "cat <<'END-MARK.1!'\nEND-MARK.1! \n##[error]$VAR\nEND-MARK.1!"),
+            ("RT25_unquoted_heredoc_bs_split", "cat <<EOF\n::ER\\\nROR::$VAR\nEOF"),
+            ("RT26_heredoc_bs_joined_fixed_echo", "tr '\\n\\\\' '  ' <<'EOF' | sed \"s/^ *echo *'//;s/' *$/$VAR/\"\necho \\\n  '::error::fixed'\nEOF"),
+            ("RT27_transitive_fn_capture", "f2() {\n  echo '::error::fixed'\n}\nf1() {\n  f2\n}\necho \"$(f1)$VAR\""),
+            ("RT28_backslash_split_echo_word", "ech\\\no '::error::fixed'"),
+        ]
+        for probe_id, snippet in red_team_probes:
+            indented = "".join(f"          {ln}\n" for ln in snippet.split("\n"))
+            with self.subTest(probe=probe_id):
+                mutated = base.replace(anchor, anchor_block + indented, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        accepted_controls = [
+            ("brace_redirect_without_workflow_cmd", '{ echo "INFO clean"; } > /tmp/clean-check.log'),
+            ("top_level_fn_invocation_only", "local_notice() {\n  echo '::notice::fixed helper'\n}\nlocal_notice"),
+            ("here_string_not_heredoc", 'cat <<<"plain text" >/dev/null\n# comment after here-string: ##[error]$VAR'),
+        ]
+        for ctrl_id, snippet in accepted_controls:
+            indented = "".join(f"          {ln}\n" for ln in snippet.split("\n"))
+            with self.subTest(control=ctrl_id):
+                mutated_ctrl = base.replace(anchor, anchor_block + indented, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated_ctrl), [])
 
 
 
