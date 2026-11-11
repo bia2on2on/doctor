@@ -1176,7 +1176,8 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
 
         doctor_setup = pilot.split("- name: Doctor Portal fixture", 1)[1].split("\n      - name:", 1)[0]
         self.assertIn('cat /tmp/doctor-portal.env >> "$GITHUB_ENV"', doctor_setup)
-        self.assertIn("grep '^DOCTOR_PORTAL_FIXTURE_OK '", doctor_setup)
+        self.assertIn("grep -q '^DOCTOR_PORTAL_FIXTURE_OK '", doctor_setup)
+        self.assertIn("Doctor Portal fixture environment loaded; values withheld.", doctor_setup)
         self.assertNotIn("log_tail=", doctor_setup)
         self.assertNotIn("tail -c", doctor_setup)
         self.assertNotIn("DOCTOR_PORTAL_PUBLIC", doctor_setup)
@@ -1196,7 +1197,9 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
         evidence = pilot.split("- name: Post Doctor Portal evidence to PR", 1)[1].split("\n      - name:", 1)[0]
         self.assertNotIn("DOCTOR_PORTAL_PUBLIC", evidence)
         self.assertNotIn("doctor-portal.env", evidence)
-        self.assertIn("DOCTOR_PORTAL_FIXTURE_OK", evidence)
+        self.assertNotIn("doctor-portal-fixture.log", evidence)
+        self.assertNotIn("doctor-portal.log", evidence)
+        self.assertIn("pilot-doctor-portal:", evidence)
 
         self.assertNotIn("FINANCE_BOARD_ACCOUNTANT_PUBLIC", finance_fixture)
         self.assertIn("FINANCE_BOARD_ACCOUNTANT_FIXTURE_OK", finance_fixture)
@@ -3213,6 +3216,2293 @@ class ClassicV1RemediationPublicationContractTests(unittest.TestCase):
         self.assertNotIn(CANARY, published)
         self.assertIn("HTTP_PROFILE label=BASELINE operations=2 verdict=OK", published)
         self.assertIn("HTTP_PROFILE label=CANDIDATE operations=0 verdict=UNAVAILABLE", published)
+
+
+_PILOT_EXPECTED_JOBS = {
+    "release-artifact": set(),
+    "staging-gate": {"release-artifact"},
+    "upgrade-test": {"release-artifact"},
+    "responsive": {"release-artifact"},
+}
+
+_PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY = {
+    "/tmp/cpms-inner-zip-evidence.md": "pilot-inner-zip",
+    "/tmp/pilot-benchmark-status.md": "pilot-benchmark",
+    "/tmp/resp-evidence.md": "pilot-responsive-evidence",
+    "/tmp/journey-evidence.md": "pilot-otp-journey",
+    "/tmp/slice3-evidence.md": "pilot-slice3-chooser",
+    "/tmp/portal-cancel-evidence.md": "pilot-portal-cancel",
+    "/tmp/portal-profile-evidence.md": "pilot-portal-profile",
+    "/tmp/doctor-portal-evidence.md": "pilot-doctor-portal",
+    "/tmp/reception-evidence.md": "pilot-reception",
+    "/tmp/day2-workflows-evidence.md": "pilot-day2-workflows",
+}
+
+_PILOT_EVIDENCE_FAMILIES = frozenset(_PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY.values())
+_PILOT_EVIDENCE_BODY_BASENAME_TO_PATH = {
+    path.rsplit("/", 1)[-1]: path for path in _PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY
+}
+
+_PILOT_ALLOWED_GITHUB_ENV_FILES = frozenset({
+    "/tmp/resp-public-page.env",
+    "/tmp/otp-journey.env",
+    "/tmp/slice3.env",
+    "/tmp/portal-cancel.env",
+    "/tmp/portal-profile.env",
+    "/tmp/doctor-portal.env",
+    "/tmp/finance-board.env",
+    "/tmp/reception.env",
+    "/tmp/reports.env",
+    "/tmp/day2-workflows.env",
+})
+
+_PILOT_ALLOWED_LOCAL_REDIRECT_VARS = {
+    "MANIFEST": '"$BENCH/manifest.jsonl"',
+    "log": '"/tmp/resp-${engine}.log"',
+}
+
+_PILOT_EVIDENCE_CLOSED_TOKENS = frozenset({
+    "PASS",
+    "FAIL",
+    "WARN",
+    "NOT_RUN",
+    "UNAVAILABLE",
+    "unavailable",
+})
+
+_PILOT_SUMMARY_CLOSED_TOKENS = _PILOT_EVIDENCE_CLOSED_TOKENS | frozenset({
+    "CLEAN",
+    "OK",
+    "READY",
+    "ok",
+    "refused",
+    "not_probed",
+    "not_run",
+    "present_denied_403",
+    "absent",
+    "quiescence_not_reached",
+    "enqueue_refused",
+    "precheck_refused",
+    "collect_refused",
+    "aggregate_refused",
+    "unknown_refusal",
+})
+
+_PILOT_POST_CALL_RE = re.compile(
+    r'^bash "\$GITHUB_WORKSPACE/\.github/scripts/post-pr-evidence\.sh" '
+    r'(/tmp/[A-Za-z0-9._-]+\.md) "([a-z0-9-]+)"$'
+)
+_PILOT_DIRECT_EVIDENCE_COMMENT_RE = re.compile(r"pr-evidence-comment(?:\.sh)?\b")
+_PILOT_EVIDENCE_READER_RE = re.compile(
+    _CMD_POS + r"(cat|grep|egrep|fgrep|tail|head|sed|awk|cut|paste|sort|uniq|jq|curl)(?:\s|$)"
+)
+_PILOT_PRINTF_CALL_RE = re.compile(
+    r"^printf '([^'\r\n]+)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
+)
+_PILOT_ECHO_CALL_RE = re.compile(
+    r"^echo '([^'\r\n]+)'\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
+)
+_PILOT_SUMMARY_ECHO_RE = re.compile(
+    r"^echo '([^'\r\n]+)'\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
+)
+_PILOT_SUMMARY_PRINTF_RE = re.compile(
+    r"^printf '([^'\r\n]+)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
+)
+_PILOT_WORKFLOW_CMD_NAMES = (
+    "error",
+    "warning",
+    "notice",
+    "debug",
+    "group",
+    "endgroup",
+    "add-mask",
+    "set-output",
+    "save-state",
+    "stop-commands",
+)
+_PILOT_WORKFLOW_CMD_RAW_RE = re.compile(
+    r"::(" + "|".join(_PILOT_WORKFLOW_CMD_NAMES) + r")\b",
+    re.IGNORECASE,
+)
+# Intentional friction: only lowercase standalone fixed single-quoted
+# ::(error|warning|notice):: literals (matching the 43 existing annotations in
+# pilot-gate.yml, plus newline-terminated single-quoted printf) are exempted;
+# uppercase/mixed-case fixed literals (e.g. echo '::ERROR::fixed') are rejected.
+_PILOT_STANDALONE_FIXED_ECHO_PRINTF_RE = re.compile(
+    r"(?:echo[ \t]+'(::(?:error|warning|notice)::[^'\r\n]+)'"
+    r"|printf[ \t]+'(::(?:error|warning|notice)::[^'%\r\n\\]+\\n)')"
+    r"(?=[ \t]*(?:$|&&|\|\||[;\}])|[ \t]+#)"
+)
+_PILOT_SHELL_CONTROL_KW_RE = re.compile(
+    r"(?:then|do|else|elif|if|while|until)(?=[ \t])"
+)
+_PILOT_SHELL_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PILOT_ANSIC_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "e": "\x1b",
+    "E": "\x1b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+}
+# Runner internal ##[command] syntax (ActionCommand.TryParse matches IndexOf("##[")
+# anywhere on a line, dispatching commands with OrdinalIgnoreCase) and Azure-inherited
+# ##vso[...] syntax, rejected conservatively (including fixed ##[group] markers).
+_PILOT_HASH_BRACKET_CMD_RE = re.compile(
+    r"##(?:vso\[|\[)",
+    re.IGNORECASE,
+)
+_PILOT_WORKFLOW_CMD_NEUTRALISE_RES = (
+    re.compile(r"\$'"),
+    re.compile(
+        r"\\+(?:[xX][0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[0-7]{1,3}|[abefnrtv\\'\"?])(?![A-Za-z0-9_])"
+    ),
+    re.compile(
+        r"%(?:\d+\$)?[-+ #0]*(?:\d+|\*(?:\d+\$)?)?(?:\.(?:\d+|\*(?:\d+\$)?))?[hljztL]*[diouxXeEfFgGaAcCsSpnbB%]"
+    ),
+    re.compile(r"\$\{[^{}\r\n]*\}|\$\([^()\r\n]*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@#?*!$-]"),
+)
+_PILOT_PHP_CLASS_LHS_RE = re.compile(
+    r"(?<![A-Za-z0-9_$%\\])\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+_PILOT_WORKFLOW_CMD_RHS_RE = re.compile(r"^(?:::|\s+[^:;\r\n()]*::)")
+
+
+def _iter_yaml_strings(node):
+    """Yield every string key and string value inside a parsed YAML node."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(key, str):
+                yield key
+            yield from _iter_yaml_strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_yaml_strings(item)
+    elif isinstance(node, str):
+        yield node
+
+
+def _is_shell_word_boundary(line, start_idx, end_idx):
+    before_ok = start_idx == 0 or line[start_idx - 1] in " \t|&;(){}"
+    after_ok = end_idx == len(line) or line[end_idx] in " \t|&;()#"
+    return before_ok and after_ok
+
+
+def _parse_heredoc_delimiter(line, start_idx):
+    """Parse a Bash heredoc delimiter word starting at `start_idx`, applying Bash quote removal."""
+    idx = start_idx
+    length = len(line)
+    while idx < length and line[idx] in " \t":
+        idx += 1
+    if idx >= length or line[idx] in "|&;()<>#":
+        return None
+    word_start = idx
+    chars = []
+    while idx < length:
+        ch = line[idx]
+        if ch in " \t|&;()<>":
+            break
+        if ch == "$" and idx + 1 < length and line[idx + 1] == "'":
+            idx += 2
+            while idx < length and line[idx] != "'":
+                if line[idx] == "\\" and idx + 1 < length:
+                    esc = line[idx + 1]
+                    if esc in _PILOT_ANSIC_ESCAPES:
+                        chars.append(_PILOT_ANSIC_ESCAPES[esc])
+                        idx += 2
+                    elif (
+                        esc == "x"
+                        and idx + 3 < length
+                        and all(c in "0123456789abcdefABCDEF" for c in line[idx + 2 : idx + 4])
+                    ):
+                        chars.append(chr(int(line[idx + 2 : idx + 4], 16)))
+                        idx += 4
+                    else:
+                        chars.append(esc)
+                        idx += 2
+                else:
+                    chars.append(line[idx])
+                    idx += 1
+            if idx < length and line[idx] == "'":
+                idx += 1
+            continue
+        if ch == "'":
+            idx += 1
+            while idx < length and line[idx] != "'":
+                chars.append(line[idx])
+                idx += 1
+            if idx < length and line[idx] == "'":
+                idx += 1
+            continue
+        if ch == '"':
+            idx += 1
+            while idx < length and line[idx] != '"':
+                if line[idx] == "\\" and idx + 1 < length and line[idx + 1] in '"\\$`':
+                    chars.append(line[idx + 1])
+                    idx += 2
+                else:
+                    chars.append(line[idx])
+                    idx += 1
+            if idx < length and line[idx] == '"':
+                idx += 1
+            continue
+        if ch == "\\":
+            if idx + 1 < length:
+                chars.append(line[idx + 1])
+                idx += 2
+            else:
+                idx += 1
+            continue
+        chars.append(ch)
+        idx += 1
+    if idx == word_start:
+        return None
+    return "".join(chars), idx
+
+
+def _advance_shell_line(raw_line, ctx_stack, pending_heredocs):
+    """Advance `ctx_stack` (`[kind, case_depth]`) and `pending_heredocs` across `raw_line`."""
+    idx = 0
+    length = len(raw_line)
+    while idx < length:
+        top = ctx_stack[-1][0] if ctx_stack else None
+        ch = raw_line[idx]
+        if top == "'":
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+        elif top == "$'":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+        elif top == '"':
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if raw_line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if raw_line[idx : idx + 2] == "$(":
+                ctx_stack.append(["$(", 0])
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == '"':
+                ctx_stack.pop()
+            idx += 1
+        elif top == "`":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.pop()
+            idx += 1
+        elif top in ("$((", "arith_("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["arith_(", 0])
+                idx += 1
+                continue
+            if raw_line[idx : idx + 2] == "))" and top == "$((":
+                ctx_stack.pop()
+                idx += 2
+                continue
+            if ch == ")" and top == "arith_(":
+                ctx_stack.pop()
+            idx += 1
+        else:
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if raw_line[idx : idx + 2] == "$'":
+                ctx_stack.append(["$'", 0])
+                idx += 2
+                continue
+            if ch in ("'", '"'):
+                ctx_stack.append([ch, 0])
+                idx += 1
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == "#" and (idx == 0 or raw_line[idx - 1] in " \t|&;()"):
+                return True
+            if raw_line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if raw_line[idx : idx + 2] in ("$(", "<(", ">("):
+                ctx_stack.append([raw_line[idx : idx + 2], 0])
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["(", 0])
+                idx += 1
+                continue
+            if ch == ")" and top in ("$(", "<(", ">(", "("):
+                if ctx_stack[-1][1] == 0:
+                    ctx_stack.pop()
+                idx += 1
+                continue
+            if (
+                ch == "<"
+                and raw_line[idx : idx + 2] == "<<"
+                and raw_line[idx : idx + 3] != "<<<"
+                and (idx == 0 or raw_line[idx - 1] != "<")
+            ):
+                strip_tabs = raw_line[idx : idx + 3] == "<<-"
+                op_end = idx + (3 if strip_tabs else 2)
+                parsed = _parse_heredoc_delimiter(raw_line, op_end)
+                if parsed is not None:
+                    delim, next_idx = parsed
+                    pending_heredocs.append((delim, strip_tabs))
+                    idx = next_idx
+                    continue
+            if top in ("$(", "<(", ">(", "("):
+                word_m = _PILOT_SHELL_WORD_RE.match(raw_line, idx)
+                if word_m and _is_shell_word_boundary(raw_line, idx, word_m.end()):
+                    word = word_m.group(0)
+                    if word == "case":
+                        ctx_stack[-1][1] += 1
+                    elif word == "esac" and ctx_stack[-1][1] > 0:
+                        ctx_stack[-1][1] -= 1
+                    idx = word_m.end()
+                    continue
+            idx += 1
+    return False
+
+
+def _scan_run_units(run_text):
+    """Classify LF-delimited lines of `run_text` into `('payload' | 'code_top' | 'code_nested', line)`.
+
+    Splits on `\\n` (preserving `\\r` so `EOF\\r` does not match `EOF`) and matches
+    heredoc terminators with exact Bash semantics (`raw_line == delim` for `<<`,
+    `raw_line.lstrip('\\t') == delim` for `<<-`). Unterminated heredocs leave
+    remaining lines classified as `'payload'` so they are scanned with
+    `allow_fixed_echo=False` rather than skipped.
+    """
+    if not run_text:
+        return []
+    body = run_text[:-1] if run_text.endswith("\n") else run_text
+    raw_lines = body.split("\n")
+    ctx_stack = []
+    pending_heredocs = []
+    active_heredocs = []
+    units = []
+    prev_continued_nested = False
+    prev_continued_after_pipe = False
+
+    for raw_line in raw_lines:
+        if active_heredocs:
+            delim, strip_tabs = active_heredocs[0]
+            candidate = raw_line.lstrip("\t") if strip_tabs else raw_line
+            if candidate == delim:
+                active_heredocs.pop(0)
+            else:
+                units.append(("payload", raw_line))
+            continue
+
+        entry_top = (
+            len(ctx_stack) == 0
+            and not prev_continued_nested
+            and not prev_continued_after_pipe
+        )
+        stripped = raw_line.strip()
+        if len(ctx_stack) == 0 and (not stripped or stripped.startswith("#")) and not prev_continued_nested:
+            if pending_heredocs:
+                active_heredocs.extend(pending_heredocs)
+                pending_heredocs.clear()
+            prev_continued_after_pipe = False
+            continue
+
+        if entry_top:
+            units.append(("code_top", stripped))
+        elif stripped:
+            if ctx_stack and ctx_stack[-1][0] in ("$(", "<(", ">(", "(") and stripped.startswith("#"):
+                continue
+            units.append(("code_nested", stripped))
+
+        ended_in_comment = _advance_shell_line(raw_line, ctx_stack, pending_heredocs)
+        trailing_bs = len(raw_line) - len(raw_line.rstrip("\\"))
+        top_after = ctx_stack[-1][0] if ctx_stack else None
+        continues = (
+            not ended_in_comment
+            and top_after not in ("'", "$'")
+            and trailing_bs % 2 == 1
+        )
+        if continues:
+            before_bs = raw_line[:-1].rstrip(" \t")
+            prev_continued_after_pipe = (
+                before_bs.endswith("|") and not before_bs.endswith("||")
+            ) or before_bs.endswith("|&")
+            prev_continued_nested = len(ctx_stack) > 0
+        else:
+            prev_continued_after_pipe = False
+            prev_continued_nested = False
+            if pending_heredocs:
+                active_heredocs.extend(pending_heredocs)
+                pending_heredocs.clear()
+    return units
+
+
+def _strip_standalone_fixed_workflow_commands(line):
+    """Mask approved standalone top-level fixed single-quoted `echo`/`printf` notices only.
+
+    Never masks inside quotes (`'...'`, `"..."`, `$'...'`), command substitutions
+    (`$(...)`, backticks), process substitutions (`<(...)`, `>(...)`), subshells
+    (`(...)`), pipelines (`|`, `|&`), redirections (`>`, `<`), or piped/redirected
+    `{ ... }` brace groups.
+    """
+    idx = 0
+    length = len(line)
+    ctx_stack = []
+    brace_stack = []
+    piped_or_redirected_braces = set()
+    next_brace_id = 0
+    candidate_spans = []
+    at_cmd_start = True
+
+    while idx < length:
+        top = ctx_stack[-1][0] if ctx_stack else None
+        ch = line[idx]
+        if top == "'":
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top == "$'":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top == '"':
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if line[idx : idx + 2] == "$(":
+                ctx_stack.append(["$(", 0])
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == '"':
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top == "`":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top in ("$((", "arith_("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["arith_(", 0])
+                idx += 1
+                continue
+            if line[idx : idx + 2] == "))" and top == "$((":
+                ctx_stack.pop()
+                idx += 2
+                continue
+            if ch == ")" and top == "arith_(":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top in ("$(", "<(", ">(", "("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if line[idx : idx + 2] == "$'":
+                ctx_stack.append(["$'", 0])
+                idx += 2
+                continue
+            if ch in ("'", '"'):
+                ctx_stack.append([ch, 0])
+                idx += 1
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if line[idx : idx + 2] in ("$(", "<(", ">("):
+                ctx_stack.append([line[idx : idx + 2], 0])
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["(", 0])
+                idx += 1
+                continue
+            if ch == ")":
+                if ctx_stack[-1][1] == 0:
+                    ctx_stack.pop()
+                idx += 1
+                continue
+            word_m = _PILOT_SHELL_WORD_RE.match(line, idx)
+            if word_m and _is_shell_word_boundary(line, idx, word_m.end()):
+                word = word_m.group(0)
+                if word == "case":
+                    ctx_stack[-1][1] += 1
+                elif word == "esac" and ctx_stack[-1][1] > 0:
+                    ctx_stack[-1][1] -= 1
+                idx = word_m.end()
+                continue
+            idx += 1
+            continue
+
+        if ch in " \t":
+            idx += 1
+            continue
+        if ch == "#" and (idx == 0 or line[idx - 1] in " \t|&;()"):
+            break
+        if ch == ";":
+            at_cmd_start = True
+            idx += 1
+            continue
+        if line[idx : idx + 2] in ("&&", "||"):
+            at_cmd_start = True
+            idx += 2
+            continue
+        if ch == "|":
+            at_cmd_start = False
+            idx += 2 if line[idx : idx + 2] == "|&" else 1
+            continue
+        if ch == "&":
+            at_cmd_start = False
+            idx += 1
+            continue
+        if ch == "{" and at_cmd_start and (idx + 1 == length or line[idx + 1] in " \t"):
+            brace_stack.append(next_brace_id)
+            next_brace_id += 1
+            at_cmd_start = True
+            idx += 1
+            continue
+        if ch == "}" and brace_stack:
+            bid = brace_stack.pop()
+            rest = line[idx + 1 :].lstrip(" \t")
+            if (rest.startswith("|") and not rest.startswith("||")) or re.match(r"^(?:\d*[<>]|&>)", rest):
+                piped_or_redirected_braces.add(bid)
+            at_cmd_start = False
+            idx += 1
+            continue
+
+        if at_cmd_start:
+            kw_m = _PILOT_SHELL_CONTROL_KW_RE.match(line, idx)
+            if kw_m and (idx == 0 or not (line[idx - 1].isalnum() or line[idx - 1] == "_")):
+                idx = kw_m.end()
+                at_cmd_start = True
+                continue
+            fixed_m = _PILOT_STANDALONE_FIXED_ECHO_PRINTF_RE.match(line, idx)
+            if fixed_m:
+                literal = fixed_m.group(1) or fixed_m.group(2)
+                body = literal.split("::", 2)[2]
+                if not (_PILOT_WORKFLOW_CMD_RAW_RE.search(body) or _PILOT_HASH_BRACKET_CMD_RE.search(body)):
+                    candidate_spans.append((idx, fixed_m.end(), tuple(brace_stack)))
+                    idx = fixed_m.end()
+                    at_cmd_start = False
+                    continue
+
+        at_cmd_start = False
+        if ch == "\\" and idx + 1 < length:
+            idx += 2
+            continue
+        if line[idx : idx + 2] == "$'":
+            ctx_stack.append(["$'", 0])
+            idx += 2
+            continue
+        if ch in ("'", '"'):
+            ctx_stack.append([ch, 0])
+            idx += 1
+            continue
+        if ch == "`":
+            ctx_stack.append(["`", 0])
+            idx += 1
+            continue
+        if line[idx : idx + 3] == "$((":
+            ctx_stack.append(["$((", 0])
+            idx += 3
+            continue
+        if line[idx : idx + 2] in ("$(", "<(", ">("):
+            ctx_stack.append([line[idx : idx + 2], 0])
+            idx += 2
+            continue
+        if ch == "(":
+            ctx_stack.append(["(", 0])
+            idx += 1
+            continue
+        idx += 1
+
+    chars = list(line)
+    for start, end, enclosing_braces in candidate_spans:
+        if any(bid in piped_or_redirected_braces for bid in enclosing_braces):
+            continue
+        for pos in range(start, end):
+            chars[pos] = " "
+    return "".join(chars)
+
+
+def _has_piped_compound_or_captured_fn_workflow_cmd(run_text, units):
+    """Return offending snippet if a workflow-command token sits inside a piped/redirected compound block or captured/piped function."""
+    if not (_PILOT_WORKFLOW_CMD_RAW_RE.search(run_text) or _PILOT_HASH_BRACKET_CMD_RE.search(run_text)):
+        return None
+
+    open_blocks = []
+    close_for_open = {"{": "}", "if": "fi", "for": "done", "while": "done", "until": "done", "case": "esac"}
+    token_re = re.compile(r"(?:\{|\}|\b(?:if|fi|for|while|until|done|case|esac)\b)")
+    for kind, text_line in units:
+        line_has_cmd = bool(
+            _PILOT_WORKFLOW_CMD_RAW_RE.search(text_line)
+            or _PILOT_HASH_BRACKET_CMD_RE.search(text_line)
+        )
+        if kind != "code_top":
+            if line_has_cmd:
+                for blk in open_blocks:
+                    blk[1] = True
+            continue
+        masked = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", lambda m: " " * len(m.group(0)), text_line)
+        masked = re.sub(r"(?:^|[ \t|&;()])#.*$", "", masked)
+        for tm in token_re.finditer(masked):
+            tok = tm.group(0)
+            if tok in close_for_open:
+                if tok == "{":
+                    after = masked[tm.end() :]
+                    if after and after[0] not in " \t":
+                        continue
+                open_blocks.append([close_for_open[tok], line_has_cmd])
+            elif tok in ("}", "fi", "done", "esac"):
+                for b_idx in range(len(open_blocks) - 1, -1, -1):
+                    if open_blocks[b_idx][0] == tok:
+                        _, blk_has_cmd = open_blocks.pop(b_idx)
+                        has_any = blk_has_cmd or line_has_cmd
+                        rest = masked[tm.end() :].lstrip(" \t")
+                        if has_any and (
+                            (rest.startswith("|") and not rest.startswith("||"))
+                            or re.match(r"^(?:\d*[<>]|&>)", rest)
+                        ):
+                            return text_line[:160]
+                        break
+        if line_has_cmd:
+            for blk in open_blocks:
+                blk[1] = True
+
+    fn_def_re = re.compile(
+        r"(?:^|[;\n{])[ \t]*(?:function[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\(\))?[ \t]*\{",
+        re.MULTILINE,
+    )
+    fn_bodies = {}
+    fn_spans = {}
+    for fm in fn_def_re.finditer(run_text):
+        fname = fm.group(1)
+        brace_idx = fm.end() - 1
+        depth = 0
+        end_idx = len(run_text)
+        pos = brace_idx
+        while pos < len(run_text):
+            if run_text[pos] == "'":
+                end_q = run_text.find("'", pos + 1)
+                pos = (end_q + 1) if end_q != -1 else len(run_text)
+                continue
+            if run_text[pos] == "{":
+                depth += 1
+            elif run_text[pos] == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = pos + 1
+                    break
+            pos += 1
+        fn_bodies[fname] = run_text[brace_idx:end_idx]
+        fn_spans[fname] = (fm.start(), end_idx)
+
+    tainted_fns = {
+        fname
+        for fname, body in fn_bodies.items()
+        if _PILOT_WORKFLOW_CMD_RAW_RE.search(body) or _PILOT_HASH_BRACKET_CMD_RE.search(body)
+    }
+    changed = True
+    while changed and tainted_fns:
+        changed = False
+        for fname, body in fn_bodies.items():
+            if fname in tainted_fns:
+                continue
+            if any(re.search(r"\b" + re.escape(tf) + r"\b", body) for tf in tainted_fns):
+                tainted_fns.add(fname)
+                changed = True
+
+    nested_lines = [line for kind, line in units if kind == "code_nested"]
+    for fname in tainted_fns:
+        span_start, span_end = fn_spans[fname]
+        outside = run_text[:span_start] + "\n" + run_text[span_end:]
+        fn_call_pat = re.compile(
+            r"(?:\$\([^)\n]*\b" + re.escape(fname) + r"\b"
+            r"|`[^`\n]*\b" + re.escape(fname) + r"\b"
+            r"|[<>]\([^)\n]*\b" + re.escape(fname) + r"\b"
+            r"|\b" + re.escape(fname) + r"\b[^\n;|&]*?(?:\|(?!\|)|\d*>>?|&>))"
+        )
+        m_call = fn_call_pat.search(outside)
+        if m_call:
+            return m_call.group(0)[:160]
+        for nline in nested_lines:
+            if re.search(r"\b" + re.escape(fname) + r"\b", nline):
+                return nline[:160]
+    return None
+
+
+def _has_unapproved_workflow_command(line, *, allow_fixed_echo=True):
+    """Return True if `line` contains any unapproved GitHub Actions workflow command token."""
+    if _PILOT_HASH_BRACKET_CMD_RE.search(line):
+        return True
+    if not _PILOT_WORKFLOW_CMD_RAW_RE.search(line):
+        return False
+    if "${{" in line:
+        return True
+
+    remainder = _strip_standalone_fixed_workflow_commands(line) if allow_fixed_echo else line
+    if not _PILOT_WORKFLOW_CMD_RAW_RE.search(remainder):
+        return False
+
+    neutralised = remainder
+    for pattern in _PILOT_WORKFLOW_CMD_NEUTRALISE_RES:
+        neutralised = pattern.sub(lambda m: " " * len(m.group(0)), neutralised)
+
+    for match in _PILOT_WORKFLOW_CMD_RAW_RE.finditer(remainder):
+        cmd_name = match.group(1)
+        if "-" in cmd_name:
+            return True
+        lhs = neutralised[:match.start()]
+        rhs = remainder[match.end():]
+        if not _PILOT_PHP_CLASS_LHS_RE.search(lhs):
+            return True
+        if _PILOT_WORKFLOW_CMD_RHS_RE.match(rhs):
+            return True
+    return False
+_PILOT_SHELL_EVAL_RE = re.compile(
+    _CMD_POS
+    + r"(?:(?:command|builtin|env|sudo|exec)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;|&]+\s+)*eval(?:\s|$)"
+)
+_PILOT_VAR_INDIRECTION_RE = re.compile(
+    r"(?:\$\{![A-Za-z_][A-Za-z0-9_]*|"
+    r"\b(?:declare|typeset|local|export|readonly)\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*n\b|"
+    r"\bprintf\s+(?:-[A-Za-z]+\s+)*-v\b)"
+)
+_PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE = re.compile(
+    r"\bGITHUB_(?:OUTPUT|STATE|PATH)\b"
+)
+_PILOT_GITHUB_ALIAS_ENV_RE = re.compile(
+    r"\bGITHUB_(?:STEP_SUMMARY|ENV|OUTPUT|STATE|PATH)\b"
+)
+_PILOT_BARE_VAR_REDIRECT_RE = re.compile(
+    r'(?<![=-])(?:\d*>>?)\s*(?:"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)(?=\s|$|[;|&)])'
+)
+_PILOT_CMD_SUB_REDIRECT_RE = re.compile(
+    r'(?<![=-])(?:\d*>>?)\s*["\']?(?:\$\(|`)'
+)
+_PILOT_BARE_VAR_TEE_RE = re.compile(
+    r'\btee\b(?:\s+-[A-Za-z]+)*\s+(?:"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)(?=\s|$|[;|&)])'
+)
+_PILOT_GITHUB_ENV_APPEND_RE = re.compile(
+    r"^cat (/tmp/[A-Za-z0-9._-]+\.env) >> \"\$GITHUB_ENV\"$"
+)
+_PILOT_TMP_ENV_PATH_RE = re.compile(r"/tmp/[A-Za-z0-9._-]+\.env\b")
+_PILOT_FIXTURE_LOG_READ_RE = re.compile(
+    _CMD_POS
+    + r"(?:(?:cat|tail|head|sed|awk|cut)\b[^\n;|]*?/tmp/[A-Za-z0-9._-]*fixture[A-Za-z0-9._-]*\.log\b|"
+    + r"grep\b(?![^\n;|]*?(?:^|\s)-[A-Za-z]*q)[^\n;|]*?/tmp/[A-Za-z0-9._-]*fixture[A-Za-z0-9._-]*\.log\b)"
+)
+
+
+def _mask_shell_comments_and_single_quotes(run_text):
+    """Mask comment lines and single-line single-quoted strings with equal-length spaces."""
+    no_comments = re.sub(r"(?m)^\s*#[^\n]*", lambda m: " " * len(m.group(0)), run_text)
+    return re.sub(r"'[^'\n]*'", lambda m: "'" + (" " * (len(m.group(0)) - 2)) + "'", no_comments)
+
+
+def _extract_var_assignments_with_spans(var_name, run_text):
+    """Return `(assign_start, rhs_end, rhs_str)` for every assignment to `var_name` in `run_text`."""
+    assignments = []
+    masked = _mask_shell_comments_and_single_quotes(run_text)
+    pattern = re.compile(
+        r"(?:^|[;|&\n{]|\)\s*|\b(?:then|else|do)\s+)\s*"
+        r"(?:(?:export|declare|typeset|local|readonly)(?:\s+-[A-Za-z]+)*\s+)?"
+        + re.escape(var_name)
+        + r"=(?!=)",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(masked):
+        start = match.end()
+        tail_real = run_text[start:]
+        rhs_match = re.match(
+            r"(\$\(\([^)\n]*\)\)|'[^'\n]*'|\"[^\"\n]*\"|[^\s;|&)\n]+)",
+            tail_real,
+        )
+        if rhs_match:
+            assignments.append((match.start(), start + rhs_match.end(), rhs_match.group(1).strip()))
+    return assignments
+
+
+def _extract_var_assignments(var_name, run_text):
+    """Return every RHS assigned to `var_name` at command position in `run_text`."""
+    return [rhs for _, _, rhs in _extract_var_assignments_with_spans(var_name, run_text)]
+
+
+def _has_non_simple_var_mutation(var_name, run_text):
+    """Detect `+=`, `read`, `for`, `let`, or `((...))` mutations of `var_name`."""
+    masked = _mask_shell_comments_and_single_quotes(run_text)
+    esc = re.escape(var_name)
+    if re.search(rf"(?<![A-Za-z0-9_]){esc}\+=", masked):
+        return True
+    if re.search(rf"\b(?:read\s+(?:-[A-Za-z]+\s+)*|for\s+){esc}\b", masked):
+        return True
+    if re.search(rf"\(\([^)]*\b{esc}\s*(?:[+\-*/%&|^]?=|\+\+|--)", masked):
+        return True
+    if re.search(rf"\blet\b[^\n;]*\b{esc}\b", masked):
+        return True
+    return False
+
+
+def _is_strictly_digit_guarded_copy(src_var, copy_start, copy_end, run_text, inherited_env):
+    """Verify `target="$src_var"` lies inside the post-digit-check arm of an immutable `src_var`."""
+    if src_var in inherited_env or _has_non_simple_var_mutation(src_var, run_text):
+        return False
+    src_assignments = _extract_var_assignments_with_spans(src_var, run_text)
+    if len(src_assignments) != 1:
+        return False
+    _, src_assign_end, _ = src_assignments[0]
+
+    masked = _mask_shell_comments_and_single_quotes(run_text)
+    case_re = re.compile(
+        r'case\s+"\$' + re.escape(src_var) + r'"\s+in\b(.*?)\besac\b',
+        re.DOTALL,
+    )
+    case_matches = list(case_re.finditer(masked))
+    if len(case_matches) != 1:
+        return False
+    case_match = case_matches[0]
+    if src_assign_end >= case_match.start():
+        return False
+
+    body_start, body_end = case_match.span(1)
+    real_body = run_text[body_start:body_end]
+    masked_body = masked[body_start:body_end]
+    if re.search(r"\bcase\b", masked_body):
+        return False
+
+    first_terminator = masked_body.find(";;")
+    if first_terminator < 0:
+        return False
+    first_arm_real = real_body[:first_terminator]
+    if not re.match(r"^\s*''\|\*\[!0-9\]\*\)", first_arm_real):
+        return False
+    if re.search(rf"\$\{{?{re.escape(src_var)}\b", first_arm_real):
+        return False
+
+    validated_region_start = body_start + first_terminator + 2
+    return validated_region_start <= copy_start and copy_end <= body_end
+
+
+def _verify_pilot_var_allowlist(var_name, run_text, inherited_env, closed_tokens, allow_int_arith):
+    """Verify every assignment to `var_name` in `run_text` is allow-listed.
+
+    Returns a list of reason strings (empty when safe).
+    """
+    reasons = []
+    if var_name in inherited_env:
+        reasons.append(f"variable ${var_name} comes from workflow/job/step env without closed mapping")
+    if _has_non_simple_var_mutation(var_name, run_text):
+        reasons.append(f"variable ${var_name} mutated via +=, read, for, let, or ((...))")
+    assignments = _extract_var_assignments_with_spans(var_name, run_text)
+    if not assignments:
+        reasons.append(f"variable ${var_name} has no local allowlisted assignment")
+        return reasons
+    for assign_start, rhs_end, rhs in assignments:
+        unquoted = rhs[1:-1] if (len(rhs) >= 2 and rhs[0] == rhs[-1] == "'") else rhs
+        if unquoted in closed_tokens and "$" not in rhs and "`" not in rhs:
+            continue
+        if allow_int_arith and re.fullmatch(r"\$\(\([A-Za-z0-9_ +*/%-]+\)\)", rhs):
+            continue
+        src_match = re.fullmatch(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', rhs)
+        if src_match and _is_strictly_digit_guarded_copy(
+            src_match.group(1), assign_start, rhs_end, run_text, inherited_env
+        ):
+            continue
+        reasons.append(f"variable ${var_name} assigned non-allowlisted RHS: {rhs}")
+    return reasons
+
+
+def pilot_gate_public_output_violations(text):
+    r"""Static regression tripwire for public output surfaces in `.github/workflows/pilot-gate.yml`.
+
+    IMPORTANT SCOPE NOTE: This guard is a static REGRESSION tripwire against
+    accidental reintroduction of untrusted/dynamic data on public GitHub output
+    surfaces in `pilot-gate.yml`. It is NOT a security boundary and NOT a proof
+    of absence of leaks.
+
+    Surfaces checked after parsing YAML (`yaml.safe_load`):
+      1. PR evidence comments (`post-pr-evidence.sh` & `pr-evidence-comment.sh`):
+         zero direct references to `pr-evidence-comment.sh` anywhere; exact 10
+         `(body_path, family)` pairs; each evidence body file may appear ONLY
+         inside its owning `post-pr-evidence.sh` step on exactly two lines (one
+         single-line single-quoted truncating `printf`/`echo > <body_path>`
+         with closed-token or strictly digit-guarded variables, followed by one
+         `post-pr-evidence.sh <body_path> "<family>"` call); no `cat`/`grep`/
+         `tail`/`head`/`sed`/`awk`/`cut` inside any `post-pr-evidence.sh` step.
+      2. `$GITHUB_STEP_SUMMARY`: no compound `{ ... } >> "$GITHUB_STEP_SUMMARY"`;
+         every write is a single-line single-quoted `echo` or `printf` with
+         closed-token, arithmetic-integer, or strictly digit-guarded variables.
+      3. Workflow commands (`::error`, `::warning`, `::notice`, `::debug`,
+         `::group`, `::endgroup`, `::add-mask`, `::set-output`, `::save-state`,
+         `::stop-commands`, case-insensitively, plus `##[...]` and `##vso[...]`):
+         detected across `run:` steps and non-`run` YAML string keys/values
+         (including workflow/job/step `env:`, `name:`, `with:`), excluding only
+         real PHP `Class::member` / `\Ns\Class::member` scope-resolution tokens
+         whose left side is a genuine class identifier path (after neutralising
+         escapes, `printf` formats, and `$` expansions) and whose right side has
+         no workflow-command `::` delimiter. Fixed-literal exemption applies
+         ONLY to standalone top-level simple-command single-quoted lowercase
+         `echo '::(error|warning|notice)::...'` or newline-terminated
+         `printf '::(error|warning|notice)::...\n'` at top-level statement
+         boundaries (`;`, `&&`, `||`, unpiped/unredirected `{ `, or shell
+         control keywords `if`/`then`/`else`/`elif`/`do`/`while`/`until`) —
+         NEVER inside `$(...)`, backticks, `<(...)`, `>(...)`, subshells `(...)`,
+         enclosing quotes, pipelines (`|`/`|&`), redirections (`>`/`<`),
+         piped/redirected compound blocks, functions captured in substitutions
+         or pipelines, heredoc bodies, or non-`run` YAML strings. Heredocs use
+         Bash delimiter quote removal (`<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF`,
+         `<<$'EOF'`, mixed quotes, multiple heredocs per line, ignoring `<<` in
+         quotes and `<<<` here-strings) and exact LF-line terminator matching
+         (`raw_line == delim` for `<<`, `raw_line.lstrip('\t') == delim` for
+         `<<-`, preserving `\r` so `EOF `, `EOF\r`, `EOF\u00a0`, leading spaces
+         on `<<` or `<<-`, and case mismatches do not terminate); heredoc
+         payload lines (including `#`-leading lines and unterminated heredoc
+         bodies) are scanned with `allow_fixed_echo=False`.
+      4. `$GITHUB_ENV`, `$GITHUB_OUTPUT`, dynamic indirection & fixture echoes:
+         `GITHUB_OUTPUT`/`GITHUB_STATE`/`GITHUB_PATH` forbidden; `eval`,
+         `${!var}`, `declare -n`, `printf -v`, `env:` aliases of GitHub command
+         files, command-substitution redirects, bare-variable `tee`, and
+         unallowlisted bare-variable shell redirects rejected; `GITHUB_ENV`
+         receives only `cat /tmp/<allowed>.env >> "$GITHUB_ENV"`; no stdout
+         dump or non-quiet `grep` of `/tmp/*.env` or `/tmp/*fixture*.log`.
+
+    Known static-analysis blind spots (disclosed, not claimed covered):
+      - Indirect scripts invoked from `run:` (`php ...`, `python3 ...`,
+        `bash ...`, `wp eval-file ...`, composite actions) inherit runner
+        environment variables and can emit workflow commands or write command
+        files internally without being parsed by this YAML guard.
+      - Split-string or computed constructions that never spell `::<command>`,
+        `##[`, `##vso[`, or `GITHUB_STEP_SUMMARY`/`GITHUB_ENV`/`GITHUB_OUTPUT`
+        contiguously in the YAML text and do not redirect through shell
+        `>`/`>>`/`tee` (for example `printf ':%s' ':ERROR::...'`,
+        `echo ':'':error::...'`, `python3 -c 'print("##" + "[error]" + x)'`,
+        character-code assembly, or
+        `open(os.environ["GITHUB_" + "STEP_SUMMARY"], "a")` in inline
+        Python/PHP), as well as whole-command execution via a shell variable
+        (`$CMD`) without `eval`, are not statically detectable here.
+      - Multi-statement file-descriptor plumbing (`exec > /tmp/file` / `exec 3>&1`
+        or background FIFO co-processes) that diverts stdout of a standalone
+        fixed `echo '::error::...'` across separate statements and later
+        concatenates it with dynamic data via `paste`/`tr` is not tracked across
+        statements (steps such as `Restore Drill` legitimately redirect whole
+        step logs via `exec > >(tee -i /tmp/restore.log) 2>&1`).
+      - Intentional friction: fixed single-quoted uppercase/mixed-case
+        `::ERROR::`/`::Error::` literals, fixed annotations with `file=/line=/title=`
+        parameters, fixed `##[group]`/`##[...]` markers, an 11th evidence family,
+        or a 5th job are rejected unless explicitly reviewed and updated.
+      - Raw workflow job logs remain public on a public repository (including
+        `tee` / `cat` / `head` stdout lines and runner-rendered step `env:`
+        headers populated via `$GITHUB_ENV`).
+    """
+    violations = []
+    doc = _yaml_parser().safe_load(text)
+    if not isinstance(doc, dict):
+        return [("YAML_ROOT", "<document>", "pilot-gate.yml did not parse to a mapping")]
+
+    workflow_env = doc.get("env") if isinstance(doc.get("env"), dict) else {}
+    workflow_env_dump = _yaml_parser().safe_dump(workflow_env, allow_unicode=True)
+    if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(workflow_env_dump):
+        violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", "<workflow-env>", workflow_env_dump[:160]))
+    if _PILOT_GITHUB_ALIAS_ENV_RE.search(workflow_env_dump):
+        violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", "<workflow-env>", workflow_env_dump[:160]))
+    for wf_str in _iter_yaml_strings(workflow_env):
+        for wf_line in wf_str.splitlines() or [wf_str]:
+            if _has_unapproved_workflow_command(wf_line, allow_fixed_echo=False):
+                violations.append(("ANNOTATION_NON_LITERAL", "<workflow-env>", wf_line[:160]))
+
+    jobs = doc.get("jobs") or {}
+    if set(jobs.keys()) != set(_PILOT_EXPECTED_JOBS.keys()):
+        violations.append((
+            "JOB_SET",
+            "<jobs>",
+            f"expected jobs {sorted(_PILOT_EXPECTED_JOBS)}, got {sorted(jobs.keys())}",
+        ))
+    for job_name, expected_needs in _PILOT_EXPECTED_JOBS.items():
+        job_obj = jobs.get(job_name)
+        if not isinstance(job_obj, dict):
+            continue
+        raw_needs = job_obj.get("needs")
+        if raw_needs is None:
+            needs_set = set()
+        elif isinstance(raw_needs, str):
+            needs_set = {raw_needs}
+        else:
+            needs_set = set(raw_needs)
+        if needs_set != expected_needs:
+            violations.append((
+                "JOB_NEEDS",
+                job_name,
+                f"expected needs={sorted(expected_needs)}, got {sorted(needs_set)}",
+            ))
+
+    seen_families = []
+
+    for job_name, job_obj in jobs.items():
+        if not isinstance(job_obj, dict):
+            continue
+        job_env = job_obj.get("env") if isinstance(job_obj.get("env"), dict) else {}
+        job_env_dump = _yaml_parser().safe_dump(job_env, allow_unicode=True)
+        if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(job_env_dump):
+            violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", job_name, job_env_dump[:160]))
+        if _PILOT_GITHUB_ALIAS_ENV_RE.search(job_env_dump):
+            violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", job_name, job_env_dump[:160]))
+        for jb_str in _iter_yaml_strings(job_env):
+            for jb_line in jb_str.splitlines() or [jb_str]:
+                if _has_unapproved_workflow_command(jb_line, allow_fixed_echo=False):
+                    violations.append(("ANNOTATION_NON_LITERAL", job_name, jb_line[:160]))
+
+        steps = job_obj.get("steps") or []
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            step_label = f"{job_name}:{step.get('name') or f'step#{index}'}"
+            step_env = step.get("env") if isinstance(step.get("env"), dict) else {}
+            step_meta = {k: v for k, v in step.items() if k != "run"}
+            step_meta_dump = _yaml_parser().safe_dump(step_meta, allow_unicode=True)
+            if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(step_meta_dump):
+                violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", step_label, step_meta_dump[:160]))
+            if _PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE.search(step_meta_dump):
+                violations.append(("GITHUB_OUTPUT_FORBIDDEN", step_label, step_meta_dump[:160]))
+            elif _PILOT_GITHUB_ALIAS_ENV_RE.search(step_meta_dump):
+                violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", step_label, step_meta_dump[:160]))
+            for meta_key in ("name", "env", "with"):
+                if meta_key not in step:
+                    continue
+                for meta_str in _iter_yaml_strings(step.get(meta_key)):
+                    for meta_line in meta_str.splitlines() or [meta_str]:
+                        if _has_unapproved_workflow_command(meta_line, allow_fixed_echo=False):
+                            violations.append(("ANNOTATION_NON_LITERAL", step_label, meta_line[:160]))
+
+            for basename, owned_path in _PILOT_EVIDENCE_BODY_BASENAME_TO_PATH.items():
+                if owned_path in step_meta_dump or basename in step_meta_dump:
+                    violations.append(("EVIDENCE_BODY_FOREIGN_STEP", step_label, owned_path))
+
+            run_text = step.get("run")
+            if not isinstance(run_text, str):
+                continue
+
+            inherited_env = {}
+            inherited_env.update(workflow_env)
+            inherited_env.update(job_env)
+            inherited_env.update(step_env)
+
+            logical = [(ln, line.strip()) for ln, line in _logical_lines(run_text) if line.strip()]
+            owned_body_path = None
+
+            # --- Surface 0: direct pr-evidence-comment.sh & dynamic indirection
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(line):
+                    violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", step_label, line[:160]))
+                if _PILOT_SHELL_EVAL_RE.search(line):
+                    violations.append(("DYNAMIC_SHELL_EVAL", step_label, line[:160]))
+                if _PILOT_VAR_INDIRECTION_RE.search(line):
+                    violations.append(("DYNAMIC_VAR_INDIRECTION", step_label, line[:160]))
+                if _PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE.search(line):
+                    violations.append(("GITHUB_OUTPUT_FORBIDDEN", step_label, line[:160]))
+                if "${{" in line and _PILOT_GITHUB_ALIAS_ENV_RE.search(line):
+                    violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", step_label, line[:160]))
+                if _PILOT_CMD_SUB_REDIRECT_RE.search(line):
+                    violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                if _PILOT_BARE_VAR_TEE_RE.search(line):
+                    violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                for redir_match in _PILOT_BARE_VAR_REDIRECT_RE.finditer(line):
+                    redir_var = redir_match.group(1) or redir_match.group(2)
+                    if redir_var in ("GITHUB_STEP_SUMMARY", "GITHUB_ENV"):
+                        continue
+                    expected_rhs = _PILOT_ALLOWED_LOCAL_REDIRECT_VARS.get(redir_var)
+                    if expected_rhs is None or redir_var in inherited_env or _has_non_simple_var_mutation(redir_var, run_text):
+                        violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                        continue
+                    local_assigns = _extract_var_assignments(redir_var, run_text)
+                    if local_assigns != [expected_rhs]:
+                        violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+
+            # --- Surface 1: post-pr-evidence.sh steps ------------------------
+            if "post-pr-evidence.sh" in run_text:
+                for _, line in logical:
+                    if not line.startswith("#") and _PILOT_EVIDENCE_READER_RE.search(line):
+                        violations.append((
+                            "EVIDENCE_FORBIDDEN_READER",
+                            step_label,
+                            line[:160],
+                        ))
+                post_indexed = [
+                    (idx, line)
+                    for idx, (_, line) in enumerate(logical)
+                    if not line.startswith("#") and "post-pr-evidence.sh" in line
+                ]
+                if len(post_indexed) != 1:
+                    violations.append((
+                        "EVIDENCE_CALL_COUNT",
+                        step_label,
+                        f"expected 1 post-pr-evidence.sh logical line, got {len(post_indexed)}",
+                    ))
+                else:
+                    post_idx, post_line = post_indexed[0]
+                    call_match = _PILOT_POST_CALL_RE.fullmatch(post_line)
+                    if not call_match:
+                        violations.append((
+                            "EVIDENCE_CALL_SHAPE",
+                            step_label,
+                            post_line[:160],
+                        ))
+                    else:
+                        body_path, family = call_match.group(1), call_match.group(2)
+                        seen_families.append(family)
+                        if _PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY.get(body_path) != family:
+                            violations.append((
+                                "EVIDENCE_BODY_FAMILY_MISMATCH",
+                                step_label,
+                                f"{body_path} -> {family}",
+                            ))
+                        else:
+                            owned_body_path = body_path
+                        body_basename = body_path.rsplit("/", 1)[-1]
+                        if re.search(r"[};)]\s*>>?\s*" + re.escape(body_path) + r"\b", run_text):
+                            violations.append((
+                                "EVIDENCE_COMPOUND_REDIRECT",
+                                step_label,
+                                body_path,
+                            ))
+                        body_refs = [
+                            (idx, line)
+                            for idx, (_, line) in enumerate(logical)
+                            if not line.startswith("#")
+                            and idx != post_idx
+                            and (body_path in line or body_basename in line)
+                        ]
+                        if not body_refs:
+                            violations.append((
+                                "EVIDENCE_BODY_MISSING_WRITER",
+                                step_label,
+                                body_path,
+                            ))
+                        elif len(body_refs) > 1:
+                            violations.append((
+                                "EVIDENCE_BODY_WRITER",
+                                step_label,
+                                f"expected exactly 1 writer line for {body_path}, got {len(body_refs)}",
+                            ))
+                        for ref_idx, ref_line in body_refs:
+                            if ref_idx > post_idx:
+                                violations.append((
+                                    "EVIDENCE_BODY_WRITER",
+                                    step_label,
+                                    f"writer/reference after post-pr-evidence.sh: {ref_line[:120]}",
+                                ))
+                            p_match = _PILOT_PRINTF_CALL_RE.fullmatch(ref_line)
+                            e_match = _PILOT_ECHO_CALL_RE.fullmatch(ref_line)
+                            if p_match and p_match.group(3) == body_path:
+                                fmt_text = p_match.group(1)
+                                if "\\n" in fmt_text[:-2]:
+                                    violations.append((
+                                        "EVIDENCE_BODY_WRITER",
+                                        step_label,
+                                        f"multi-line printf format forbidden: {ref_line[:120]}",
+                                    ))
+                                var_names = re.findall(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', p_match.group(2))
+                                for var_name in var_names:
+                                    for reason in _verify_pilot_var_allowlist(
+                                        var_name,
+                                        run_text,
+                                        inherited_env,
+                                        _PILOT_EVIDENCE_CLOSED_TOKENS,
+                                        allow_int_arith=False,
+                                    ):
+                                        violations.append((
+                                            "EVIDENCE_VAR_TAINTED",
+                                            step_label,
+                                            reason,
+                                        ))
+                            elif e_match and e_match.group(2) == body_path:
+                                pass
+                            else:
+                                violations.append((
+                                    "EVIDENCE_BODY_WRITER",
+                                    step_label,
+                                    ref_line[:160],
+                                ))
+
+            # Exclusive evidence-body ownership across ALL steps: no step may
+            # reference any evidence body file other than its own owned_body_path.
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                for basename, candidate_path in _PILOT_EVIDENCE_BODY_BASENAME_TO_PATH.items():
+                    if candidate_path == owned_body_path:
+                        continue
+                    if candidate_path in line or basename in line:
+                        violations.append((
+                            "EVIDENCE_BODY_FOREIGN_STEP",
+                            step_label,
+                            line[:160],
+                        ))
+
+            # --- Surface 2: $GITHUB_STEP_SUMMARY -----------------------------
+            if "GITHUB_STEP_SUMMARY" in run_text:
+                if re.search(r"[};)]\s*>>?\s*\"?\$GITHUB_STEP_SUMMARY\"?", run_text):
+                    violations.append((
+                        "SUMMARY_COMPOUND_REDIRECT",
+                        step_label,
+                        "compound block redirect to $GITHUB_STEP_SUMMARY",
+                    ))
+                for _, line in logical:
+                    if line.startswith("#") or "GITHUB_STEP_SUMMARY" not in line:
+                        continue
+                    s_echo = _PILOT_SUMMARY_ECHO_RE.fullmatch(line)
+                    s_printf = _PILOT_SUMMARY_PRINTF_RE.fullmatch(line)
+                    if s_echo:
+                        continue
+                    if s_printf:
+                        fmt_text = s_printf.group(1)
+                        if "\\n" in fmt_text[:-2]:
+                            violations.append((
+                                "SUMMARY_WRITER_SHAPE",
+                                step_label,
+                                f"multi-line summary printf forbidden: {line[:120]}",
+                            ))
+                        var_names = re.findall(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', s_printf.group(2))
+                        for var_name in var_names:
+                            for reason in _verify_pilot_var_allowlist(
+                                var_name,
+                                run_text,
+                                inherited_env,
+                                _PILOT_SUMMARY_CLOSED_TOKENS,
+                                allow_int_arith=True,
+                            ):
+                                violations.append((
+                                    "SUMMARY_VAR_TAINTED",
+                                    step_label,
+                                    reason,
+                                ))
+                    else:
+                        violations.append((
+                            "SUMMARY_WRITER_SHAPE",
+                            step_label,
+                            line[:160],
+                        ))
+
+            # --- Surface 3: all workflow commands (::name::, ##[, ##vso[) ----
+            units = _scan_run_units(run_text)
+            surface3_candidates = []
+            elided_buf = ""
+            elided_allow = True
+            spaced_buf = ""
+            spaced_allow = True
+            for kind, unit_line in units:
+                allow_fixed = kind == "code_top"
+                surface3_candidates.append((unit_line, allow_fixed))
+                if unit_line.endswith("\\"):
+                    before_bs = unit_line[:-1]
+                    elided_buf += before_bs
+                    elided_allow = (
+                        elided_allow
+                        and allow_fixed
+                        and before_bs.endswith((" ", "\t"))
+                    )
+                    piece = before_bs.rstrip()
+                    spaced_buf = f"{spaced_buf} {piece}".strip() if spaced_buf else piece
+                    spaced_allow = spaced_allow and allow_fixed
+                else:
+                    if elided_buf:
+                        elided_buf += unit_line
+                        surface3_candidates.append((elided_buf, elided_allow and allow_fixed))
+                        elided_buf = ""
+                        elided_allow = True
+                    if spaced_buf:
+                        joined_sp = f"{spaced_buf} {unit_line}".strip()
+                        surface3_candidates.append((joined_sp, spaced_allow and allow_fixed))
+                        spaced_buf = ""
+                        spaced_allow = True
+            if elided_buf:
+                surface3_candidates.append((elided_buf, False))
+            if spaced_buf:
+                surface3_candidates.append((spaced_buf, False))
+
+            dedup_surface3 = {}
+            for cand_line, cand_allow in surface3_candidates:
+                if cand_line:
+                    dedup_surface3[cand_line] = dedup_surface3.get(cand_line, True) and cand_allow
+            for cand_line, cand_allow in dedup_surface3.items():
+                if _has_unapproved_workflow_command(cand_line, allow_fixed_echo=cand_allow):
+                    violations.append((
+                        "ANNOTATION_NON_LITERAL",
+                        step_label,
+                        cand_line[:160],
+                    ))
+            wrapped_hit = _has_piped_compound_or_captured_fn_workflow_cmd(run_text, units)
+            if wrapped_hit is not None:
+                violations.append((
+                    "ANNOTATION_NON_LITERAL",
+                    step_label,
+                    wrapped_hit,
+                ))
+
+            # --- Surface 4: $GITHUB_ENV & fixture .env / fixture.log echoes --
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                if "GITHUB_ENV" in line:
+                    env_match = _PILOT_GITHUB_ENV_APPEND_RE.fullmatch(line)
+                    if not env_match or env_match.group(1) not in _PILOT_ALLOWED_GITHUB_ENV_FILES:
+                        violations.append((
+                            "GITHUB_ENV_WRITER_SHAPE",
+                            step_label,
+                            line[:160],
+                        ))
+                    continue
+
+                for env_path in _PILOT_TMP_ENV_PATH_RE.findall(line):
+                    allowed_non_echo = (
+                        line == f"test -s {env_path}"
+                        or re.fullmatch(r"echo '[^']*'", line) is not None
+                        or re.search(r"file_put_contents\('" + re.escape(env_path) + r"'", line) is not None
+                        or re.search(r"\[(?: !)? -[fs] " + re.escape(env_path) + r"\b", line) is not None
+                        or re.fullmatch(r"grep -q '[^']+' " + re.escape(env_path), line) is not None
+                        or (
+                            f"--env-file {env_path}" in line
+                            and "pilot-safe-evidence.py" in line
+                            and ">/dev/null" in line
+                        )
+                    )
+                    if not allowed_non_echo:
+                        violations.append((
+                            "FIXTURE_ENV_STDOUT_ECHO",
+                            step_label,
+                            line[:160],
+                        ))
+
+            for _, line in logical:
+                if not line.startswith("#") and _PILOT_FIXTURE_LOG_READ_RE.search(line):
+                    violations.append((
+                        "FIXTURE_LOG_STDOUT_ECHO",
+                        step_label,
+                        line[:160],
+                    ))
+
+    if set(seen_families) != _PILOT_EVIDENCE_FAMILIES or len(seen_families) != len(_PILOT_EVIDENCE_FAMILIES):
+        violations.append((
+            "EVIDENCE_FAMILY_SET",
+            "<pilot-gate>",
+            f"expected {sorted(_PILOT_EVIDENCE_FAMILIES)}, got {seen_families}",
+        ))
+
+    return violations
+
+
+class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
+    """YAML-parsed structural guard + non-vacuity checks for pilot-gate.yml."""
+
+    def test_pilot_gate_passes_structural_public_output_guard(self):
+        violations = pilot_gate_public_output_violations(workflow("pilot-gate.yml"))
+        self.assertEqual(violations, [])
+
+    def test_guard_rejects_in_memory_cat_raw_log_in_evidence_body(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(anchor, base)
+        mutated_cat = base.replace(
+            anchor,
+            "          cat /tmp/raw.log >> /tmp/doctor-portal-evidence.md\n" + anchor,
+            1,
+        )
+        violations_cat = pilot_gate_public_output_violations(mutated_cat)
+        codes_cat = {code for code, _, _ in violations_cat}
+        self.assertEqual(
+            {"EVIDENCE_FORBIDDEN_READER", "EVIDENCE_BODY_WRITER"},
+            {"EVIDENCE_FORBIDDEN_READER", "EVIDENCE_BODY_WRITER"} & codes_cat,
+            f"expected both reader and writer violations, got {violations_cat}",
+        )
+
+        # Also verify variable-tainted printf into an evidence body is rejected.
+        var_anchor = "            verdict=PASS\n"
+        self.assertIn(var_anchor, base)
+        mutated_var = base.replace(
+            var_anchor,
+            '            verdict="$(head -n1 /tmp/doctor-portal.log)"\n',
+            1,
+        )
+        codes_var = {code for code, _, _ in pilot_gate_public_output_violations(mutated_var)}
+        self.assertIn("EVIDENCE_VAR_TAINTED", codes_var)
+
+    def test_guard_rejects_in_memory_grep_smoke_log_in_step_summary(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          printf \'workflow-smokes: %s\\n\' "$smoke_verdict" >> "$GITHUB_STEP_SUMMARY"'
+        self.assertIn(anchor, base)
+        mutated = base.replace(
+            anchor,
+            '          grep -E \'^(PASS|FAIL)\' /tmp/smoke.log >> "$GITHUB_STEP_SUMMARY"',
+            1,
+        )
+        violations = pilot_gate_public_output_violations(mutated)
+        codes = {code for code, _, _ in violations}
+        self.assertIn("SUMMARY_WRITER_SHAPE", codes, f"expected summary violation, got {violations}")
+
+    def test_guard_rejects_in_memory_raw_error_annotation(self):
+        base = workflow("pilot-gate.yml")
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+        mutated = base.replace(
+            anchor,
+            '            echo "::error::doctor-portal-browser failed: fail_lines=$(grep \'^FAIL\' /tmp/doctor-portal.log)"',
+            1,
+        )
+        violations = pilot_gate_public_output_violations(mutated)
+        codes = {code for code, _, _ in violations}
+        self.assertIn("ANNOTATION_NON_LITERAL", codes, f"expected annotation violation, got {violations}")
+
+    def test_guard_rejects_in_memory_github_env_and_fixture_env_echoes(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          cat /tmp/resp-public-page.env >> "$GITHUB_ENV"'
+        self.assertIn(anchor, base)
+
+        mutated_stdout_echo = base.replace(
+            anchor,
+            anchor + "\n          cat /tmp/resp-public-page.env",
+            1,
+        )
+        codes_stdout = {code for code, _, _ in pilot_gate_public_output_violations(mutated_stdout_echo)}
+        self.assertIn("FIXTURE_ENV_STDOUT_ECHO", codes_stdout)
+
+        mutated_env_echo = base.replace(
+            anchor,
+            anchor + '\n          echo "RESP_PUBLIC_PAGE=$respPermalink" >> "$GITHUB_ENV"',
+            1,
+        )
+        codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env_echo)}
+        self.assertIn("GITHUB_ENV_WRITER_SHAPE", codes_env)
+
+    def test_guard_workflow_commands_reject_concat_params_and_non_annotation_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        # Single-quoted fixed printf literal (no % format, no dynamic text) is accepted.
+        accepted_printf = base.replace(
+            anchor,
+            "            printf '::notice::doctor-portal-browser: fixed literal notice\\n'",
+            1,
+        )
+        self.assertEqual(pilot_gate_public_output_violations(accepted_printf), [])
+
+        rejected_mutations = [
+            "            echo '::error::fixed-prefix'\"$SECRET\"",
+            "            echo '::error::fixed-prefix'$SECRET",
+            "            echo '::error::fixed'; echo \"::error::$SECRET\"",
+            "            printf '::error::%s\\n' \"$SECRET\"",
+            "            echo '::error::${{ github.actor }}'",
+            "            echo \"::error file=foo.php,line=1::$SECRET\"",
+            "            echo '::error file=foo.php,line=1::fixed message'",
+            "            echo \"::warning title=leak::$SECRET\"",
+            "            echo \"::notice file=bar.php::$SECRET\"",
+            "            echo \"::debug::$SECRET\"",
+            "            echo \"::group::$SECRET\"",
+            "            echo \"::endgroup::$SECRET\"",
+            "            echo \"::add-mask::$SECRET\"",
+            "            echo \"::set-output name=leak::$SECRET\"",
+            "            echo \"::save-state name=leak::$SECRET\"",
+            "            echo \"::stop-commands::$SECRET\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_rejects_direct_pr_evidence_comment_calls_anywhere(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # 1. Direct call added in an arbitrary non-evidence step.
+        non_evidence_anchor = "          echo 'synthetic-seed: PASS' >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(non_evidence_anchor, base)
+        mutated_run = base.replace(
+            non_evidence_anchor,
+            non_evidence_anchor
+            + '\n          bash "$GITHUB_WORKSPACE/.github/scripts/pr-evidence-comment.sh" --marker pilot-extra --body-file /tmp/raw.md',
+            1,
+        )
+        codes_run = {code for code, _, _ in pilot_gate_public_output_violations(mutated_run)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_run)
+
+        # 2. Direct call replacing post-pr-evidence.sh inside an evidence step.
+        evidence_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(evidence_anchor, base)
+        mutated_replace = base.replace(
+            evidence_anchor,
+            '          bash "$GITHUB_WORKSPACE/.github/scripts/pr-evidence-comment.sh" --marker pilot-doctor-portal --body-file /tmp/doctor-portal-evidence.md',
+            1,
+        )
+        codes_replace = {code for code, _, _ in pilot_gate_public_output_violations(mutated_replace)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_replace)
+
+        # 3. Reference hidden in step env metadata.
+        env_anchor = "          FIXTURE_OUTCOME: ${{ steps.doctor_portal_fixture.outcome }}"
+        self.assertIn(env_anchor, base)
+        mutated_env = base.replace(
+            env_anchor,
+            env_anchor + "\n          COMMENT_HELPER: .github/scripts/pr-evidence-comment.sh",
+            1,
+        )
+        codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_env)
+
+    def test_guard_rejects_foreign_step_or_extra_line_writing_evidence_body(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # 1. Foreign step writing or appending to an evidence body path.
+        foreign_anchor = "          python3 bin/pilot-doctor-portal.py | tee /tmp/doctor-portal.log"
+        self.assertIn(foreign_anchor, base)
+        for foreign_write in (
+            "          echo 'pilot-doctor-portal: PASS' > /tmp/doctor-portal-evidence.md",
+            "          printf 'extra\\n' >> /tmp/resp-evidence.md",
+        ):
+            with self.subTest(foreign_write=foreign_write.strip()):
+                mutated_foreign = base.replace(foreign_anchor, foreign_anchor + "\n" + foreign_write, 1)
+                codes_foreign = {code for code, _, _ in pilot_gate_public_output_violations(mutated_foreign)}
+                self.assertIn("EVIDENCE_BODY_FOREIGN_STEP", codes_foreign)
+
+        # 2. Owning step appending or writing a second line to its own body path.
+        post_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(post_anchor, base)
+        mutated_extra_before = base.replace(
+            post_anchor,
+            "          echo 'pilot-doctor-portal: PASS' >> /tmp/doctor-portal-evidence.md\n" + post_anchor,
+            1,
+        )
+        codes_before = {code for code, _, _ in pilot_gate_public_output_violations(mutated_extra_before)}
+        self.assertIn("EVIDENCE_BODY_WRITER", codes_before)
+
+        mutated_after = base.replace(
+            post_anchor,
+            post_anchor + "\n          echo 'pilot-doctor-portal: PASS' > /tmp/doctor-portal-evidence.md",
+            1,
+        )
+        codes_after = {code for code, _, _ in pilot_gate_public_output_violations(mutated_after)}
+        self.assertIn("EVIDENCE_BODY_WRITER", codes_after)
+
+    def test_guard_rejects_eval_and_detectable_dynamic_github_file_redirection(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "          echo 'synthetic-seed: PASS' >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(anchor, base)
+
+        cases = [
+            ('          eval \'cat /tmp/seed.json >> "$GITHUB_STEP_SUMMARY"\'', "DYNAMIC_SHELL_EVAL"),
+            ('          target_var=GITHUB_STEP_SUMMARY\n          echo \'ok\' >> "${!target_var}"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          declare -n out_ref=GITHUB_ENV\n          echo "X=1" >> "$out_ref"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          printf -v dyn_target \'%s\' "/tmp/out"\n          echo \'ok\' >> "$dyn_target"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          echo "leak=1" >> "$GITHUB_OUTPUT"', "GITHUB_OUTPUT_FORBIDDEN"),
+            ('          OUT=/tmp/alias\n          echo \'ok\' >> "$OUT"', "DYNAMIC_REDIRECT_TARGET"),
+            ('          echo \'ok\' >> "$(printf /tmp/alias)"', "DYNAMIC_REDIRECT_TARGET"),
+            ('          OUT=/tmp/alias\n          echo \'ok\' | tee -a "$OUT"', "DYNAMIC_REDIRECT_TARGET"),
+        ]
+        for snippet, expected_code in cases:
+            with self.subTest(expected_code=expected_code, snippet=snippet.strip()):
+                mutated = base.replace(anchor, anchor + "\n" + snippet, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn(expected_code, codes)
+
+        env_anchor = "          SMOKE_OUTCOME: ${{ steps.workflow_smokes.outcome }}"
+        self.assertIn(env_anchor, base)
+        mutated_step_env_alias = base.replace(
+            env_anchor,
+            env_anchor + "\n          SUMMARY_ALIAS: ${{ env.GITHUB_STEP_SUMMARY }}",
+            1,
+        )
+        codes_alias = {code for code, _, _ in pilot_gate_public_output_violations(mutated_step_env_alias)}
+        self.assertIn("DYNAMIC_GITHUB_FILE_ALIAS", codes_alias)
+
+    def test_guard_rejects_numeric_case_reassignment_after_digit_check(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # Reproduce the exact case-branch reassignment bypass on `bytes` -> `safe_bytes`.
+        case_arm_anchor = (
+            "            *)\n"
+            "              if [ \"${#bytes}\" -le 10 ]; then\n"
+            "                safe_bytes=\"$bytes\""
+        )
+        self.assertIn(case_arm_anchor, base)
+        for reassign_stmt in (
+            '              bytes="$(head -n1 /tmp/raw.log)"',
+            '              export bytes="$(head -n1 /tmp/raw.log)"',
+            '              { bytes="$(head -n1 /tmp/raw.log)"; }',
+            '              bytes+="-leak"',
+        ):
+            with self.subTest(reassign_stmt=reassign_stmt.strip()):
+                mutated_reassign = base.replace(
+                    case_arm_anchor,
+                    "            *)\n"
+                    f"{reassign_stmt}\n"
+                    "              if [ \"${#bytes}\" -le 10 ]; then\n"
+                    "                safe_bytes=\"$bytes\"",
+                    1,
+                )
+                codes_reassign = {code for code, _, _ in pilot_gate_public_output_violations(mutated_reassign)}
+                self.assertIn("EVIDENCE_VAR_TAINTED", codes_reassign)
+                self.assertIn("SUMMARY_VAR_TAINTED", codes_reassign)
+
+        # Reject copying `$bytes` inside the non-digit rejection arm `''|*[!0-9]*)`.
+        reject_arm_anchor = (
+            "            ''|*[!0-9]*)\n"
+            "              safe_bytes=unavailable"
+        )
+        self.assertIn(reject_arm_anchor, base)
+        mutated_wrong_arm = base.replace(
+            reject_arm_anchor,
+            "            ''|*[!0-9]*)\n"
+            "              safe_bytes=\"$bytes\"",
+            1,
+        )
+        codes_wrong_arm = {code for code, _, _ in pilot_gate_public_output_violations(mutated_wrong_arm)}
+        self.assertIn("EVIDENCE_VAR_TAINTED", codes_wrong_arm)
+        self.assertIn("SUMMARY_VAR_TAINTED", codes_wrong_arm)
+
+        # Reject copying `$N` outside `case "$N" in ... esac`.
+        audit_anchor = "          printf 'audit-verification: PASS chain_verify=OK rows=%s\\n' \"$audit_rows\" >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(audit_anchor, base)
+        mutated_outside_case = base.replace(
+            audit_anchor,
+            "          audit_rows=\"$N\"\n" + audit_anchor,
+            1,
+        )
+        codes_outside = {code for code, _, _ in pilot_gate_public_output_violations(mutated_outside_case)}
+        self.assertIn("SUMMARY_VAR_TAINTED", codes_outside)
+
+    def test_guard_conscious_friction_rejects_extra_evidence_family_and_extra_job(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # Conscious friction: an 11th evidence family requires explicit guard review.
+        day2_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md "pilot-day2-workflows"'
+        self.assertIn(day2_anchor, base)
+        extra_family_step = (
+            day2_anchor
+            + "\n      - name: Unreviewed 11th evidence family\n"
+            + "        run: |\n"
+            + "          echo 'pilot-eleventh: PASS' > /tmp/eleventh-evidence.md\n"
+            + '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/eleventh-evidence.md "pilot-eleventh"'
+        )
+        codes_family = {
+            code for code, _, _ in pilot_gate_public_output_violations(base.replace(day2_anchor, extra_family_step, 1))
+        }
+        self.assertIn("EVIDENCE_BODY_FAMILY_MISMATCH", codes_family)
+        self.assertIn("EVIDENCE_FAMILY_SET", codes_family)
+
+        # Conscious friction: a 5th job in pilot-gate.yml requires explicit guard review.
+        extra_job_yaml = (
+            base
+            + "\n  extra-unreviewed-job:\n"
+            + "    runs-on: ubuntu-24.04\n"
+            + "    steps:\n"
+            + "      - run: echo ok\n"
+        )
+        codes_job = {code for code, _, _ in pilot_gate_public_output_violations(extra_job_yaml)}
+        self.assertIn("JOB_SET", codes_job)
+
+    def test_guard_rejects_escaped_newline_and_printf_format_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        rejected_mutations = [
+            "            printf 'x\\n::error::%s\\n' \"$VAR\"",
+            "            printf 'x\\r::error::%s\\n' \"$VAR\"",
+            "            printf 'x\\t::warning::%s\\n' \"$VAR\"",
+            "            printf '%s::error::%s' \"$A\" \"$B\"",
+            "            printf '%d::warning::%s\\n' 1 \"$B\"",
+            "            printf '%b::notice::%s\\n' '\\n' \"$B\"",
+            "            printf 'x\\n::add-mask::%s\\n' \"$VAR\"",
+            "            printf 'x\\n::stop-commands::%s\\n' \"$VAR\"",
+            "            echo $'a\\n::add-mask::'\"$VAR\"",
+            "            echo $'a\\n::stop-commands::'\"$VAR\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_rejects_var_prefix_ansic_herestring_and_heredoc_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        single_line_mutations = [
+            "            echo \"${NL}::error::$VAR\"",
+            "            echo \"$NL::error::$VAR\"",
+            "            echo \"$(printf '\\n')::error::$VAR\"",
+            "            echo $'a\\n::error::'\"$VAR\"",
+            "            cat <<< \"::error::$VAR\"",
+        ]
+        for replacement in single_line_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        heredoc_mutation = (
+            "            cat <<EOF\n"
+            "            preamble\n"
+            "            ::error::$VAR\n"
+            "            EOF"
+        )
+        codes_heredoc = {
+            code for code, _, _ in pilot_gate_public_output_violations(base.replace(anchor, heredoc_mutation, 1))
+        }
+        self.assertIn("ANNOTATION_NON_LITERAL", codes_heredoc)
+
+    def test_guard_rejects_inline_cat_tee_sed_awk_python_and_php_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        inline_emitters = [
+            "            cat /tmp/prefix.txt - <<< \"::error::$VAR\"",
+            "            printf 'x\\n::error::%s\\n' \"$VAR\" | tee /tmp/out.log",
+            "            sed \"s/^/::error::/\" /tmp/doctor-portal.log",
+            "            awk '{print \"::error::\" $0}' /tmp/doctor-portal.log",
+            "            python3 -c 'import os; print(\"::error::\" + os.environ.get(\"VAR\", \"\"))'",
+            "            python3 -c \"import os; print('x\\\\n::error::' + os.environ.get('VAR', ''))\"",
+            "            php -r 'echo \"::error::\" . getenv(\"VAR\") . \"\\n\";'",
+            "            php -r 'echo \"x\\n::error::\" . getenv(\"VAR\");'",
+        ]
+        for replacement in inline_emitters:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_accepts_namespaced_php_scope_resolution_comments_and_fixed_printf(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        wp_eval_anchor = "          wp eval-file bin/pilot-smoke.php --path=\"$WP_DIR\" --allow-root 2>&1 | tee /tmp/smoke.log"
+        self.assertIn(wp_eval_anchor, base)
+
+        accepted_edits = [
+            wp_eval_anchor + "\n          wp eval 'echo Foo::bar(), \\Foo\\Bar::baz(), \\Foo\\Bar::error(\"ok\");' --path=\"$WP_DIR\" --allow-root",
+            wp_eval_anchor + "\n          php -r 'echo Foo::bar() . \\Foo\\Bar::baz() . \\Foo\\Bar::notice(\"ok\");'",
+            wp_eval_anchor + "\n          # Guard regression comment: printf 'x\\n::error::%s\\n' \"$VAR\" must never execute",
+            wp_eval_anchor + "\n          printf '::notice::pilot-smoke: fixed literal notice\\n'",
+        ]
+        for edit_text in accepted_edits:
+            with self.subTest(edit_text=edit_text.splitlines()[-1].strip()):
+                mutated = base.replace(wp_eval_anchor, edit_text, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated), [])
+
+    def test_guard_rejects_case_variant_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        rejected_mutations = [
+            "            printf 'x\\n::ERROR::%s\\n' \"$VAR\"",
+            "            echo \"::Error::$VAR\"",
+            "            echo \"::NOTICE::$VAR\"",
+            "            echo \"::WaRnInG::$VAR\"",
+            "            echo \"::DEBUG::$VAR\"",
+            "            echo \"::GROUP::$VAR\"",
+            "            echo \"::ENDGROUP::$VAR\"",
+            "            echo \"::Add-Mask::$VAR\"",
+            "            echo \"::ADD-MASK::$VAR\"",
+            "            echo \"::SET-OUTPUT name=x::$VAR\"",
+            "            echo \"::Save-State name=x::$VAR\"",
+            "            printf 'x\\n::Stop-Commands::%s\\n' \"$VAR\"",
+            "            php -r 'echo \"::ERROR::\" . getenv(\"V\");'",
+            "            python3 -c 'import os; print(\"::ERROR::\" + os.environ.get(\"V\", \"\"))'",
+            "            cat <<< \"::ERROR::$VAR\"",
+            "            echo '::ERROR::doctor-portal-browser: fixed uppercase literal'",
+            "            echo '::Error::doctor-portal-browser: fixed mixed-case literal'",
+            "            printf '::NOTICE::doctor-portal-browser: fixed uppercase notice\\n'",
+            "            echo \"::ER\\\n            ROR::$VAR\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        heredoc_uppercase = (
+            "            cat <<EOF\n"
+            "            preamble\n"
+            "            ::ERROR::$VAR\n"
+            "            EOF"
+        )
+        with self.subTest(replacement="heredoc_uppercase"):
+            codes_heredoc = {
+                code for code, _, _ in pilot_gate_public_output_violations(base.replace(anchor, heredoc_uppercase, 1))
+            }
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_heredoc)
+
+    def test_guard_rejects_hash_bracket_and_vso_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        rejected_mutations = [
+            "            echo \"##[error]$VAR\"",
+            "            echo \"##[ERROR]$VAR\"",
+            "            printf 'x\\n##[error]%s\\n' \"$VAR\"",
+            "            echo \"##[warning]$VAR\"",
+            "            echo \"##[notice]$VAR\"",
+            "            echo \"##[debug]$VAR\"",
+            "            echo \"##[group]$VAR\"",
+            "            echo \"##[endgroup]$VAR\"",
+            "            echo \"##[command]$VAR\"",
+            "            echo \"##[section]$VAR\"",
+            "            echo \"##[add-matcher]$VAR\"",
+            "            echo \"##[remove-matcher]$VAR\"",
+            "            echo \"##[stop-commands]$VAR\"",
+            "            echo '##[group]fixed group header'",
+            "            echo \"##vso[task.logissue type=error]$VAR\"",
+            "            echo \"##VSO[task.setvariable variable=x]$VAR\"",
+            "            python3 -c 'print(\"##[error]\" + \"x\")'",
+            "            php -r 'echo \"##[error]\" . getenv(\"V\");'",
+            "            cat <<< \"##[error]$VAR\"",
+            "            cat <<< \"##vso[task.logissue type=error]$VAR\"",
+            "            echo \"##[\\\n            error]$VAR\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        heredoc_hash_bracket = (
+            "            cat <<EOF\n"
+            "            preamble\n"
+            "            ##[error]$VAR\n"
+            "            EOF"
+        )
+        with self.subTest(replacement="heredoc_hash_bracket"):
+            codes_heredoc = {
+                code for code, _, _ in pilot_gate_public_output_violations(base.replace(anchor, heredoc_hash_bracket, 1))
+            }
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_heredoc)
+
+        multiline_quote_hash_bracket = (
+            "            echo \"preamble\n"
+            "            ##[error]$VAR\""
+        )
+        with self.subTest(replacement="multiline_quote_hash_bracket"):
+            codes_multiline_quote = {
+                code
+                for code, _, _ in pilot_gate_public_output_violations(
+                    base.replace(anchor, multiline_quote_hash_bracket, 1)
+                )
+            }
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_multiline_quote)
+
+    def test_guard_rejects_hash_bracket_and_vso_in_step_and_env_metadata(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        step_env_anchor = "          SMOKE_OUTCOME: ${{ steps.workflow_smokes.outcome }}"
+        self.assertIn(step_env_anchor, base)
+        for env_addition in (
+            "\n          MARKER_PREFIX: '##[error]'",
+            "\n          VSO_PREFIX: '##vso[task.logissue type=error]'",
+            "\n          UPPER_PREFIX: '::ERROR::'",
+        ):
+            with self.subTest(scope="step.env", addition=env_addition.strip()):
+                mutated = base.replace(step_env_anchor, step_env_anchor + env_addition, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        step_name_anchor = "      - name: Post Doctor Portal evidence to PR"
+        self.assertIn(step_name_anchor, base)
+        with self.subTest(scope="step.name"):
+            mutated_name = base.replace(
+                step_name_anchor,
+                "      - name: 'Post Doctor Portal evidence to PR ##[error]'",
+                1,
+            )
+            codes_name = {code for code, _, _ in pilot_gate_public_output_violations(mutated_name)}
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_name)
+
+        step_with_anchor = "          apt-log-dir: /tmp"
+        self.assertIn(step_with_anchor, base)
+        with self.subTest(scope="step.with"):
+            mutated_with = base.replace(
+                step_with_anchor,
+                "          apt-log-dir: '/tmp/##[error]'",
+                1,
+            )
+            codes_with = {code for code, _, _ in pilot_gate_public_output_violations(mutated_with)}
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_with)
+
+        wf_env_anchor = "  DB_MAIN: cpms_main"
+        self.assertIn(wf_env_anchor, base)
+        with self.subTest(scope="workflow.env"):
+            mutated_wf_env = base.replace(
+                wf_env_anchor,
+                wf_env_anchor + "\n  WF_MARKER: '##[error]'",
+                1,
+            )
+            codes_wf_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_wf_env)}
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_wf_env)
+
+        job_env_anchor = "      DB_MAIN: cpms_main"
+        self.assertIn(job_env_anchor, base)
+        with self.subTest(scope="job.env"):
+            mutated_job_env = base.replace(
+                job_env_anchor,
+                job_env_anchor + "\n      JOB_MARKER: '##vso[task.logissue type=error]'",
+                1,
+            )
+            codes_job_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_job_env)}
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_job_env)
+
+    def test_guard_accepts_mixed_case_php_scope_resolution_and_hash_bracket_comments(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        wp_eval_anchor = "          wp eval-file bin/pilot-smoke.php --path=\"$WP_DIR\" --allow-root 2>&1 | tee /tmp/smoke.log"
+        self.assertIn(wp_eval_anchor, base)
+
+        accepted_run_edits = [
+            wp_eval_anchor + "\n          wp eval 'echo \\Foo\\Bar::Error(\"ok\"); echo Foo::NOTICE;'",
+            wp_eval_anchor + "\n          wp eval 'echo Foo::bar(), \\Foo\\Bar::baz(), \\Foo\\Bar::Error(\"ok\"), Foo::WARNING;' --path=\"$WP_DIR\" --allow-root",
+            wp_eval_anchor + "\n          # Shell comment: ##[error] and ##vso[task.logissue type=error] and ::ERROR:: are not executed",
+        ]
+        for edit_text in accepted_run_edits:
+            with self.subTest(edit_text=edit_text.splitlines()[-1].strip()):
+                mutated = base.replace(wp_eval_anchor, edit_text, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated), [])
+
+        yaml_comment_mutated = "# YAML comment mentioning ##[error] and ##vso[task.logissue type=error]\n" + base
+        self.assertEqual(pilot_gate_public_output_violations(yaml_comment_mutated), [])
+
+    def test_guard_rejects_nested_and_quoted_fixed_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        accepted_standalone = [
+            "          printf '::notice::fixed notice line\\n'\n",
+            "          printf '::warning::fixed warning line\\n'\n",
+            "          printf '::error::fixed error line\\n'\n",
+            "          if true; then echo '::notice::fixed conditional notice'; fi\n",
+        ]
+        for snippet in accepted_standalone:
+            with self.subTest(scope="accepted_standalone", snippet=snippet.strip()):
+                mutated = base.replace(anchor, anchor_block + snippet, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated), [])
+
+        nested_forms = [
+            ("cmdsub_echo", 'echo "$(echo \'::error::fixed\')$VAR"'),
+            ("backtick_echo", 'echo "`echo \'::error::fixed\'`$VAR"'),
+            ("printf_cmdsub_echo", 'printf \'%s\\n\' "$(echo \'::error::fixed\')"'),
+            ("var_capture_echo", 'x=$(echo \'::error::fixed\'); echo "$x$VAR"'),
+            ("cmdsub_printf_notice", 'echo "$(printf \'::notice::fixed\\n\')$VAR"'),
+            ("cmdsub_hash_bracket", 'echo "x$(echo \'##[error]fixed\')"'),
+        ]
+
+        for label, expr in nested_forms:
+            with self.subTest(scope="run", case=label):
+                mutated_run = base.replace(anchor, anchor_block + f"          {expr}\n", 1)
+                codes_run = {code for code, _, _ in pilot_gate_public_output_violations(mutated_run)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_run)
+
+            with self.subTest(scope="heredoc", case=label):
+                heredoc_block = (
+                    "          cat <<EOF >/dev/null\n"
+                    f"          {expr}\n"
+                    "          EOF\n"
+                )
+                mutated_hd = base.replace(anchor, anchor_block + heredoc_block, 1)
+                codes_hd = {code for code, _, _ in pilot_gate_public_output_violations(mutated_hd)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_hd)
+
+        for label, expr in nested_forms:
+            with self.subTest(scope="step.env", case=label):
+                yaml_safe = expr.replace("\\", "\\\\").replace('"', '\\"')
+                mutated_env = base.replace(
+                    anchor,
+                    "      - name: Runtime SDK contract (built ZIP, no network)\n"
+                    f'        env:\n          STEP_NESTED: "{yaml_safe}"\n'
+                    "        run: python3 tests/bin/release-runtime-contract.py\n",
+                    1,
+                )
+                codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_env)
+
+    def test_guard_heredoc_exact_bash_terminators_and_quotes(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        rejected_blocks = [
+            (
+                "trailing_space_hash_bracket",
+                "cat <<EOF\nEOF \n##[error]$VAR\nEOF\n",
+            ),
+            (
+                "trailing_space_hash_comment_payload",
+                "cat <<EOF\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "leading_spaces_on_no_dash_heredoc",
+                "cat <<EOF\n  EOF\n::error::$VAR\nEOF\n",
+            ),
+            (
+                "leading_spaces_hash_payload_on_no_dash_heredoc",
+                "cat <<EOF\n  EOF\n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "single_quoted_delim_trailing_space",
+                "cat <<'EOF'\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "double_quoted_delim_trailing_space",
+                'cat <<"EOF"\nEOF \n# ::error::$VAR\nEOF\n',
+            ),
+            (
+                "backslash_delim_trailing_space",
+                "cat <<\\EOF\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "ansic_delim_trailing_space",
+                "cat <<$'EOF'\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "two_heredocs_one_line_second_payload",
+                "cat <<EOF1 >/dev/null; cat <<'EOF2'\nok\nEOF1\n# ::error::$VAR\nEOF2\n",
+            ),
+            (
+                "unterminated_heredoc_uppercase_error",
+                "cat <<EOF\n::ERROR::$VAR\n",
+            ),
+        ]
+        for label, block_lines in rejected_blocks:
+            indented = "".join(
+                f"          {line}" for line in block_lines.splitlines(keepends=True)
+            )
+            with self.subTest(kind="rejected", case=label):
+                mutated = base.replace(anchor, anchor_block + indented, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        for cr_label, cr_payload in (
+            ("trailing_cr_hash_bracket", "##[error]$VAR"),
+            ("trailing_cr_hash_prefixed_v2", "# ::error::$VAR"),
+        ):
+            with self.subTest(kind="rejected", case=cr_label):
+                cr_step_new = (
+                    "      - name: Runtime SDK contract (built ZIP, no network)\n"
+                    '        run: "python3 tests/bin/release-runtime-contract.py\\n'
+                    f'cat <<EOF\\nEOF\\r\\n{cr_payload}\\nEOF\\n"\n'
+                )
+                mutated_cr = base.replace(anchor, cr_step_new, 1)
+                codes_cr = {code for code, _, _ in pilot_gate_public_output_violations(mutated_cr)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_cr)
+
+        accepted_blocks = [
+            (
+                "dash_heredoc_tab_indented_terminator",
+                "          cat <<-EOF >/dev/null\n"
+                "          \thello\n"
+                "          \tEOF\n"
+                "          # real shell comment after terminator: ##[error]$VAR\n",
+            ),
+            (
+                "single_quoted_delim_exact",
+                "          cat <<'EOF' >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "double_quoted_delim_exact",
+                '          cat <<"EOF" >/dev/null\n'
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "backslash_delim_exact",
+                "          cat <<\\EOF >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "ansic_delim_exact",
+                "          cat <<$'EOF' >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "two_heredocs_one_line_clean",
+                "          cat <<EOF1 >/dev/null; cat <<'EOF2' >/dev/null\n"
+                "          first body\n"
+                "          EOF1\n"
+                "          second body\n"
+                "          EOF2\n"
+                "          # real shell comment after both: ##[error]$VAR\n",
+            ),
+            (
+                "double_lt_inside_quotes_not_heredoc",
+                '          echo "bitshift <<EOF inside quotes" >/dev/null\n'
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "real_shell_comment_hash_bracket",
+                "          # shell comment with ##[error] and ::ERROR:: markers\n",
+            ),
+        ]
+        for label, block_text in accepted_blocks:
+            with self.subTest(kind="accepted", case=label):
+                mutated_ok = base.replace(anchor, anchor_block + block_text, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated_ok), [])
+
+        with self.subTest(kind="accepted", case="yaml_comment_hash_bracket"):
+            yaml_comment_doc = "# YAML comment with ##[error] marker\n" + base
+            self.assertEqual(pilot_gate_public_output_violations(yaml_comment_doc), [])
+
+    def test_guard_round5_red_team_nesting_wrappers_and_heredoc_edge_cases(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        red_team_probes = [
+            ("RT01_procsub_in", 'cat <(echo \'::error::fixed\') <(echo "$VAR") | tr -d \'\\n\''),
+            ("RT02_procsub_out", 'echo \'::error::fixed\' > >(sed "s/fixed/$VAR/")'),
+            ("RT03_subshell_pipe", '(echo \'::error::fixed\'; echo "$VAR") | tr -d \'\\n\''),
+            ("RT04_brace_pipe_single_line", '{ echo \'::error::fixed\'; echo "$VAR"; } | tr -d \'\\n\''),
+            ("RT05_brace_pipe_multiline", "{\n  echo '::error::fixed'\n  echo \"$VAR\"\n} | tr -d '\\n'"),
+            ("RT06_if_pipe_multiline", "if true; then\n  echo '::error::fixed'\nfi | tr -d '\\n'"),
+            ("RT07_pipe_xargs", 'echo \'::error::fixed\' | xargs -I{} echo "{}$VAR"'),
+            ("RT08_pipe_tee", "echo '::error::fixed' | tee /tmp/p.txt"),
+            ("RT09_pipe_cat", "echo '::error::fixed' | cat - /tmp/s.txt"),
+            ("RT10_printf_no_newline_concat", 'printf \'::error::fixed\'; echo "$VAR"'),
+            ("RT11_echo_minus_n_concat", 'echo -n \'::error::fixed\'; echo "$VAR"'),
+            ("RT12_fn_captured_in_cmdsub", "emit_p() {\n  echo '::error::fixed'\n}\necho \"$(emit_p)$VAR\""),
+            ("RT13_fn_piped", "emit_p() {\n  echo '::error::fixed'\n}\nemit_p | tr -d '\\n'"),
+            ("RT14_multiline_cmdsub", "x=$(\n  echo '::error::fixed'\n)\necho \"$x$VAR\""),
+            ("RT15_cmdsub_case_arm_paren", "x=$(case a in a) true; echo '::error::fixed';; esac)\necho \"$x$VAR\""),
+            ("RT16_adjacent_hash_not_comment", 'echo \'::error::fixed\'#"$VAR"'),
+            ("RT17_heredoc_after_and_list", "true && cat <<EOF\nEOF \n##[error]$VAR\nEOF"),
+            ("RT18_heredoc_before_pipe", "cat <<EOF | cat\nEOF \n##[error]$VAR\nEOF"),
+            ("RT19_heredoc_inside_cmdsub", 'x="$(cat <<EOF\nEOF \n##[error]$VAR\nEOF\n)"\necho "$x"'),
+            ("RT20_heredoc_nbsp_terminator", "cat <<EOF\nEOF\u00a0\n##[error]$VAR\nEOF"),
+            ("RT21_dash_heredoc_trailing_tab", "cat <<-EOF\n\tEOF\t\n##[error]$VAR\nEOF"),
+            ("RT22_dash_heredoc_leading_spaces", "cat <<-EOF\n  EOF\n##[error]$VAR\nEOF"),
+            ("RT23_heredoc_case_mismatch_terminator", "cat <<EOF\neof\n##[error]$VAR\nEOF"),
+            ("RT24_heredoc_punct_delim", "cat <<'END-MARK.1!'\nEND-MARK.1! \n##[error]$VAR\nEND-MARK.1!"),
+            ("RT25_unquoted_heredoc_bs_split", "cat <<EOF\n::ER\\\nROR::$VAR\nEOF"),
+            ("RT26_heredoc_bs_joined_fixed_echo", "tr '\\n\\\\' '  ' <<'EOF' | sed \"s/^ *echo *'//;s/' *$/$VAR/\"\necho \\\n  '::error::fixed'\nEOF"),
+            ("RT27_transitive_fn_capture", "f2() {\n  echo '::error::fixed'\n}\nf1() {\n  f2\n}\necho \"$(f1)$VAR\""),
+            ("RT28_backslash_split_echo_word", "ech\\\no '::error::fixed'"),
+        ]
+        for probe_id, snippet in red_team_probes:
+            indented = "".join(f"          {ln}\n" for ln in snippet.split("\n"))
+            with self.subTest(probe=probe_id):
+                mutated = base.replace(anchor, anchor_block + indented, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        accepted_controls = [
+            ("brace_redirect_without_workflow_cmd", '{ echo "INFO clean"; } > /tmp/clean-check.log'),
+            ("top_level_fn_invocation_only", "local_notice() {\n  echo '::notice::fixed helper'\n}\nlocal_notice"),
+            ("here_string_not_heredoc", 'cat <<<"plain text" >/dev/null\n# comment after here-string: ##[error]$VAR'),
+        ]
+        for ctrl_id, snippet in accepted_controls:
+            indented = "".join(f"          {ln}\n" for ln in snippet.split("\n"))
+            with self.subTest(control=ctrl_id):
+                mutated_ctrl = base.replace(anchor, anchor_block + indented, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated_ctrl), [])
 
 
 
