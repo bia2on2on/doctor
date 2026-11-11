@@ -1176,7 +1176,8 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
 
         doctor_setup = pilot.split("- name: Doctor Portal fixture", 1)[1].split("\n      - name:", 1)[0]
         self.assertIn('cat /tmp/doctor-portal.env >> "$GITHUB_ENV"', doctor_setup)
-        self.assertIn("grep '^DOCTOR_PORTAL_FIXTURE_OK '", doctor_setup)
+        self.assertIn("grep -q '^DOCTOR_PORTAL_FIXTURE_OK '", doctor_setup)
+        self.assertIn("Doctor Portal fixture environment loaded; values withheld.", doctor_setup)
         self.assertNotIn("log_tail=", doctor_setup)
         self.assertNotIn("tail -c", doctor_setup)
         self.assertNotIn("DOCTOR_PORTAL_PUBLIC", doctor_setup)
@@ -1196,7 +1197,9 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
         evidence = pilot.split("- name: Post Doctor Portal evidence to PR", 1)[1].split("\n      - name:", 1)[0]
         self.assertNotIn("DOCTOR_PORTAL_PUBLIC", evidence)
         self.assertNotIn("doctor-portal.env", evidence)
-        self.assertIn("DOCTOR_PORTAL_FIXTURE_OK", evidence)
+        self.assertNotIn("doctor-portal-fixture.log", evidence)
+        self.assertNotIn("doctor-portal.log", evidence)
+        self.assertIn("pilot-doctor-portal:", evidence)
 
         self.assertNotIn("FINANCE_BOARD_ACCOUNTANT_PUBLIC", finance_fixture)
         self.assertIn("FINANCE_BOARD_ACCOUNTANT_FIXTURE_OK", finance_fixture)
@@ -3213,6 +3216,497 @@ class ClassicV1RemediationPublicationContractTests(unittest.TestCase):
         self.assertNotIn(CANARY, published)
         self.assertIn("HTTP_PROFILE label=BASELINE operations=2 verdict=OK", published)
         self.assertIn("HTTP_PROFILE label=CANDIDATE operations=0 verdict=UNAVAILABLE", published)
+
+
+_PILOT_EXPECTED_JOBS = {
+    "release-artifact": set(),
+    "staging-gate": {"release-artifact"},
+    "upgrade-test": {"release-artifact"},
+    "responsive": {"release-artifact"},
+}
+
+_PILOT_EVIDENCE_FAMILIES = frozenset({
+    "pilot-inner-zip",
+    "pilot-benchmark",
+    "pilot-responsive-evidence",
+    "pilot-otp-journey",
+    "pilot-slice3-chooser",
+    "pilot-portal-cancel",
+    "pilot-portal-profile",
+    "pilot-doctor-portal",
+    "pilot-reception",
+    "pilot-day2-workflows",
+})
+
+_PILOT_ALLOWED_GITHUB_ENV_FILES = frozenset({
+    "/tmp/resp-public-page.env",
+    "/tmp/otp-journey.env",
+    "/tmp/slice3.env",
+    "/tmp/portal-cancel.env",
+    "/tmp/portal-profile.env",
+    "/tmp/doctor-portal.env",
+    "/tmp/finance-board.env",
+    "/tmp/reception.env",
+    "/tmp/reports.env",
+    "/tmp/day2-workflows.env",
+})
+
+_PILOT_EVIDENCE_CLOSED_TOKENS = frozenset({
+    "PASS",
+    "FAIL",
+    "WARN",
+    "NOT_RUN",
+    "UNAVAILABLE",
+    "unavailable",
+})
+
+_PILOT_SUMMARY_CLOSED_TOKENS = _PILOT_EVIDENCE_CLOSED_TOKENS | frozenset({
+    "CLEAN",
+    "OK",
+    "READY",
+    "ok",
+    "refused",
+    "not_probed",
+    "not_run",
+    "present_denied_403",
+    "absent",
+    "quiescence_not_reached",
+    "enqueue_refused",
+    "precheck_refused",
+    "collect_refused",
+    "aggregate_refused",
+    "unknown_refusal",
+})
+
+_PILOT_POST_CALL_RE = re.compile(
+    r'^bash "\$GITHUB_WORKSPACE/\.github/scripts/post-pr-evidence\.sh" '
+    r'(/tmp/[A-Za-z0-9._-]+\.md) "([a-z0-9-]+)"$'
+)
+_PILOT_EVIDENCE_READER_RE = re.compile(
+    _CMD_POS + r"(cat|grep|egrep|fgrep|tail|head|sed|awk|cut|paste|sort|uniq|jq|curl)(?:\s|$)"
+)
+_PILOT_PRINTF_CALL_RE = re.compile(
+    r"^printf '([^']*)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
+)
+_PILOT_ECHO_CALL_RE = re.compile(
+    r"^echo '([^']*)'\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
+)
+_PILOT_SUMMARY_ECHO_RE = re.compile(
+    r"^echo '([^']*)'\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
+)
+_PILOT_SUMMARY_PRINTF_RE = re.compile(
+    r"^printf '([^']*)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
+)
+_PILOT_ANNOTATION_TOKEN_RE = re.compile(r"::(?:error|warning|notice)::")
+_PILOT_LITERAL_ANNOTATION_FRAGMENT_RE = re.compile(
+    r"echo '::(?:error|warning|notice)::[^']*'"
+)
+_PILOT_GITHUB_ENV_APPEND_RE = re.compile(
+    r"^cat (/tmp/[A-Za-z0-9._-]+\.env) >> \"\$GITHUB_ENV\"$"
+)
+_PILOT_TMP_ENV_PATH_RE = re.compile(r"/tmp/[A-Za-z0-9._-]+\.env\b")
+_PILOT_FIXTURE_LOG_READ_RE = re.compile(
+    _CMD_POS
+    + r"(?:(?:cat|tail|head|sed|awk|cut)\b[^\n;|]*?/tmp/[A-Za-z0-9._-]*fixture[A-Za-z0-9._-]*\.log\b|"
+    + r"grep\b(?![^\n;|]*?(?:^|\s)-[A-Za-z]*q)[^\n;|]*?/tmp/[A-Za-z0-9._-]*fixture[A-Za-z0-9._-]*\.log\b)"
+)
+
+
+def _extract_var_assignments(var_name, run_text):
+    """Return every RHS assigned to `var_name` at command position in `run_text`."""
+    assignments = []
+    # Mask comment lines and single-line single-quoted literals with equal-length
+    # spaces so apostrophes in comments or `printf 'foo var=%s'` format text
+    # neither cross lines nor look like shell assignments.
+    no_comments = re.sub(r"(?m)^\s*#[^\n]*", lambda m: " " * len(m.group(0)), run_text)
+    masked = re.sub(r"'[^'\n]*'", lambda m: "'" + (" " * (len(m.group(0)) - 2)) + "'", no_comments)
+    pattern = re.compile(
+        r"(?:^|[;|&\n]|\)\s*|\b(?:then|else|do)\s+)\s*"
+        + re.escape(var_name)
+        + r"=(?!=)",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(masked):
+        start = match.end()
+        tail_real = run_text[start:]
+        rhs_match = re.match(
+            r"(\$\(\([^)\n]*\)\)|'[^'\n]*'|\"[^\"\n]*\"|[^\s;|&)\n]+)",
+            tail_real,
+        )
+        if rhs_match:
+            assignments.append(rhs_match.group(1).strip())
+    return assignments
+
+
+def _has_digit_only_case_guard(src_var, run_text):
+    case_re = re.compile(
+        r'case\s+"\$' + re.escape(src_var) + r'"\s+in\b.*?\besac\b',
+        re.DOTALL,
+    )
+    for match in case_re.finditer(run_text):
+        if "''|*[!0-9]*)" in match.group(0):
+            return True
+    return False
+
+
+def _verify_pilot_var_allowlist(var_name, run_text, step_env, closed_tokens, allow_int_arith):
+    """Verify every assignment to `var_name` in `run_text` is allow-listed.
+
+    Returns a list of reason strings (empty when safe).
+    """
+    reasons = []
+    if var_name in step_env:
+        reasons.append(f"variable ${var_name} comes from step env without closed mapping")
+    if re.search(rf"\b(?:read|for)\s+{re.escape(var_name)}\b", run_text):
+        reasons.append(f"variable ${var_name} populated by read/for loop")
+    assignments = _extract_var_assignments(var_name, run_text)
+    if not assignments:
+        reasons.append(f"variable ${var_name} has no local allowlisted assignment")
+        return reasons
+    for rhs in assignments:
+        unquoted = rhs[1:-1] if (len(rhs) >= 2 and rhs[0] == rhs[-1] == "'") else rhs
+        if unquoted in closed_tokens and "$" not in rhs and "`" not in rhs:
+            continue
+        if allow_int_arith and re.fullmatch(r"\$\(\([A-Za-z0-9_ +*/%-]+\)\)", rhs):
+            continue
+        src_match = re.fullmatch(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', rhs)
+        if src_match and _has_digit_only_case_guard(src_match.group(1), run_text):
+            continue
+        reasons.append(f"variable ${var_name} assigned non-allowlisted RHS: {rhs}")
+    return reasons
+
+
+def pilot_gate_public_output_violations(text):
+    """Structural YAML guard for public output surfaces in `.github/workflows/pilot-gate.yml`.
+
+    Surfaces checked after parsing YAML (`yaml.safe_load`):
+      1. `post-pr-evidence.sh` steps: exact 10 families; body path must be a
+         literal `/tmp/*.md` written only by single-quoted `printf`/`echo`
+         whose interpolated variables come exclusively from closed token sets
+         or POSIX digit-validated `case` guards; no `cat`/`grep`/`tail`/`head`/
+         `sed`/`awk`/`cut` inside any `post-pr-evidence.sh` step.
+      2. `$GITHUB_STEP_SUMMARY`: no compound `{ ... } >> "$GITHUB_STEP_SUMMARY"`;
+         every write is a single-quoted `echo` or `printf` with closed-token,
+         arithmetic-integer, or digit-validated variables only.
+      3. `::error::` / `::warning::` / `::notice::`: single-quoted fixed literal
+         `echo '::...::...'` only; no variable or command interpolation.
+      4. `$GITHUB_ENV` & fixture `.env`/log echoes: `GITHUB_ENV` receives only
+         `cat /tmp/<allowed>.env >> "$GITHUB_ENV"`; no `echo`/`printf` to
+         `$GITHUB_ENV`; no stdout dump or non-quiet `grep` of `/tmp/*.env` or
+         `/tmp/*fixture*.log`.
+
+    Known static-analysis blind spots (disclosed, not claimed covered):
+      - Indirect scripts invoked from `run:` (`php ...`, `python3 ...`,
+        `bash ...`, composite actions) are not parsed by this YAML guard; a
+        script that itself writes to `$GITHUB_STEP_SUMMARY`, `$GITHUB_ENV`,
+        annotations, or PR comments would bypass workflow-level inspection.
+      - Dynamic command construction (`eval`, variable-held command names or
+        variable-held file paths such as `OUT=$GITHUB_STEP_SUMMARY; cat x >> "$OUT"`)
+        is not taint-tracked across arbitrary aliases.
+      - Raw workflow job logs remain public on a public repository (including
+        runner-rendered step `env:` headers populated via `$GITHUB_ENV` and
+        stdout from helper scripts).
+    """
+    violations = []
+    doc = _yaml_parser().safe_load(text)
+    if not isinstance(doc, dict):
+        return [("YAML_ROOT", "<document>", "pilot-gate.yml did not parse to a mapping")]
+
+    jobs = doc.get("jobs") or {}
+    if set(jobs.keys()) != set(_PILOT_EXPECTED_JOBS.keys()):
+        violations.append((
+            "JOB_SET",
+            "<jobs>",
+            f"expected jobs {sorted(_PILOT_EXPECTED_JOBS)}, got {sorted(jobs.keys())}",
+        ))
+    for job_name, expected_needs in _PILOT_EXPECTED_JOBS.items():
+        job_obj = jobs.get(job_name)
+        if not isinstance(job_obj, dict):
+            continue
+        raw_needs = job_obj.get("needs")
+        if raw_needs is None:
+            needs_set = set()
+        elif isinstance(raw_needs, str):
+            needs_set = {raw_needs}
+        else:
+            needs_set = set(raw_needs)
+        if needs_set != expected_needs:
+            violations.append((
+                "JOB_NEEDS",
+                job_name,
+                f"expected needs={sorted(expected_needs)}, got {sorted(needs_set)}",
+            ))
+
+    seen_families = []
+
+    for job_name, job_obj in jobs.items():
+        if not isinstance(job_obj, dict):
+            continue
+        steps = job_obj.get("steps") or []
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            step_label = f"{job_name}:{step.get('name') or f'step#{index}'}"
+            run_text = step.get("run")
+            if not isinstance(run_text, str):
+                continue
+            step_env = step.get("env") or {}
+            logical = [(ln, line.strip()) for ln, line in _logical_lines(run_text) if line.strip()]
+
+            # --- Surface 1: post-pr-evidence.sh steps ------------------------
+            if "post-pr-evidence.sh" in run_text:
+                for _, line in logical:
+                    if not line.startswith("#") and _PILOT_EVIDENCE_READER_RE.search(line):
+                        violations.append((
+                            "EVIDENCE_FORBIDDEN_READER",
+                            step_label,
+                            line[:160],
+                        ))
+                post_lines = [line for _, line in logical if "post-pr-evidence.sh" in line]
+                if len(post_lines) != 1:
+                    violations.append((
+                        "EVIDENCE_CALL_COUNT",
+                        step_label,
+                        f"expected 1 post-pr-evidence.sh logical line, got {len(post_lines)}",
+                    ))
+                else:
+                    call_match = _PILOT_POST_CALL_RE.fullmatch(post_lines[0])
+                    if not call_match:
+                        violations.append((
+                            "EVIDENCE_CALL_SHAPE",
+                            step_label,
+                            post_lines[0][:160],
+                        ))
+                    else:
+                        body_path, family = call_match.group(1), call_match.group(2)
+                        seen_families.append(family)
+                        if re.search(r"[};)]\s*>>?\s*" + re.escape(body_path) + r"\b", run_text):
+                            violations.append((
+                                "EVIDENCE_COMPOUND_REDIRECT",
+                                step_label,
+                                body_path,
+                            ))
+                        body_refs = [
+                            line for _, line in logical
+                            if body_path in line and line != post_lines[0] and not line.startswith("#")
+                        ]
+                        if not body_refs:
+                            violations.append((
+                                "EVIDENCE_BODY_MISSING_WRITER",
+                                step_label,
+                                body_path,
+                            ))
+                        for ref_line in body_refs:
+                            p_match = _PILOT_PRINTF_CALL_RE.fullmatch(ref_line)
+                            e_match = _PILOT_ECHO_CALL_RE.fullmatch(ref_line)
+                            if p_match and p_match.group(3) == body_path:
+                                var_names = re.findall(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', p_match.group(2))
+                                for var_name in var_names:
+                                    for reason in _verify_pilot_var_allowlist(
+                                        var_name,
+                                        run_text,
+                                        step_env,
+                                        _PILOT_EVIDENCE_CLOSED_TOKENS,
+                                        allow_int_arith=False,
+                                    ):
+                                        violations.append((
+                                            "EVIDENCE_VAR_TAINTED",
+                                            step_label,
+                                            reason,
+                                        ))
+                            elif e_match and e_match.group(2) == body_path:
+                                pass
+                            else:
+                                violations.append((
+                                    "EVIDENCE_BODY_WRITER",
+                                    step_label,
+                                    ref_line[:160],
+                                ))
+
+            # --- Surface 2: $GITHUB_STEP_SUMMARY -----------------------------
+            if "GITHUB_STEP_SUMMARY" in run_text:
+                if re.search(r"[};)]\s*>>?\s*\"?\$GITHUB_STEP_SUMMARY\"?", run_text):
+                    violations.append((
+                        "SUMMARY_COMPOUND_REDIRECT",
+                        step_label,
+                        "compound block redirect to $GITHUB_STEP_SUMMARY",
+                    ))
+                for _, line in logical:
+                    if line.startswith("#") or "GITHUB_STEP_SUMMARY" not in line:
+                        continue
+                    s_echo = _PILOT_SUMMARY_ECHO_RE.fullmatch(line)
+                    s_printf = _PILOT_SUMMARY_PRINTF_RE.fullmatch(line)
+                    if s_echo:
+                        continue
+                    if s_printf:
+                        var_names = re.findall(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', s_printf.group(2))
+                        for var_name in var_names:
+                            for reason in _verify_pilot_var_allowlist(
+                                var_name,
+                                run_text,
+                                step_env,
+                                _PILOT_SUMMARY_CLOSED_TOKENS,
+                                allow_int_arith=True,
+                            ):
+                                violations.append((
+                                    "SUMMARY_VAR_TAINTED",
+                                    step_label,
+                                    reason,
+                                ))
+                    else:
+                        violations.append((
+                            "SUMMARY_WRITER_SHAPE",
+                            step_label,
+                            line[:160],
+                        ))
+
+            # --- Surface 3: ::error:: / ::warning:: / ::notice:: -------------
+            for raw_line in run_text.splitlines():
+                stripped = raw_line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if "::error" in stripped or "::warning" in stripped or "::notice" in stripped:
+                    scrubbed = _PILOT_LITERAL_ANNOTATION_FRAGMENT_RE.sub("", stripped)
+                    if "::error" in scrubbed or "::warning" in scrubbed or "::notice" in scrubbed or not _PILOT_ANNOTATION_TOKEN_RE.search(stripped):
+                        violations.append((
+                            "ANNOTATION_NON_LITERAL",
+                            step_label,
+                            stripped[:160],
+                        ))
+
+            # --- Surface 4: $GITHUB_ENV & fixture .env / fixture.log echoes --
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                if "GITHUB_ENV" in line:
+                    env_match = _PILOT_GITHUB_ENV_APPEND_RE.fullmatch(line)
+                    if not env_match or env_match.group(1) not in _PILOT_ALLOWED_GITHUB_ENV_FILES:
+                        violations.append((
+                            "GITHUB_ENV_WRITER_SHAPE",
+                            step_label,
+                            line[:160],
+                        ))
+                    continue
+
+                for env_path in _PILOT_TMP_ENV_PATH_RE.findall(line):
+                    allowed_non_echo = (
+                        line == f"test -s {env_path}"
+                        or re.fullmatch(r"echo '[^']*'", line) is not None
+                        or re.search(r"file_put_contents\('" + re.escape(env_path) + r"'", line) is not None
+                        or re.search(r"\[(?: !)? -[fs] " + re.escape(env_path) + r"\b", line) is not None
+                        or re.fullmatch(r"grep -q '[^']+' " + re.escape(env_path), line) is not None
+                        or (
+                            f"--env-file {env_path}" in line
+                            and "pilot-safe-evidence.py" in line
+                            and ">/dev/null" in line
+                        )
+                    )
+                    if not allowed_non_echo:
+                        violations.append((
+                            "FIXTURE_ENV_STDOUT_ECHO",
+                            step_label,
+                            line[:160],
+                        ))
+
+            for _, line in logical:
+                if not line.startswith("#") and _PILOT_FIXTURE_LOG_READ_RE.search(line):
+                    violations.append((
+                        "FIXTURE_LOG_STDOUT_ECHO",
+                        step_label,
+                        line[:160],
+                    ))
+
+    if set(seen_families) != _PILOT_EVIDENCE_FAMILIES or len(seen_families) != len(_PILOT_EVIDENCE_FAMILIES):
+        violations.append((
+            "EVIDENCE_FAMILY_SET",
+            "<pilot-gate>",
+            f"expected {sorted(_PILOT_EVIDENCE_FAMILIES)}, got {seen_families}",
+        ))
+
+    return violations
+
+
+class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
+    """YAML-parsed structural guard + non-vacuity checks for pilot-gate.yml."""
+
+    def test_pilot_gate_passes_structural_public_output_guard(self):
+        violations = pilot_gate_public_output_violations(workflow("pilot-gate.yml"))
+        self.assertEqual(violations, [])
+
+    def test_guard_rejects_in_memory_cat_raw_log_in_evidence_body(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(anchor, base)
+        mutated_cat = base.replace(
+            anchor,
+            "          cat /tmp/raw.log >> /tmp/doctor-portal-evidence.md\n" + anchor,
+            1,
+        )
+        violations_cat = pilot_gate_public_output_violations(mutated_cat)
+        codes_cat = {code for code, _, _ in violations_cat}
+        self.assertEqual(
+            {"EVIDENCE_FORBIDDEN_READER", "EVIDENCE_BODY_WRITER"},
+            {"EVIDENCE_FORBIDDEN_READER", "EVIDENCE_BODY_WRITER"} & codes_cat,
+            f"expected both reader and writer violations, got {violations_cat}",
+        )
+
+        # Also verify variable-tainted printf into an evidence body is rejected.
+        var_anchor = "            verdict=PASS\n"
+        self.assertIn(var_anchor, base)
+        mutated_var = base.replace(
+            var_anchor,
+            '            verdict="$(head -n1 /tmp/doctor-portal.log)"\n',
+            1,
+        )
+        codes_var = {code for code, _, _ in pilot_gate_public_output_violations(mutated_var)}
+        self.assertIn("EVIDENCE_VAR_TAINTED", codes_var)
+
+    def test_guard_rejects_in_memory_grep_smoke_log_in_step_summary(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          printf \'workflow-smokes: %s\\n\' "$smoke_verdict" >> "$GITHUB_STEP_SUMMARY"'
+        self.assertIn(anchor, base)
+        mutated = base.replace(
+            anchor,
+            '          grep -E \'^(PASS|FAIL)\' /tmp/smoke.log >> "$GITHUB_STEP_SUMMARY"',
+            1,
+        )
+        violations = pilot_gate_public_output_violations(mutated)
+        codes = {code for code, _, _ in violations}
+        self.assertIn("SUMMARY_WRITER_SHAPE", codes, f"expected summary violation, got {violations}")
+
+    def test_guard_rejects_in_memory_raw_error_annotation(self):
+        base = workflow("pilot-gate.yml")
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+        mutated = base.replace(
+            anchor,
+            '            echo "::error::doctor-portal-browser failed: fail_lines=$(grep \'^FAIL\' /tmp/doctor-portal.log)"',
+            1,
+        )
+        violations = pilot_gate_public_output_violations(mutated)
+        codes = {code for code, _, _ in violations}
+        self.assertIn("ANNOTATION_NON_LITERAL", codes, f"expected annotation violation, got {violations}")
+
+    def test_guard_rejects_in_memory_github_env_and_fixture_env_echoes(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          cat /tmp/resp-public-page.env >> "$GITHUB_ENV"'
+        self.assertIn(anchor, base)
+
+        mutated_stdout_echo = base.replace(
+            anchor,
+            anchor + "\n          cat /tmp/resp-public-page.env",
+            1,
+        )
+        codes_stdout = {code for code, _, _ in pilot_gate_public_output_violations(mutated_stdout_echo)}
+        self.assertIn("FIXTURE_ENV_STDOUT_ECHO", codes_stdout)
+
+        mutated_env_echo = base.replace(
+            anchor,
+            anchor + '\n          echo "RESP_PUBLIC_PAGE=$respPermalink" >> "$GITHUB_ENV"',
+            1,
+        )
+        codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env_echo)}
+        self.assertIn("GITHUB_ENV_WRITER_SHAPE", codes_env)
 
 
 
