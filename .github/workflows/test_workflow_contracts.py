@@ -945,8 +945,8 @@ class CompanionIsolationTests(unittest.TestCase):
         self.assertIn("python3 bin/pilot-bench-report.py --test", text)
         self.assertIn("working-directory: ${{ github.workspace }}/clinic-practice-management", text)
 
-    def test_all_fifteen_evidence_publishers_use_shared_fail_loud_router(self):
-        for filename, expected_count in (("closure-gate.yml", 2), ("pilot-gate.yml", 13)):
+    def test_all_twelve_evidence_publishers_use_shared_fail_loud_router(self):
+        for filename, expected_count in (("closure-gate.yml", 2), ("pilot-gate.yml", 10)):
             with self.subTest(filename=filename):
                 text = workflow(filename)
                 self.assertEqual(text.count(".github/scripts/post-pr-evidence.sh"), expected_count)
@@ -1030,12 +1030,12 @@ class CompanionIsolationTests(unittest.TestCase):
         self.assertNotIn('exit "${code}"', block, block)
         self.assertNotIn("if ! python3 .github/scripts/companion-compat/evaluate.py", block, block)
 
-    def test_failure_dump_guards_and_bounds_are_preserved(self):
+    def test_failure_dump_publication_is_removed(self):
         text = workflow("pilot-gate.yml")
-        self.assertEqual(text.count("- name: Debug dump به PR"), 3)
-        self.assertEqual(text.count("if: failure()"), 3)
-        self.assertEqual(text.count('tail -50 "$f"'), 3)
-        self.assertEqual(text.count("bash \"$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh\" /tmp/debug.md"), 3)
+        self.assertEqual(text.count("- name: Debug dump به PR"), 0)
+        self.assertEqual(text.count("if: failure()"), 0)
+        self.assertEqual(text.count('tail -50 "$f"'), 0)
+        self.assertEqual(text.count("bash \"$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh\" /tmp/debug.md"), 0)
 
     def test_closure_evidence_redacts_full_and_masked_install_identifiers(self):
         text = workflow("closure-gate.yml")
@@ -1221,6 +1221,64 @@ class SharedCommentTransportTests(unittest.TestCase):
             if re.search(r"(?m)^\s*gh pr comment ", text):
                 offenders.append(path.name)
         self.assertEqual(offenders, [], "route PR evidence through pr-evidence-comment.sh")
+
+    def test_no_workflow_posts_commit_comments_directly(self):
+        """No workflow may POST to the commit-comments endpoint.
+
+        P1/P2 published raw acceptance output (acceptance log, shell proof,
+        fixture users, login JSON, management-portal diagnostics) as commit
+        comments on a public repository. Re-adding that endpoint anywhere
+        re-opens the raw-output publication path.
+        """
+        offenders = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            if "commits/$GITHUB_SHA/comments" in text:
+                offenders.append(path.name)
+        self.assertEqual(offenders, [], "commit comments are a public raw-output channel")
+
+    def test_real_wp_acceptance_publishes_no_raw_evidence_comment(self):
+        """P1/P2 must stay removed from real-wp-acceptance.yml.
+
+        The removed steps embedded the full acceptance log, shell proof,
+        fixture users (wp user list), login JSON and management-portal
+        diagnostics into commit comments. This test fails if any of those
+        publication markers return.
+        """
+        text = workflow("real-wp-acceptance.yml")
+        for marker in (
+            "Publish evidence as commit comment",
+            "Publish Management Portal browser diagnostics",
+            "mp-diag.md",
+            "evidence-comment.md",
+            "commits/$GITHUB_SHA/comments",
+        ):
+            self.assertNotIn(marker, text, f"removed publication marker returned: {marker}")
+
+    def test_pilot_gate_publishes_no_debug_dump(self):
+        """P3/P4 must stay removed from pilot-gate.yml.
+
+        The three removed Debug dump steps published tail -50 of about 25
+        raw logs (including /tmp/leak.txt and /tmp/leak2.txt, which list
+        PHI-match hits) to PR comments. This test fails if any of those
+        publication markers return.
+        """
+        text = workflow("pilot-gate.yml")
+        for marker in (
+            "Debug dump به PR",
+            'tail -50 "$f"',
+            "/tmp/debug.md",
+            "pilot-gate-debug",
+            "pilot-responsive-debug",
+            "pilot-debug-dump",
+        ):
+            self.assertNotIn(marker, text, f"removed publication marker returned: {marker}")
+
+    def test_real_wp_acceptance_uses_least_privilege_contents(self):
+        """contents: write existed only for the removed commit comments."""
+        text = workflow("real-wp-acceptance.yml")
+        self.assertNotIn("contents: write", text)
+        self.assertIn("contents: read", text)
 
     def test_every_family_uses_a_distinct_marker(self):
         families = []

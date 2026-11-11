@@ -1392,33 +1392,6 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: failure()
-        run: |
-          {
-            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
-            echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
-                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
-              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
-            done
-            echo '--- apache diagnostics ---'
-            sudo apache2ctl configtest 2>&1 | tail -5
-            sudo service apache2 status 2>&1 | tail -3
-            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
-            sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
-            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
-            curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
-            curl -s http://localhost:8080/ 2>&1 | head -c 300; echo
-            curl -s "http://localhost:8080/?rest_route=/" 2>&1 | head -c 300; echo
-            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
-            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
-            echo '```'
-          } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-gate-debug"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1522,35 +1495,6 @@ jobs:
             echo 'current migration CLI + two safe runner repeats + tenant-aware reads: verified'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-
-      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: failure()
-        run: |
-          {
-            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
-            echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
-                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
-              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
-            done
-            echo '--- apache diagnostics ---'
-            sudo apache2ctl configtest 2>&1 | tail -5
-            sudo service apache2 status 2>&1 | tail -3
-            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
-            sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
-            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
-            curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
-            curl -s http://localhost:8080/ 2>&1 | head -c 300; echo
-            curl -s "http://localhost:8080/?rest_route=/" 2>&1 | head -c 300; echo
-            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
-            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
-            echo '```'
-          } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-responsive-debug"
 
   # ============================================================
   # 4) Responsive smoke — Chromium واقعی × 4 viewport × 4 صفحه
@@ -2497,37 +2441,6 @@ jobs:
           } > /tmp/day2-workflows-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md "pilot-day2-workflows"
 
-      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: failure()
-        run: |
-          {
-            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
-            echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
-                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log /tmp/slice3.log /tmp/slice3-fixture.log /tmp/portal-cancel.log /tmp/portal-cancel-fixture.log /tmp/portal-profile.log /tmp/portal-profile-fixture.log /tmp/doctor-portal.log /tmp/doctor-portal-fixture.log /tmp/day2-workflows-fixture.log /tmp/day2-workflows-browser.log; do
-              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
-            done
-            echo '--- apache diagnostics ---'
-            sudo apache2ctl configtest 2>&1 | tail -5
-            sudo service apache2 status 2>&1 | tail -3
-            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
-            for apache_log in /var/log/apache2/pilot-error.log /var/log/apache2/error.log; do
-              if [ -r "$apache_log" ]; then
-                for error_kind in 'PHP Fatal error' 'PHP Parse error' 'PHP Warning' 'PHP Notice' 'AH[0-9]{5}:'; do
-                  error_count="$(grep -Ec "$error_kind" "$apache_log" 2>/dev/null || true)"
-                  echo "apache_log=$(basename "$apache_log") category=$error_kind count=$error_count"
-                done
-              fi
-            done
-            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
-            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
-            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
-            echo '```'
-          } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-debug-dump"
       - uses: actions/upload-artifact@v4
         if: always() && !cancelled()
         with:
