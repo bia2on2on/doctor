@@ -101,7 +101,7 @@ function cpms_race_fail(string $code, ?\Throwable $cause = null): void
  * anything of its own.
  *
  * Descriptors are reported as classes only ("dev-null", "socket", "pipe",
- * "regular") — no paths, no link targets. The environment is reported as sorted
+ * "other" for regular files and anything else) — no paths, no link targets. The environment is reported as sorted
  * *names* only, bounded, and never as values.
  *
  * @return array<string, mixed>
@@ -145,7 +145,7 @@ function cpms_race_descriptor_probe(): array
         if (!is_string($target)) {
             continue; // already closed again (the directory handle scandir used)
         }
-        $class = 'regular';
+        $class = 'other';
         if ($target === '/dev/null') {
             $class = 'dev-null';
         } elseif (str_starts_with($target, 'socket:')) {
