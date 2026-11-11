@@ -3320,12 +3320,61 @@ _PILOT_WORKFLOW_CMD_NAMES = (
     "save-state",
     "stop-commands",
 )
-_PILOT_WORKFLOW_CMD_TOKEN_RE = re.compile(
-    r"(?<![A-Za-z0-9_\\])::(?:" + "|".join(_PILOT_WORKFLOW_CMD_NAMES) + r")\b"
+_PILOT_WORKFLOW_CMD_RAW_RE = re.compile(
+    r"::(" + "|".join(_PILOT_WORKFLOW_CMD_NAMES) + r")\b"
 )
 _PILOT_FIXED_WORKFLOW_CMD_SEGMENT_RE = re.compile(
-    r"""(?:^|(?:&&|\|\||[|;(])\s*|\{\s*)(?:echo\s+'::(?:error|warning|notice)::[^'\r\n]+'|printf\s+'::(?:error|warning|notice)::[^'%\r\n\\]+(?:\\n)?')(?=\s*(?:$|(?:&&|\|\||[;)}])))"""
+    r"""(?:^|(?:&&|\|\||[|;(])\s*|\{\s*)(?:echo\s+'(::(?:error|warning|notice)::[^'\r\n]+)'|printf\s+'(::(?:error|warning|notice)::[^'%\r\n\\]+(?:\\n)?)')(?=\s*(?:$|(?:&&|\|\||[;)}])))"""
 )
+_PILOT_WORKFLOW_CMD_NEUTRALISE_RES = (
+    re.compile(r"\$'"),
+    re.compile(
+        r"\\+(?:x[0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[0-7]{1,3}|[abefnrtv\\'\"?])(?![A-Za-z0-9_])"
+    ),
+    re.compile(
+        r"%(?:\d+\$)?[-+ #0]*(?:\d+|\*(?:\d+\$)?)?(?:\.(?:\d+|\*(?:\d+\$)?))?[hljztL]*[diouxXeEfFgGaAcspnb%]"
+    ),
+    re.compile(r"\$\{[^{}\r\n]*\}|\$\([^()\r\n]*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@#?*!$-]"),
+)
+_PILOT_PHP_CLASS_LHS_RE = re.compile(
+    r"(?<![A-Za-z0-9_$%\\])\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+_PILOT_WORKFLOW_CMD_RHS_RE = re.compile(r"^(?:::|\s+[^:;\r\n()]*::)")
+
+
+def _has_unapproved_workflow_command(line):
+    """Return True if `line` contains any unapproved GitHub Actions workflow command token."""
+    if not _PILOT_WORKFLOW_CMD_RAW_RE.search(line):
+        return False
+    if "${{" in line:
+        return True
+
+    def _strip_approved_fixed_segment(match):
+        literal = match.group(1) or match.group(2)
+        body = literal.split("::", 2)[2]
+        if _PILOT_WORKFLOW_CMD_RAW_RE.search(body):
+            return match.group(0)
+        return " " * len(match.group(0))
+
+    remainder = _PILOT_FIXED_WORKFLOW_CMD_SEGMENT_RE.sub(_strip_approved_fixed_segment, line)
+    if not _PILOT_WORKFLOW_CMD_RAW_RE.search(remainder):
+        return False
+
+    neutralised = remainder
+    for pattern in _PILOT_WORKFLOW_CMD_NEUTRALISE_RES:
+        neutralised = pattern.sub(lambda m: " " * len(m.group(0)), neutralised)
+
+    for match in _PILOT_WORKFLOW_CMD_RAW_RE.finditer(remainder):
+        cmd_name = match.group(1)
+        if "-" in cmd_name:
+            return True
+        lhs = neutralised[:match.start()]
+        rhs = remainder[match.end():]
+        if not _PILOT_PHP_CLASS_LHS_RE.search(lhs):
+            return True
+        if _PILOT_WORKFLOW_CMD_RHS_RE.match(rhs):
+            return True
+    return False
 _PILOT_SHELL_EVAL_RE = re.compile(
     _CMD_POS
     + r"(?:(?:command|builtin|env|sudo|exec)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;|&]+\s+)*eval(?:\s|$)"
@@ -3480,7 +3529,7 @@ def _verify_pilot_var_allowlist(var_name, run_text, inherited_env, closed_tokens
 
 
 def pilot_gate_public_output_violations(text):
-    """Structural YAML guard for public output surfaces in `.github/workflows/pilot-gate.yml`.
+    r"""Structural YAML guard for public output surfaces in `.github/workflows/pilot-gate.yml`.
 
     Surfaces checked after parsing YAML (`yaml.safe_load`):
       1. PR evidence comments (`post-pr-evidence.sh` & `pr-evidence-comment.sh`):
@@ -3497,12 +3546,19 @@ def pilot_gate_public_output_violations(text):
       3. Workflow commands (`::error`, `::warning`, `::notice`, `::debug`,
          `::group`, `::endgroup`, `::add-mask`, `::set-output`, `::save-state`,
          `::stop-commands`, with or without `file=/line=/title=/name=` params):
-         every command must be a standalone single-quoted fixed literal
-         `echo`/`printf` of parameterless `::(error|warning|notice)::...` with
-         zero concatenation, `${{ ... }}` expressions, `%` format specifiers,
-         or trailing arguments. Fixed annotations with `file=/line=/title=`
-         parameters, an 11th evidence family, or a 5th job are intentionally
-         rejected as conscious friction requiring explicit guard review.
+         detected wherever `::<name>` appears (including after `\n`/`\r`/`\t`/
+         hex/octal escapes, `printf` format specifiers, `${VAR}`/`$VAR`/`$(...)`
+         expansions, `$'...'` ANSI-C strings, here-strings/here-docs, and inline
+         `cat`/`tee`/`sed`/`awk`/`python3 -c`/`php -r` statements), excluding
+         only real PHP `Class::member` / `\Ns\Class::member` scope-resolution
+         tokens whose left side is a genuine class identifier path (after
+         neutralising escapes, `printf` formats, and `$` expansions) and whose
+         right side has no workflow-command `::` delimiter. Every workflow
+         command must be a standalone single-quoted fixed literal `echo`/`printf`
+         of parameterless `::(error|warning|notice)::...`. Fixed annotations
+         with `file=/line=/title=` parameters, an 11th evidence family, or a
+         5th job are intentionally rejected as conscious friction requiring
+         explicit guard review.
       4. `$GITHUB_ENV`, `$GITHUB_OUTPUT`, dynamic indirection & fixture echoes:
          `GITHUB_OUTPUT`/`GITHUB_STATE`/`GITHUB_PATH` forbidden; `eval`,
          `${!var}`, `declare -n`, `printf -v`, `env:` aliases of GitHub command
@@ -3513,13 +3569,16 @@ def pilot_gate_public_output_violations(text):
 
     Known static-analysis blind spots (disclosed, not claimed covered):
       - Indirect scripts invoked from `run:` (`php ...`, `python3 ...`,
-        `bash ...`, composite actions) inherit runner environment variables and
-        are not parsed by this YAML guard.
-      - Split-string or computed lookups that never spell the target token
-        contiguously and do not redirect through shell `>`/`>>`/`tee` (for
-        example `open(os.environ["GITHUB_" + "STEP_SUMMARY"], "a")` in inline
-        Python/PHP, or quote-split stdout prefixes such as `echo ':'':error::...'`)
-        are not statically detectable here.
+        `bash ...`, `wp eval-file ...`, composite actions) inherit runner
+        environment variables and can emit workflow commands or write command
+        files internally without being parsed by this YAML guard.
+      - Split-string or computed constructions that never spell `::<command>`
+        or `GITHUB_STEP_SUMMARY`/`GITHUB_ENV`/`GITHUB_OUTPUT` contiguously in
+        the YAML `run:` text and do not redirect through shell `>`/`>>`/`tee`
+        (for example `printf ':%s' ':error::...'`, `echo ':'':error::...'`,
+        `python3 -c 'print(":" + ":error::" + x)'`, character-code assembly, or
+        `open(os.environ["GITHUB_" + "STEP_SUMMARY"], "a")` in inline
+        Python/PHP) are not statically detectable here.
       - Raw workflow job logs remain public on a public repository (including
         `tee` / `cat` / `head` stdout lines and runner-rendered step `env:`
         headers populated via `$GITHUB_ENV`).
@@ -3800,24 +3859,18 @@ def pilot_gate_public_output_violations(text):
                         ))
 
             # --- Surface 3: all workflow commands (::name:: / ::name params::)
-            for _, line in logical:
-                if line.startswith("#"):
-                    continue
-                if _PILOT_WORKFLOW_CMD_TOKEN_RE.search(line):
-                    if "${{" in line:
-                        violations.append((
-                            "ANNOTATION_NON_LITERAL",
-                            step_label,
-                            line[:160],
-                        ))
-                        continue
-                    remainder = _PILOT_FIXED_WORKFLOW_CMD_SEGMENT_RE.sub(" ", line)
-                    if _PILOT_WORKFLOW_CMD_TOKEN_RE.search(remainder):
-                        violations.append((
-                            "ANNOTATION_NON_LITERAL",
-                            step_label,
-                            line[:160],
-                        ))
+            surface3_lines = [line for _, line in logical if not line.startswith("#")]
+            for raw_line in run_text.splitlines():
+                stripped = raw_line.strip()
+                if stripped and not stripped.startswith("#"):
+                    surface3_lines.append(stripped)
+            for candidate_line in dict.fromkeys(surface3_lines):
+                if _has_unapproved_workflow_command(candidate_line):
+                    violations.append((
+                        "ANNOTATION_NON_LITERAL",
+                        step_label,
+                        candidate_line[:160],
+                    ))
 
             # --- Surface 4: $GITHUB_ENV & fixture .env / fixture.log echoes --
             for _, line in logical:
@@ -4183,6 +4236,100 @@ class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
         )
         codes_job = {code for code, _, _ in pilot_gate_public_output_violations(extra_job_yaml)}
         self.assertIn("JOB_SET", codes_job)
+
+    def test_guard_rejects_escaped_newline_and_printf_format_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        rejected_mutations = [
+            "            printf 'x\\n::error::%s\\n' \"$VAR\"",
+            "            printf 'x\\r::error::%s\\n' \"$VAR\"",
+            "            printf 'x\\t::warning::%s\\n' \"$VAR\"",
+            "            printf '%s::error::%s' \"$A\" \"$B\"",
+            "            printf '%d::warning::%s\\n' 1 \"$B\"",
+            "            printf '%b::notice::%s\\n' '\\n' \"$B\"",
+            "            printf 'x\\n::add-mask::%s\\n' \"$VAR\"",
+            "            printf 'x\\n::stop-commands::%s\\n' \"$VAR\"",
+            "            echo $'a\\n::add-mask::'\"$VAR\"",
+            "            echo $'a\\n::stop-commands::'\"$VAR\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_rejects_var_prefix_ansic_herestring_and_heredoc_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        single_line_mutations = [
+            "            echo \"${NL}::error::$VAR\"",
+            "            echo \"$NL::error::$VAR\"",
+            "            echo \"$(printf '\\n')::error::$VAR\"",
+            "            echo $'a\\n::error::'\"$VAR\"",
+            "            cat <<< \"::error::$VAR\"",
+        ]
+        for replacement in single_line_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        heredoc_mutation = (
+            "            cat <<EOF\n"
+            "            preamble\n"
+            "            ::error::$VAR\n"
+            "            EOF"
+        )
+        codes_heredoc = {
+            code for code, _, _ in pilot_gate_public_output_violations(base.replace(anchor, heredoc_mutation, 1))
+        }
+        self.assertIn("ANNOTATION_NON_LITERAL", codes_heredoc)
+
+    def test_guard_rejects_inline_cat_tee_sed_awk_python_and_php_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        inline_emitters = [
+            "            cat /tmp/prefix.txt - <<< \"::error::$VAR\"",
+            "            printf 'x\\n::error::%s\\n' \"$VAR\" | tee /tmp/out.log",
+            "            sed \"s/^/::error::/\" /tmp/doctor-portal.log",
+            "            awk '{print \"::error::\" $0}' /tmp/doctor-portal.log",
+            "            python3 -c 'import os; print(\"::error::\" + os.environ.get(\"VAR\", \"\"))'",
+            "            python3 -c \"import os; print('x\\\\n::error::' + os.environ.get('VAR', ''))\"",
+            "            php -r 'echo \"::error::\" . getenv(\"VAR\") . \"\\n\";'",
+            "            php -r 'echo \"x\\n::error::\" . getenv(\"VAR\");'",
+        ]
+        for replacement in inline_emitters:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_accepts_namespaced_php_scope_resolution_comments_and_fixed_printf(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        wp_eval_anchor = "          wp eval-file bin/pilot-smoke.php --path=\"$WP_DIR\" --allow-root 2>&1 | tee /tmp/smoke.log"
+        self.assertIn(wp_eval_anchor, base)
+
+        accepted_edits = [
+            wp_eval_anchor + "\n          wp eval 'echo Foo::bar(), \\Foo\\Bar::baz(), \\Foo\\Bar::error(\"ok\");' --path=\"$WP_DIR\" --allow-root",
+            wp_eval_anchor + "\n          php -r 'echo Foo::bar() . \\Foo\\Bar::baz() . \\Foo\\Bar::notice(\"ok\");'",
+            wp_eval_anchor + "\n          # Guard regression comment: printf 'x\\n::error::%s\\n' \"$VAR\" must never execute",
+            wp_eval_anchor + "\n          printf '::notice::pilot-smoke: fixed literal notice\\n'",
+        ]
+        for edit_text in accepted_edits:
+            with self.subTest(edit_text=edit_text.splitlines()[-1].strip()):
+                mutated = base.replace(wp_eval_anchor, edit_text, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated), [])
 
 
 
