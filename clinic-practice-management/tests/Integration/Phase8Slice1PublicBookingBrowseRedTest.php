@@ -477,6 +477,11 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
             $html,
             'Tenant safety: the Clinic A surface must never expose a Clinic B clinician name.'
         );
+        $this->assertRawNameNotLeaked(
+            $this->clinicianRawNameOf($this->clinicianB),
+            $html,
+            'Tenant safety: the Clinic A surface must never expose a Clinic B clinician raw name.'
+        );
         self::assertStringNotContainsString(
             self::CLINICIAN_ID_ATTR . '="' . $this->clinicianB . '"',
             $html,
@@ -555,6 +560,11 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
             $this->clinicianNameOf($this->clinicianAInactive),
             $html,
             'An INACTIVE clinician must not be listed by name on the public surface.'
+        );
+        $this->assertRawNameNotLeaked(
+            $this->clinicianRawNameOf($this->clinicianAInactive),
+            $html,
+            'An INACTIVE clinician raw name must not appear on the public surface.'
         );
     }
 
@@ -1144,6 +1154,13 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
                 $context . ': a fail-closed surface must not leak clinician name "' . $name . '".'
             );
         }
+        foreach ($this->allClinicianRawNames() as $name) {
+            $this->assertRawNameNotLeaked(
+                $name,
+                $html,
+                $context . ': a fail-closed surface must not leak clinician raw name "' . $name . '".'
+            );
+        }
     }
 
     /**
@@ -1588,7 +1605,41 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         );
         self::assertIsString($name, 'precondition: clinician ' . $clinicianId . ' must exist in the fixture.');
 
-        return (string) $name;
+        // expectation synchronised with the owner-reported defect: raw stored
+        // doctor title must not be shown (install round 11). The public surface
+        // now renders the titled display label ('دکتر ...'), so the test
+        // expectation must match the published value rather than the stored one.
+        return 'دکتر ' . preg_replace( '/^Dr\.\s+/u', '', (string) $name );
+    }
+
+    /**
+     * Return the raw stored clinician name (no title applied) for negative
+     * leak assertions. The raw value may still appear in `data-search` (which
+     * is lowercased by normalize_search_text()) even when the visible name is
+     * titled, so callers must compare case-insensitively.
+     */
+    private function clinicianRawNameOf( int $clinicianId ): string {
+        global $wpdb;
+        $raw = $wpdb->get_var(
+            $wpdb->prepare( 'SELECT full_name FROM ' . $wpdb->prefix . 'cpms_clinicians WHERE id = %d', $clinicianId ) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
+        );
+        self::assertIsString( $raw, 'precondition: clinician ' . $clinicianId . ' must exist in the fixture.' );
+
+        return (string) $raw;
+    }
+
+    /**
+     * Assert a raw clinician name does not leak into the rendered HTML in any
+     * case. `data-search` is lowercased by normalize_search_text(), so a
+     * case-sensitive substring check would be vacuous; compare lowercased
+     * forms instead. Does not weaken the assertion.
+     */
+    private function assertRawNameNotLeaked( string $raw_name, string $html, string $message ): void {
+        self::assertStringNotContainsString(
+            mb_strtolower( $raw_name, 'UTF-8' ),
+            mb_strtolower( $html, 'UTF-8' ),
+            $message
+        );
     }
 
     /**
@@ -1607,6 +1658,28 @@ final class Phase8Slice1PublicBookingBrowseRedTest extends WP_UnitTestCase
         foreach ($ids as $id) {
             if ($id > 0) {
                 $names[] = $this->clinicianNameOf($id);
+            }
+        }
+        self::assertNotSame([], $names, 'precondition: the fixture must own clinicians.');
+
+        return $names;
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function allClinicianRawNames(): array {
+        $ids = [
+            $this->clinicianA,
+            $this->clinicianANoSlots,
+            $this->clinicianAInactive,
+            $this->clinicianB,
+            $this->clinicianEmptyInactive,
+        ];
+        $names = [];
+        foreach ($ids as $id) {
+            if ($id > 0) {
+                $names[] = $this->clinicianRawNameOf($id);
             }
         }
         self::assertNotSame([], $names, 'precondition: the fixture must own clinicians.');
