@@ -67,6 +67,14 @@ jobs:
         run: python3 bin/pilot-bench-report.py --test
         working-directory: ${{ github.workspace }}/clinic-practice-management
 
+      - name: Day-2 closed-vocabulary projection tests
+        # Offline and deterministic (no browser, WordPress, MySQL or network):
+        # hostile log text, CLI totality and the frozen vocabulary of the
+        # one-line Day-2 failure projection. Deliberately NOT optional; a
+        # failure fails this job like every other check above.
+        run: python3 -m unittest discover -s tests/bin -p 'test_pilot_day2_failure_report.py' -v
+        working-directory: ${{ github.workspace }}/clinic-practice-management
+
       # Fail-closed diagnostics ordering: the contract/self-test steps above can
       # fail (that failure is what fails this job), and a default `if: success()`
       # would then SKIP the actual production hardcode scan — so a red tripwire

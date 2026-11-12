@@ -3288,6 +3288,101 @@ _PILOT_SUMMARY_CLOSED_TOKENS = _PILOT_EVIDENCE_CLOSED_TOKENS | frozenset({
     "unknown_refusal",
 })
 
+# --- Day-2 browser failure projection (closed vocabulary) -------------------
+#
+# The ONE extra summary line `day2-browser-failure: ...` is the only dynamic
+# diagnostic this repository publishes about the intermittent Day-2 browser
+# failure. Its fields are produced by `bin/pilot-day2-failure-report.py` and
+# additionally re-validated in `pilot-gate.yml` by per-field `case` arms that
+# assign either a literal below or a digits-only, length-bounded copy (the same
+# shape already accepted for `safe_bytes`).
+#
+# The five journey ids of `bin/pilot-day2-workflows.py` `main()`, the seven
+# stage markers of `visible_or_diagnose()`/`hold-request`, and the sixteen
+# `read` labels of `BookingService::assert_read_succeeded()` call sites. These
+# must stay byte-identical to the projector's `JOURNEYS`/`STAGES`/`READS`; the
+# test suite asserts that, so drift fails closed instead of widening output.
+_PILOT_DAY2_JOURNEYS = (
+    "journey-A1-public",
+    "journey-A2-reschedule",
+    "journey-B-reception",
+    "journey-C-doctors",
+    "journey-D-accountant",
+)
+_PILOT_DAY2_STAGES = (
+    "otp-mobile",
+    "otp-code",
+    "hold-countdown",
+    "hold-request",
+    "confirm-btn",
+    "names-form",
+    "receipt",
+)
+_PILOT_DAY2_READS = (
+    "cancel_appointment",
+    "clinic",
+    "confirm_hold",
+    "confirm_slot",
+    "location",
+    "location_active",
+    "location_timezone",
+    "no_show_appointment",
+    "organization",
+    "organization_active",
+    "persisted_slot",
+    "reschedule_appointment",
+    "reschedule_first_slot",
+    "reschedule_second_slot",
+    "slot",
+    "staff_create_slot",
+)
+_PILOT_DAY2_CODES = ("CLINIC_BOOKING_BUSY", "other", "none")
+_PILOT_DAY2_ERRNO_CLASSES = ("deadlock", "lock_wait_timeout", "other", "unknown")
+_PILOT_DAY2_SUMMARY_CLOSED_TOKENS = frozenset(
+    _PILOT_DAY2_JOURNEYS
+    + _PILOT_DAY2_STAGES
+    + _PILOT_DAY2_READS
+    + _PILOT_DAY2_CODES
+    + _PILOT_DAY2_ERRNO_CLASSES
+    + ("none", "unrecognised")
+)
+#: Registered into the generic summary vocabulary so the existing taint check
+#: accepts these fixed literals. This widens nothing observable: every member is
+#: a frozen token, and `pilot_day2_projection_violations()` below additionally
+#: pins the exact line shape, the exact set of accepted tokens per field, and the
+#: digits-only/length-bounded copies for the integer fields.
+_PILOT_SUMMARY_CLOSED_TOKENS = _PILOT_SUMMARY_CLOSED_TOKENS | _PILOT_DAY2_SUMMARY_CLOSED_TOKENS
+
+#: The exact fixed shape of the projected summary line: the format string, then
+#: the eight `"$var"` arguments in order. Anything else is a violation.
+_PILOT_DAY2_SUMMARY_FORMAT = (
+    "day2-browser-failure: journey=%s stage=%s http=%s code=%s read=%s "
+    "errno=%s errno_class=%s elapsed_s=%s"
+)
+_PILOT_DAY2_SUMMARY_VARS = (
+    "$day2_journey_token",
+    "$day2_stage_token",
+    "$safe_day2_http",
+    "$day2_code_token",
+    "$safe_day2_read",
+    "$safe_day2_errno",
+    "$day2_errno_class",
+    "$safe_day2_elapsed",
+)
+#: Largest accepted `errno`/`elapsed_s` width; longer tokens are `unrecognised`.
+_PILOT_DAY2_INT_MAX_DIGITS = 5
+#: Largest accepted HTTP status width.
+_PILOT_DAY2_HTTP_MAX_DIGITS = 3
+#: Exact exit selection of the projection step. The step must never be able to
+#: fail the gate on its own, and must never swallow the real gate result.
+_PILOT_DAY2_SELECTIONS = (
+    "day2_journey", "day2_stage", "day2_http", "day2_code", "day2_read",
+    "day2_errno", "day2_elapsed",
+)
+_PILOT_DAY2_DIGITS_ONLY_GUARD = re.compile(
+    r"if \[ \"\$\{#([A-Za-z_][A-Za-z0-9_]*)\}\" -le ([0-9]{1,2}) \]; then"
+)
+
 _PILOT_POST_CALL_RE = re.compile(
     r'^bash "\$GITHUB_WORKSPACE/\.github/scripts/post-pr-evidence\.sh" '
     r'(/tmp/[A-Za-z0-9._-]+\.md) "([a-z0-9-]+)"$'
@@ -4641,6 +4736,264 @@ def pilot_gate_public_output_violations(text):
     return violations
 
 
+# --- Day-2 closed-vocabulary projection: dedicated structural checker -------
+#
+# `pilot_gate_public_output_violations()` proves that the Day-2 projection step's
+# `printf` arguments are fixed tokens or digits-only, length-bounded copies. That
+# is necessary but not sufficient: it cannot prove the *set* of accepted tokens
+# is the intended one, nor that a rejected value falls back to a fixed token
+# rather than being passed through. This checker pins both, field by field, and
+# it is checked against deliberately broken in-memory copies of the workflow so
+# a regression cannot pass silently.
+
+_DAY2_VAR_TO_FIELD = {
+    "$day2_journey_token": "journey",
+    "$day2_stage_token": "stage",
+    "$safe_day2_http": "http",
+    "$day2_code_token": "code",
+    "$safe_day2_read": "read",
+    "$safe_day2_errno": "errno",
+    "$day2_errno_class": "errno_class",
+    "$safe_day2_elapsed": "elapsed_s",
+}
+#: Fields whose accepted values are a closed literal set (and nothing else).
+_DAY2_ENUM_TOKENS = {
+    "journey": frozenset(_PILOT_DAY2_JOURNEYS) | {"unrecognised"},
+    "stage": frozenset(_PILOT_DAY2_STAGES) | {"none", "unrecognised"},
+    "code": frozenset(_PILOT_DAY2_CODES) | {"unrecognised"},
+    "read": frozenset(_PILOT_DAY2_READS) | {"none", "unrecognised"},
+    "errno_class": frozenset(_PILOT_DAY2_ERRNO_CLASSES),
+}
+#: Integer fields: the only *copied* values allowed, plus their digit bound.
+_DAY2_INT_TOKENS = {
+    "http": _PILOT_DAY2_HTTP_MAX_DIGITS,
+    "errno": _PILOT_DAY2_INT_MAX_DIGITS,
+    "elapsed_s": _PILOT_DAY2_INT_MAX_DIGITS,
+}
+
+
+def _day2_projection_step(text):
+    """Return the projection step's `run:` text, or None when it is absent."""
+    doc = _yaml_parser().safe_load(text)
+    if not isinstance(doc, dict):
+        return None
+    jobs = doc.get("jobs") or {}
+    job = jobs.get("responsive") if isinstance(jobs, dict) else None
+    steps = job.get("steps") if isinstance(job, dict) else None
+    if not isinstance(steps, list):
+        return None
+    found = [
+        step.get("run")
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("name"), str)
+        and step["name"].startswith("Day-2 Operational Workflows — closed-vocabulary")
+    ]
+    return found[0] if len(found) == 1 and isinstance(found[0], str) else None
+
+
+def pilot_day2_projection_violations(text):
+    """Structural, field-by-field validation of the Day-2 summary projection.
+
+    Rejects (fail closed, never widens): a missing/duplicated shape, a `printf`
+    whose format or argument order is not the fixed one, an argument that is not
+    a registered variable, an enum field that accepts a token outside its closed
+    set (or has no catch-all that assigns a fixed token), an integer field that
+    is copied without a digits-only rejection arm, without a `\${#...}` length
+    bound at or below the registered width, or with a catch-all that keeps the
+    unvalidated value.
+    """
+    violations = []
+    run_text = _day2_projection_step(text)
+    if run_text is None:
+        return [("DAY2_PROJECTION_STEP", "<responsive>", "projection step missing or duplicated")]
+
+    logical = [line.strip() for _, line in _logical_lines(run_text) if line.strip()]
+    writes = [
+        line for line in logical
+        if "GITHUB_STEP_SUMMARY" in line
+    ]
+    if len(writes) != 1:
+        return [("DAY2_SUMMARY_WRITER", "<responsive>", f"expected 1 summary writer, got {len(writes)}")]
+    writer = writes[0]
+    expected_call = (
+        "printf '" + _PILOT_DAY2_SUMMARY_FORMAT + "\\n' "
+        + " ".join('"%s"' % var for var in _PILOT_DAY2_SUMMARY_VARS)
+        + ' >> "$GITHUB_STEP_SUMMARY"'
+    )
+    # Line-continuation joining can leave doubled spaces; normalise those only.
+    # Any other difference (format, token order, extra argument) still fails.
+    normalise = lambda value: re.sub(r"[ \t]+", " ", value).strip()
+    if normalise(writer) != normalise(expected_call):
+        violations.append(("DAY2_SUMMARY_SHAPE", "<responsive>", normalise(writer)[:200]))
+        return violations
+
+    for var in _PILOT_DAY2_SUMMARY_VARS:
+        if var not in _DAY2_VAR_TO_FIELD:
+            violations.append(("DAY2_SUMMARY_VAR", var, "argument is not a registered projection variable"))
+
+    for var, field in _DAY2_VAR_TO_FIELD.items():
+        if field == "errno_class":
+            for reason in _day2_errno_class_guard(run_text, var):
+                violations.append(("DAY2_ENUM_DERIVED", field, reason))
+        elif field in _DAY2_ENUM_TOKENS:
+            assigned, catch_all = _day2_enum_arms(run_text, var)
+            expected = _DAY2_ENUM_TOKENS[field]
+            if not assigned:
+                violations.append(("DAY2_ENUM_ARMS", field, f"no case arms assign {var}"))
+                continue
+            if None in assigned:
+                violations.append((
+                    "DAY2_ENUM_DYNAMIC", field,
+                    f"{var} has an arm whose RHS is not a bare literal",
+                ))
+            extra = {value for value in assigned if value is not None} - expected
+            if extra:
+                violations.append((
+                    "DAY2_ENUM_WIDENED", field,
+                    f"accepted tokens outside the closed vocabulary: {sorted(extra)[:5]}",
+                ))
+            if not catch_all or None in catch_all:
+                violations.append((
+                    "DAY2_ENUM_CATCHALL", field,
+                    f"{var} has no fixed-token catch-all arm",
+                ))
+        else:
+            bound = _DAY2_INT_TOKENS[field]
+            for reason in _day2_int_is_strict_copy(run_text, var, bound):
+                violations.append(("DAY2_INT_GUARD", field, reason))
+
+    # The step must never mask the gate result nor invent one.
+    lowered = run_text.lower()
+    if "continue-on-error" in lowered or "|| true" in lowered:
+        violations.append(("DAY2_STEP_SWALLOW", "<responsive>", "projection step swallows failures"))
+    if "::error::" in lowered or "::warning::" in lowered or "::notice::" in lowered:
+        violations.append(("DAY2_STEP_ANNOTATION", "<responsive>", "projection step emits an annotation"))
+    if "set -e" in lowered:
+        violations.append(("DAY2_STEP_MASKING", "<responsive>", "projection step can fail the gate"))
+    return violations
+
+
+def _day2_errno_class_guard(run_text, var):
+    """`errno_class` must be derived from the validated errno, never copied.
+
+    Accepted shape (exactly one assignment per token, all inside the errno
+    `case`): ``unknown`` in the digits-only rejection arm, and
+    ``deadlock``/``lock_wait_timeout``/``other`` behind literal comparisons with
+    `$day2_errno` inside the accepting arm. No assignment may interpolate a
+    variable, so no errno value other than the three literals can be published.
+    """
+    reasons = []
+    name = var.lstrip("$")
+    assigns = _extract_var_assignments(name, run_text)
+    literals = set()
+    for rhs in assigns:
+        value = rhs.strip()
+        if re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            literals.add(value)
+        else:
+            reasons.append(f"{var} assigned a non-literal RHS: {rhs}")
+    expected = set(_PILOT_DAY2_ERRNO_CLASSES)
+    if not expected <= literals:
+        reasons.append(f"{var} is missing classes: {sorted(expected - literals)}")
+    extra = literals - expected
+    if extra:
+        reasons.append(f"{var} publishes unregistered classes: {sorted(extra)}")
+    for comparison in ("1213", "1205"):
+        if not re.search(
+            r"\[ \"\$day2_errno\" = \"" + comparison + r"\" \]",
+            run_text,
+        ):
+            reasons.append(f"{var} is not derived from the literal errno {comparison}")
+    if re.search(r"(?m)^\s*\*\).*" + re.escape(name) + r"=\$", run_text):
+        reasons.append(f"{var} has a catch-all that keeps a variable value")
+    return reasons
+
+
+def _day2_enum_arms(run_text, var):
+    """Everything `var` may end up holding, and whether a catch-all exists.
+
+    Returns ``(assigned_literals, catch_all_literals)``. Both are computed from
+    the shell text only: an arm whose RHS is not a bare literal is reported as
+    the special value ``None`` so the caller fails closed.
+    """
+    name = var.lstrip("$")
+    assigned, catch_all = set(), set()
+    for match in re.finditer(
+        r"(?m)^\s*(?P<pattern>[^\n]*?)\)\s*" + re.escape(name) + r"=(?P<rhs>[^\n]*?)\s*;;$",
+        run_text,
+    ):
+        pattern = match.group("pattern").strip()
+        rhs = match.group("rhs").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", rhs):
+            assigned.add(None)
+            if pattern == "*":
+                catch_all.add(None)
+            continue
+        assigned.add(rhs)
+        if pattern == "*":
+            catch_all.add(rhs)
+    return assigned, catch_all
+
+
+#: Each validated integer is a copy of exactly one projector field variable.
+_DAY2_COPY_SOURCES = {
+    "safe_day2_http": ("day2_http",),
+    "safe_day2_errno": ("day2_errno",),
+    "safe_day2_elapsed": ("day2_elapsed",),
+}
+
+
+def _day2_int_is_strict_copy(run_text, var, bound):
+    """Reasons why `var` is not a fixed token or a digits-bounded copy.
+
+    The accepted shape is exactly the one used for the pre-existing `bytes`
+    projection: a digits-only rejection arm that assigns the fixed token, then a
+    ``${#src}`` length bound, then the quoted copy inside the accepting arm.
+    """
+    name = var.lstrip("$")
+    reasons = []
+    assigns = _extract_var_assignments(name, run_text)
+    copies = [
+        rhs for rhs in assigns
+        if (len(rhs) >= 2 and rhs[0] == rhs[-1] == '"')
+        or rhs.startswith("unrecognised")
+    ]
+    if len(assigns) != len(copies):
+        reasons.append(f"{var} has a non-token assignment: {assigns}")
+    sources = [
+        match.group(1)
+        for match in (re.fullmatch(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', rhs) for rhs in assigns)
+        if match is not None
+    ]
+    unexpected = [src for src in sources if src not in _DAY2_COPY_SOURCES.get(name, ())]
+    if unexpected:
+        reasons.append(f"{var} copies an unexpected variable: {sorted(set(unexpected))}")
+    if not sources:
+        reasons.append(f"{var} is never a validated copy")
+        return reasons
+
+    guard = re.search(
+        r"(?m)^\s*''\|\*\[!0-9\]\*\)\s*" + re.escape(name) + r"=unrecognised(?:\s*;;|\s*$)",
+        run_text,
+    )
+    first_copy = run_text.find(name + '="$')
+    if not guard:
+        reasons.append(f"{var} has no ''|*[!0-9]*) -> unrecognised rejection arm")
+    elif first_copy >= 0 and guard.start() > first_copy:
+        reasons.append(f"{var} is copied before its digits-only rejection arm")
+
+    bounds = {}
+    for match in _PILOT_DAY2_DIGITS_ONLY_GUARD.finditer(run_text):
+        bounds.setdefault(match.group(1), []).append(int(match.group(2)))
+    for src in set(sources):
+        if src not in bounds:
+            reasons.append(f"{var} has no ${{#{src}}} length bound")
+        elif min(bounds[src]) > bound:
+            reasons.append(f"{var} length bound {min(bounds[src])} exceeds width {bound}")
+    return reasons
+
+
 class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
     """YAML-parsed structural guard + non-vacuity checks for pilot-gate.yml."""
 
@@ -5504,6 +5857,330 @@ class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
                 mutated_ctrl = base.replace(anchor, anchor_block + indented, 1)
                 self.assertEqual(pilot_gate_public_output_violations(mutated_ctrl), [])
 
+
+
+class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
+    """The published Day-2 line cannot carry anything outside its vocabulary.
+
+    Layer 1: the projector's own tests (clinic-practice-management/tests/bin/
+    test_pilot_day2_failure_report.py) prove hostile log text collapses.
+    Layer 2, here: the *workflow* can only ever pass closed tokens or
+    digits-bounded copies into the line, the accepted token set is exactly the
+    intended one per field, and the pre-existing annotation guard still rejects
+    dynamic `::error::`/`::warning::`/`::notice::`.
+    """
+
+    #: First shell line of the projection step; mutation anchor.
+    ANCHOR = (
+        '          day2_journey="$(python3 bin/pilot-day2-failure-report.py '
+        '--log /tmp/day2-workflows-browser.log --field journey)"'
+    )
+    SWALLOW_PREFIX = "          continue-on-error: true"
+    INTEGERS_GUARD_HEAD = '          case "$day2_http" in\n'
+
+    def base(self):
+        text = workflow("pilot-gate.yml")
+        self.assertIn(self.ANCHOR, text)
+        return text
+
+    def codes(self, text):
+        """Violation codes of the dedicated Day-2 projection checker."""
+        return {code for code, _, _ in pilot_day2_projection_violations(text)}
+
+    def guard_codes(self, text):
+        """Violation codes of the pre-existing pilot-gate public-output guard."""
+        return {code for code, _, _ in pilot_gate_public_output_violations(text)}
+
+    def test_pilot_gate_publishes_exactly_one_closed_day2_projection(self):
+        base = self.base()
+        self.assertEqual(pilot_day2_projection_violations(base), [])
+        self.assertEqual(base.count("day2-browser-failure: journey=%s"), 1)
+        # The projection lives in its own step, not inside the evidence-body step
+        # whose single-writer contract must stay untouched.
+        evidence_step = base.split(
+            "- name: Post Day-2 Operational Workflows evidence to PR", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("day2-browser-failure", evidence_step)
+        self.assertNotIn("pilot-day2-failure-report.py", evidence_step)
+
+    def test_ci_runs_the_projector_tests_without_swallowing_failure(self):
+        text = workflow("ci.yml")
+        self.assertIn(
+            "python3 -m unittest discover -s tests/bin "
+            "-p 'test_pilot_day2_failure_report.py' -v",
+            text,
+        )
+        block = text.split("- name: Day-2 closed-vocabulary projection tests", 1)[1]
+        block = block.split("\n      - name:", 1)[0]
+        self.assertIn("working-directory: ${{ github.workspace }}/clinic-practice-management", block)
+        for swallow in ("|| true", "continue-on-error"):
+            self.assertNotIn(swallow, block)
+
+    def test_new_tokens_are_registered_and_do_not_widen_evidence_bodies(self):
+        self.assertLessEqual(_PILOT_DAY2_SUMMARY_CLOSED_TOKENS, _PILOT_SUMMARY_CLOSED_TOKENS)
+        for token in (
+            "journey-A1-public",
+            "hold-countdown",
+            "CLINIC_BOOKING_BUSY",
+            "persisted_slot",
+            "lock_wait_timeout",
+            "unrecognised",
+        ):
+            self.assertIn(token, _PILOT_SUMMARY_CLOSED_TOKENS)
+        # Summary-only: the evidence-body vocabulary stays exactly as reviewed.
+        self.assertEqual(
+            _PILOT_EVIDENCE_CLOSED_TOKENS,
+            frozenset({"PASS", "FAIL", "WARN", "NOT_RUN", "UNAVAILABLE", "unavailable"}),
+        )
+
+    def test_token_constants_match_the_projector_vocabulary(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "day2_projector",
+            ROOT / "clinic-practice-management" / "bin" / "pilot-day2-failure-report.py",
+        )
+        projector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(projector)
+        self.assertEqual(tuple(_PILOT_DAY2_JOURNEYS), projector.JOURNEYS)
+        self.assertEqual(tuple(_PILOT_DAY2_STAGES), projector.STAGES)
+        self.assertEqual(tuple(_PILOT_DAY2_READS), projector.READS)
+        self.assertEqual(tuple(_PILOT_DAY2_CODES), projector.ENUMS["code"][:3])
+
+    def test_guard_still_rejects_dynamic_annotations(self):
+        base = self.base()
+        anchor = (
+            "            echo '::error::day2-workflows-browser: Day-2 Operational "
+            "Workflows browser acceptance failed; dynamic diagnostics withheld'"
+        )
+        self.assertIn(anchor, base)
+        replacements = (
+            '            echo "::error::day2-workflows-browser failed: $(cat /tmp/day2-workflows-browser.log)"',
+            "            printf '::error::%s\\\\n' \"$DAY2_FAIL\"",
+            '            echo "::warning::day2: $day2_journey"',
+            '            echo "::notice::day2: $safe_day2_errno"',
+            '            echo "##[error]$day2_code_token"',
+        )
+        for replacement in replacements:
+            with self.subTest(replacement=replacement.strip()[:60]):
+                mutated = base.replace(anchor, replacement, 1)
+                self.assertIn("ANNOTATION_NON_LITERAL", self.guard_codes(mutated))
+
+    def test_guard_rejects_widening_any_field_vocabulary(self):
+        base = self.base()
+        mutations = {
+            "journey": (
+                "            journey-A1-public) day2_journey_token=journey-A1-public ;;",
+                "            journey-A1-public) day2_journey_token=journey-Z9-extra ;;",
+            ),
+            "stage": (
+                "            hold-countdown) day2_stage_token=hold-countdown ;;",
+                "            hold-countdown) day2_stage_token=stage-from-log ;;",
+            ),
+            "read": (
+                "            slot) safe_day2_read=slot ;;",
+                "            slot) safe_day2_read=slot_or_anything_else ;;",
+            ),
+            "code": (
+                "            other) day2_code_token=other ;;",
+                "            other) day2_code_token=code_from_log ;;",
+            ),
+            "errno_class": (
+                "                  day2_errno_class=lock_wait_timeout",
+                "                  day2_errno_class=$day2_errno",
+            ),
+        }
+        for field, (old, new) in mutations.items():
+            with self.subTest(field=field):
+                self.assertIn(old, base)
+                codes = self.codes(base.replace(old, new, 1))
+                self.assertTrue(
+                    codes
+                    & {
+                        "DAY2_ENUM_WIDENED",
+                        "DAY2_ENUM_DYNAMIC",
+                        "DAY2_ENUM_ARMS",
+                        "DAY2_ENUM_DERIVED",
+                        "DAY2_ENUM_CATCHALL",
+                        "SUMMARY_VAR_TAINTED",
+                    },
+                    f"{field} mutation was accepted: {sorted(codes)}",
+                )
+
+    def test_guard_rejects_unvalidated_integer_paths(self):
+        base = self.base()
+        head = self.INTEGERS_GUARD_HEAD
+        self.assertIn(head + "            ''|*[!0-9]*)", base)
+        mutations = (
+            (head + "            ''|*[!0-9]*)", head + "            x-never)"),
+            ('if [ "${#day2_http}" -le 3 ]; then', "if true; then"),
+            ('"$safe_day2_errno" "$day2_errno_class"', '"$day2_errno" "$day2_errno_class"'),
+            ("                safe_day2_elapsed=unrecognised\n", "                safe_day2_elapsed=$day2_elapsed\n"),
+            ('if [ "${#day2_elapsed}" -le 5 ]; then', 'if [ "${#day2_elapsed}" -le 99 ]; then'),
+        )
+        for old, new in mutations:
+            with self.subTest(mutation=old.strip().splitlines()[-1][:50]):
+                self.assertIn(old, base)
+                codes = self.codes(base.replace(old, new, 1))
+                self.assertTrue(
+                    codes
+                    & {
+                        "DAY2_INT_GUARD",
+                        "DAY2_SUMMARY_SHAPE",
+                        "SUMMARY_VAR_TAINTED",
+                        "EVIDENCE_VAR_TAINTED",
+                        "DAY2_ENUM_DERIVED",
+                    },
+                    f"integer mutation was accepted: {sorted(codes)}",
+                )
+
+    def test_guard_rejects_shape_annotations_and_swallowing(self):
+        base = self.base()
+        shape_mutations = (
+            ("errno_class=%s elapsed_s=%s", "errno_class=%s elapsed_s=%s extra=%s"),
+            ("journey=%s stage=%s http=%s", "stage=%s journey=%s http=%s"),
+            ("day2-browser-failure: journey=", "day2-failure: journey="),
+        )
+        for old, new in shape_mutations:
+            with self.subTest(shape=old[:34]):
+                self.assertIn(old, base)
+                self.assertIn("DAY2_SUMMARY_SHAPE", self.codes(base.replace(old, new, 1)))
+
+        step_prefixes = (
+            "          echo '::warning::day2 projection degraded'",
+            self.SWALLOW_PREFIX,
+            "          set -e",
+            "          python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log || true",
+        )
+        for append in step_prefixes:
+            with self.subTest(append=append.strip()[:40]):
+                mutated = base.replace(self.ANCHOR, append + "\n" + self.ANCHOR, 1)
+                codes = self.codes(mutated)
+                self.assertTrue(
+                    codes & {"DAY2_STEP_ANNOTATION", "DAY2_STEP_SWALLOW", "DAY2_STEP_MASKING"},
+                    f"step-level mutation was accepted: {sorted(codes)}",
+                )
+
+    def test_guard_rejects_a_missing_or_duplicated_step_and_extra_writer(self):
+        base = self.base()
+        step_name = "      - name: Day-2 Operational Workflows — closed-vocabulary failure projection\n"
+        self.assertIn(step_name, base)
+        without_step = base.replace(step_name, "      - name: removed\n", 1)
+        self.assertIn("DAY2_PROJECTION_STEP", self.codes(without_step))
+
+        writer_tail = '            >> "$GITHUB_STEP_SUMMARY"\n'
+        self.assertIn(writer_tail, base)
+        extra_writer = base.replace(
+            writer_tail,
+            writer_tail
+            + "          echo 'day2-browser-failure: journey=none' >> \"$GITHUB_STEP_SUMMARY\"\n",
+            1,
+        )
+        self.assertIn("DAY2_SUMMARY_WRITER", self.codes(extra_writer))
+
+
+    # --- behavioural proof: run the real step under bash with a stubbed
+    # projector and assert the published line is closed for hostile values.
+
+    STEP_FIELDS = ("journey", "stage", "http", "code", "read", "errno", "elapsed_s")
+
+    def _run_projection_step(self, values):
+        """Execute the step's shell with a stub projector; return the summary text.
+
+        The step text is taken verbatim from pilot-gate.yml; only the
+        `--field <name>` invocations are replaced by environment stubs, so the
+        `case`/copy logic that actually runs in CI is the code under test.
+        """
+        run_text = _day2_projection_step(workflow("pilot-gate.yml"))
+        self.assertIsNotNone(run_text)
+        body = run_text
+        for field in self.STEP_FIELDS:
+            body = body.replace(
+                "$(python3 bin/pilot-day2-failure-report.py "
+                "--log /tmp/day2-workflows-browser.log --field %s)" % field,
+                "${STUB_%s:-}" % field,
+            )
+        self.assertNotIn("pilot-day2-failure-report.py", body)
+        with tempfile.TemporaryDirectory(prefix="day2-step-") as tmp:
+            script = Path(tmp) / "step.sh"
+            summary = Path(tmp) / "summary.txt"
+            script.write_text(body, encoding="utf-8")
+            env = dict(os.environ)
+            env["GITHUB_STEP_SUMMARY"] = str(summary)
+            for field in self.STEP_FIELDS:
+                env["STUB_" + field] = str(values.get(field, ""))
+            completed = subprocess.run(
+                ["bash", str(script)], capture_output=True, text=True, env=env, check=False
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stderr, "")
+            return summary.read_text(encoding="utf-8")
+
+    def test_projection_step_publishes_a_closed_line_for_legitimate_values(self):
+        cases = (
+            ({"journey": "journey-A1-public", "stage": "hold-countdown", "http": "503",
+              "code": "CLINIC_BOOKING_BUSY", "read": "slot", "errno": "1213",
+              "elapsed_s": "51"},
+             "journey=journey-A1-public stage=hold-countdown http=503 "
+             "code=CLINIC_BOOKING_BUSY read=slot errno=1213 errno_class=deadlock elapsed_s=51"),
+            ({"journey": "journey-A2-reschedule", "stage": "receipt", "http": "409",
+              "code": "other", "read": "reschedule_second_slot", "errno": "1205",
+              "elapsed_s": "7"},
+             "journey=journey-A2-reschedule stage=receipt http=409 code=other "
+             "read=reschedule_second_slot errno=1205 errno_class=lock_wait_timeout elapsed_s=7"),
+            ({"journey": "journey-B-reception", "stage": "none", "http": "unrecognised",
+              "code": "none", "read": "none", "errno": "unrecognised",
+              "elapsed_s": "unrecognised"},
+             "journey=journey-B-reception stage=none http=unrecognised code=none "
+             "read=none errno=unrecognised errno_class=unknown elapsed_s=unrecognised"),
+        )
+        for values, expected in cases:
+            with self.subTest(journey=values["journey"]):
+                published = self._run_projection_step(values)
+                self.assertEqual(published, "day2-browser-failure: " + expected + "\n")
+
+    def test_projection_step_collapses_hostile_values_at_runtime(self):
+        hostile = "x9; ::error::canary ##[error] $(id) `id` /etc/passwd"
+        cases = (
+            ({"journey": hostile, "stage": hostile, "http": "2000", "code": hostile,
+              "read": hostile, "errno": "999999", "elapsed_s": "99999999"},
+             "journey=unrecognised stage=unrecognised http=unrecognised "
+             "code=unrecognised read=unrecognised errno=unrecognised "
+             "errno_class=unknown elapsed_s=unrecognised"),
+            ({"journey": "journey-C-doctors", "stage": "none", "http": "50x",
+              "code": "other", "read": "nosuchread", "errno": "12130",
+              "elapsed_s": "00000051"},
+             "journey=journey-C-doctors stage=none http=unrecognised code=other "
+             "read=unrecognised errno=12130 errno_class=other elapsed_s=unrecognised"),
+        )
+        published = self._run_projection_step(cases[0][0])
+        self.assertEqual(published, "day2-browser-failure: " + cases[0][1] + "\n")
+        for canary in ("::error::", "##[", "$(id)", "`id`", "/etc/passwd", "canary"):
+            self.assertNotIn(canary, published)
+
+        # A canonical integer that is merely out of *length* range collapses,
+        # while any other digits-only value (e.g. errno=12130) stays a number --
+        # the errno *class* then reports `other` rather than guessing.
+        published = self._run_projection_step(cases[1][0])
+        self.assertNotIn("http=50x", published)
+        self.assertNotIn("00000051", published)
+        self.assertIn("errno=12130", published)
+        self.assertIn("errno_class=other", published)
+
+    def test_projection_step_handles_every_field_empty(self):
+        published = self._run_projection_step({})
+        self.assertEqual(
+            published,
+            "day2-browser-failure: journey=unrecognised stage=unrecognised "
+            "http=unrecognised code=unrecognised read=unrecognised "
+            "errno=unrecognised errno_class=unknown elapsed_s=unrecognised\n",
+        )
+
+    def test_checker_fails_closed_on_a_document_without_the_projection(self):
+        self.assertEqual(
+            self.codes("name: x\non: push\njobs: {}\n"),
+            {"DAY2_PROJECTION_STEP"},
+        )
 
 
 if __name__ == "__main__":
