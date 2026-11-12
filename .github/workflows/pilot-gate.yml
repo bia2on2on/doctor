@@ -82,7 +82,7 @@ jobs:
           set -Eeuo pipefail
           python3 --version
           test -f .github/scripts/companion-compat/evaluate.py || {
-            echo "::error::companion compatibility gate script is missing from ${PWD}"; exit 2; }
+            echo '::error::companion-compat-gate: compatibility gate script is missing'; exit 2; }
           # `$?` inside `if ! cmd; then` is the status of the NEGATION, i.e. always
           # 0 - so the previous form reported "failed with exit 0" and then
           # `exit 0`, turning a failed gate into a green release gate. The exit
@@ -92,7 +92,7 @@ jobs:
           GATE_EXIT=$?
           set -e
           if [ "${GATE_EXIT}" -ne 0 ]; then
-            echo "::error::companion compatibility gate failed with exit ${GATE_EXIT}"
+            echo '::error::companion-compat-gate: compatibility gate failed'
             exit "${GATE_EXIT}"
           fi
 
@@ -106,19 +106,27 @@ jobs:
           zip=dist/clinic-practice-management-1.0.0.zip
           test -f "$zip"
           bytes=$(wc -c < "$zip" | tr -d ' ')
-          sha=$(sha256sum "$zip" | cut -d' ' -f1)
-          echo "INNER_INSTALLABLE_ZIP_BYTES=$bytes"
-          echo "INNER_INSTALLABLE_ZIP_SHA256=$sha"
-          {
-            echo "### Inner installable ZIP — run ${{ github.run_id }}, head ${{ github.sha }}"
-            echo "Exact ZIP bytes: $bytes; SHA-256: $sha"
-            echo 'This is the direct `bin/build-release.sh` output, not the compressed Actions artifact.'
-            if [ "$bytes" -gt 33554432 ]; then
-              echo 'WARNING: inner ZIP exceeds the provisional 32 MiB PHP upload policy.'
-            else
-              echo 'Inner ZIP fits the provisional 32 MiB PHP upload policy (independent of the 40 MiB POST limit).'
-            fi
-          } | tee /tmp/cpms-inner-zip-evidence.md >> "$GITHUB_STEP_SUMMARY"
+          case "$bytes" in
+            ''|*[!0-9]*)
+              safe_bytes=unavailable
+              zip_policy=WARN
+              ;;
+            *)
+              if [ "${#bytes}" -le 10 ]; then
+                safe_bytes="$bytes"
+                if [ "$bytes" -gt 33554432 ]; then
+                  zip_policy=WARN
+                else
+                  zip_policy=PASS
+                fi
+              else
+                safe_bytes=unavailable
+                zip_policy=WARN
+              fi
+              ;;
+          esac
+          printf 'pilot-inner-zip: %s bytes=%s\n' "$zip_policy" "$safe_bytes" > /tmp/cpms-inner-zip-evidence.md
+          printf 'pilot-inner-zip: %s bytes=%s\n' "$zip_policy" "$safe_bytes" >> "$GITHUB_STEP_SUMMARY"
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/cpms-inner-zip-evidence.md "pilot-inner-zip"
 
       - name: Runtime SDK contract (built ZIP, no network)
@@ -138,14 +146,18 @@ jobs:
             exit 1
           fi
           echo 'ZIP policy scan: CLEAN'
-          {
-            echo '## Release Artifact'
-            echo '```'
-            echo "zip: $(du -h dist/clinic-practice-management-1.0.0.zip | cut -f1) — $(wc -l < dist/clinic-practice-management-1.0.0-manifest.txt) files"
-            cat dist/clinic-practice-management-1.0.0.zip.sha256
-            echo '```'
-            echo '### Policy: **CLEAN** — locked runtime vendor allowed; no dev/tests/.git/.env/Composer manifests/auth/cache/logs/pilot-tools/secrets'
-          } >> "$GITHUB_STEP_SUMMARY"
+          raw_manifest_lines=$(wc -l < dist/clinic-practice-management-1.0.0-manifest.txt | tr -d ' ')
+          case "$raw_manifest_lines" in
+            ''|*[!0-9]*) manifest_files=unavailable ;;
+            *)
+              if [ "${#raw_manifest_lines}" -le 7 ]; then
+                manifest_files="$raw_manifest_lines"
+              else
+                manifest_files=unavailable
+              fi
+              ;;
+          esac
+          printf 'release-artifact-policy: CLEAN manifest_files=%s\n' "$manifest_files" >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -221,27 +233,16 @@ jobs:
           python3 bin/pilot-bench-report.py --test
           python3 bin/pilot-page-overhead.py --test
           python3 bin/pilot-job-start.py --test
-          {
-            echo '### Pilot benchmark harness self-test — PASSED on this run'
-            echo '`bin/pilot-bench-report.py --test` (deterministic: no network, no WordPress, no `ab` binary) — ab parsing, report generation, honesty fields, the artifact privacy gate and the REST-visible safe evidence projection (exact allowlist field sets, fixed endpoint labels, cold|warm-only phases, fail-closed refusal of malformed/unexpected values, sentinel-absence and tamper-refusal). This runs on every gate run; the live benchmark step itself runs on pull_request, main push, schedule, and workflow_dispatch events.'
-            echo 'The Phase 17 queue-start self-test (`bin/pilot-job-start.py --test`) also proves fail-closed first-claim/retry/outcome validation, the pinned measurement label and nearest-rank stats; the live autonomous pass uses the production enqueue API and the production fast-wake path with NO tick call, while the explicit-tick control pass stays explicitly labelled and the System Cron step follows both.'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'pilot-bench-selftest: PASS' >> "$GITHUB_STEP_SUMMARY"
 
       - name: Environment specs (گزارش واقعی محیط)
         run: |
-          {
-            echo '## Staging Environment (واقعی — نه شبیه‌سازی)'
-            echo '```'
-            echo "runner:  $RUNNER_NAME ($RUNNER_OS)"
-            echo "cpu:     $(nproc) vCPU"
-            free -h | head -2
-            php -v | head -1
-            APACHE_PHP=$(ls /usr/lib/php/ | head -1); echo "apache php: $APACHE_PHP (mod_php, opcache default)"
-            mysql --version
-            apache2 -v | head -1
-            echo 'db:      mysql:8 docker (main@3306, restore@3307)'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          nproc >/dev/null
+          free -h >/dev/null
+          php -v >/dev/null
+          mysql --version >/dev/null
+          apache2 -v >/dev/null
+          echo 'staging-environment: READY' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Clean deployment از Release Artifact ----------
       - name: WordPress 7.1.3 + wp-config (production-like)
@@ -429,7 +430,7 @@ jobs:
           HEALTH_BODY="$TEMP_DIR/health.json"
           HEALTH_HTTP=$(curl -s -o "$HEALTH_BODY" -w '%{http_code}' "$WP_URL/wp-json/clinic/v1/health" || true)
           if [ "$SITE_HTTP" != "200" ] || [ "$HEALTH_HTTP" != "200" ] || ! grep -q '"ok":true' "$HEALTH_BODY"; then
-            echo "::error::autonomous measurement preconditions not met (site_http=$SITE_HTTP cpms_health_http=$HEALTH_HTTP)"; exit 1
+            echo '::error::phase17-autonomous-job-start: autonomous measurement preconditions not met'; exit 1
           fi
           # Bounded, READ-ONLY wait for WordPress's own cron spawn lock to lapse
           # naturally. A previous legitimate spawn can hold core's `doing_cron` lock for
@@ -444,42 +445,23 @@ jobs:
             [ "$LOCK_PRESENT" = "0" ] && break
             sleep 5
           done
-          LOCK_WAIT_MS=$(( ($(date +%s) - LOCK_WAIT_START) * 1000 ))
-          PRE_DIAG="DIAG workflow.site_http_status=$SITE_HTTP DIAG workflow.cpms_health_http_status=$HEALTH_HTTP DIAG workflow.doing_cron_free_wait_ms=$LOCK_WAIT_MS DIAG workflow.doing_cron_lock_present_at_enqueue=$LOCK_PRESENT "
           export CPMS_JOB_START_MODE=autonomous
           export CPMS_JOB_START_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
           export CPMS_JOB_START_RAW_PATH="$TEMP_DIR/raw.json"
           if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php enqueue >"$TEMP_DIR/enqueue.log" 2>&1; then
-            ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
-            echo "::error::synthetic job enqueue refused by the fail-closed preconditions (${PRE_DIAG}${ENQ_DIAG})"; exit 1
+            echo '::error::phase17-autonomous-job-start: synthetic job enqueue refused by fail-closed preconditions'; exit 1
           fi
-          ENQ_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/enqueue.log" | tr '\n' ' ' || true)
-          COLLECT_DIAG=''
           if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php collect >"$TEMP_DIR/collect.log" 2>&1; then
-            COLLECT_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/collect.log" | tr '\n' ' ' || true)
-            {
-              echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
-              echo "  ${PRE_DIAG}${ENQ_DIAG}${COLLECT_DIAG}"
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::warning::autonomous first-start evidence was NOT adjudicated within the bounded wait (no tick was called; minute fallback untouched) — diagnostics: ${PRE_DIAG}${ENQ_DIAG}${COLLECT_DIAG}"
-            echo 'Phase 17 autonomous job-start: NOT ADJUDICATED (bounded wait expired); published job-start block stays explicit_tick.' >> "$GITHUB_STEP_SUMMARY"
+            echo '::warning::phase17-autonomous-job-start: evidence was NOT adjudicated within the bounded wait; job-start block stays explicit_tick'
+            echo 'phase17-autonomous-job-start: NOT_ADJUDICATED fallback=explicit_tick' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          COLLECT_DIAG=$(grep -h '^DIAG ' "$TEMP_DIR/collect.log" | tr '\n' ' ' || true)
           if ! python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start-autonomous.json; then
-            {
-              echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
-              echo "  ${PRE_DIAG}${ENQ_DIAG}${COLLECT_DIAG}"
-            } >> "$GITHUB_STEP_SUMMARY"
             echo '::warning::autonomous first-start aggregate refused (fail closed) — the run-bound job-start block stays explicit_tick'
-            echo 'Phase 17 autonomous job-start: AGGREGATE REFUSED (fail closed); published job-start block stays explicit_tick.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'phase17-autonomous-job-start: AGGREGATE_REFUSED fallback=explicit_tick' >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          {
-            echo 'Phase 17 autonomous fast-wake diagnostics (fixed keys; booleans/bounded integers only):'
-            echo "  ${PRE_DIAG}${ENQ_DIAG}${COLLECT_DIAG}"
-            echo 'Phase 17 job-start sample set: autonomous (production fast-wake path only; no tick call; the same loopback pass may also run other due core cron events); first persisted claim; 100 synthetic non-PHI samples; no latency threshold.'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'phase17-autonomous-job-start: PASS sample_count=100' >> "$GITHUB_STEP_SUMMARY"
 
 
       # ---------- Phase 17 background-job first-start measurement (control) ----------
@@ -512,28 +494,26 @@ jobs:
           export CPMS_JOB_START_MODE=explicit_tick
           export CPMS_JOB_START_TOKEN="$(python3 -c 'import secrets; print(secrets.token_hex(16))')"
           export CPMS_JOB_START_RAW_PATH="$TEMP_DIR/raw.json"
-          QUIET_DIAG='not-probed'
-          ENQ_DIAG='not-run'
-          PRECHECK_DIAG='not-run'
-          TICK_DIAG='not-run'
-          COLLECT_DIAG='not-run'
-          AGG_DIAG='not-run'
+          QUIET_STATE=not_probed
+          ENQ_STATE=not_run
+          PRECHECK_STATE=not_run
+          TICK_STATE=not_run
+          COLLECT_STATE=not_run
+          AGG_STATE=not_run
 
-          diag_of() { grep -h '^DIAG ' "$1" 2>/dev/null | tr '\n' ' ' || true; }
-
-          # Fixed-key refusal: the summary and the annotation carry only the reason code.
+          # Fixed-key refusal: the summary and the annotation carry only fixed tokens.
           control_fail() {
-            {
-              echo '### Phase 17 explicit-tick control — refused (fail closed; no explicit-processing claim)'
-              echo "- refusal: $1"
-              echo "- quiescence: ${QUIET_DIAG}"
-              echo "- enqueue: ${ENQ_DIAG}"
-              echo "- precheck: ${PRECHECK_DIAG}"
-              echo "- tick: ${TICK_DIAG}"
-              echo "- collect: ${COLLECT_DIAG}"
-              echo "- aggregate: ${AGG_DIAG}"
-            } >> "$GITHUB_STEP_SUMMARY"
-            echo "::error::explicit-tick control refused ($1); fixed-key diagnostics are in the step summary"
+            case "${1:-}" in
+              quiescence_not_reached) refusal=quiescence_not_reached ;;
+              enqueue_refused) refusal=enqueue_refused ;;
+              precheck_refused) refusal=precheck_refused ;;
+              collect_refused) refusal=collect_refused ;;
+              aggregate_refused) refusal=aggregate_refused ;;
+              *) refusal=unknown_refusal ;;
+            esac
+            printf 'phase17-explicit-tick-control: FAIL refusal=%s quiescence=%s enqueue=%s precheck=%s tick=%s collect=%s aggregate=%s\n' \
+              "$refusal" "$QUIET_STATE" "$ENQ_STATE" "$PRECHECK_STATE" "$TICK_STATE" "$COLLECT_STATE" "$AGG_STATE" >> "$GITHUB_STEP_SUMMARY"
+            echo '::error::phase17-explicit-tick-control: explicit-tick control refused; fixed-key status is in the step summary'
             exit 1
           }
 
@@ -541,27 +521,27 @@ jobs:
           #    quiescence condition itself is the synchronization mechanism.
           Q_START=$(date +%s)
           until WP_HOME="$WP_DIR" php bin/pilot-job-start.php quiet >"$TEMP_DIR/quiet.log" 2>&1; do
-            QUIET_DIAG=$(diag_of "$TEMP_DIR/quiet.log")
+            QUIET_STATE=refused
             if [ $(( $(date +%s) - Q_START )) -ge 75 ]; then
               control_fail quiescence_not_reached
             fi
             sleep 2
           done
-          QUIET_DIAG=$(diag_of "$TEMP_DIR/quiet.log")
+          QUIET_STATE=ok
 
           # 2) Explicit fixture: production enqueue WITHOUT the advisory wake collaborator.
           if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php enqueue >"$TEMP_DIR/enqueue.log" 2>&1; then
-            ENQ_DIAG=$(diag_of "$TEMP_DIR/enqueue.log")
+            ENQ_STATE=refused
             control_fail enqueue_refused
           fi
-          ENQ_DIAG=$(diag_of "$TEMP_DIR/enqueue.log")
+          ENQ_STATE=ok
 
           # 3) Immediately before the tick: all 100 rows still queued and unstarted, still quiescent.
           if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php precheck >"$TEMP_DIR/precheck.log" 2>&1; then
-            PRECHECK_DIAG=$(diag_of "$TEMP_DIR/precheck.log")
+            PRECHECK_STATE=refused
             control_fail precheck_refused
           fi
-          PRECHECK_DIAG=$(diag_of "$TEMP_DIR/precheck.log")
+          PRECHECK_STATE=ok
 
           # 4) Production CLI tick (App::runTick: GET_LOCK, recurring schedule, claim loop).
           #    Output is captured and bounded. The limit is above the 100-row batch so that
@@ -569,14 +549,18 @@ jobs:
           TICK_RC=0
           timeout 120 env WP_HOME="$WP_DIR" php "$PLUGIN_DIR/bin/cpms" jobs tick --limit=500 \
             >"$TEMP_DIR/tick.out" 2>"$TEMP_DIR/tick.err" || TICK_RC=$?
-          TICK_DIAG="rc=${TICK_RC} stdout_bytes=$(wc -c <"$TEMP_DIR/tick.out") stderr_bytes=$(wc -c <"$TEMP_DIR/tick.err")"
+          if [ "$TICK_RC" -eq 0 ]; then
+            TICK_STATE=ok
+          else
+            TICK_STATE=refused
+          fi
 
           # 5) Collect the batch's exact queue state, then aggregate with the captured tick evidence.
           if ! WP_HOME="$WP_DIR" php bin/pilot-job-start.php collect >"$TEMP_DIR/collect.log" 2>&1; then
-            COLLECT_DIAG=$(diag_of "$TEMP_DIR/collect.log")
+            COLLECT_STATE=refused
             control_fail collect_refused
           fi
-          COLLECT_DIAG=$(diag_of "$TEMP_DIR/collect.log")
+          COLLECT_STATE=ok
 
           set +e
           python3 bin/pilot-job-start.py --raw "$TEMP_DIR/raw.json" --out /tmp/cpms-pilot-job-start.json \
@@ -584,20 +568,13 @@ jobs:
             >"$TEMP_DIR/aggregate.log" 2>"$TEMP_DIR/aggregate.err"
           AGG_RC=$?
           set -e
-          AGG_DIAG=$(diag_of "$TEMP_DIR/aggregate.log")
           if [ "$AGG_RC" -ne 0 ]; then
-            control_fail "aggregate_refused ${AGG_DIAG}"
+            AGG_STATE=refused
+            control_fail aggregate_refused
           fi
+          AGG_STATE=ok
 
-          {
-            echo '### Phase 17 explicit-tick control (fixed-key diagnostics)'
-            echo "- quiescence: ${QUIET_DIAG}"
-            echo "- enqueue: ${ENQ_DIAG}"
-            echo "- precheck: ${PRECHECK_DIAG}"
-            echo "- tick: ${TICK_DIAG} ${AGG_DIAG}"
-            echo "- collect: ${COLLECT_DIAG}"
-            echo 'Phase 17 job-start sample set: explicit_tick control; the fixture requested no wake; first persisted claim; 100 synthetic non-PHI samples; no latency threshold.'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'phase17-explicit-tick-control: PASS sample_count=100' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- System Cron verification ----------
       - name: System Cron — daemon واقعی + bin/cpms (دستور تولید طبق user-guide)
@@ -648,12 +625,7 @@ jobs:
           PILOT_PATIENTS=400 PILOT_DAYS=30 PILOT_SLOTS_PER_DAY=15 wp eval-file bin/pilot-seed.php --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/seed.json
           tail -1 /tmp/seed.json | grep -q '"ok":true' || { echo 'SEED FAILED'; cat /tmp/seed.json; exit 1; }
           set +o pipefail
-          {
-            echo '## Synthetic Dataset'
-            echo '```'
-            tail -1 /tmp/seed.json
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'synthetic-seed: PASS' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Background Jobs verification ----------
       - name: Background Jobs — recurring + بدون failed
@@ -677,12 +649,7 @@ jobs:
           for J in holds.expire slots.generate visits.no_show handwriting.gc notif.dispatch appt.reminder fu.reminder cleanup.otp cleanup.rate_limits cleanup.idem; do
             grep -q "^$J:" /tmp/jobs-success.txt || { echo "$J NEVER RAN"; exit 1; }
           done
-          {
-            echo '## Background Jobs'
-            echo '```'
-            cat /tmp/jobs-success.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'background-jobs: PASS recurring_types=10 failed_jobs=0' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Protected medical file access ----------
       - name: Protected files — private storage outside webroot + legacy deny (Apache واقعی)
@@ -825,19 +792,16 @@ jobs:
           [ "$AUTHZ" = "200" ] || { echo "AUTHORIZED STREAM BROKEN: $AUTHZ"; exit 1; }
           echo 'D ✓ application-authorized delivery works'
 
-          {
-            echo '## Protected files (OD-7 invariant)'
-            echo '```'
-            echo "A default storage outside webroot: $DEFAULT_PATH"
-            echo "B active  storage outside webroot: $ACTIVE_PATH"
-            echo "B clinical file on disk:           $ABS (no HTTP mapping)"
-            echo "C legacy wp-content/clinic-files:  $([ -d "$LEGACY" ] && echo 'present → Apache 403' || echo 'absent')"
-            echo "D stream anon=$ANON authorized=$AUTHZ"
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -d "$LEGACY" ]; then
+            legacy_state=present_denied_403
+          else
+            legacy_state=absent
+          fi
+          printf 'protected-files: PASS legacy_dir=%s\n' "$legacy_state" >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Smoke workflows (S1..S9) ----------
       - name: Workflow Smokes (Patient/Secretary/Doctor/Handwriting/Reports/SMS/Files/Idempotency)
+        id: workflow_smokes
         run: |
           wp eval-file bin/pilot-smoke.php --path="$WP_DIR" --allow-root 2>&1 | tee /tmp/smoke.log
           NPASS=$(grep -c '^PASS' /tmp/smoke.log || true)
@@ -938,7 +902,7 @@ jobs:
               --raw-out "$RAW_STAGE/$NAME.ab.txt" --out "$DIAG/level-$NAME.json" \
               -- ab -q -n "$N" -c "$C" "$URL" || DIAG_RC=$?
             if [ "$DIAG_RC" != "0" ]; then
-              echo "::warning::DIAGNOSTIC MEASUREMENT FAILURE (rc=$DIAG_RC) for seq=$SEQ phase=$PHASE c=$C n=$N — raw dump remains in scan-staging; parser will distinguish this from ab/product correctness"
+              echo '::warning::pilot-benchmark: diagnostic measurement failure — raw dump remains in scan-staging; parser distinguishes this from ab/product correctness'
             fi
             # NOTE: do NOT copy or tail the raw dump here (/tmp/ab.txt removed): raw bytes
             # must not leave the scan-staging directory before the privacy scan succeeds.
@@ -984,7 +948,7 @@ jobs:
           # Arm probe: the flag must be LIVE (visible to PHP) before sampling starts —
           # a disarmed pass would collect 200s with no header and fail late at sample 1.
           ARM_PROBE=$(curl -s -D - -o /dev/null "$WP_URL/wp-json/clinic/v1/health" | grep -ci '^x-cpms-profile:' || true)
-          echo "::notice::profiling arm probe — X-CPMS-Profile header count on a warm request: $ARM_PROBE"
+          echo '::notice::pilot-benchmark: profiling arm probe executed'
           [ "$ARM_PROBE" = "1" ] || { echo '::error::profiling boundary broken — profiler did not arm (SetEnv CPMS_PROFILE not visible to PHP despite configtest+restart)'; exit 1; }
           PROFILE_N=25
           PROFILE_WARM=5
@@ -998,7 +962,7 @@ jobs:
             local QUERY="$3"
             local URL="$WP_URL$ROUTE$QUERY"
             local CODE HDR JSON i
-            echo "::notice::profiling — sampling endpoint=$ENDPOINT ($PROFILE_N sequential c=1 after $PROFILE_WARM warm-ups)"
+            echo '::notice::pilot-benchmark: profiling endpoint sampling started'
             for i in $(seq 1 "$PROFILE_WARM"); do curl -s -o /dev/null "$URL"; done
             for i in $(seq 1 "$PROFILE_N"); do
               HDR=$(mktemp)
@@ -1006,12 +970,12 @@ jobs:
               JSON=$(grep -i '^x-cpms-profile:' "$HDR" | tr -d '\r' | sed 's/^[^:]*:[[:space:]]*//' | head -1 || true)
               rm -f "$HDR"
               if [ "$CODE" != "200" ] || [ -z "$JSON" ]; then
-                echo "::error::PROFILING MEASUREMENT FAILURE — endpoint=$ENDPOINT sample=$i http=$CODE (expected 200 + X-CPMS-Profile header)"
+                echo '::error::pilot-benchmark: profiling measurement failure (expected HTTP 200 and X-CPMS-Profile header)'
                 return 1
               fi
               printf '%s\t%s\t%s\n' "$ENDPOINT" "$CODE" "$JSON" >> "$RAW_STAGE/profiling.samples.tsv"
             done
-            echo "::notice::profiling — endpoint=$ENDPOINT collected ($PROFILE_N samples)"
+            echo '::notice::pilot-benchmark: profiling endpoint sampling completed'
           }
           profile_endpoint health '/wp-json/clinic/v1/health' '' || exit 1
           profile_endpoint availability '/wp-json/clinic/v1/availability' "?clinician_id=1&from=$FROM&to=$TO" || exit 1
@@ -1126,69 +1090,31 @@ jobs:
             || RC=$?
           cat "$OUT.txt" >> /tmp/bench.txt 2>/dev/null || true
 
-          {
-            echo '## Performance Benchmark (ab — اندازه‌گیری واقعی؛ Phase 17 Slice 0: cold + warm)'
-            echo '```'
-            cat /tmp/bench.txt
-            echo
-            echo "dataset: $(tail -1 /tmp/seed.json)"
-            echo '```'
-            echo
-            echo '**معنای دقیق cold/warm در این هارنس:** `cold` = نخستین Request‌ها بلافاصله پس از restart کردن Apache/mod_php در همین step (فرآیندهای تازهٔ PHP با opcode cache خالی؛ انتظار readiness فقط در سطح TCP، بدون هیچ Request گرم‌کننده). این **cold-cache در زیرساخت نیست**: InnoDB buffer pool و OS page cache پاک نشده‌اند و این هارنس نمی‌تواند آن‌ها را تضمین کند. `warm` = اندازه‌گیری‌های پیشین روی همان stackِ سرویس‌شده، هرکدام با دو Request گرم‌کنندهٔ قبلی. سطوح c=10/50/100 حفظ شده‌اند و c=1 افزوده شده است.'
-            echo
-            echo '**این گام فقط اندازه‌گیری است:** هیچ آستانهٔ latency در CI اعمال **نمی‌شود** و NFR-PERF پاس/شکست اعلام **نمی‌شود**؛ داوری به بنچمارک سرور مرجع موکول است (`report-pilot-gate.md` §12.3 — BLOCKED_BY_ENVIRONMENT). تنها شکست‌های این گام، شکست‌های صحت‌اند: خروجی قابل‌تحلیل‌نبودن `ab` یا پاسخ Non-2xx.'
-            echo
-            echo '**Artifact:** `pilot-benchmark-${{ github.run_id }}` → `cpms-pilot-benchmark.json` (ماشین‌خوان) + `.md` (انسانی) + `.txt` + `manifest.jsonl` + raw dumps — bound به run `${{ github.run_id }}` attempt `${{ github.run_attempt }}` و SHA `${{ github.sha }}`. اعداد per-run عمداً در تاریخچهٔ Git commit نمی‌شوند.'
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$RC" = "0" ]; then
+            bench_verdict=PASS
+          else
+            bench_verdict=FAIL
+          fi
+          printf 'pilot-benchmark-collection: %s\n' "$bench_verdict" >> "$GITHUB_STEP_SUMMARY"
 
           [ "$RC" = "0" ] || { echo "BENCHMARK CORRECTNESS FAILURE (rc=$RC) — collection/HTTP-correctness only; no latency threshold exists in this step"; exit "$RC"; }
           echo 'benchmark collected: no NFR verdict claimed (adjudication stays with report-pilot-gate.md §12.3)'
 
       # ---------- REST-visible safe benchmark evidence (allowlist only) ----------
-      # WHY: the run-bound artifact `pilot-benchmark-<run_id>` (14-day retention) is the only
-      # place the numbers exist, and an engineering agent without artifact/blob access cannot
-      # read it. This step posts the DEDICATED allowlist projection produced by the report step
-      # (`$OUT.evidence.md`, generated from the post-privacy-scan structured report) so the real
-      # Phase 17 measurements are retrievable via GitHub REST.
-      # WHAT IS POSTED: only the validated allowlist — measurement seq, phase cold|warm, LABEL
-      # from the fixed endpoint set (never free-form manifest text), concurrency, request counts,
-      # p50/p95/p99, requests/sec, failed + non-2xx counts, plus the bounded diagnostics:
-      # runner CPU count, active MPM, PHP handler mode, five worker-capacity values, and per-level
-      # sample count/interval, host CPU/memory, `ab` CPU/RSS, and Apache/PHP server CPU/RSS/process
-      # count, plus the additive request-level profiling aggregates (per-endpoint sequential
-      # c=1 samples: server-side segment means/maxima, CPMS-layer query counts, CPMS DB-time
-      # means/maxima, `$wpdb` min/max — no SQL, no values, no PHI), plus the additive
-      # public-page CPMS plugin overhead block (fixed page token/label, sandwich ordering,
-      # per-round sample/warmup counts, p50/p95/p99/mean and non-2xx count, and the pooled
-      # ACTIVE-vs-DEACTIVATED p95 delta — no URL, no path, no plugin list, no SQL), plus the
-      # additive queue first-start allowlist only: measurement_mode (`autonomous` when the
-      # run-bound fast-wake evidence exists, otherwise the `explicit_tick` control from the
-      # same run — never a relabelled block), fixed `backup.run` type,
-      # sample count, p50/p95/p99/max, not-started count and processing-failure count. No job ID,
-      # payload, correlation token, SQL, Clinic/patient label, or arbitrary error is published.
-      # The run binding (run_id, run_attempt, event_name, head_sha, ref) is included.
-      # No raw `ab` dump, response/header/body content, unallowlisted environment metadata, path or
-      # free-form text ever enters the projection.
-      # PUBLICATION vs CORRECTNESS: publication reuses the repository-native evidence-comment
-      # pattern (PR comment when a PR exists, otherwise a commit comment) and is append-only; a
-      # GitHub/API permission or network failure is reported as `::notice::` and does NOT make
-      # benchmark correctness depend on comment publication. The pre-publication re-validation
-      # failure (`::error::`) is an evidence-integrity failure, not a latency/NFR judgement.
-      # This publisher stays inside the existing workflow job/permissions; no new publication
-      # job, dependency, trigger, or latency threshold is added. It runs only after the benchmark
-      # step above SUCCEEDED (default `success()` step condition).
       - name: Post safe benchmark evidence projection (REST-visible, allowlist only)
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          EVIDENCE=/tmp/cpms-bench/cpms-pilot-benchmark.evidence.md
-          if [ ! -f "$EVIDENCE" ]; then
+          RAW_PROJECTION=/tmp/cpms-bench/cpms-pilot-benchmark.evidence.md
+          if [ ! -f "$RAW_PROJECTION" ]; then
             echo '::warning::safe evidence projection not produced (benchmark step did not run or refused it fail-closed) — nothing posted'
             exit 0
           fi
-          python3 bin/pilot-bench-report.py --verify-evidence "$EVIDENCE" \
-            || { echo '::error::safe evidence projection failed pre-publication re-validation — NOT posted (fail closed)'; exit 1; }
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" "$EVIDENCE" "pilot-benchmark"
+          python3 bin/pilot-bench-report.py --verify-evidence "$RAW_PROJECTION" >/dev/null 2>&1 \
+            || { echo '::error::pilot-benchmark: safe evidence projection failed pre-publication re-validation — NOT posted (fail closed)'; exit 1; }
+          bench_status=PASS
+          printf 'pilot-benchmark: %s\n' "$bench_status" > /tmp/pilot-benchmark-status.md
+          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/pilot-benchmark-status.md "pilot-benchmark"
 
       - name: Upload benchmark artifact (per-run numbers never enter Git history)
         if: always()
@@ -1243,14 +1169,17 @@ jobs:
           N=$(mysql -h127.0.0.1 -P3306 -uroot -proot -N -e "SELECT COUNT(*) FROM ${DB_MAIN}.cpmswp_cpms_audit_logs;")
           echo "audit rows: $N"
           [ "$N" -gt 20 ] || { echo 'TOO FEW AUDIT ROWS'; exit 1; }
-          {
-            echo '## Audit'
-            echo '```'
-            echo "chain verify: OK"
-            echo "rows: $N"
-            cat /tmp/audit-actions.txt
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          case "$N" in
+            ''|*[!0-9]*) audit_rows=unavailable ;;
+            *)
+              if [ "${#N}" -le 9 ]; then
+                audit_rows="$N"
+              else
+                audit_rows=unavailable
+              fi
+              ;;
+          esac
+          printf 'audit-verification: PASS chain_verify=OK rows=%s\n' "$audit_rows" >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Backup creation ----------
       - name: Backup creation (DB + protected storage + checksums)
@@ -1272,16 +1201,7 @@ jobs:
           cp "$WP_DIR/wp-config.php" /tmp/backup-wp-config.txt
           T2=$(date +%s)
           sha256sum /tmp/backup-db.sql.gz /tmp/backup-storage.tar.gz | tee /tmp/backup-hashes.txt
-          {
-            echo '## Backup'
-            echo '```'
-            echo "db dump:     $(du -h /tmp/backup-db.sql.gz | cut -f1) ($(bc -l <<< "$T1 - $T0")s, mysqldump --single-transaction)"
-            echo "storage tar: $(du -h /tmp/backup-storage.tar.gz | cut -f1) ($(bc -l <<< "$T2 - $T1")s)"
-            echo "storage files: $(tar -tzf /tmp/backup-storage.tar.gz | grep -vc '/$')"
-            cat /tmp/backup-hashes.txt
-            echo 'wp-config: جدا از Artifact نگه داشته شد (backup امن خودش Runbook دارد)'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo 'backup-creation: PASS' >> "$GITHUB_STEP_SUMMARY"
 
       # ---------- Full Restore Drill ----------
       - name: Restore Drill — محیط جداگانه (DB دوم + WP tree دوم) + Integrity
@@ -1371,54 +1291,21 @@ jobs:
           PHPEOF
           WP_HOME="$WP_RESTORE_DIR" php /tmp/restore-sample.php
           T3=$(date +%s)
-          {
-            echo '## Restore Drill (محیط جداگانه — MySQL دوم @3307 + WP tree دوم)'
-            echo '```'
-            echo "db restore:    $(bc -l <<< "$T1 - $T0")s"
-            echo "files+config:  $(bc -l <<< "$T2 - $T1")s"
-            echo "integrity:     $(bc -l <<< "$T3 - $T2")s"
-            echo "TOTAL:         $(bc -l <<< "$T3 - $T0")s  (هدف RTO ≤ 4h)"
-            echo 'integrity:     شمارش جداول + schema + audit chain + checksum فایلها + نمونه کسب‌وکار — همه identical ✓'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          restore_total_s=$((T3 - T0))
+          printf 'restore-drill: PASS total_seconds=%s\n' "$restore_total_s" >> "$GITHUB_STEP_SUMMARY"
 
       - name: جمع‌بندی Gate
         if: always()
+        env:
+          SMOKE_OUTCOME: ${{ steps.workflow_smokes.outcome }}
         run: |
-          {
-            echo '## Workflow Smokes (خدمات واقعی روی محیط نصب‌شده)'
-            echo '```'
-            grep -E '^(PASS|FAIL)' /tmp/smoke.log 2>/dev/null || echo '(smoke not reached)'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          case "${SMOKE_OUTCOME:-}" in
+            success) smoke_verdict=PASS ;;
+            failure) smoke_verdict=FAIL ;;
+            *) smoke_verdict=NOT_RUN ;;
+          esac
+          printf 'workflow-smokes: %s\n' "$smoke_verdict" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: failure()
-        run: |
-          {
-            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
-            echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
-                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
-              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
-            done
-            echo '--- apache diagnostics ---'
-            sudo apache2ctl configtest 2>&1 | tail -5
-            sudo service apache2 status 2>&1 | tail -3
-            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
-            sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
-            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
-            curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
-            curl -s http://localhost:8080/ 2>&1 | head -c 300; echo
-            curl -s "http://localhost:8080/?rest_route=/" 2>&1 | head -c 300; echo
-            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
-            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
-            echo '```'
-          } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-gate-debug"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -1513,44 +1400,7 @@ jobs:
           WP_HOME="$WP_DIR" php bin/cpms migrate
           WP_HOME="$WP_DIR" php "$GITHUB_WORKSPACE/clinic-practice-management/tests/bin/upgrade-path-fixture.php" verify
           echo 'UPGRADE PATH OK ✓'
-          {
-            echo '## Upgrade Compatibility (pinned pre-#191 source → candidate artifact)'
-            echo '```'
-            echo "previous CPMS source: $PREVIOUS_CPMS_REF"
-            echo 'schema: 2026_09_26_0023 → 2026_10_31_0031 (migrations 2026_10_10_0024 + 2026_10_11_0025 + 2026_10_11_0026 + 2026_10_13_0027 + 2026_10_18_0028 + 2026_10_18_0029 + 2026_10_27_0030 + 2026_10_31_0031 applied)'
-            echo 'synthetic Organization → Clinic → Location scopes: 2; preserved representative rows: 20'
-            echo 'current migration CLI + two safe runner repeats + tenant-aware reads: verified'
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
-
-
-      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: failure()
-        run: |
-          {
-            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
-            echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
-                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log; do
-              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
-            done
-            echo '--- apache diagnostics ---'
-            sudo apache2ctl configtest 2>&1 | tail -5
-            sudo service apache2 status 2>&1 | tail -3
-            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
-            sudo tail -15 /var/log/apache2/pilot-error.log 2>/dev/null || sudo tail -15 /var/log/apache2/error.log 2>/dev/null || true
-            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
-            curl -s -o /dev/null -w 'curl /wp-json/: %{http_code}\n' http://localhost:8080/wp-json/ 2>&1 || true
-            curl -s http://localhost:8080/ 2>&1 | head -c 300; echo
-            curl -s "http://localhost:8080/?rest_route=/" 2>&1 | head -c 300; echo
-            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
-            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
-            echo '```'
-          } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-responsive-debug"
+          echo 'upgrade-compatibility: PASS' >> "$GITHUB_STEP_SUMMARY"
 
   # ============================================================
   # 4) Responsive smoke — Chromium واقعی × 4 viewport × 4 صفحه
@@ -1613,6 +1463,7 @@ jobs:
         with:
           browsers: chromium firefox webkit
       - name: WP + Plugin از Artifact + داده حداقلی Synthetic
+        id: resp_fixture
         run: |
           mysql -h127.0.0.1 -P3306 -uroot -proot -e "CREATE DATABASE $DB_MAIN;"
           curl -sS https://wordpress.org/wordpress-7.1.3.tar.gz -o /tmp/wp.tar.gz && tar -xzf /tmp/wp.tar.gz -C /tmp && mv /tmp/wordpress "$WP_DIR"
@@ -1654,7 +1505,7 @@ jobs:
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_patients') . ' (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at) VALUES (1, %s, %s, %s, %s, %s, %s, %s)', 'SYN-RESP-001', 'بیمار', 'ریسپانسیو (Synthetic)', '09120008888', 'active', $now, $now));
           $pid = (int) $wpdb->insert_id;
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_visits') . ' (clinic_id, location_id, clinician_id, patient_id, source, status, visit_date, check_in_at, waiting_since, active, created_at, updated_at) VALUES (1, (SELECT id FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = 1 AND is_primary = 1 LIMIT 1), 1, %d, %s, %s, %s, %s, %s, 1, %s, %s)', $pid, 'walk_in', 'waiting', gmdate('Y-m-d'), $now, $now, $now, $now));
-          echo 'fixture: clinician+patient+waiting visit #' . (int) $wpdb->insert_id . "\n";
+          echo "fixture: clinician+patient+waiting visit ready\n";
           // --- Phase 8 Slice 1: صفحهٔ عمومیِ shortcode برای Responsive smoke ---
           // Clinic/Location/پزشک از ردیف‌های **پایدارِ** خودِ نصب خوانده می‌شوند
           // (derived، نه literal): سطح عمومی به یک Clinicِ صریح پیوند می‌خورد و
@@ -1665,7 +1516,7 @@ jobs:
           $respClinicianId = (int) $respClinician['id'];
           $respClinicId = (int) $respClinician['clinic_id'];
           $respLocation = $wpdb->get_row($wpdb->prepare('SELECT id, timezone FROM ' . $db->table('cpms_locations') . ' WHERE clinic_id = %d AND is_active = 1 ORDER BY is_primary DESC, id ASC LIMIT 1', $respClinicId), ARRAY_A);
-          if (!is_array($respLocation)) { echo "RESP_FIXTURE_ERROR: no active Location for clinic {$respClinicId}\n"; exit(1); }
+          if (!is_array($respLocation)) { echo "RESP_FIXTURE_ERROR: no active Location\n"; exit(1); }
           $respLocationId = (int) $respLocation['id'];
           $respTzName = (is_string($respLocation['timezone']) && $respLocation['timezone'] !== '') ? $respLocation['timezone'] : 'UTC';
           $respTz = new DateTimeZone($respTzName);
@@ -1686,9 +1537,9 @@ jobs:
           // استفاده می‌کند (محتوای Page)، پس انکیوِ شرطیِ head هم exercised
           // می‌شود، نه فقط مسیرِ رندر.
           $respPageId = wp_insert_post(['post_title' => 'Public Booking Responsive Fixture', 'post_name' => 'cpms-public-booking-responsive', 'post_content' => '[cpms_public_booking clinic_id="' . $respClinicId . '"]', 'post_status' => 'publish', 'post_type' => 'page'], true);
-          if (is_wp_error($respPageId)) { echo 'RESP_FIXTURE_ERROR: ' . $respPageId->get_error_message() . "\n"; exit(1); }
+          if (is_wp_error($respPageId)) { echo "RESP_FIXTURE_ERROR: booking page seed failed\n"; exit(1); }
           $respPermalink = (string) get_permalink($respPageId);
-          echo 'fixture: public booking page #' . (int) $respPageId . ' clinic=' . $respClinicId . ' clinician=' . $respClinicianId . ' location=' . $respLocationId . ' tz=' . $respTzName . ' slots=' . $respSlotCount . ' url=' . $respPermalink . "\n";
+          echo "fixture: public booking page ready\n";
           // فایلِ env (نه pipeline) — تا خروجِ غیرصفرِ php توسط `tee` پنهان
           // نشود و `bash -e` همان‌جا گیت را متوقف کند.
           file_put_contents('/tmp/resp-public-page.env', 'RESP_PUBLIC_PAGE=' . $respPermalink . '|' . $respClinicId . '|' . $respClinicianId . "\n");
@@ -1696,7 +1547,7 @@ jobs:
           WP_HOME="$WP_DIR" php /tmp/resp-fixture.php
           test -s /tmp/resp-public-page.env
           cat /tmp/resp-public-page.env >> "$GITHUB_ENV"
-          cat /tmp/resp-public-page.env
+          echo 'Responsive public-page fixture environment loaded; values withheld.'
 
       # Phase 8 Slice 2 — Fixtureِ سفرِ OTP: یک Clinicِ دومِ کاملاً Synthetic
       # (id>1، هرگز clinic_id=1 به‌عنوان authority). مسیرِ مرورگرِ واقعی باید
@@ -1704,6 +1555,7 @@ jobs:
       # تک-Clinic بودنِ نصب، defctهایِ tenant را mask می‌کند. دو نوبتِ ظرفیت ۱
       # (یکی برای Viewportِ موبایل، یکی برای لپ‌تاپ) + یک نوبتِ ظرفیت ۲.
       - name: OTP journey fixture — Clinic دوم + صفحهٔ عمومیِ مسیر رزرو
+        id: otp_journey_fixture
         run: |
           cat > /tmp/otp-journey-fixture.php <<'PHPEOF'
           <?php
@@ -1716,12 +1568,12 @@ jobs:
           // (clinics.organization_id NOT NULL + FK) — سازمانِ دومِ Synthetic.
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_organizations') . ' (name, slug, status, created_at, updated_at) VALUES (%s, %s, %s, %s, %s)', 'سازمان سفر OTP (Synthetic)', 'otp-journey-org-' . $uniq, 'active', $now, $now));
           $orgId = (int) $wpdb->insert_id;
-          if ($orgId <= 1) { echo "JOURNEY_FIXTURE_ERROR: org must be nontrivial (id > 1); got {$orgId}\n"; exit(1); }
+          if ($orgId <= 1) { echo "JOURNEY_FIXTURE_ERROR: organization seed invalid\n"; exit(1); }
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinics') . ' (name, slug, timezone, organization_id, address, phone, created_at, updated_at) VALUES (%s, %s, %s, %d, NULL, NULL, %s, %s)', 'کلینیک سفر OTP (Synthetic)', 'otp-journey-' . $uniq, 'Asia/Tehran', $orgId, $now, $now));
           $clinicId = (int) $wpdb->insert_id;
-          if ($clinicId <= 1) { echo "JOURNEY_FIXTURE_ERROR: tenant must be nontrivial (clinic id > 1); got {$clinicId}\n"; exit(1); }
+          if ($clinicId <= 1) { echo "JOURNEY_FIXTURE_ERROR: clinic seed invalid\n"; exit(1); }
           $boundOrg = (int) $wpdb->get_var($wpdb->prepare('SELECT organization_id FROM ' . $db->table('cpms_clinics') . ' WHERE id = %d LIMIT 1', $clinicId));
-          if ($boundOrg !== $orgId) { echo "JOURNEY_FIXTURE_ERROR: clinic {$clinicId} organization mismatch ({$boundOrg} != {$orgId})\n"; exit(1); }
+          if ($boundOrg !== $orgId) { echo "JOURNEY_FIXTURE_ERROR: clinic organization binding invalid\n"; exit(1); }
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_locations') . ' (clinic_id, name, slug, address, phone, timezone, is_primary, is_active, created_at, updated_at) VALUES (%d, %s, %s, NULL, NULL, %s, 1, 1, %s, %s)', $clinicId, 'شعبهٔ سفر OTP (Synthetic)', 'main-' . $uniq, 'Asia/Tehran', $now, $now));
           $locationId = (int) $wpdb->insert_id;
           $wpdb->query($wpdb->prepare('INSERT INTO ' . $db->table('cpms_clinicians') . ' (clinic_id, wp_user_id, full_name, specialty, room, is_active, created_at, updated_at) VALUES (%d, NULL, %s, %s, NULL, 1, %s, %s)', $clinicId, 'دکتر سفر OTP (Synthetic)', 'عمومی', $now, $now));
@@ -1738,16 +1590,16 @@ jobs:
             $slotIds[] = (int) $wpdb->insert_id;
           }
           $pageId = wp_insert_post(['post_title' => 'Public Booking OTP Journey Fixture', 'post_name' => 'cpms-otp-journey', 'post_content' => '[cpms_public_booking clinic_id="' . $clinicId . '"]', 'post_status' => 'publish', 'post_type' => 'page'], true);
-          if (is_wp_error($pageId)) { echo 'JOURNEY_FIXTURE_ERROR: ' . $pageId->get_error_message() . "\n"; exit(1); }
+          if (is_wp_error($pageId)) { echo "JOURNEY_FIXTURE_ERROR: booking page seed failed\n"; exit(1); }
           $permalink = (string) get_permalink($pageId);
-          echo 'fixture: journey page #' . (int) $pageId . ' clinic=' . $clinicId . ' clinician=' . $clinicianId . ' location=' . $locationId . ' slots=' . implode(',', $slotIds) . ' url=' . $permalink . "\n";
+          echo "fixture: journey page ready\n";
           file_put_contents('/tmp/otp-journey.env', 'JOURNEY_PAGE=' . $permalink . '|' . $clinicId . '|' . $clinicianId . '|' . $locationId . '|11:45:00|11:50:00' . "\n");
           PHPEOF
           WP_HOME="$WP_DIR" php /tmp/otp-journey-fixture.php 2>&1 | tee /tmp/otp-journey-fixture.log
           test "${PIPESTATUS[0]}" -eq 0
           test -s /tmp/otp-journey.env
           cat /tmp/otp-journey.env >> "$GITHUB_ENV"
-          cat /tmp/otp-journey.env
+          echo 'OTP journey fixture environment loaded; values withheld.'
 
       # Phase 8 Slice 3 — Fixtureِ N>1 chooser: یک Clinicِ سومِ کاملاً Synthetic
       # (id nontrivial، جدای از 1 و 2)، با Patient A و B به یک cpms_patient لینکِ فعال
@@ -1959,24 +1811,22 @@ jobs:
           curl -s -o /dev/null -w 'rest_route: %{http_code}\n' "$WP_URL/?rest_route=/"
           curl -s -o /dev/null -w '%{http_code}\n' "$WP_URL/wp-json/" | grep -q 200
       - name: Responsive smoke (4 viewport × 4 صفحه — بدون overflow افقی)
+        id: resp_smoke
         env:
           BASE: http://localhost:8080
           RESP_PASS: 'Pilot-Gate-2026!'
           RESP_DOCTOR_PASS: 'Pilot-Gate-2026!'
         run: |
           python3 bin/pilot-responsive.py | tee /tmp/resp.log
-          {
-            echo '## Responsive Smoke (Chromium واقعی — NFR-UI-3/5)'
-            echo '```'
-            grep -E '^(PASS|FAIL)' /tmp/resp.log
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          grep -qE '^(PASS|FAIL)' /tmp/resp.log
+          echo 'responsive-chromium: PASS' >> "$GITHUB_STEP_SUMMARY"
 
       # B-3 — پذیرشِ واقعیِ 320px/390px برای ده اسلاگِ مدیریتی: RTL فارسی،
       # سایدبارِ قابلِ‌استفاده، نبودِ overflow افقی، جدول/فرم در viewport،
       # دسترسی با کیبورد، و ردِ URLِ مستقیم برای نقشِ نامجاز. همان نصبِ WP و
       # همان کاربرانِ fixture؛ فقط Chromium و فقط دو عرض (بودجهٔ گیت).
       - name: Admin narrow RTL acceptance (Chromium — 320/390 × 10 slugs)
+        id: admin_narrow
         env:
           BASE: http://localhost:8080
           ARESP_ADMIN_PASS: 'Pilot-Gate-2026!'
@@ -1996,19 +1846,18 @@ jobs:
           python3 bin/pilot-admin-narrow.py | tee /tmp/admin-narrow.log
           test "${PIPESTATUS[0]}" -eq 0
           narrow_rc=$?
-          {
-            echo '## Admin narrow RTL acceptance (320px + 390px, real Chromium)'
-            echo '```'
-            grep -E '^(FAIL |INFO |MISSING |Traceback|  File )' /tmp/admin-narrow.log | head -80
-            grep -E '^PASS ' /tmp/admin-narrow.log | sed -E 's/^PASS ([a-zA-Z0-9_-]+@[0-9]+) .*/\1/' | sort | uniq -c
-            echo '```'
-          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${narrow_rc}" -eq 0 ]; then
+            narrow_verdict=PASS
+          else
+            narrow_verdict=FAIL
+          fi
+          printf 'admin-narrow-rtl: %s\n' "$narrow_verdict" >> "$GITHUB_STEP_SUMMARY"
           # `set +e` بالاتر یعنی کدِ خروجِ `test` خطا نمی‌سازد و آخرین فرمانِ این
           # گام (بلوکِ step-summary، که همیشه موفق است) وضعیتِ گام را تعیین می‌کرد:
           # پذیرشِ باریک حتی وقتی در همان صفحهٔ نخست متوقف شده بود «سبز» گزارش
           # می‌شد. اکنون کدِ خروجِ پذیرش صریحاً fail-closed است.
           if [ "${narrow_rc}" -ne 0 ]; then
-            echo "::error::Admin narrow RTL acceptance exited ${narrow_rc} — see the published evidence"
+            echo '::error::admin-narrow-rtl: Admin narrow RTL acceptance failed'
             exit "${narrow_rc}"
           fi
 
@@ -2016,12 +1865,15 @@ jobs:
       # Reuse the same authenticated admin/public-booking smoke on Firefox and
       # WebKit, bounded to phone + tablet widths; no extra copy or product setup.
       - name: Firefox/WebKit compatibility smoke (390×844 + 768×1024)
+        id: compat_smoke
         env:
           BASE: http://localhost:8080
           RESP_PASS: 'Pilot-Gate-2026!'
           RESP_DOCTOR_PASS: 'Pilot-Gate-2026!'
         run: |
           COMPAT_FAILED=0
+          firefox_verdict=PASS
+          webkit_verdict=PASS
           for engine in firefox webkit; do
             log="/tmp/resp-${engine}.log"
             set +e
@@ -2030,19 +1882,17 @@ jobs:
             set -e
             cat "$log"
             if [ "$rc" -ne 0 ]; then
-              echo "::error::${engine} compatibility smoke failed (exit=${rc})"
+              if [ "$engine" = "firefox" ]; then
+                echo '::error::firefox-compat-smoke: compatibility smoke failed'
+                firefox_verdict=FAIL
+              else
+                echo '::error::webkit-compat-smoke: compatibility smoke failed'
+                webkit_verdict=FAIL
+              fi
               COMPAT_FAILED=1
             fi
           done
-          {
-            echo '## Firefox/WebKit compatibility smoke (390×844 + 768×1024)'
-            for engine in firefox webkit; do
-              echo "### ${engine}"
-              echo '```'
-              grep -E '^(INFO browser_engine=|PASS|FAIL)' "/tmp/resp-${engine}.log" 2>/dev/null || echo '(log missing)'
-              echo '```'
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
+          printf 'compat-smoke: firefox=%s webkit=%s\n' "$firefox_verdict" "$webkit_verdict" >> "$GITHUB_STEP_SUMMARY"
           test "$COMPAT_FAILED" -eq 0
 
       # Phase 8 Slice 2 — سفرِ کاملِ بیمار روی مرورگرِ واقعی (scoping از انتخاب).
@@ -2051,6 +1901,7 @@ jobs:
       # boolean/شناسه/تعداد-transition هستند — OTP/موبایل/نام/cookie/nonce
       # هرگز در لاگ print نمی‌شوند.
       - name: Slice-2 OTP journey — سفرِ کامل بیمار در مرورگر واقعی
+        id: otp_journey_browser
         env:
           BASE: http://localhost:8080
         run: |
@@ -2098,14 +1949,17 @@ jobs:
       # و بیمارِ synthetic با دو پیوندِ فعال + پیوندِ بیگانه/بایگانی. بدون فریم‌ورک
       # جدید. شواهد فقط boolean/شناسه. رمز/موبایل/کدملی/nonce در لاگ نیست.
       - name: Slice-4 profile fixture — one record + two-clinic selector + decoys
+        id: portal_profile_fixture
         run: |
           WP_HOME="$WP_DIR" php tests/fixtures/pilot-slice4-profile-fixture.php 2>&1 | tee /tmp/portal-profile-fixture.log
           test "${PIPESTATUS[0]}" -eq 0
           test -s /tmp/portal-profile.env
           cat /tmp/portal-profile.env >> "$GITHUB_ENV"
-          grep '^PROFILE_FIXTURE_OK ' /tmp/portal-profile-fixture.log
+          grep -q '^PROFILE_FIXTURE_OK ' /tmp/portal-profile-fixture.log
+          echo 'Slice-4 profile fixture environment loaded; values withheld.'
 
       - name: Slice-4 Patient Profile — real browser (390×844, 768×1024, 1366×768)
+        id: portal_profile_browser
         env:
           BASE: http://localhost:8080
         run: |
@@ -2116,23 +1970,25 @@ jobs:
       # Phase 10 — همان Chromium و همان وردپرس. صفحهٔ واقعی پورتال پزشک، نشست
       # پزشک، REST واقعی، و مجوز سرور موجود. بدون فریم‌ورک جدید و بدون توقف زمان.
       - name: Doctor Portal fixture — one location + multi location + isolation
+        id: doctor_portal_fixture
         run: |
           WP_HOME="$WP_DIR" php tests/fixtures/pilot-doctor-portal-fixture.php 2>&1 | tee /tmp/doctor-portal-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/doctor-portal.env ]; then
-            echo "::error::Doctor Portal fixture failed (exit=${FIX_EXIT}); environment and diagnostic details withheld"
+            echo '::error::doctor-portal-fixture: Doctor Portal fixture failed; environment and diagnostic details withheld'
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/doctor-portal.env
           cat /tmp/doctor-portal.env >> "$GITHUB_ENV"
-          grep '^DOCTOR_PORTAL_FIXTURE_OK ' /tmp/doctor-portal-fixture.log
+          grep -q '^DOCTOR_PORTAL_FIXTURE_OK ' /tmp/doctor-portal-fixture.log
+          echo 'Doctor Portal fixture environment loaded; values withheld.'
 
       - name: Phase 12 Finance board fixture — awaiting-payment rows + invoice/no-invoice
         run: |
           WP_HOME="$WP_DIR" php tests/fixtures/pilot-finance-board-fixture.php 2>&1 | tee /tmp/finance-board-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/finance-board.env ]; then
-            echo "::error::Finance board fixture failed validation (exit=${FIX_EXIT}); fixture values and raw diagnostics withheld"
+            echo '::error::finance-board-fixture: Finance board fixture failed validation; fixture values and raw diagnostics withheld'
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/finance-board.env
@@ -2147,11 +2003,12 @@ jobs:
           python3 bin/pilot-finance-board.py | tee /tmp/finance-board-browser.log
           BROWSER_EXIT="${PIPESTATUS[0]}"
           if [ "${BROWSER_EXIT}" != "0" ]; then
-            echo "::error::Finance board browser acceptance failed (exit=${BROWSER_EXIT}); dynamic diagnostics withheld"
+            echo '::error::finance-board-browser: Finance board browser acceptance failed; dynamic diagnostics withheld'
           fi
           test "${BROWSER_EXIT}" -eq 0
 
       - name: Doctor Portal — real browser (390×844, 768×1024, 1366×768)
+        id: doctor_portal_browser
         env:
           BASE: http://localhost:8080
         run: |
@@ -2159,7 +2016,7 @@ jobs:
           python3 bin/pilot-doctor-portal.py | tee /tmp/doctor-portal.log
           BROWSER_EXIT="${PIPESTATUS[0]}"
           if [ "${BROWSER_EXIT}" != "0" ]; then
-            echo "::error::doctor-portal-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/doctor-portal.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/doctor-portal.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'
           fi
           test "${BROWSER_EXIT}" -eq 0
 
@@ -2168,37 +2025,28 @@ jobs:
       # TODAY and fails closed if the day no longer has the required browser runway;
       # it never changes the day to make the acceptance pass.
       - name: Reception fixture — two Locations + today's booked rows + empty Location
+        id: reception_fixture
         run: |
           # Keep the PHP CLI fatal/stack log because WordPress renders a generic error page.
           : > /tmp/reception-php-error.log
           WP_HOME="$WP_DIR" php -d log_errors=1 -d error_log=/tmp/reception-php-error.log tests/fixtures/pilot-reception-fixture.php 2>&1 | tee /tmp/reception-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
-          fixture_clocks="$(grep -E '^RECEPTION_FIXTURE_CLOCK_(BEFORE|AFTER)_WP_LOAD=' /tmp/reception-fixture.log 2>/dev/null | tr '\n' ';')"
-          echo "${fixture_clocks:-RECEPTION_FIXTURE_CLOCK_MARKERS=MISSING}"
-          php_error_kinds="$(grep -Eo 'PHP (Fatal error|Parse error|Warning|Notice)' /tmp/reception-php-error.log 2>/dev/null | sort -u | paste -sd ',' -)"
-          if [ -s /tmp/reception.env ]; then
-            env_bytes="$(wc -c < /tmp/reception.env)"
-          else
-            env_bytes=MISSING
-          fi
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/reception.env ]; then
-            # Bounded, sanitized failure category: rp_fail() already redacts long
-            # digit runs, and this keeps exactly one truncated line so the annotation
-            # names the fixture stage instead of requiring the raw fixture log.
-            fixture_error="$(grep -m1 -a '^RECEPTION_FIXTURE_ERROR:' /tmp/reception-fixture.log 2>/dev/null | cut -c1-300 | tr -d '\r\n')"
-            fixture_clock="$(grep -m1 -E '^RECEPTION_FIXTURE_CLOCK_BEFORE_WP_LOAD=' /tmp/reception-fixture.log 2>/dev/null | cut -c1-80 | tr -d '\r\n')"
-            echo "::error::reception-fixture failed: exit=${FIX_EXIT} env_bytes=${env_bytes} php_error_kinds=${php_error_kinds:-none} clock=${fixture_clock:-MISSING} stage_error=${fixture_error:-RECEPTION_FIXTURE_ERROR_NOT_LOGGED}; raw fixture/PHP logs are not posted"
+            echo '::error::reception-fixture: Reception fixture failed; raw fixture and PHP logs are not posted'
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/reception.env
           cat /tmp/reception.env >> "$GITHUB_ENV"
-          grep '^RECEPTION_PUBLIC=' /tmp/reception.env
+          grep -q '^RECEPTION_PUBLIC=' /tmp/reception.env
+          echo 'Reception fixture environment loaded; values withheld.'
 
       - name: Reception Apache/PHP preflight — normal wall clock
+        id: reception_preflight
         run: |
           bash tests/bin/reception-http-probe.sh http://localhost:8080 before-browser "$WP_DIR" | tee /tmp/reception-http-before.log
 
       - name: Staff Portal Reception — real browser (390×844, 768×1024, 1366×768)
+        id: reception_browser
         env:
           BASE: http://localhost:8080
         run: |
@@ -2210,11 +2058,12 @@ jobs:
           python3 bin/pilot-reception.py | tee /tmp/reception.log
           BROWSER_EXIT="${PIPESTATUS[0]}"
           if [ "${BROWSER_EXIT}" != "0" ]; then
-            echo "::error::reception-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/reception.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/reception.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+            echo '::error::reception-browser: Staff Portal Reception browser acceptance failed; dynamic diagnostics withheld'
           fi
           test "${BROWSER_EXIT}" -eq 0
 
       - name: Reception Apache/PHP postflight — always
+        id: reception_postflight
         if: always() && !cancelled()
         run: |
           bash tests/bin/reception-http-probe.sh http://localhost:8080 after-browser "$WP_DIR" | tee /tmp/reception-http-after.log
@@ -2238,12 +2087,13 @@ jobs:
           WP_HOME="$WP_DIR" php tests/fixtures/pilot-reports-fixture.php 2>&1 | tee /tmp/reports-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/reports.env ]; then
-            echo "::error::reports-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/reports.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/reports-fixture.log 2>/dev/null | tr '\n' '~')"
+            echo '::error::reports-fixture: Phase 14 Reports fixture failed; fixture values and raw diagnostics withheld'
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/reports.env
           cat /tmp/reports.env >> "$GITHUB_ENV"
-          grep '^REPORTS_URL=' /tmp/reports.env
+          grep -q '^REPORTS_URL=' /tmp/reports.env
+          echo 'Reports fixture environment loaded; values withheld.'
 
       - name: Staff Portal Reports — real browser (390×844, 768×1024, 1366×768)
         env:
@@ -2253,23 +2103,26 @@ jobs:
           python3 bin/pilot-reports.py | tee /tmp/reports-browser.log
           BROWSER_EXIT="${PIPESTATUS[0]}"
           if [ "${BROWSER_EXIT}" != "0" ]; then
-            echo "::error::reports-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/reports-browser.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/reports-browser.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+            echo '::error::reports-browser: Staff Portal Reports browser acceptance failed; dynamic diagnostics withheld'
           fi
           test "${BROWSER_EXIT}" -eq 0
 
       - name: Day-2 Operational Workflows fixture — Subscriber personas + 4 portals
+        id: day2_workflows_fixture
         run: |
           WP_HOME="$WP_DIR" php tests/fixtures/pilot-day2-workflows-fixture.php 2>&1 | tee /tmp/day2-workflows-fixture.log
           FIX_EXIT="${PIPESTATUS[0]}"
           if [ "${FIX_EXIT}" != "0" ] || [ ! -s /tmp/day2-workflows.env ]; then
-            echo "::error::day2-workflows-fixture failed: exit=${FIX_EXIT} env_bytes=$(wc -c < /tmp/day2-workflows.env 2>/dev/null || echo MISSING) log_tail=$(tail -c 1500 /tmp/day2-workflows-fixture.log 2>/dev/null | tr '\n' '~')"
+            echo '::error::day2-workflows-fixture: Day-2 Operational Workflows fixture failed; fixture values and raw diagnostics withheld'
           fi
           test "${FIX_EXIT}" -eq 0
           test -s /tmp/day2-workflows.env
           cat /tmp/day2-workflows.env >> "$GITHUB_ENV"
-          grep '^DAY2_PUBLIC_URL=' /tmp/day2-workflows.env
+          grep -q '^DAY2_PUBLIC_URL=' /tmp/day2-workflows.env
+          echo 'Day-2 Operational Workflows fixture environment loaded; values withheld.'
 
       - name: Day-2 Operational Workflows — real browser (Patient, Receptionist, Doctor, Accountant + 390/320)
+        id: day2_workflows_browser
         env:
           BASE: http://localhost:8080
         run: |
@@ -2279,255 +2132,244 @@ jobs:
           python3 bin/pilot-day2-workflows.py | tee /tmp/day2-workflows-browser.log
           BROWSER_EXIT="${PIPESTATUS[0]}"
           if [ "${BROWSER_EXIT}" != "0" ]; then
-            echo "::error::day2-workflows-browser failed: exit=${BROWSER_EXIT} fails=$(grep '^FAIL' /tmp/day2-workflows-browser.log 2>/dev/null | wc -l) fail_lines=$(grep '^FAIL' /tmp/day2-workflows-browser.log 2>/dev/null | tr '\n' '~' | head -c 2500)"
+            echo '::error::day2-workflows-browser: Day-2 Operational Workflows browser acceptance failed; dynamic diagnostics withheld'
           fi
           test "${BROWSER_EXIT}" -eq 0
 
-      # خلاصهٔ Responsive باید از sandbox هم قابل بازیابی باشد: لاگِ job به blob
-      # ریدایرکت می‌شود و دانلودشدنی نیست و `$GITHUB_STEP_SUMMARY` هم از API
-      # خوانده نمی‌شود. پس همان خلاصهٔ PASS/FAIL (که برای صفحهٔ عمومیِ shortcode
-      # شامل A1/تعداد روز/تعداد نوبت/گذارِ وضعیت/A4 است) به PR post می‌شود.
-      # کاملاً الحاقی و `always()` — هیچ معیار یا آستانهٔ گیتی تغییر نکرد.
       - name: Post responsive evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
+          FIXTURE_OUTCOME: ${{ steps.resp_fixture.outcome }}
+          CHROMIUM_OUTCOME: ${{ steps.resp_smoke.outcome }}
+          NARROW_OUTCOME: ${{ steps.admin_narrow.outcome }}
+          COMPAT_OUTCOME: ${{ steps.compat_smoke.outcome }}
         run: |
-          {
-            echo "### Responsive smoke evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-            echo '```'
-            echo '--- fixture: anonymous public booking page ---'
-            cat /tmp/resp-public-page.env 2>/dev/null || echo '(RESP_PUBLIC_PAGE not produced — anonymous surface NOT exercised)'
-            echo '--- PASS/FAIL summary (per viewport) ---'
-            grep -E '^(PASS|FAIL)' /tmp/resp.log 2>/dev/null || echo '(resp.log missing)'
-            echo '--- INFO (cross-origin / advisory; includes Chromium runtime version) ---'
-            grep -E '^INFO' /tmp/resp.log 2>/dev/null || echo '(none)'
-            for engine in firefox webkit; do
-              echo "--- ${engine} compatibility (runtime version + PASS/FAIL) ---"
-              if [ -s "/tmp/resp-${engine}.log" ]; then
-                grep -E '^(INFO browser_engine=|PASS|FAIL)' "/tmp/resp-${engine}.log" || true
-              else
-                echo 'NOT RUN / log not produced'
-              fi
-            done
-            echo '--- admin narrow RTL acceptance (320/390 × 10 slugs; B-3) ---'
-            # هر سطرِ سنجش (PASS/FAIL/INFO) از خودِ اسکریپت منتشر می‌شود؛ پیش‌تر
-            # grep فقط سطرِ جمع‌بندی را می‌گرفت و پذیرشِ موفق در PR دیده نمی‌شد.
-            if [ -s /tmp/admin-narrow.log ]; then
-              # ابتدا همهٔ شکست‌ها، بعد جمع‌بندی‌ها، بعد شمارشِ اثباتِ اجرا برای هر
-              # slug@viewport؛ head -80 پیش‌تر شکست‌های بعدی را از دیدِ PR حذف می‌کرد.
-              echo '--- failures (every FAIL line) ---'
-              grep -E '^FAIL ' /tmp/admin-narrow.log || echo '(no FAIL line)'
-              echo '--- INFO / aggregate ---'
-              grep -E '^(INFO |MISSING )' /tmp/admin-narrow.log || true
-              echo '--- per slug@viewport PASS count (proof each combination ran) ---'
-              grep -E '^PASS ' /tmp/admin-narrow.log | sed -E 's/^PASS ([a-zA-Z0-9_-]+@[0-9]+) .*/\1/' | sort | uniq -c || true
-            else
-              echo '(admin-narrow.log نه تولید شد: این گام در همین job اجرا نشده است — Re-run failed jobs روی runner تازه آغاز می‌شود و فایل‌های /tmp گام‌های قبلی وجود ندارند)'
-            fi
-            python3 -c "import json;d=json.load(open('pilot-admin-narrow-results.json'));print('INFO admin_narrow_json=' + json.dumps(d['summary'],ensure_ascii=False))" 2>/dev/null || echo '(pilot-admin-narrow-results.json موجود نیست: اسکریپت به جمع‌بندی نرسیده است)'
-            echo '```'
-          } > /tmp/resp-evidence.md
+          case "${FIXTURE_OUTCOME:-}" in
+            success) fixture_status=PASS ;;
+            failure) fixture_status=FAIL ;;
+            *) fixture_status=NOT_RUN ;;
+          esac
+          case "${CHROMIUM_OUTCOME:-}" in
+            success) chromium_status=PASS ;;
+            failure) chromium_status=FAIL ;;
+            *) chromium_status=NOT_RUN ;;
+          esac
+          case "${NARROW_OUTCOME:-}" in
+            success) narrow_status=PASS ;;
+            failure) narrow_status=FAIL ;;
+            *) narrow_status=NOT_RUN ;;
+          esac
+          case "${COMPAT_OUTCOME:-}" in
+            success) compat_status=PASS ;;
+            failure) compat_status=FAIL ;;
+            *) compat_status=NOT_RUN ;;
+          esac
+          if [ "$fixture_status" = "PASS" ] && [ "$chromium_status" = "PASS" ] && [ "$narrow_status" = "PASS" ] && [ "$compat_status" = "PASS" ]; then
+            verdict=PASS
+          elif [ "$fixture_status" = "FAIL" ] || [ "$chromium_status" = "FAIL" ] || [ "$narrow_status" = "FAIL" ] || [ "$compat_status" = "FAIL" ]; then
+            verdict=FAIL
+          else
+            verdict=NOT_RUN
+          fi
+          printf 'pilot-responsive-evidence: %s fixture=%s chromium=%s admin_narrow=%s compat=%s\n' \
+            "$verdict" "$fixture_status" "$chromium_status" "$narrow_status" "$compat_status" > /tmp/resp-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/resp-evidence.md "pilot-responsive-evidence"
 
-      # همان الگوی evidence channel — sandbox نمی‌تواند blob artifact را دانلود
-      # کند، پس خلاصهٔ PASS/FAIL سفر OTP هم (فقط boolean/شناسه/تعداد) به PR
-      # post می‌شود. `always()` و صرفاً الحاقی — هیچ معیارِ گیتی تغییر نکرد.
       - name: Post OTP journey evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
+          FIXTURE_OUTCOME: ${{ steps.otp_journey_fixture.outcome }}
+          BROWSER_OUTCOME: ${{ steps.otp_journey_browser.outcome }}
         run: |
-          {
-            echo "### Slice-2 OTP journey evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-            echo '```'
-            echo '--- fixture: second synthetic clinic + own public booking page ---'
-            cat /tmp/otp-journey.env 2>/dev/null || echo '(JOURNEY_PAGE not produced — journey NOT exercised)'
-            echo '--- PASS/FAIL summary (per viewport × stage) ---'
-            grep -E '^(PASS|FAIL)' /tmp/journey.log 2>/dev/null || echo '(journey.log missing)'
-            echo '```'
-            echo 'قرارداد شواهد: فقط boolean/شناسه/تعداد — کد OTP، موبایل، نام بیمار(ها)، cookie، nonce و secret در شواهد نشت نکرده‌اند.'
-          } > /tmp/journey-evidence.md
+          case "${FIXTURE_OUTCOME:-}" in
+            success) fixture_status=PASS ;;
+            failure) fixture_status=FAIL ;;
+            *) fixture_status=NOT_RUN ;;
+          esac
+          case "${BROWSER_OUTCOME:-}" in
+            success) browser_status=PASS ;;
+            failure) browser_status=FAIL ;;
+            *) browser_status=NOT_RUN ;;
+          esac
+          if [ "$fixture_status" = "PASS" ] && [ "$browser_status" = "PASS" ]; then
+            verdict=PASS
+          elif [ "$fixture_status" = "FAIL" ] || [ "$browser_status" = "FAIL" ]; then
+            verdict=FAIL
+          else
+            verdict=NOT_RUN
+          fi
+          printf 'pilot-otp-journey: %s fixture=%s browser=%s\n' \
+            "$verdict" "$fixture_status" "$browser_status" > /tmp/journey-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/journey-evidence.md "pilot-otp-journey"
 
-      # Slice 3 — همان کانال شواهد: مرورگر واقعی با Clinicِ سوم و N>1 chooser.
-      # sandbox نمی‌تواند blob را دانلود کند، پس خلاصه PASS/FAIL هم به PR پست
-      # می‌شود. فقط boolean/تعداد/شناسه — بدون نام/موبایل/nonce/cookie.
       - name: Post Slice-3 chooser evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # If the earlier Slice-3 fixture/results steps were skipped or failed,
-          # the evidence files were never produced. This step is diagnostic-only:
-          # missing file -> clear warning and exit 0, not a synthetic gate failure.
-          # A single post-pr-evidence.sh call below publishes either the
-          # diagnostic warning or the real projection — never both.
           PROJECTION_RC=0
           if [ ! -f /tmp/slice3.env ] || [ ! -f /tmp/pilot-slice3-results.json ]; then
             echo '::warning::Slice-3 chooser evidence files were not produced by an earlier step (/tmp/slice3.env or /tmp/pilot-slice3-results.json missing — that step was skipped or failed). Posting diagnostic-only evidence; this step does not fail the gate.'
-            {
-              echo "### Slice-3 N>1 chooser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-              echo '```'
-              echo 'Slice-3 evidence unavailable: fixture/results files were not produced by an earlier step (skipped or failed). Diagnostic step only — no pass/fail assertion.'
-              echo '```'
-            } > /tmp/slice3-evidence.md
+            slice3_status=UNAVAILABLE
           else
-            python3 bin/pilot-safe-evidence.py --suite slice3 --env-file /tmp/slice3.env --results-file /tmp/pilot-slice3-results.json > /tmp/slice3-projection.md || PROJECTION_RC=$?
-            {
-              echo "### Slice-3 N>1 chooser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-              echo '```'
-              cat /tmp/slice3-projection.md
-              echo '```'
-              echo 'Evidence is an allowlisted pass/fail count only; credential and patient identifier values are withheld.'
-            } > /tmp/slice3-evidence.md
+            python3 bin/pilot-safe-evidence.py --suite slice3 --env-file /tmp/slice3.env --results-file /tmp/pilot-slice3-results.json >/dev/null || PROJECTION_RC=$?
+            if [ "$PROJECTION_RC" -eq 0 ]; then
+              slice3_status=PASS
+            else
+              slice3_status=FAIL
+            fi
           fi
+          printf 'pilot-slice3-chooser: %s\n' "$slice3_status" > /tmp/slice3-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/slice3-evidence.md "pilot-slice3-chooser"
           exit "$PROJECTION_RC"
 
-      # Phase 9 Slice 1 + Slice 2 — همان کانال شواهد برای پورتال بیمار (لغو نوبت +
-      # اعلان‌های داخلی). فقط boolean/تعداد/شناسه — بدون نام/موبایل/رمز/nonce/cookie.
       - name: Post Slice-1/Slice-2 portal evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # If the earlier portal-cancel fixture/results steps were skipped or failed,
-          # the evidence files were never produced. This step is diagnostic-only:
-          # missing file -> clear warning and exit 0, not a synthetic gate failure.
-          # A single post-pr-evidence.sh call below publishes either the
-          # diagnostic warning or the real projection — never both.
           PROJECTION_RC=0
           if [ ! -f /tmp/portal-cancel.env ] || [ ! -f /tmp/pilot-portal-cancel-results.json ]; then
             echo '::warning::Slice-1/Slice-2 portal evidence files were not produced by an earlier step (/tmp/portal-cancel.env or /tmp/pilot-portal-cancel-results.json missing — that step was skipped or failed). Posting diagnostic-only evidence; this step does not fail the gate.'
-            {
-              echo "### Phase 9 Slice 1 + Slice 2 — portal self-cancel + notifications evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-              echo '```'
-              echo 'Portal evidence unavailable: fixture/results files were not produced by an earlier step (skipped or failed). Diagnostic step only — no pass/fail assertion.'
-              echo '```'
-            } > /tmp/portal-cancel-evidence.md
+            portal_cancel_status=UNAVAILABLE
           else
-            python3 bin/pilot-safe-evidence.py --suite portal-cancel --env-file /tmp/portal-cancel.env --results-file /tmp/pilot-portal-cancel-results.json > /tmp/portal-cancel-projection.md || PROJECTION_RC=$?
-            {
-              echo "### Phase 9 Slice 1 + Slice 2 — portal self-cancel + notifications evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-              echo '```'
-              cat /tmp/portal-cancel-projection.md
-              echo '```'
-              echo 'Evidence is an allowlisted pass/fail count only; credential and patient identifier values are withheld.'
-            } > /tmp/portal-cancel-evidence.md
+            python3 bin/pilot-safe-evidence.py --suite portal-cancel --env-file /tmp/portal-cancel.env --results-file /tmp/pilot-portal-cancel-results.json >/dev/null || PROJECTION_RC=$?
+            if [ "$PROJECTION_RC" -eq 0 ]; then
+              portal_cancel_status=PASS
+            else
+              portal_cancel_status=FAIL
+            fi
           fi
+          printf 'pilot-portal-cancel: %s\n' "$portal_cancel_status" > /tmp/portal-cancel-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-cancel-evidence.md "pilot-portal-cancel"
           exit "$PROJECTION_RC"
 
-      # Phase 9 Slice 4 — same channel, with status-only browser output and a safe fixture summary.
-      # env کامل (رمز) هرگز cat نمی‌شود. always() تا شکستِ سفر هم قابل بازیابی باشد.
       - name: Post Slice-4 profile evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
+          FIXTURE_OUTCOME: ${{ steps.portal_profile_fixture.outcome }}
+          BROWSER_OUTCOME: ${{ steps.portal_profile_browser.outcome }}
         run: |
-          {
-            echo "### Phase 9 Slice 4 — Patient Profile browser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-            echo '```'
-            echo '--- safe fixture summary ---'
-            grep '^PROFILE_FIXTURE_OK ' /tmp/portal-profile-fixture.log 2>/dev/null || echo '(profile fixture summary unavailable; identifiers withheld)'
-            echo '--- PASS/FAIL/INFO/SHOT ---'
-            grep -E '^(PASS|FAIL|INFO|SHOT)' /tmp/portal-profile.log 2>/dev/null || echo '(portal-profile.log missing)'
-            echo '```'
-            echo 'قرارداد شواهد: فقط boolean/تعداد/شناسه‌های synthetic — هیچ موبایل/کدملی/رمز/nonce/cookie/OTP در شواهد نشت نکرده. ظاهر توسط مالک تأیید نشده است.'
-          } > /tmp/portal-profile-evidence.md
+          case "${FIXTURE_OUTCOME:-}" in
+            success) fixture_status=PASS ;;
+            failure) fixture_status=FAIL ;;
+            *) fixture_status=NOT_RUN ;;
+          esac
+          case "${BROWSER_OUTCOME:-}" in
+            success) browser_status=PASS ;;
+            failure) browser_status=FAIL ;;
+            *) browser_status=NOT_RUN ;;
+          esac
+          if [ "$fixture_status" = "PASS" ] && [ "$browser_status" = "PASS" ]; then
+            verdict=PASS
+          elif [ "$fixture_status" = "FAIL" ] || [ "$browser_status" = "FAIL" ]; then
+            verdict=FAIL
+          else
+            verdict=NOT_RUN
+          fi
+          printf 'pilot-portal-profile: %s fixture=%s browser=%s\n' \
+            "$verdict" "$fixture_status" "$browser_status" > /tmp/portal-profile-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/portal-profile-evidence.md "pilot-portal-profile"
 
       - name: Post Doctor Portal evidence to PR
         if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
+          FIXTURE_OUTCOME: ${{ steps.doctor_portal_fixture.outcome }}
+          BROWSER_OUTCOME: ${{ steps.doctor_portal_browser.outcome }}
         run: |
-          {
-            echo "### Phase 10 Doctor Portal browser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-            echo '```'
-            echo '--- safe fixture summary ---'
-            grep '^DOCTOR_PORTAL_FIXTURE_OK ' /tmp/doctor-portal-fixture.log 2>/dev/null || echo '(doctor portal fixture summary unavailable; identifiers withheld)'
-            echo '--- PASS/FAIL/INFO/SHOT ---'
-            grep -E '^(PASS|FAIL|INFO|SHOT)' /tmp/doctor-portal.log 2>/dev/null || echo '(doctor-portal.log missing)'
-            echo '```'
-            echo 'Evidence is status-only; fixture environment values and identifiers are withheld. Screenshot pixels are not inspected by this comment.'
-          } > /tmp/doctor-portal-evidence.md
+          case "${FIXTURE_OUTCOME:-}" in
+            success) fixture_status=PASS ;;
+            failure) fixture_status=FAIL ;;
+            *) fixture_status=NOT_RUN ;;
+          esac
+          case "${BROWSER_OUTCOME:-}" in
+            success) browser_status=PASS ;;
+            failure) browser_status=FAIL ;;
+            *) browser_status=NOT_RUN ;;
+          esac
+          if [ "$fixture_status" = "PASS" ] && [ "$browser_status" = "PASS" ]; then
+            verdict=PASS
+          elif [ "$fixture_status" = "FAIL" ] || [ "$browser_status" = "FAIL" ]; then
+            verdict=FAIL
+          else
+            verdict=NOT_RUN
+          fi
+          printf 'pilot-doctor-portal: %s fixture=%s browser=%s\n' \
+            "$verdict" "$fixture_status" "$browser_status" > /tmp/doctor-portal-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"
 
       - name: Post Reception evidence to PR
         if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
+          FIXTURE_OUTCOME: ${{ steps.reception_fixture.outcome }}
+          PREFLIGHT_OUTCOME: ${{ steps.reception_preflight.outcome }}
+          BROWSER_OUTCOME: ${{ steps.reception_browser.outcome }}
+          POSTFLIGHT_OUTCOME: ${{ steps.reception_postflight.outcome }}
         run: |
-          {
-            echo "### Phase 11 Slice 1 Reception Arrival Board browser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-            echo '```'
-            echo '--- PHP fixture clock around WordPress bootstrap ---'
-            grep '^RECEPTION_FIXTURE_CLOCK_' /tmp/reception-fixture.log 2>/dev/null || echo '(fixture clock markers missing)'
-            echo '--- bounded Apache/PHP probes (route/status/latency/process state only) ---'
-            cat /tmp/reception-http-before.log /tmp/reception-http-after.log 2>/dev/null || echo '(HTTP probe output missing)'
-            echo '--- fixture public ids only ---'
-            grep '^RECEPTION_PUBLIC=' /tmp/reception.env 2>/dev/null || echo '(RECEPTION_PUBLIC not produced — reception NOT exercised)'
-            echo '--- fixture failure category (bounded to one 300-char line; no raw log) ---'
-            fixture_error_line="$(grep -m1 -a '^RECEPTION_FIXTURE_ERROR:' /tmp/reception-fixture.log 2>/dev/null | cut -c1-300 | tr -d '\r\n')"
-            echo "${fixture_error_line:-(no RECEPTION_FIXTURE_ERROR line — the fixture reached its browser-handoff stage)}"
-
-            echo '--- PASS/FAIL/INFO/SHOT ---'
-            grep -E '^(PASS|FAIL|INFO|SHOT)' /tmp/reception.log 2>/dev/null || echo '(reception.log missing)'
-            echo '```'
-            echo 'Evidence is booleans and synthetic ids only. Screenshot pixels are not inspected by this comment.'
-          } > /tmp/reception-evidence.md
+          case "${FIXTURE_OUTCOME:-}" in
+            success) fixture_status=PASS ;;
+            failure) fixture_status=FAIL ;;
+            *) fixture_status=NOT_RUN ;;
+          esac
+          case "${PREFLIGHT_OUTCOME:-}" in
+            success) preflight_status=PASS ;;
+            failure) preflight_status=FAIL ;;
+            *) preflight_status=NOT_RUN ;;
+          esac
+          case "${BROWSER_OUTCOME:-}" in
+            success) browser_status=PASS ;;
+            failure) browser_status=FAIL ;;
+            *) browser_status=NOT_RUN ;;
+          esac
+          case "${POSTFLIGHT_OUTCOME:-}" in
+            success) postflight_status=PASS ;;
+            failure) postflight_status=FAIL ;;
+            *) postflight_status=NOT_RUN ;;
+          esac
+          if [ "$fixture_status" = "PASS" ] && [ "$preflight_status" = "PASS" ] && [ "$browser_status" = "PASS" ] && [ "$postflight_status" = "PASS" ]; then
+            verdict=PASS
+          elif [ "$fixture_status" = "FAIL" ] || [ "$preflight_status" = "FAIL" ] || [ "$browser_status" = "FAIL" ] || [ "$postflight_status" = "FAIL" ]; then
+            verdict=FAIL
+          else
+            verdict=NOT_RUN
+          fi
+          printf 'pilot-reception: %s fixture=%s preflight=%s browser=%s postflight=%s\n' \
+            "$verdict" "$fixture_status" "$preflight_status" "$browser_status" "$postflight_status" > /tmp/reception-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/reception-evidence.md "pilot-reception"
 
       - name: Post Day-2 Operational Workflows evidence to PR (لاگ Blob از Sandbox در دسترس نیست)
         if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
+          FIXTURE_OUTCOME: ${{ steps.day2_workflows_fixture.outcome }}
+          BROWSER_OUTCOME: ${{ steps.day2_workflows_browser.outcome }}
         run: |
-          {
-            echo "### Day-2 Operational Workflows browser evidence (run ${{ github.run_id }}, job ${GITHUB_JOB}, sha ${{ github.sha }})"
-            echo '```'
-            echo '--- fixture: Subscriber personas + 4 Day-2 portals ---'
-            grep -E '^DAY2_FIXTURE_' /tmp/day2-workflows-fixture.log 2>/dev/null || echo '(day2 fixture summary not produced)'
-            echo '--- PASS/FAIL/INFO summary ---'
-            grep -E '^(PASS|FAIL|INFO)' /tmp/day2-workflows-browser.log 2>/dev/null || echo '(day2-workflows-browser.log missing)'
-            echo '```'
-            echo 'Evidence is booleans, HTTP statuses, and synthetic numeric IDs only — no passwords, OTP codes, mobile numbers, patient names, nonces, or cookies.'
-          } > /tmp/day2-workflows-evidence.md
+          case "${FIXTURE_OUTCOME:-}" in
+            success) fixture_status=PASS ;;
+            failure) fixture_status=FAIL ;;
+            *) fixture_status=NOT_RUN ;;
+          esac
+          case "${BROWSER_OUTCOME:-}" in
+            success) browser_status=PASS ;;
+            failure) browser_status=FAIL ;;
+            *) browser_status=NOT_RUN ;;
+          esac
+          if [ "$fixture_status" = "PASS" ] && [ "$browser_status" = "PASS" ]; then
+            verdict=PASS
+          elif [ "$fixture_status" = "FAIL" ] || [ "$browser_status" = "FAIL" ]; then
+            verdict=FAIL
+          else
+            verdict=NOT_RUN
+          fi
+          printf 'pilot-day2-workflows: %s fixture=%s browser=%s\n' \
+            "$verdict" "$fixture_status" "$browser_status" > /tmp/day2-workflows-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md "pilot-day2-workflows"
 
-      - name: Debug dump به PR (لاگ Blob از Sandbox در دسترس نیست)
-        if: failure()
-        run: |
-          {
-            echo "### Pilot Gate FAILURE — job: ${GITHUB_JOB} (run ${{ github.run_id }})"
-            echo '```'
-            for f in /tmp/apt.log /tmp/seed.json /tmp/smoke.log /tmp/bench.txt /tmp/headers.txt \
-                     /tmp/perms.txt /tmp/audit-actions.txt /tmp/jobs-queued.txt /tmp/jobs-success.txt /tmp/failed-jobs.txt \
-                     /tmp/tick-1.log /tmp/tick-2.log /tmp/restore.log /tmp/orig-files.txt /tmp/restored-files.txt /tmp/backup-hashes.txt /tmp/backup-counts.txt \
-                     /tmp/health.json /tmp/avail.json /tmp/unauth.json /tmp/probe-body.txt \
-                     /tmp/leak.txt /tmp/leak2.txt /tmp/cpms-tick.log /tmp/tick-manual.log /tmp/health-check.log /tmp/pw.log /tmp/resp.log /tmp/journey.log /tmp/otp-journey-fixture.log /tmp/slice3.log /tmp/slice3-fixture.log /tmp/portal-cancel.log /tmp/portal-cancel-fixture.log /tmp/portal-profile.log /tmp/portal-profile-fixture.log /tmp/doctor-portal.log /tmp/doctor-portal-fixture.log /tmp/day2-workflows-fixture.log /tmp/day2-workflows-browser.log; do
-              if [ -f "$f" ]; then echo "--- $f (tail 50) ---"; tail -50 "$f"; fi
-            done
-            echo '--- apache diagnostics ---'
-            sudo apache2ctl configtest 2>&1 | tail -5
-            sudo service apache2 status 2>&1 | tail -3
-            sudo ss -tlnp 2>/dev/null | grep -E ':(80|8080)\b' || echo '(no listener on 80/8080)'
-            for apache_log in /var/log/apache2/pilot-error.log /var/log/apache2/error.log; do
-              if [ -r "$apache_log" ]; then
-                for error_kind in 'PHP Fatal error' 'PHP Parse error' 'PHP Warning' 'PHP Notice' 'AH[0-9]{5}:'; do
-                  error_count="$(grep -Ec "$error_kind" "$apache_log" 2>/dev/null || true)"
-                  echo "apache_log=$(basename "$apache_log") category=$error_kind count=$error_count"
-                done
-              fi
-            done
-            ls -la /etc/php/*/apache2/php.ini 2>/dev/null || echo '(no mod_php ini!)'
-            sudo cat /etc/apache2/sites-available/pilot.conf 2>/dev/null || true
-            cat "$WP_DIR/.htaccess" 2>/dev/null || echo '(no .htaccess)'
-            echo '```'
-          } > /tmp/debug.md
-          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/debug.md "pilot-debug-dump"
       - uses: actions/upload-artifact@v4
         if: always() && !cancelled()
         with:

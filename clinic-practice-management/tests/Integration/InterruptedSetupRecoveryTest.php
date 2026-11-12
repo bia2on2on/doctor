@@ -317,15 +317,17 @@ final class InterruptedSetupRecoveryTest extends WP_UnitTestCase
         self::assertSame(0, (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d', [$this->clinic_id]
         ), 'runtime ticks must not fabricate human ownership evidence');
-        fwrite(STDOUT, 'HEARTBEAT_PERSISTENCE=' . wp_json_encode([
-            'server' => App::db()->fetchValue('SELECT VERSION()'),
+        // Fail-closed publication boundary: BoundedEvidence drops anything that is
+        // not an int/bool/strict-ASCII token. The server version string is not
+        // published — there is no schema/version field on this boundary.
+        fwrite(STDOUT, 'HEARTBEAT_PERSISTENCE=' . wp_json_encode(\ClinicCore\Tests\Support\BoundedEvidence::heartbeat([
             'sql_mode' => App::db()->fetchValue('SELECT @@SESSION.sql_mode'),
             'insert_writer' => $inserted['updated_by_wp_user_id'],
             'insert_php_type' => gettype($inserted['updated_by_wp_user_id']),
             'update_writer' => $updated['updated_by_wp_user_id'],
             'update_php_type' => gettype($updated['updated_by_wp_user_id']),
             'json_type' => $updated['value_type'],
-        ]) . PHP_EOL);
+        ])) . PHP_EOL);
     }
 
     public function testOwnerShapedSixEventHistoryWithNaturalZeroWriterHeartbeatRecovers(): void

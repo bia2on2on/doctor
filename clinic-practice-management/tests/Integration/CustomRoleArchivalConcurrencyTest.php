@@ -355,12 +355,12 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 self::assertGreaterThan(0, $isolationProbe['pinned_fd_count'], 'the launcher must hold descriptors to pin');
                 self::assertTrue(
                     $isolationProbe['pinned_isolation_proven'],
-                    'the launcher descriptors are not /dev/null inside the worker: ' . json_encode($isolationProbe)
+                    'the launcher descriptors are not /dev/null inside the worker (see the descriptor-isolation evidence record)'
                 );
                 self::assertSame(
                     0,
                     $isolationProbe['worker_socket_count'],
-                    'the worker must start with no inherited socket: ' . json_encode($isolationProbe)
+                    'the worker must start with no inherited socket'
                 );
                 self::assertGreaterThan(
                     0,
@@ -423,11 +423,7 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                     }
                     usleep(20000);
                 } while (microtime(true) < $deadline);
-                self::assertIsArray($waitEdge, 'actual performance_schema.data_lock_waits edge is required: ' . json_encode([
-                    'winner' => $winner, 'waiter' => $waiter, 'parent_connection_id' => $parentConnectionId,
-                    'child_connection_id' => $childConnectionId, 'parent_locks' => $this->customRoleDefinitionLocksForConnection($observer, $parentConnectionId),
-                    'child_locks' => $this->customRoleDefinitionLocksForConnection($observer, $childConnectionId),
-                ], JSON_THROW_ON_ERROR));
+                self::assertIsArray($waitEdge, 'actual performance_schema.data_lock_waits edge is required');
                 self::assertSame('WAITING', $waitEdge['requesting_lock_status']);
                 self::assertSame('GRANTED', $waitEdge['blocking_lock_status']);
                 self::assertSame((string) $definitionId, trim((string) $waitEdge['blocking_lock_data']));
@@ -513,10 +509,12 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
             // dot and the line-oriented CI collector would miss it.
             self::assertMatchesRegularExpression('/^denied:[A-Z_]+$/', $outcome);
             self::assertStringNotContainsString($canary, $waiterDiagnostics, 'the canary must never reach the worker at all');
-            $evidence = json_encode([
+            // Fail-closed publication boundary: the record is projected through
+            // BoundedEvidence (fixed allow-listed keys, strictly validated bounded
+            // values). Raw SQL, schema names, fixture ids, role keys and raw FD
+            // targets / env var NAMES never reach the job log or a mirror.
+            $evidence = json_encode(\ClinicCore\Tests\Support\BoundedEvidence::archival([
                 'case' => $winner . '_before_' . $waiter,
-                'mysql_schema' => DB_NAME,
-                'definition_id' => $definitionId,
                 'worker_mechanism' => 'proc_open-independent-process',
                 'worker_bootstrap' => 'wp-config constants + wp-settings.php (no test installer)',
                 'startup_fixture_probe' => $startupProbeAfter,
@@ -526,22 +524,19 @@ final class CustomRoleArchivalConcurrencyTest extends WP_UnitTestCase
                 'child_connection_id' => $childConnectionId,
                 'parent_connection_id_live_on_own_session' => $liveConnectionId,
                 'parent_transaction_visible_on_own_session' => is_array($selfTransaction),
-                'parent_transaction_state' => $parentTransaction['trx_state'],
-                'child_transaction_state' => $childTransaction['trx_state'],
-                'waiter_lock_query' => $childQuery,
-                'waiter_lock_query_sha256' => hash('sha256', $childQuery),
+                'parent_transaction_state' => $parentTransaction['trx_state'] ?? null,
+                'child_transaction_state' => $childTransaction['trx_state'] ?? null,
                 'wait_edge' => $waitEdge,
                 'same_wait_edge_through_mutation_and_audit_before_commit' => $waitAfterMutation !== null,
                 'child_outcome_after_parent_commit' => $outcome,
-                'definition_status_after_commit' => $roleAfter['status'],
-                'definition_version_after_commit' => $roleAfter['version'],
-                'membership_role_after_commit' => $memberAfter['role_key'],
+                'definition_status_after_commit' => $roleAfter['status'] ?? null,
+                'definition_version_after_commit' => $roleAfter['version'] ?? null,
                 'archival_audit_count' => $archivalAudits,
                 'assignment_audit_count' => $assignmentAudits,
                 'descriptor_isolation' => $isolationProbe,
                 'environment_allowlist_verified' => true,
                 'privacy_marker_absent' => true,
-            ], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR);
+            ]), JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
             self::assertStringNotContainsString($canary, $evidence, 'no marker value may enter the evidence record');
             foreach ($faultInjection as $faultMarker) {
                 self::assertStringNotContainsString(
