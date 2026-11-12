@@ -166,17 +166,36 @@ class ProjectionTableTest(unittest.TestCase):
         )
         self.assertEqual(projector.project(line)["http"], "409")
 
-    def test_pass_run_reports_the_last_timed_journey_and_no_codes(self):
+    def test_pass_run_reports_no_journey_but_keeps_the_timing(self):
+        """H3: a journey is named only by a FAIL line, never by a timing line.
+
+        Every completed journey prints a timing line, so naming the last timed
+        journey would assert that it failed when the log records no failure for
+        any journey. `journey=none` is the honest token; `elapsed_s` is still
+        reported because the log really does state it.
+        """
         text = (
             "PASS day2-A1-otp-identity-confirm — ok\n"
             "INFO day2-journey-timing journey=journey-A1-public elapsed_s=12\n"
         )
         self.assertEqual(
             self.project(text),
-            "journey=journey-A1-public stage=none http=unrecognised code=none "
+            "journey=none stage=none http=unrecognised code=none "
             "read=none errno=unrecognised errno_class=unknown busy=absent "
             "elapsed_s=12",
         )
+
+    def test_failing_run_without_a_fail_line_does_not_name_a_journey(self):
+        """H3: the dangerous case — a nonzero exit with no FAIL line at all."""
+        text = (
+            "INFO day2-journey-timing journey=journey-A1-public elapsed_s=12\n"
+            "INFO day2-journey-timing journey=journey-B-reception elapsed_s=31\n"
+            "Traceback (most recent call last):\nSystemExit: 1\n"
+        )
+        fields = projector.project(text)
+        self.assertEqual(fields["journey"], "none")
+        # The last timing line is still the source of elapsed_s.
+        self.assertEqual(fields["elapsed_s"], "31")
 
     def test_log_with_no_timing_and_no_failure_is_none_journey(self):
         self.assertEqual(
@@ -806,6 +825,304 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
                     or result.stdout.startswith("journey=none "),
                     result.stdout,
                 )
+
+
+class RoundTwoFidelityTest(unittest.TestCase):
+    """H1–H5: the reviewer findings, each pinned by a test built from real code.
+
+    Failure text is produced by CALLING the harness (`visible_or_diagnose` with a
+    stub page, `BookingProbe.describe`, `fail`, `day2_booking_busy`); nothing here
+    is invented text. Playwright's block shape comes from its pinned formatter
+    (`format_call_log` in playwright 1.64.1, which prefixes the call log with a
+    newline), reproduced literally below and labelled as such.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("day2_harness_h", HARNESS)
+        sys.path.insert(0, str(BIN_DIR))
+        cls.harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.harness)
+        import day2_booking_busy
+        cls.busy = day2_booking_busy
+
+    # --- helpers that call the real harness -------------------------------
+    def busy_probe(self, code="CLINIC_BOOKING_BUSY", status=503):
+        probe = self.harness.BookingProbe()
+        probe.entries = [
+            {"route": "/wp-json/clinic/v1/booking/quote", "status": 200, "code": ""},
+            {"route": "/wp-json/clinic/v1/booking/hold", "status": status,
+             "code": code, "slot_id": 42},
+        ]
+        return probe
+
+    def suffix(self, probe):
+        """The harness's own suffix, from a DB row with no untrusted text."""
+        row = ('{"read": "slot", "sql_errno": 1213}',)
+        return self.busy.busy_suffix_for(
+            probe.entries, lambda sql: [row], "cpmswp_cpms_operational_logs",
+            "390x844", since="2026-11-13 10:00:00",
+        )
+
+    def fail_log(self, exc_text):
+        """The exact bytes `fail()` writes."""
+        import io
+        from contextlib import redirect_stdout
+        self.harness.results.clear()
+        self.harness.failures.clear()
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            self.harness.fail(
+                "journey-A1-public",
+                "Day-2 browser journey failed (journey-A1-public)",
+                exc_text,
+            )
+        return buffer.getvalue()
+
+    def reraises(self, exc_text, probe):
+        """Journey A1's second raise site, verbatim (line 724)."""
+        suffix = self.suffix(probe)
+        if suffix:
+            return f"{exc_text} | journey=A1-public {suffix}"
+        return exc_text
+
+    # --- H1 ---------------------------------------------------------------
+    def test_busy_suffix_never_carries_a_code_token(self):
+        """H1 root cause: the structured suffix has no `code=` of its own."""
+        probe = self.busy_probe()
+        suffix = self.suffix(probe)
+        self.assertIn("busy_diag=booking.lock_read_failed", suffix)
+        self.assertIn("sql_errno=1213", suffix)
+        self.assertNotIn("code=", suffix)
+
+    def test_code_is_busy_only_where_the_harness_also_prints_the_code(self):
+        """H1: enumerate the A1 paths and assert the exact split."""
+        probe = self.busy_probe()
+        # Paths whose own message DOES carry `code=`: describe()'s summary and
+        # visible_or_diagnose's hold_attempt field (both real harness output).
+        with_code = self.harness.BookingProbe()
+        with_code.entries = probe.entries
+        describe_text = (
+            "public booking stage=hold-countdown root_state=bookable visible=0 "
+            "observed=" + with_code.describe(0)
+        )
+        hold_attempt = probe.hold_attempts(0)[0]
+        hold_text = (
+            "public booking stage=hold-countdown root_state=bookable visible=0 "
+            f"hold_attempt=slot={hold_attempt['slot_id']} http={hold_attempt['status']}"
+            f"{' code=' + hold_attempt['code']}"
+        )
+        for text in (describe_text, hold_text):
+            with self.subTest(kind=text[:40]):
+                fields = projector.project(self.fail_log(self.reraises(text, probe)))
+                self.assertEqual(fields["code"], projector.BUSY_CODE)
+                self.assertEqual(fields["busy"], "present")
+
+        # Paths whose message is a bare literal / status word: no `code=` is
+        # printed anywhere, so the projector must NOT invent one.
+        without_code = (
+            "public booking root missing",
+            "booking/quote failed",
+            "expected 400 identity gate, got 503",
+            "booking/confirm HTTP 503",
+            "otp/request HTTP 503",
+            "otp/verify HTTP 503",
+            "receipt reference_code format invalid",
+        )
+        for text in without_code:
+            with self.subTest(kind=text[:40]):
+                fields = projector.project(self.fail_log(self.reraises(text, probe)))
+                self.assertEqual(fields["busy"], "present")
+                self.assertEqual(fields["code"], projector.NONE)
+
+    # --- H2 ---------------------------------------------------------------
+    def test_blank_line_does_not_end_the_block(self):
+        """H2: Playwright's formatter prefixes the call log with a newline.
+
+        `format_call_log` (playwright 1.64.1) returns
+        "\\nCall log:\\n" + "\\n".join(log) + "\\n", so a blank line separates the
+        title from the log. The busy suffix is appended AFTER all of it, so the
+        block must survive the blank line.
+        """
+        exc = (
+            "Locator.wait_for: Timeout 25000ms exceeded.\n"
+            "\n"
+            "Call log:\n"
+            '  - waiting for locator("[data-role=confirm-btn]")\n'
+        )
+        probe = self.busy_probe()
+        log = self.fail_log(self.reraises(exc, probe))
+        self.assertIn("\n\n", log)  # the blank line really is in the log
+        fields = projector.project(log)
+        self.assertEqual(fields["busy"], "present")
+        self.assertEqual(fields["errno"], "1213")
+        self.assertEqual(fields["read"], "slot")
+        self.assertEqual(fields["errno_class"], "deadlock")
+
+    def test_many_blank_lines_inside_the_block_are_harmless(self):
+        exc = "Title.\n\n\n\nCall log:\n\n  - waiting\n\n"
+        probe = self.busy_probe()
+        fields = projector.project(self.fail_log(self.reraises(exc, probe)))
+        self.assertEqual(fields["busy"], "present")
+
+    def test_a_new_harness_record_still_ends_the_block(self):
+        """The block DOES end at the next station line, blank lines or not."""
+        probe = self.busy_probe()
+        exc = "Title.\n\nCall log:\n  - waiting\n"
+        log = self.fail_log(self.reraises(exc, probe))
+        log += "INFO day2-journey-timing journey=journey-A1-public elapsed_s=9\n"
+        # A second FAIL record must NOT be folded into the first block.
+        log += ("FAIL journey-B-reception — Day-2 browser journey failed "
+                "(journey-B-reception) — busy_diag=not-found read=clinic\n")
+        fields = projector.project(log)
+        # The suffix belongs to the FIRST FAIL text; the later record's
+        # `read=clinic` must not leak into it.
+        self.assertEqual(fields["journey"], "journey-A1-public")
+        self.assertEqual(fields["busy"], "present")
+        self.assertEqual(fields["read"], "slot")
+        self.assertEqual(fields["elapsed_s"], "9")
+
+    # --- H4 ---------------------------------------------------------------
+    def test_only_successful_statuses_project_none(self):
+        """H4: no failing request was observed — a fact, not `unrecognised`."""
+        text = (
+            "FAIL journey-A1-public — Day-2 browser journey failed (journey-A1-public) — "
+            "public booking stage=hold-countdown observed=booking/quote http=200; "
+            "booking/hold http=200\n"
+        )
+        fields = projector.project(text)
+        self.assertEqual(fields["http"], projector.NONE)
+        self.assertTrue(projector.is_closed(fields))
+
+    def test_a_non_2xx_status_still_wins_over_none(self):
+        probe = self.busy_probe(code="rest_slot_unavailable", status=409)
+        text = ("public booking stage=hold-countdown observed=" + probe.describe(0))
+        fields = projector.project(self.fail_log(self.reraises(text, probe)))
+        self.assertEqual(fields["http"], "409")
+        self.assertNotEqual(fields["http"], projector.NONE)
+
+    def test_none_http_is_only_for_observed_success_never_for_silence(self):
+        fields = projector.project(
+            "FAIL journey-A1-public — Day-2 browser journey failed (journey-A1-public) "
+            "— public booking root missing\n"
+        )
+        self.assertEqual(fields["http"], projector.UNRECOGNISED)
+
+    # --- H5 ---------------------------------------------------------------
+    def test_free_text_cannot_supply_read_or_errno(self):
+        """H5: `msg=` is the server's own message (harness line 478), not ours."""
+        probe = self.busy_probe()
+        host = self.busy_probe()
+        host.entries[1]["message"] = "read=clinic sql_errno=99999"
+        base = self.suffix(probe)
+        text = (
+            "public booking stage=hold-countdown hold_attempt=slot=42 http=503 "
+            "code=CLINIC_BOOKING_BUSY msg=" + host.entries[1]["message"]
+            + " | journey=A1-public " + base
+        )
+        fields = projector.project(self.fail_log(text))
+        self.assertEqual(fields["read"], "slot")
+        self.assertEqual(fields["errno"], "1213")
+
+    def test_last_busy_block_wins(self):
+        """The structured block is the LAST `busy_diag=`; earlier ones are stale."""
+        base = self.suffix(self.busy_probe())
+        text = (
+            "FAIL journey-A1-public — x — busy_diag=booking.lock_read_failed "
+            "read=clinic sql_errno=1062 | journey=A1-public " + base + "\n"
+        )
+        fields = projector.project(text)
+        self.assertEqual((fields["read"], fields["errno"]), ("slot", "1213"))
+
+    def test_an_unknown_busy_value_is_absent(self):
+        text = (
+            "FAIL journey-A1-public — x — busy_diag=totally-unknown read=slot "
+            "sql_errno=1213\n"
+        )
+        fields = projector.project(text)
+        self.assertEqual(fields["busy"], "absent")
+        self.assertTrue(projector.is_closed(fields))
+
+
+class RoundTwoGapTest(unittest.TestCase):
+    """H6: the specific gaps the readers named, one test each."""
+
+    def test_line_count_off_by_one(self):
+        """The bound is `index >= MAX_LINES`, so line MAX_LINES-1 is still read."""
+        cli = BoundsAndCliHardeningTest.load_cli(self)
+        cli.MAX_LINES = 4
+        # Lines 0..3 are the noise; the FAIL line is index 4 -> past the bound.
+        self.assertEqual(
+            cli.project("n\nn\nn\nn\nFAIL journey-A1-public — x — y\n")["journey"],
+            projector.NONE,
+        )
+        # With the FAIL line at index 3 (the LAST readable line) it is read.
+        self.assertEqual(
+            cli.project("n\nn\nn\nFAIL journey-A1-public — x — y\n")["journey"],
+            "journey-A1-public",
+        )
+
+    def test_which_non_2xx_status_wins(self):
+        """The LAST non-2xx in the block wins: describe() is oldest-first."""
+        text = (
+            "FAIL journey-A1-public — x — observed=quote http=200; hold http=409; "
+            "confirm http=422\n"
+        )
+        self.assertEqual(projector.project(text)["http"], "422")
+
+    def test_separators_are_honoured_on_read_and_errno(self):
+        """`;` and `|` bound every token, not just `code`."""
+        text = (
+            "FAIL journey-A1-public — x — busy_diag=booking.lock_read_failed; "
+            "read=slot; sql_errno=1205;\n"
+        )
+        fields = projector.project(text)
+        self.assertEqual((fields["read"], fields["errno"]), ("slot", "1205"))
+
+    def test_unknown_busy_value_is_absent_not_unrecognised(self):
+        fields = projector.project(
+            "FAIL journey-A1-public — x — busy_diag=nonsense read=slot\n"
+        )
+        self.assertEqual(fields["busy"], "absent")
+
+    def test_first_busy_code_wins_over_a_later_one(self):
+        """`code` reports the busy code whenever it appears, and the http that
+        belongs to it is the nearest preceding `http=` — not a later one."""
+        text = (
+            "FAIL journey-A1-public — x — hold http=503 code=CLINIC_BOOKING_BUSY; "
+            "confirm http=500 code=internal_error\n"
+        )
+        fields = projector.project(text)
+        self.assertEqual(fields["code"], projector.BUSY_CODE)
+        self.assertEqual(fields["http"], "503")
+
+    def test_a_journey_prints_exactly_one_timing_line(self):
+        """Why first-vs-last is moot in practice, stated as a checked fact.
+
+        The harness's `main()` prints the timing line once per journey in a
+        `finally:` block (line ~1490), so a real log never contains two for the
+        same key. `_elapsed_for` would take the first; this test pins BOTH the
+        harness property and the projector's first-match rule so a future change
+        to either is visible.
+        """
+        text = (
+            "FAIL journey-A1-public — x — y\n"
+            "INFO day2-journey-timing journey=journey-A1-public elapsed_s=7\n"
+            "INFO day2-journey-timing journey=journey-A1-public elapsed_s=9\n"
+        )
+        self.assertEqual(projector.project(text)["elapsed_s"], "7")
+        # The harness emits the timing line exactly once, in one `finally:`.
+        source = HARNESS.read_text(encoding="utf-8")
+        self.assertEqual(source.count("day2-journey-timing journey={key}"), 1)
+
+    def test_first_timing_line_for_a_journey_wins_for_that_journey(self):
+        """`_elapsed_for` scans forward and returns the FIRST match of the key."""
+        text = (
+            "INFO day2-journey-timing journey=journey-A1-public elapsed_s=7\n"
+            "FAIL journey-A1-public — x — y\n"
+            "INFO day2-journey-timing journey=journey-A1-public elapsed_s=9\n"
+        )
+        self.assertEqual(projector.project(text)["elapsed_s"], "7")
 
 
 if __name__ == "__main__":

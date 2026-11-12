@@ -52,61 +52,109 @@ What the harness really prints (read from `bin/pilot-day2-workflows.py`)
 * Per-journey wall clock (added to the harness for this diagnostic):
   ``INFO day2-journey-timing journey=<key> elapsed_s=<int>``.
 
-Multi-line failure text
------------------------
+Multi-line failure text, and the block rule
+------------------------------------------
 `fail()` prints ``FAIL ... — <exception text>`` exactly once, and the exception
 text is whatever the failing assertion carried. Playwright messages commonly
 contain newlines (Call log, "waiting for locator(...)"), and the *second* raise
 site in journey A1 (``raise AssertionError(f"{exc} | journey=A1-public {suffix}")``,
 line 724) interpolates the previous exception's text, which may itself be
 multi-line. Those newlines are written verbatim by ``print()``, so a
-`busy_diag=` block can land on a line *after* the `FAIL` line. This module
-therefore treats the first ``FAIL `` line plus every immediately following
-non-blank line as ONE failure block, bounded by :data:`MAX_BLOCK_CHARS`.
+`busy_diag=` block can land on a line *after* the `FAIL` line.
+
+Playwright's pinned formatter makes a BLANK line possible inside that text:
+``format_call_log`` (playwright 1.64.1, ``_impl/_connection.py``) returns
+``"\nCall log:\n" + "\n".join(log) + "\n"``, so the call log is introduced by a
+newline that renders as an empty line whenever the title does not already end
+with one.
+
+**The block rule is therefore:** the first ``FAIL `` line, then every following
+line up to the next harness-emitted record at column 0 (``FAIL ``/``PASS ``/
+``INFO ``/``WARN ``/``NOT_RUN ``) or the :data:`MAX_BLOCK_CHARS` bound. A blank
+line does NOT end the block — ending there would discard a busy suffix that
+legitimately follows one. Blank lines stay inside the block and are simply never
+matched by any token pattern.
 
 Vocabulary
 ----------
 =================  ==========================================================
-``journey``        the failing journey id (first FAIL line); on a log with no
-                   FAIL line, the last journey that printed a timing line, or
-                   ``none`` when there is none; ``unrecognised`` when a FAIL
+``journey``        the failing journey id (first FAIL line); ``none`` when the
+                   log has no FAIL line at all; ``unrecognised`` when a FAIL
                    line names a foreign key, or when the log itself is
-                   missing/unreadable.
+                   missing/unreadable. The journey is NEVER taken from a timing
+                   line: every completed journey prints one, so naming the last
+                   would assert a failure that the log does not record.
 ``stage``          one of the seven markers above, ``none``, ``unrecognised``.
-``http``           canonical decimal 100..599, else ``unrecognised``. The
-                   status paired with ``code=CLINIC_BOOKING_BUSY`` when that
-                   code appears (the nearest ``http=`` before it); otherwise the
-                   last non-2xx status printed in the failure block (the REST
-                   calls are printed oldest-first, so the first status is the
-                   successful quote), falling back to the last status, then to
-                   the word forms the harness also prints (``HTTP 409``,
-                   ``got 400``).
+``http``           canonical decimal 100..599, the closed token ``none``, or
+                   ``unrecognised``. Precedence: the status paired with
+                   ``code=CLINIC_BOOKING_BUSY`` when that code appears (the
+                   nearest ``http=`` before it); otherwise the harness's
+                   structured ``http=`` from the busy block; otherwise the last
+                   non-2xx status printed by ``describe()`` (oldest-first, so the
+                   first status is the successful quote); otherwise the word
+                   forms the harness also prints (``HTTP 409``, ``got 400``);
+                   otherwise ``none`` when only 2xx statuses were printed — that
+                   means no failing request was observed, which is a fact the log
+                   states, and is distinct from ``unrecognised``.
 ``code``           ``CLINIC_BOOKING_BUSY`` (wins wherever it appears),
                    ``other`` (a different code was printed), ``none``.
 ``read``           one of the 16 lock-read labels, ``none``, ``unrecognised``.
-``errno``          canonical decimal 0..99999, else ``unrecognised``.
+                   Read ONLY from the harness's structured ``busy_diag=`` block
+                   (the last one in the failure text), never from free text that
+                   happens to spell ``read=`` — ``msg=`` at line 478 carries the
+                   server's own message and a Playwright call log is arbitrary.
+``errno``          canonical decimal 0..99999, else ``unrecognised``. Read from
+                   the same structured busy block as ``read``.
 ``errno_class``    ``deadlock`` (1213), ``lock_wait_timeout`` (1205), ``other``
                    (any other validated non-zero errno), ``unknown`` (no
                    validated errno, or errno ``0`` — a zero errno is "no driver
                    error", not a cause class).
-``busy``           whether the busy-details row was found. ``present`` (the
+``busy``           whether a busy diagnostic was PRODUCED. ``present`` (the
                    harness printed ``busy_diag=booking.lock_read_failed``),
                    ``not_found``, ``fetch_failed``, ``stale_or_mismatch``
                    (the three degraded ``busy_diag=`` states, hyphens mapped to
-                   underscores), ``absent`` (no ``busy_diag=`` token at all:
-                   no busy call was observed, or the journey is not A1).
+                   underscores), ``absent`` (no ``busy_diag=`` token at all).
+                   ``absent`` means "no busy diagnostic was produced", NOT "the
+                   database was not busy": the suffix is appended at one call
+                   site in journey A1 only, so every A2/B/C/D failure is
+                   ``absent`` by construction, and so is an A1 failure that the
+                   harness reached before its busy branch.
 ``elapsed_s``      canonical decimal 0..86400, else ``unrecognised``.
 =================  ==========================================================
 
-The three integer fields have no ``none`` form: absent, malformed, leading-zero
-(``007``) and over-long (40-digit) values all collapse to ``unrecognised``.
-Integers are emitted canonically, never with padding.
+``errno`` and ``elapsed_s`` have no ``none`` form: absent, malformed,
+leading-zero (``007``) and over-long (40-digit) values all collapse to
+``unrecognised``. ``http`` additionally has ``none`` (see above). Integers are
+emitted canonically, never with padding.
 
-Only the FIRST FAIL line of the log is projected (journey order in `main()`),
-so a run that fails journey A and then B reports A. This is a best-effort
-single-line projection, not a proof about the log: a failure that prints none
-of these markers yields ``unrecognised`` fields, and the intermittent cause
-itself remains unknown.
+Limitations (each one is a fact about what the surfaces can say)
+---------------------------------------------------------------
+* **Only the FIRST failure is reported.** One `FAIL ` block is projected (journey
+  order in `main()`), so a run that fails journey A and then B reports A. B's
+  failure is not represented.
+* **``busy=absent`` is not "the database was not busy".** It means no busy
+  diagnostic was produced (see the ``busy`` row above).
+* **The busy suffix exists for journey A1 only** (`busy_suffix_for` is called
+  once, in `run_journey_a_public_booking`), so A2/B/C/D can never be ``present``.
+* **``code=CLINIC_BOOKING_BUSY`` is only visible where the harness prints it.**
+  The structured suffix itself contains no `code=` token: `format_busy_suffix`
+  emits `busy_diag=`, `read=`, `sql_errno=`, ids, `route=`, `http=`, `viewport=`.
+  So `code` is the busy code only when the *other* text in the same block also
+  carries it — the `describe()` summary (`observed=… code=…`) or the
+  `hold_attempt=… code=…` field of `visible_or_diagnose`. On the many journey-A1
+  raise sites whose message is a bare literal or a status word (root missing,
+  switcher counts, availability, quote, `HTTP {n}`, `got {n}`, the receipt and
+  reference-code checks, and the `visible_or_diagnose` stages other than
+  `hold-countdown`), the harness prints no `code=` at all, so those failures
+  project `code=none` even when `busy=present`. They are listed in the PR body.
+* **`route=` is printed by the harness but not projected.** `format_busy_suffix`
+  emits it, and it is a closed, useful token, but it is out of this change's
+  declared field set; projecting it is deferred rather than half-done.
+* **`sql_error` is never read.** It is untrusted driver text.
+
+This is a best-effort single-line projection, not a proof about the log: a
+failure that prints none of these markers yields ``unrecognised`` fields, and
+the intermittent cause itself remains unknown.
 """
 
 from __future__ import annotations
@@ -208,6 +256,11 @@ INTS = {
     "errno": (0, 99999),
     "elapsed_s": (0, 86400),
 }
+
+#: Integer fields that additionally accept the closed token `none`. `http` uses
+#: it for "no failing request was observed": a fact the log states, distinct from
+#: `unrecognised` ("the log did not say") and from borrowing a 2xx status.
+NONE_ALLOWED_INTS = frozenset({"http"})
 
 MIN_HTTP, MAX_HTTP = INTS["http"]
 MAX_ERRNO_DIGITS = 5
@@ -316,6 +369,11 @@ def errno_class_for(errno):
     return "other"
 
 
+def _is_success_status(raw):
+    """True when `raw` is a canonical 2xx HTTP status (no failure was seen)."""
+    return int_token(raw, *INTS["http"]) != UNRECOGNISED and 200 <= int(raw) <= 299
+
+
 def busy_token_for(text):
     """`busy` field: which `busy_diag=` state the harness printed, if any.
 
@@ -336,12 +394,23 @@ def _failure_block(text):
     """The first `FAIL ` line plus its continuation lines, bounded.
 
     `fail()` prints `FAIL <key> — <title> — <exception text>` once, but the
-    exception text may itself contain newlines (a Playwright timeout message
-    carries a `Call log:`, and the second raise site in journey A1 appends its
-    `busy_diag=` suffix to text that may already end with one). Continuation
-    lines are every immediately following non-blank line that does not start a
-    new harness record; a blank line, another `FAIL `/`PASS `/`INFO ` line, the
-    :data:`MAX_LINES` bound or the :data:`MAX_BLOCK_CHARS` bound ends the block.
+    exception text may itself contain newlines, and the second raise site in
+    journey A1 appends its `busy_diag=` suffix to text that may already be
+    multi-line:
+
+        raise AssertionError(f"{exc} | journey=A1-public {suffix}")
+
+    Playwright's pinned formatter (`format_call_log`, playwright 1.64.1) returns
+    ``"\\nCall log:\\n" + "\\n".join(log) + "\\n"`` — i.e. the call log is prefixed
+    by a NEWLINE, which renders as a BLANK line whenever the title line does not
+    already end with one. So a blank line can sit *inside* the exception text,
+    and ending the block there would discard the busy suffix that follows it.
+
+    A blank line therefore does NOT end the block. Only a new harness-emitted
+    record (`FAIL `/`PASS `/`INFO `/`WARN `/`NOT_RUN ` at column 0) does, and
+    the :data:`MAX_LINES` and :data:`MAX_BLOCK_CHARS` bounds still apply. Blank
+    lines inside the block are kept (they cost nothing: every token search is a
+    regex over the joined text) and are simply never matched.
     """
     block, size, started = [], 0, False
     for line in _lines(text):
@@ -352,7 +421,7 @@ def _failure_block(text):
                 size += len(clipped)
                 started = True
             continue
-        if not line.strip() or line.startswith(_TOP_LEVEL_PREFIXES):
+        if line.startswith(_TOP_LEVEL_PREFIXES):
             break
         block.append(clipped)
         size += len(clipped)
@@ -396,8 +465,13 @@ def project(text):
     failure = _failure_block(text)
 
     if failure is None:
-        # The step produced a log but no journey failed. Report the journey the
-        # log last timed, if any: `journey=none` then means "no failure at all".
+        # No `FAIL ` line at all. The journey is `none` — NOT the last journey
+        # that printed a timing line: every completed journey prints one, so
+        # naming the last would claim that a journey failed when the log contains
+        # no failure record for any of them. The elapsed time of the last timed
+        # journey is still reported (it is a fact the log states), and the shell
+        # maps `journey=none` to `unrecognised`, so the published line never
+        # attributes a failure to a journey that did not report one.
         fields = _unobserved(NONE)
         timed = [
             match.group(1)
@@ -407,7 +481,6 @@ def project(text):
             if match and match.group(1) in JOURNEYS
         ]
         if timed:
-            fields["journey"] = timed[-1]
             fields["elapsed_s"] = _elapsed_for(text, timed[-1])
         return fields
 
@@ -439,10 +512,23 @@ def project(text):
     else:
         code = NONE
 
+    # H5: the harness prints exactly ONE machine-formatted block describing the
+    # busy attempt, and `format_busy_suffix` emits it as
+    #   busy_diag=<state> [read=<label>] [sql_errno=<int>] [sql_error="..."] [ids...]
+    #   [route=<r>] [http=<status>] [viewport=<w>x<h>]
+    # Everything BEFORE it may be free text: `msg=` at line 478 is the server's
+    # own message, and a Playwright call log is arbitrary. Anchoring `read`,
+    # `errno` and the busy `http` to the LAST `busy_diag=` block therefore reads
+    # only the harness's structured values and ignores free text that happens to
+    # spell `read=`/`sql_errno=`.
+    block_start = failure.rfind("busy_diag=")
+    structured = failure[block_start:] if block_start >= 0 else ""
+
     # `http` precedence: the status that belongs to this failure. When the busy
     # code is present, that is the nearest `http=` before it (the probe prints
-    # `... http=<status> code=<code>` per observation); otherwise the first
-    # printed status. Both forms are documented above.
+    # `... http=<status> code=<code>` per observation); otherwise the harness's
+    # structured `http=` from the busy block, else the statuses printed by
+    # `describe()` (oldest first).
     http_spans = [
         (match.start(), match.group(1))
         for match in re.finditer(_HTTP_TOKEN, failure)
@@ -450,28 +536,45 @@ def project(text):
     if busy_at >= 0:
         before = [value for start, value in http_spans if start < busy_at]
         http_raw = before[-1] if before else None
-    elif http_spans:
-        # `describe()` prints the REST calls in order, oldest first. The status
-        # that belongs to the failure is the last NON-2xx one: taking the first
-        # `http=` would report the successful quote (`http=200`) for a hold that
-        # actually failed with `http=409`.
-        failing = [
-            value for _, value in http_spans
-            if int_token(value, *INTS["http"]) != UNRECOGNISED
-            and not 200 <= int(value) <= 299
-        ]
-        http_raw = failing[-1] if failing else http_spans[-1][1]
     else:
-        http_raw = None
-    if http_raw is None:
+        structured_http = _value_of(structured, "http") if structured else None
+        if structured_http is not None:
+            http_raw = structured_http
+        elif http_spans:
+            # `describe()` prints the REST calls in order, oldest first, so the
+            # status that belongs to the failure is the last NON-2xx one: taking
+            # the first `http=` would report the successful quote (`http=200`)
+            # for a hold that actually failed with `http=409`.
+            failing = [
+                value for _, value in http_spans
+                if int_token(value, *INTS["http"]) != UNRECOGNISED
+                and not 200 <= int(value) <= 299
+            ]
+            http_raw = failing[-1] if failing else None
+        else:
+            http_raw = None
+    saw_only_success = bool(http_spans) and all(
+        _is_success_status(value) for _, value in http_spans
+    )
+    if http_raw is None and not saw_only_success:
         # Word forms the harness also prints, all without `key=`: `HTTP 409`
         # ("booking/confirm HTTP {status}"), `got 400`, `got 503`.
         word = _HTTP_WORD.search(failure) or _GOT_WORD.search(failure)
         http_raw = word.group(1) if word else None
-    http = int_token(http_raw, *INTS["http"])
+    # H4: only 2xx statuses were printed and no word form named a status, so NO
+    # FAILING REQUEST WAS OBSERVED. That is a fact the log states, so it gets the
+    # closed token `none` rather than borrowing a successful status or claiming
+    # `unrecognised` (which would mean "the log did not say").
+    if http_raw is None and saw_only_success:
+        http = NONE
+    else:
+        http = int_token(http_raw, *INTS["http"])
 
-    read = enum_token(_value_of(failure, "read"), READS)
-    errno = int_token(_value_of(failure, "sql_errno"), *INTS["errno"])
+    # `read` and `errno` come from the harness's structured busy block only (H5);
+    # free text earlier in the block cannot supply them.
+    read_source = structured if block_start >= 0 else failure
+    read = enum_token(_value_of(read_source, "read"), READS)
+    errno = int_token(_value_of(read_source, "sql_errno"), *INTS["errno"])
 
     return {
         "journey": journey,
@@ -495,6 +598,8 @@ def is_closed(fields):
             return False
     for name, (minimum, maximum) in INTS.items():
         token = fields[name]
+        if name in NONE_ALLOWED_INTS and token == NONE:
+            continue
         if token != UNRECOGNISED and int_token(token, minimum, maximum) != token:
             return False
     return True

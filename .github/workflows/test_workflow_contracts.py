@@ -4790,6 +4790,9 @@ _DAY2_ENUM_TOKENS = {
     "errno_class": frozenset(_PILOT_DAY2_ERRNO_CLASSES),
     "busy": frozenset(_PILOT_DAY2_BUSY) | {"unrecognised"},
 }
+#: Integer fields that may also carry the closed token `none` (it means "no
+#: failing request was observed", not "the log did not say"). Only `http`.
+_DAY2_NONE_ALLOWED_INTS = frozenset({"http"})
 #: Integer fields: the only *copied* values allowed, plus their digit bound.
 _DAY2_INT_TOKENS = {
     "http": _PILOT_DAY2_HTTP_MAX_DIGITS,
@@ -4938,8 +4941,13 @@ def pilot_day2_projection_violations(text):
                 ))
         else:
             bound = _DAY2_INT_TOKENS[field]
-            for reason in _day2_int_is_strict_copy(run_text, var, bound):
+            for reason in _day2_int_is_strict_copy(
+                run_text, var, bound, allow_none=field in _DAY2_NONE_ALLOWED_INTS
+            ):
                 violations.append(("DAY2_INT_GUARD", field, reason))
+            if field in _DAY2_NONE_ALLOWED_INTS:
+                for reason in _day2_none_override_guard(run_text, var):
+                    violations.append(("DAY2_INT_GUARD", field, reason))
 
     # The step must never mask the gate result nor invent one.
     lowered = run_text.lower()
@@ -4988,6 +4996,43 @@ def _day2_errno_class_guard(run_text, var):
     return reasons
 
 
+#: The only accepted shape of a post-`case` fixed-token override: a literal
+#: `if [ "$src" = "none" ]` test assigning the literal `none`. Anything else
+#: (a different literal, an interpolated RHS, an `else`) is rejected.
+_DAY2_NONE_OVERRIDE = (
+    r'(?m)^\s*if \[ "\${src}" = "none" \]; then\n'
+    r'\s*{name}=none\n'
+    r'\s*fi\s*$'
+)
+
+
+def _day2_none_override_guard(run_text, var):
+    """Reasons why a `none` override for `var` is not a literal-to-literal copy.
+
+    `http` gains `none` through ONE post-`case` statement, because the
+    pre-existing guard requires `''|*[!0-9]*)` to stay the first arm and to not
+    reference its own source. The override must therefore be exactly
+    ``if [ "$<src>" = "none" ]; then <var>=none; fi``: a literal comparison on a
+    variable that is itself validated by the digits-only `case` above it, and a
+    literal assignment. No interpolation is allowed on either side.
+    """
+    name = var.lstrip("$")
+    expected = _DAY2_NONE_OVERRIDE.format(src=re.escape("day2_" + name.split("_", 2)[-1]), name=re.escape(name))
+    # Derive the source name the same way the step does: safe_day2_http <- day2_http.
+    src = "day2_" + name[len("safe_day2_"):] if name.startswith("safe_day2_") else None
+    if src is None:
+        return [f"{var} is not a safe_day2_* variable"]
+    expected = _DAY2_NONE_OVERRIDE.format(src=re.escape(src), name=re.escape(name))
+    found = re.findall(expected, run_text)
+    if len(found) != 1:
+        return [f"{var} must have exactly one literal `none` override, found {len(found)}"]
+    # A `none` override must not be reachable through an interpolated RHS anywhere.
+    for rhs in _extract_var_assignments(name, run_text):
+        if "none" in rhs and rhs != "none" and not rhs.startswith('"$'):
+            return [f"{var} has a non-literal `none`-ish assignment: {rhs}"]
+    return []
+
+
 def _day2_enum_arms(run_text, var):
     """Everything `var` may end up holding, and whether a catch-all exists.
 
@@ -5022,20 +5067,23 @@ _DAY2_COPY_SOURCES = {
 }
 
 
-def _day2_int_is_strict_copy(run_text, var, bound):
+def _day2_int_is_strict_copy(run_text, var, bound, allow_none=False):
     """Reasons why `var` is not a fixed token or a digits-bounded copy.
 
     The accepted shape is exactly the one used for the pre-existing `bytes`
     projection: a digits-only rejection arm that assigns the fixed token, then a
-    ``${#src}`` length bound, then the quoted copy inside the accepting arm.
+    ``${#src}`` length bound, then the quoted copy inside the accepting arm. An
+    integer field registered in `_DAY2_NONE_ALLOWED_INTS` may additionally have a
+    single literal `none` arm that assigns `none`.
     """
     name = var.lstrip("$")
     reasons = []
     assigns = _extract_var_assignments(name, run_text)
+    fixed = ("unrecognised", "none") if allow_none else ("unrecognised",)
     copies = [
         rhs for rhs in assigns
         if (len(rhs) >= 2 and rhs[0] == rhs[-1] == '"')
-        or rhs.startswith("unrecognised")
+        or rhs in fixed
     ]
     if len(assigns) != len(copies):
         reasons.append(f"{var} has a non-token assignment: {assigns}")
@@ -6237,6 +6285,14 @@ class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
              "journey=journey-B-reception stage=none http=unrecognised code=none "
              "read=none errno=unrecognised errno_class=unknown busy=not_found "
              "elapsed_s=unrecognised"),
+            # H4: only successful statuses were observed -> the closed token
+            # `none`, published verbatim through the step's literal arm.
+            ({"journey": "journey-A1-public", "stage": "hold-countdown", "http": "none",
+              "code": "none", "read": "none", "errno": "unrecognised",
+              "busy": "absent", "elapsed_s": "51"},
+             "journey=journey-A1-public stage=hold-countdown http=none code=none "
+             "read=none errno=unrecognised errno_class=unknown busy=absent "
+             "elapsed_s=51"),
         )
         for values, expected in cases:
             with self.subTest(journey=values["journey"]):
@@ -6447,6 +6503,41 @@ class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
                 )
                 self.assertIn("DAY2_STEP_DEGRADE", self.codes(mutated))
 
+    def test_guard_rejects_a_tainted_none_override(self):
+        """The `http=none` override must be literal-to-literal on both sides.
+
+        `none` cannot be a `case` arm: the pre-existing guard requires
+        `''|*[!0-9]*)` to remain the FIRST arm and to not reference its own
+        source, so `none` (not digits) is produced by that arm's fixed token and
+        then replaced by one post-`case` literal comparison. Every relaxed form
+        must be rejected.
+        """
+        base = self.base()
+        good = (
+            '          if [ "$day2_http" = "none" ]; then\n'
+            "            safe_day2_http=none\n"
+            "          fi\n"
+        )
+        self.assertIn(good, base)
+        bad = {
+            "rhs interpolates": ('            safe_day2_http=none', '            safe_day2_http="$day2_http"'),
+            "wildcard test": ('if [ "$day2_http" = "none" ]; then', 'if [ -n "$day2_http" ]; then'),
+            "other literal": ('[ "$day2_http" = "none" ]', '[ "$day2_http" = "200" ]'),
+            "duplicated": (good, good + good),
+            "removed": (good, ""),
+            "else branch": ("            safe_day2_http=none\n          fi",
+                            "            safe_day2_http=none\n          else\n            safe_day2_http=none\n          fi"),
+        }
+        for label, (old, new) in bad.items():
+            with self.subTest(label=label):
+                mutated = base.replace(old, new, 1)
+                self.assertNotEqual(mutated, base, label)
+                codes = self.codes(mutated) | self.guard_codes(mutated)
+                self.assertIn(
+                    "DAY2_INT_GUARD", codes,
+                    f"{label} was accepted: {sorted(codes)}",
+                )
+
     def test_guard_rejects_a_dropped_field_selection(self):
         """F4: `busy` must be selected, or the published line cannot be trusted."""
         base = self.base()
@@ -6458,6 +6549,54 @@ class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
         self.assertIn(busy_block, base)
         mutated = base.replace(busy_block, "          day2_busy=absent\n", 1)
         self.assertIn("DAY2_STEP_DEGRADE", self.codes(mutated))
+
+    def test_projection_step_reports_an_unwritable_summary_as_nonzero(self):
+        """H6: the ONE way the step can fail is a broken `$GITHUB_STEP_SUMMARY`.
+
+        Run the real step text under `bash -e` with the summary path pointing at
+        a directory (unwritable) and at an unset variable. Both must exit
+        NONZERO — the append is the last statement, so its failure is the step's
+        failure, and it is deliberately not suppressed. This matters little in
+        practice: the step only runs after the browser step has already failed,
+        so the job verdict is unchanged either way — but the step must not
+        pretend it published something it did not.
+        """
+        run_text = self._projection_step()["run"]
+        with tempfile.TemporaryDirectory(prefix="day2-summary-") as tmp:
+            script = Path(tmp) / "step.sh"
+            script.write_text(run_text, encoding="utf-8")
+            log = Path(tmp) / "day2.log"
+            log.write_text(
+                "FAIL journey-A1-public — Day-2 browser journey failed "
+                "(journey-A1-public) — public booking root missing\n",
+                encoding="utf-8",
+            )
+            body = script.read_text(encoding="utf-8").replace(
+                "/tmp/day2-workflows-browser.log", str(log)
+            )
+            script.write_text(body, encoding="utf-8")
+
+            # (a) summary path is a DIRECTORY -> the append cannot succeed
+            env = dict(os.environ)
+            env["GITHUB_STEP_SUMMARY"] = tmp
+            completed = subprocess.run(
+                ["bash", "-e", str(script)], capture_output=True, text=True,
+                env=env, cwd=PLUGIN_DIR, check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0, "expected a nonzero exit")
+            # `printf` fails BEFORE writing, so nothing is published. That is the
+            # honest outcome: the step must not claim a line it did not write.
+            self.assertNotIn("day2-browser-failure: journey=", completed.stdout)
+            self.assertIn("Is a directory", completed.stderr)
+
+            # (b) the variable is UNSET entirely -> same class of failure
+            env2 = dict(os.environ)
+            env2.pop("GITHUB_STEP_SUMMARY", None)
+            completed2 = subprocess.run(
+                ["bash", "-e", str(script)], capture_output=True, text=True,
+                env=env2, cwd=PLUGIN_DIR, check=False,
+            )
+            self.assertNotEqual(completed2.returncode, 0, "expected a nonzero exit")
 
     def test_summary_writer_is_the_last_statement(self):
         """Nothing may run after the publish, so nothing can fail after it."""

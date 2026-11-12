@@ -2432,6 +2432,9 @@ jobs:
               fi
               ;;
           esac
+          if [ "$day2_http" = "none" ]; then
+            safe_day2_http=none
+          fi
           day2_code="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field code || printf 'unrecognised')"
           case "$day2_code" in
             CLINIC_BOOKING_BUSY) day2_code_token=CLINIC_BOOKING_BUSY ;;
