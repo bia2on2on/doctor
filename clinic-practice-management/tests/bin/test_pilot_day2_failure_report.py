@@ -19,10 +19,12 @@ drifted from what the harness/BookingService really print.
 """
 import importlib.util
 import io
+import os
 import re
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -103,7 +105,9 @@ class VocabularyDerivationTest(unittest.TestCase):
         self.assertEqual(projector.errno_class_for("1213"), "deadlock")
         self.assertEqual(projector.errno_class_for("1205"), "lock_wait_timeout")
         self.assertEqual(projector.errno_class_for("1062"), "other")
-        self.assertEqual(projector.errno_class_for("0"), "other")
+        # `(int) $dbh->errno` is 0 when no driver error is pending (and on a
+        # non-mysqli handle), so a zero errno is "no cause class", not `other`.
+        self.assertEqual(projector.errno_class_for("0"), "unknown")
         self.assertEqual(projector.errno_class_for(projector.UNRECOGNISED), "unknown")
 
 
@@ -118,7 +122,8 @@ class ProjectionTableTest(unittest.TestCase):
         self.assertEqual(
             self.project(text),
             "journey=journey-A1-public stage=hold-countdown http=503 "
-            "code=CLINIC_BOOKING_BUSY read=slot errno=1213 errno_class=deadlock elapsed_s=51",
+            "code=CLINIC_BOOKING_BUSY read=slot errno=1213 errno_class=deadlock "
+            "busy=present elapsed_s=51",
         )
 
     def test_lock_wait_timeout_is_its_own_class(self):
@@ -169,14 +174,16 @@ class ProjectionTableTest(unittest.TestCase):
         self.assertEqual(
             self.project(text),
             "journey=journey-A1-public stage=none http=unrecognised code=none "
-            "read=none errno=unrecognised errno_class=unknown elapsed_s=12",
+            "read=none errno=unrecognised errno_class=unknown busy=absent "
+            "elapsed_s=12",
         )
 
     def test_log_with_no_timing_and_no_failure_is_none_journey(self):
         self.assertEqual(
             self.project("python3: start\n"),
             "journey=none stage=none http=unrecognised code=none read=none "
-            "errno=unrecognised errno_class=unknown elapsed_s=unrecognised",
+            "errno=unrecognised errno_class=unknown busy=absent "
+            "elapsed_s=unrecognised",
         )
 
     def test_http_is_the_status_paired_with_the_busy_code(self):
@@ -215,7 +222,8 @@ class ProjectionTableTest(unittest.TestCase):
         self.assertEqual(
             self.project(None),
             "journey=unrecognised stage=none http=unrecognised code=none read=none "
-            "errno=unrecognised errno_class=unknown elapsed_s=unrecognised",
+            "errno=unrecognised errno_class=unknown busy=absent "
+            "elapsed_s=unrecognised",
         )
 
     def test_foreign_fail_key_is_unrecognised(self):
@@ -456,6 +464,348 @@ class CommandLineTest(unittest.TestCase):
         result = self.run_script("--field", "not-a-field")
         self.assertNotEqual(result.returncode, 0)
         self.assertNotIn(CANARY_TOKEN, result.stdout + result.stderr)
+
+
+class RealHarnessFormatTest(unittest.TestCase):
+    """Fidelity against the formats the harness ACTUALLY prints.
+
+    Every sample here is produced by calling the real harness / `day2_booking_busy`
+    code (imported, not restated) or by a literal copied from the line that prints
+    it, so a test cannot drift into "a format we invented".
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("day2_harness", HARNESS)
+        harness = importlib.util.module_from_spec(spec)
+        sys.path.insert(0, str(BIN_DIR))
+        spec.loader.exec_module(harness)
+        cls.harness = harness
+        import day2_booking_busy
+        cls.busy = day2_booking_busy
+
+    def describe(self, entries):
+        probe = self.harness.BookingProbe()
+        probe.entries = entries
+        return probe.describe(0, limit=12)
+
+    def test_non_busy_hold_failure_reports_the_failing_status(self):
+        """(a) A hold that fails with a non-busy code must report ITS status.
+
+        `describe()` joins observations with `"; "`, so an older `http=200`
+        (the quote) precedes the failing `http=409`. Taking the first `http=`
+        would report 200 for a 409 failure.
+        """
+        observed = self.describe([
+            {"route": "/wp-json/clinic/v1/booking/quote", "status": 200, "code": ""},
+            {"route": "/wp-json/clinic/v1/booking/hold", "status": 409,
+             "code": "rest_slot_unavailable"},
+            {"route": "/wp-json/clinic/v1/booking/hold", "status": 200, "code": ""},
+        ])
+        self.assertEqual(
+            observed,
+            "booking/quote http=200; booking/hold http=409 "
+            "code=rest_slot_unavailable; booking/hold http=200",
+        )
+        line = (
+            "FAIL journey-A1-public — Day-2 browser journey failed (journey-A1-public) — "
+            "public booking stage=hold-countdown root_state=bookable visible=0 "
+            "observed=" + observed
+        )
+        fields = projector.project(line)
+        self.assertEqual((fields["http"], fields["code"]), ("409", "other"))
+
+    def test_confirm_and_identity_gate_lines_carry_no_code(self):
+        """(b) The confirm/gate raise sites print `http=` with no `code=`.
+
+        Verbatim shapes from pilot-day2-workflows.py: `booking/confirm HTTP
+        {status}` (line 690) and `expected 400 identity gate, got {status}`
+        (line 683). Neither prints `code=`, so a busy failure on those paths
+        projects `code=none` — disclosed as a limitation, not guessed at.
+        """
+        for text, expected in (
+            ("FAIL journey-A1-public — Day-2 browser journey failed "
+             "(journey-A1-public) — booking/confirm HTTP 503", ("503", "none")),
+            ("FAIL journey-A1-public — Day-2 browser journey failed "
+             "(journey-A1-public) — expected 400 identity gate, got 503", ("503", "none")),
+        ):
+            fields = projector.project(text)
+            self.assertEqual((fields["http"], fields["code"]), expected)
+
+    def test_busy_code_followed_by_a_semicolon_is_still_the_busy_code(self):
+        """(c) `describe()` terminates every observation with `;` but the last.
+
+        A busy observation that is not the final entry is therefore printed as
+        `code=CLINIC_BOOKING_BUSY;` — the bare code plus a separator, never
+        `code=other`.
+        """
+        observed = self.describe([
+            {"route": "/wp-json/clinic/v1/booking/hold", "status": 503,
+             "code": "CLINIC_BOOKING_BUSY"},
+            {"route": "/wp-json/clinic/v1/booking/hold", "status": 200, "code": ""},
+        ])
+        self.assertIn("code=CLINIC_BOOKING_BUSY;", observed)
+        line = (
+            "FAIL journey-A1-public — Day-2 browser journey failed (journey-A1-public) — "
+            "public booking stage=hold-countdown observed=" + observed
+        )
+        fields = projector.project(line)
+        self.assertEqual((fields["code"], fields["http"]), ("CLINIC_BOOKING_BUSY", "503"))
+
+    def test_zero_errno_has_no_class(self):
+        """(d) A stored `sql_errno=0` must not be classed `other`."""
+        line = failure_line().replace("sql_errno=1213", "sql_errno=0")
+        fields = projector.project(line)
+        self.assertEqual((fields["errno"], fields["errno_class"]), ("0", "unknown"))
+
+    def test_busy_details_on_a_continuation_line_are_found(self):
+        """(e) The harness can emit the busy suffix on a later physical line.
+
+        The second raise site in journey A1 interpolates the ORIGINAL exception
+        text, which for a Playwright timeout already ends with newlines. `print()`
+        writes those newlines verbatim, so the line after `FAIL ...` can carry
+        `busy_diag=`/`sql_errno=`.
+        """
+        text = (
+            "FAIL journey-A1-public — Day-2 browser journey failed (journey-A1-public) — "
+            "public booking stage=hold-countdown root_state=bookable visible=0\n"
+            "Call log:\n"
+            "  - waiting for locator(\"[data-role=hold-countdown]\")\n"
+            " | journey=A1-public busy_diag=booking.lock_read_failed read=slot "
+            "sql_errno=1205 route=hold/hold http=503 viewport=390x844\n"
+        )
+        fields = projector.project(text)
+        self.assertEqual(fields["journey"], "journey-A1-public")
+        self.assertEqual((fields["errno"], fields["errno_class"]), ("1205", "lock_wait_timeout"))
+        self.assertEqual((fields["read"], fields["http"]), ("slot", "503"))
+        self.assertEqual(fields["busy"], "present")
+
+    def test_busy_block_is_absent_when_the_harness_appended_nothing(self):
+        """(f) `busy_suffix_for` returns "" when no busy call was observed."""
+        line = (
+            "FAIL journey-B-reception — Day-2 browser journey failed "
+            "(journey-B-reception) — reception board load failed"
+        )
+        self.assertEqual(projector.project(line)["busy"], "absent")
+
+    def test_every_busy_diag_state_maps_to_its_token(self):
+        produced = {
+            self.busy.format_busy_suffix(
+                {"event": self.busy.EVENT, "read": "slot", "sql_errno": 1213},
+                route="hold/hold", http_status=503, viewport="390x844",
+            ): "present",
+            self.busy.format_busy_suffix(
+                None, route="hold/hold", http_status=503, viewport="390x844",
+                missing="not-found",
+            ): "not_found",
+            self.busy.format_busy_suffix(
+                None, route="hold/hold", http_status=503, missing="fetch-failed",
+            ): "fetch_failed",
+            self.busy.format_busy_suffix(None, missing="stale-or-mismatch"): "stale_or_mismatch",
+        }
+        for suffix, expected in produced.items():
+            with self.subTest(expected=expected):
+                line = (
+                    "FAIL journey-A1-public — Day-2 browser journey failed "
+                    "(journey-A1-public) — x | journey=A1-public " + suffix
+                )
+                self.assertEqual(projector.project(line)["busy"], expected)
+        self.assertEqual(projector.project(failure_line())["busy"], "present")
+        self.assertEqual(projector.project(None)["busy"], "absent")
+        self.assertTrue(set(projector.BUSY_TOKENS) == set(projector.ENUMS["busy"]))
+
+
+class BoundsAndCliHardeningTest(unittest.TestCase):
+    """The bounds and the CLI paths that the workflow actually depends on.
+
+    Each test injects a SMALL limit so the bound itself is exercised (not the
+    machine's patience), and each is written so that deleting the bound makes it
+    fail — see the mutation list in the PR body.
+    """
+
+    def load_cli(self):
+        spec = importlib.util.spec_from_file_location(
+            "day2_projector_cli", BIN_DIR / "pilot-day2-failure-report.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_log_size_bound_is_enforced(self):
+        cli = self.load_cli()
+        cli.MAX_LOG_BYTES = 32
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "big.log"
+            path.write_text("x" * 31 + "\n" + failure_line(), encoding="utf-8")
+            fields = cli.project(cli._load_log(str(path)))
+        # The FAIL line starts past the bound, so it was never read: a log that
+        # was cut off mid-content has no failure in it, and the projector says
+        # `journey=none` ("no failure in what I read") rather than inventing one.
+        self.assertEqual(fields["journey"], projector.NONE)
+        self.assertEqual(fields["stage"], projector.NONE)
+        self.assertEqual(fields["http"], projector.UNRECOGNISED)
+
+    def test_log_size_bound_still_reads_up_to_the_bound(self):
+        cli = self.load_cli()
+        cli.MAX_LOG_BYTES = 4096
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "ok.log"
+            path.write_text(failure_line() + "y" * 20000, encoding="utf-8")
+            fields = cli.project(cli._load_log(str(path)))
+        self.assertEqual(fields["journey"], "journey-A1-public")
+
+    def test_line_length_bound_is_enforced(self):
+        cli = self.load_cli()
+        cli.MAX_LINE_CHARS = 40
+        fields = cli.project(failure_line())
+        # The FAIL line keeps its first 40 characters: the key survives, every
+        # marker past the bound is gone.
+        self.assertEqual(fields["journey"], "journey-A1-public")
+        self.assertEqual(fields["stage"], projector.NONE)
+        self.assertEqual(fields["code"], projector.NONE)
+
+    def test_line_length_bound_is_enforced_independently_of_the_block(self):
+        """The per-line clip must hold even when the block bound is generous."""
+        cli = self.load_cli()
+        cli.MAX_BLOCK_CHARS = 1 << 30
+        cli.MAX_LINE_CHARS = 40
+        fields = cli.project(failure_line("busy_diag=not-found"))
+        self.assertEqual(fields["journey"], "journey-A1-public")
+        self.assertEqual(fields["busy"], "absent")
+
+    def test_line_count_bound_stops_scanning_before_the_fail_line(self):
+        cli = self.load_cli()
+        cli.MAX_LINES = 3
+        text = "noise\n" * 10 + failure_line()
+        self.assertEqual(cli.project(text)["journey"], projector.NONE)
+        # With one more line allowed the same log does report the failure, so the
+        # test above fails for the bound and not for another reason.
+        cli.MAX_LINES = 12
+        self.assertEqual(cli.project(text)["journey"], "journey-A1-public")
+
+    def test_line_count_bound_is_enforced(self):
+        cli = self.load_cli()
+        cli.MAX_LINES = 3
+        text = "noise\n" * 10 + failure_line()
+        self.assertEqual(cli.project(text)["journey"], projector.NONE)
+
+    def test_line_count_bound_is_not_off_by_one(self):
+        cli = self.load_cli()
+        cli.MAX_LINES = 4
+        text = "noise\n" * 3 + failure_line()
+        self.assertEqual(cli.project(text)["journey"], "journey-A1-public")
+
+    def test_block_size_bound_is_enforced(self):
+        """A multi-megabyte failure block must not be scanned without a bound."""
+        cli = self.load_cli()
+        head = (
+            "FAIL journey-A1-public — Day-2 browser journey failed (journey-A1-public) — "
+            "public booking stage=hold-countdown|\n"
+        )
+        tail = "   filler line\n" * 200 + " | journey=A1-public busy_diag=not-found\n"
+        # Bounded: the `busy_diag=` token sits past the bound and is not read.
+        cli.MAX_BLOCK_CHARS = 200
+        self.assertEqual(cli.project(head + tail)["busy"], "absent")
+        # Unbounded (same text, generous bound): the token is found.
+        cli.MAX_BLOCK_CHARS = 1 << 20
+        self.assertEqual(cli.project(head + tail)["busy"], "not_found")
+
+    def test_non_regular_log_path_is_refused_without_blocking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fifo = Path(tmp) / "fifo.log"
+            os.mkfifo(fifo)
+            started = time.monotonic()
+            result = subprocess.run(
+                [sys.executable, str(BIN_DIR / "pilot-day2-failure-report.py"),
+                 "--log", str(fifo)],
+                capture_output=True, text=True, check=False, timeout=30,
+            )
+            elapsed = time.monotonic() - started
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(result.stdout.startswith("journey=unrecognised "))
+        self.assertLess(elapsed, 10)
+
+    def test_field_mode_never_prints_a_raw_value(self):
+        """`--field` is the ONLY interface the workflow uses, so it must be closed."""
+        hostile = "x9; ::error::canary ##[error] $(id) `id` " + CANARY_EMAIL
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "day2.log"
+            path.write_text(
+                "FAIL journey-A9-foreign — t — stage=" + hostile
+                + " http=" + hostile + " code=" + hostile + " read=" + hostile
+                + " sql_errno=" + hostile + " busy_diag=" + hostile
+                + " elapsed_s=" + hostile + "\n",
+                encoding="utf-8",
+            )
+            for field in projector.FIELDS:
+                with self.subTest(field=field):
+                    result = subprocess.run(
+                        [sys.executable, str(BIN_DIR / "pilot-day2-failure-report.py"),
+                         "--log", str(path), "--field", field],
+                        capture_output=True, text=True, check=False,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    token = result.stdout.rstrip("\n")
+                    if field in projector.ENUMS:
+                        self.assertIn(token, projector.ENUMS[field])
+                    else:
+                        self.assertEqual(token, projector.UNRECOGNISED)
+                    self.assertEqual(token.count("\n"), 0)
+                    for canary in ("canary", "::", "##[", "$(id)", "`id`", CANARY_EMAIL):
+                        self.assertNotIn(canary, token)
+
+    def test_cli_errors_are_nonzero_and_print_no_raw_text(self):
+        for args in (
+            ("--field", "not-a-field"),
+            ("--log",),
+            ("--unknown-option",),
+            ("--test", "--field", "journey", "--bogus"),
+        ):
+            with self.subTest(args=args):
+                result = subprocess.run(
+                    [sys.executable, str(BIN_DIR / "pilot-day2-failure-report.py"), *args],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                for canary in (CANARY_TOKEN, CANARY_EMAIL, CANARY_SQL, "Traceback"):
+                    self.assertNotIn(canary, result.stdout + result.stderr)
+
+    def test_cli_fallback_is_total_when_projection_raises(self):
+        """The `except Exception` fallback must print a closed token, not a traceback."""
+        cli = self.load_cli()
+        original = cli.project
+        cli.project = lambda text: (_ for _ in ()).throw(RuntimeError("boom"))
+        buffer = io.StringIO()
+        try:
+            with redirect_stdout(buffer):
+                for field in cli.FIELDS:
+                    code = cli.main(["--log", "/nonexistent/x.log", "--field", field])
+                    self.assertEqual(code, 0)
+        finally:
+            cli.project = original
+        lines = buffer.getvalue().splitlines()
+        self.assertEqual(len(lines), len(cli.FIELDS))
+        for line in lines:
+            self.assertNotIn("Traceback", line)
+            self.assertNotIn("boom", line)
+            self.assertTrue(line in cli.UNRECOGNISED or line == "none" or line == "absent"
+                            or line in cli.ENUMS.get("errno_class", ()), line)
+
+    def test_directory_and_device_paths_are_total(self):
+        for path in ("/dev/null", "/proc/self/cmdline", "/", "/nonexistent/x.log"):
+            with self.subTest(path=path):
+                result = subprocess.run(
+                    [sys.executable, str(BIN_DIR / "pilot-day2-failure-report.py"),
+                     "--log", path],
+                    capture_output=True, text=True, check=False,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.count("\n"), 1)
+                self.assertTrue(
+                    result.stdout.startswith("journey=unrecognised ")
+                    or result.stdout.startswith("journey=none "),
+                    result.stdout,
+                )
 
 
 if __name__ == "__main__":

@@ -11,6 +11,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
+#: The workflow's `defaults.run.working-directory`; the Day-2 step's `bin/...`
+#: paths are relative to it, so behavioural tests must use it as their cwd.
+PLUGIN_DIR = ROOT / "clinic-practice-management"
 PUBLISHER = ROOT / ".github" / "scripts" / "post-pr-evidence.sh"
 COMMENTER = ROOT / ".github" / "scripts" / "pr-evidence-comment.sh"
 SAFE_PILOT_EVIDENCE = ROOT / "clinic-practice-management" / "bin" / "pilot-safe-evidence.py"
@@ -3338,12 +3341,16 @@ _PILOT_DAY2_READS = (
 )
 _PILOT_DAY2_CODES = ("CLINIC_BOOKING_BUSY", "other", "none")
 _PILOT_DAY2_ERRNO_CLASSES = ("deadlock", "lock_wait_timeout", "other", "unknown")
+#: `busy` states: the found row, the three degraded `busy_diag=` states with
+#: hyphens mapped to underscores, and "no `busy_diag=` token at all".
+_PILOT_DAY2_BUSY = ("present", "not_found", "fetch_failed", "stale_or_mismatch", "absent")
 _PILOT_DAY2_SUMMARY_CLOSED_TOKENS = frozenset(
     _PILOT_DAY2_JOURNEYS
     + _PILOT_DAY2_STAGES
     + _PILOT_DAY2_READS
     + _PILOT_DAY2_CODES
     + _PILOT_DAY2_ERRNO_CLASSES
+    + _PILOT_DAY2_BUSY
     + ("none", "unrecognised")
 )
 #: Registered into the generic summary vocabulary so the existing taint check
@@ -3354,10 +3361,10 @@ _PILOT_DAY2_SUMMARY_CLOSED_TOKENS = frozenset(
 _PILOT_SUMMARY_CLOSED_TOKENS = _PILOT_SUMMARY_CLOSED_TOKENS | _PILOT_DAY2_SUMMARY_CLOSED_TOKENS
 
 #: The exact fixed shape of the projected summary line: the format string, then
-#: the eight `"$var"` arguments in order. Anything else is a violation.
+#: the nine `"$var"` arguments in order. Anything else is a violation.
 _PILOT_DAY2_SUMMARY_FORMAT = (
     "day2-browser-failure: journey=%s stage=%s http=%s code=%s read=%s "
-    "errno=%s errno_class=%s elapsed_s=%s"
+    "errno=%s errno_class=%s busy=%s elapsed_s=%s"
 )
 _PILOT_DAY2_SUMMARY_VARS = (
     "$day2_journey_token",
@@ -3367,17 +3374,34 @@ _PILOT_DAY2_SUMMARY_VARS = (
     "$safe_day2_read",
     "$safe_day2_errno",
     "$day2_errno_class",
+    "$day2_busy_token",
     "$safe_day2_elapsed",
 )
 #: Largest accepted `errno`/`elapsed_s` width; longer tokens are `unrecognised`.
 _PILOT_DAY2_INT_MAX_DIGITS = 5
 #: Largest accepted HTTP status width.
 _PILOT_DAY2_HTTP_MAX_DIGITS = 3
-#: Exact exit selection of the projection step. The step must never be able to
-#: fail the gate on its own, and must never swallow the real gate result.
-_PILOT_DAY2_SELECTIONS = (
-    "day2_journey", "day2_stage", "day2_http", "day2_code", "day2_read",
-    "day2_errno", "day2_elapsed",
+#: Exact `--field` selections of the projection step: variable -> projector
+#: field. Each assignment must end with `|| printf 'unrecognised'` inside its
+#: command substitution, so a projector failure (missing interpreter, nonzero
+#: exit) yields the fixed token instead of tripping `bash -e` and can never empty
+#: the line. `busy` has to be selected too, or the published line would lie.
+_PILOT_DAY2_SELECTIONS = {
+    "day2_journey": "journey",
+    "day2_stage": "stage",
+    "day2_http": "http",
+    "day2_code": "code",
+    "day2_read": "read",
+    "day2_errno": "errno",
+    "day2_busy": "busy",
+    "day2_elapsed": "elapsed_s",
+}
+#: The step may only run when the Day-2 browser step itself failed. `outcome` is
+#: the pre-`continue-on-error` result, so the condition stays true even if that
+#: step is ever given `continue-on-error`; `always()` is kept so the `if:` cannot
+#: be short-circuited by an earlier failure in the job.
+_PILOT_DAY2_STEP_CONDITION = (
+    "always() && !cancelled() && steps.day2_workflows_browser.outcome == 'failure'"
 )
 _PILOT_DAY2_DIGITS_ONLY_GUARD = re.compile(
     r"if \[ \"\$\{#([A-Za-z_][A-Za-z0-9_]*)\}\" -le ([0-9]{1,2}) \]; then"
@@ -4754,6 +4778,7 @@ _DAY2_VAR_TO_FIELD = {
     "$safe_day2_read": "read",
     "$safe_day2_errno": "errno",
     "$day2_errno_class": "errno_class",
+    "$day2_busy_token": "busy",
     "$safe_day2_elapsed": "elapsed_s",
 }
 #: Fields whose accepted values are a closed literal set (and nothing else).
@@ -4763,6 +4788,7 @@ _DAY2_ENUM_TOKENS = {
     "code": frozenset(_PILOT_DAY2_CODES) | {"unrecognised"},
     "read": frozenset(_PILOT_DAY2_READS) | {"none", "unrecognised"},
     "errno_class": frozenset(_PILOT_DAY2_ERRNO_CLASSES),
+    "busy": frozenset(_PILOT_DAY2_BUSY) | {"unrecognised"},
 }
 #: Integer fields: the only *copied* values allowed, plus their digit bound.
 _DAY2_INT_TOKENS = {
@@ -4774,6 +4800,16 @@ _DAY2_INT_TOKENS = {
 
 def _day2_projection_step(text):
     """Return the projection step's `run:` text, or None when it is absent."""
+    step = _day2_projection_step_dict(text)
+    return step.get("run") if step else None
+
+
+def _day2_projection_step_dict(text):
+    """Return the whole projection step mapping, or None when it is absent.
+
+    The `if:` condition and the selected fields live outside `run:`, so the
+    condition checks need the step mapping rather than just its script.
+    """
     doc = _yaml_parser().safe_load(text)
     if not isinstance(doc, dict):
         return None
@@ -4783,13 +4819,15 @@ def _day2_projection_step(text):
     if not isinstance(steps, list):
         return None
     found = [
-        step.get("run")
+        step
         for step in steps
         if isinstance(step, dict)
         and isinstance(step.get("name"), str)
         and step["name"].startswith("Day-2 Operational Workflows — closed-vocabulary")
     ]
-    return found[0] if len(found) == 1 and isinstance(found[0], str) else None
+    if len(found) != 1 or not isinstance(found[0].get("run"), str):
+        return None
+    return found[0]
 
 
 def pilot_day2_projection_violations(text):
@@ -4804,9 +4842,44 @@ def pilot_day2_projection_violations(text):
     unvalidated value.
     """
     violations = []
-    run_text = _day2_projection_step(text)
-    if run_text is None:
+    step = _day2_projection_step_dict(text)
+    if step is None:
         return [("DAY2_PROJECTION_STEP", "<responsive>", "projection step missing or duplicated")]
+    run_text = step["run"]
+
+    # --- the step may run only after a REAL failure of the browser step, and it
+    # must not be able to fail the job on its own. Both properties are structural.
+    condition = " ".join(str(step.get("if", "")).split())
+    if condition != _PILOT_DAY2_STEP_CONDITION:
+        violations.append((
+            "DAY2_STEP_CONDITION", "<responsive>",
+            f"projection step must run only on browser failure: {condition or '<none>'}",
+        ))
+    for name, field in _PILOT_DAY2_SELECTIONS.items():
+        degraded = re.search(
+            r"(?m)^\s*" + re.escape(name)
+            + r'="\$\(python3 bin/pilot-day2-failure-report\.py'
+            r" --log /tmp/day2-workflows-browser\.log --field ([a-z_]+)"
+            r" \|\| printf 'unrecognised'\)\"\s*$",
+            run_text,
+        )
+        if not degraded:
+            violations.append((
+                "DAY2_STEP_DEGRADE", name,
+                "projector call is not degraded with `|| printf 'unrecognised'`",
+            ))
+        elif degraded.group(1) != field:
+            violations.append((
+                "DAY2_STEP_DEGRADE", name,
+                f"selects field {degraded.group(1)}, expected {field}",
+            ))
+    selected = set(re.findall(r"--field ([a-z_]+)", run_text))
+    if selected != set(_PILOT_DAY2_SELECTIONS.values()):
+        violations.append((
+            "DAY2_STEP_DEGRADE", "<responsive>",
+            f"field selections differ: {sorted(selected)} != "
+            f"{sorted(_PILOT_DAY2_SELECTIONS.values())}",
+        ))
 
     logical = [line.strip() for _, line in _logical_lines(run_text) if line.strip()]
     writes = [
@@ -4816,6 +4889,11 @@ def pilot_day2_projection_violations(text):
     if len(writes) != 1:
         return [("DAY2_SUMMARY_WRITER", "<responsive>", f"expected 1 summary writer, got {len(writes)}")]
     writer = writes[0]
+    if logical[-1] != writer:
+        violations.append((
+            "DAY2_STEP_DEGRADE", "<responsive>",
+            "summary writer must be the last statement, so nothing can fail after publishing",
+        ))
     expected_call = (
         "printf '" + _PILOT_DAY2_SUMMARY_FORMAT + "\\n' "
         + " ".join('"%s"' % var for var in _PILOT_DAY2_SUMMARY_VARS)
@@ -5873,7 +5951,8 @@ class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
     #: First shell line of the projection step; mutation anchor.
     ANCHOR = (
         '          day2_journey="$(python3 bin/pilot-day2-failure-report.py '
-        '--log /tmp/day2-workflows-browser.log --field journey)"'
+        "--log /tmp/day2-workflows-browser.log --field journey "
+        "|| printf 'unrecognised')\""
     )
     SWALLOW_PREFIX = "          continue-on-error: true"
     INTEGERS_GUARD_HEAD = '          case "$day2_http" in\n'
@@ -6037,7 +6116,8 @@ class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
     def test_guard_rejects_shape_annotations_and_swallowing(self):
         base = self.base()
         shape_mutations = (
-            ("errno_class=%s elapsed_s=%s", "errno_class=%s elapsed_s=%s extra=%s"),
+            ("errno_class=%s busy=%s elapsed_s=%s", "errno_class=%s busy=%s elapsed_s=%s extra=%s"),
+            ("errno_class=%s busy=%s", "busy=%s errno_class=%s"),
             ("journey=%s stage=%s http=%s", "stage=%s journey=%s http=%s"),
             ("day2-browser-failure: journey=", "day2-failure: journey="),
         )
@@ -6079,28 +6159,47 @@ class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
         self.assertIn("DAY2_SUMMARY_WRITER", self.codes(extra_writer))
 
 
-    # --- behavioural proof: run the real step under bash with a stubbed
-    # projector and assert the published line is closed for hostile values.
+    # --- behavioural proof: run the REAL step text under `bash -e`, exactly as
+    # GitHub does for a `run:` block, and assert what it publishes. Two modes:
+    #
+    #   stub    — each `--field <name>` invocation is replaced by `${STUB_<name>}`,
+    #             which is how the `case`/copy logic is driven with hostile values.
+    #   real    — the step is run verbatim against the real projector and a real
+    #             log file (an absolute, test-owned path), so a missing log, an
+    #             empty log, a nonzero projector exit and a missing interpreter
+    #             are all exercised as real process failures.
 
-    STEP_FIELDS = ("journey", "stage", "http", "code", "read", "errno", "elapsed_s")
+    STEP_FIELDS = ("journey", "stage", "http", "code", "read", "errno", "busy", "elapsed_s")
 
-    def _run_projection_step(self, values):
-        """Execute the step's shell with a stub projector; return the summary text.
+    #: The browser step's `id` the projection step is conditioned on.
+    BROWSER_STEP_ID = "day2_workflows_browser"
 
-        The step text is taken verbatim from pilot-gate.yml; only the
-        `--field <name>` invocations are replaced by environment stubs, so the
-        `case`/copy logic that actually runs in CI is the code under test.
+    def _projection_step(self):
+        step = _day2_projection_step_dict(workflow("pilot-gate.yml"))
+        self.assertIsNotNone(step)
+        return step
+
+    def _run_projection_step(self, values=None, *, mode="stub", log_path=None,
+                             field_values=None, field_fails=False, field_hang=False):
+        """Execute the step's shell under `bash -e`; return (rc, stdout, summary).
+
+        `bash -e` is the interpreter GitHub uses for a `run:` block, so the
+        failure semantics under test are the real ones: an uncaught nonzero exit
+        anywhere aborts the step with that status.
         """
-        run_text = _day2_projection_step(workflow("pilot-gate.yml"))
-        self.assertIsNotNone(run_text)
+        run_text = self._projection_step()["run"]
         body = run_text
-        for field in self.STEP_FIELDS:
-            body = body.replace(
-                "$(python3 bin/pilot-day2-failure-report.py "
-                "--log /tmp/day2-workflows-browser.log --field %s)" % field,
-                "${STUB_%s:-}" % field,
-            )
-        self.assertNotIn("pilot-day2-failure-report.py", body)
+        log_path = log_path or "/tmp/day2-workflows-browser.log"
+        if mode == "stub":
+            for field in self.STEP_FIELDS:
+                body = body.replace(
+                    "$(python3 bin/pilot-day2-failure-report.py "
+                    "--log /tmp/day2-workflows-browser.log --field %s || printf 'unrecognised')" % field,
+                    "$(printf '%%s' \"${STUB_%s-unrecognised}\" || printf 'unrecognised')" % field,
+                )
+            self.assertNotIn("pilot-day2-failure-report.py", body)
+        else:
+            body = body.replace("/tmp/day2-workflows-browser.log", log_path)
         with tempfile.TemporaryDirectory(prefix="day2-step-") as tmp:
             script = Path(tmp) / "step.sh"
             summary = Path(tmp) / "summary.txt"
@@ -6108,52 +6207,61 @@ class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
             env = dict(os.environ)
             env["GITHUB_STEP_SUMMARY"] = str(summary)
             for field in self.STEP_FIELDS:
-                env["STUB_" + field] = str(values.get(field, ""))
+                env["STUB_" + field] = str((values or {}).get(field, "unrecognised"))
+            if field_values is not None:
+                env["DAY2_TEST_FIELD"] = json.dumps(field_values)
             completed = subprocess.run(
-                ["bash", str(script)], capture_output=True, text=True, env=env, check=False
+                ["bash", "-e", str(script)], capture_output=True, text=True, env=env,
+                cwd=PLUGIN_DIR, check=False,
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self.assertEqual(completed.stderr, "")
-            return summary.read_text(encoding="utf-8")
+            published = summary.read_text(encoding="utf-8") if summary.exists() else ""
+            return completed.returncode, completed.stdout, published
 
     def test_projection_step_publishes_a_closed_line_for_legitimate_values(self):
         cases = (
             ({"journey": "journey-A1-public", "stage": "hold-countdown", "http": "503",
               "code": "CLINIC_BOOKING_BUSY", "read": "slot", "errno": "1213",
-              "elapsed_s": "51"},
+              "busy": "present", "elapsed_s": "51"},
              "journey=journey-A1-public stage=hold-countdown http=503 "
-             "code=CLINIC_BOOKING_BUSY read=slot errno=1213 errno_class=deadlock elapsed_s=51"),
+             "code=CLINIC_BOOKING_BUSY read=slot errno=1213 errno_class=deadlock "
+             "busy=present elapsed_s=51"),
             ({"journey": "journey-A2-reschedule", "stage": "receipt", "http": "409",
               "code": "other", "read": "reschedule_second_slot", "errno": "1205",
-              "elapsed_s": "7"},
+              "busy": "absent", "elapsed_s": "7"},
              "journey=journey-A2-reschedule stage=receipt http=409 code=other "
-             "read=reschedule_second_slot errno=1205 errno_class=lock_wait_timeout elapsed_s=7"),
+             "read=reschedule_second_slot errno=1205 errno_class=lock_wait_timeout "
+             "busy=absent elapsed_s=7"),
             ({"journey": "journey-B-reception", "stage": "none", "http": "unrecognised",
               "code": "none", "read": "none", "errno": "unrecognised",
-              "elapsed_s": "unrecognised"},
+              "busy": "not_found", "elapsed_s": "unrecognised"},
              "journey=journey-B-reception stage=none http=unrecognised code=none "
-             "read=none errno=unrecognised errno_class=unknown elapsed_s=unrecognised"),
+             "read=none errno=unrecognised errno_class=unknown busy=not_found "
+             "elapsed_s=unrecognised"),
         )
         for values, expected in cases:
             with self.subTest(journey=values["journey"]):
-                published = self._run_projection_step(values)
+                rc, _, published = self._run_projection_step(values)
+                self.assertEqual(rc, 0)
                 self.assertEqual(published, "day2-browser-failure: " + expected + "\n")
 
     def test_projection_step_collapses_hostile_values_at_runtime(self):
         hostile = "x9; ::error::canary ##[error] $(id) `id` /etc/passwd"
         cases = (
             ({"journey": hostile, "stage": hostile, "http": "2000", "code": hostile,
-              "read": hostile, "errno": "999999", "elapsed_s": "99999999"},
+              "read": hostile, "errno": "999999", "busy": hostile,
+              "elapsed_s": "99999999"},
              "journey=unrecognised stage=unrecognised http=unrecognised "
              "code=unrecognised read=unrecognised errno=unrecognised "
-             "errno_class=unknown elapsed_s=unrecognised"),
+             "errno_class=unknown busy=unrecognised elapsed_s=unrecognised"),
             ({"journey": "journey-C-doctors", "stage": "none", "http": "50x",
               "code": "other", "read": "nosuchread", "errno": "12130",
-              "elapsed_s": "00000051"},
+              "busy": "fetch_failed", "elapsed_s": "00000051"},
              "journey=journey-C-doctors stage=none http=unrecognised code=other "
-             "read=unrecognised errno=12130 errno_class=other elapsed_s=unrecognised"),
+             "read=unrecognised errno=12130 errno_class=other busy=fetch_failed "
+             "elapsed_s=unrecognised"),
         )
-        published = self._run_projection_step(cases[0][0])
+        rc, _, published = self._run_projection_step(cases[0][0])
+        self.assertEqual(rc, 0)
         self.assertEqual(published, "day2-browser-failure: " + cases[0][1] + "\n")
         for canary in ("::error::", "##[", "$(id)", "`id`", "/etc/passwd", "canary"):
             self.assertNotIn(canary, published)
@@ -6161,20 +6269,202 @@ class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
         # A canonical integer that is merely out of *length* range collapses,
         # while any other digits-only value (e.g. errno=12130) stays a number --
         # the errno *class* then reports `other` rather than guessing.
-        published = self._run_projection_step(cases[1][0])
+        rc, _, published = self._run_projection_step(cases[1][0])
+        self.assertEqual(rc, 0)
         self.assertNotIn("http=50x", published)
         self.assertNotIn("00000051", published)
         self.assertIn("errno=12130", published)
         self.assertIn("errno_class=other", published)
 
+    def test_projection_step_treats_a_zero_errno_as_unknown(self):
+        """`(int) $dbh->errno` is 0 when no driver error is pending: no class."""
+        rc, _, published = self._run_projection_step(
+            {"journey": "journey-A1-public", "stage": "hold-request", "http": "503",
+             "code": "CLINIC_BOOKING_BUSY", "read": "slot", "errno": "0",
+             "busy": "not_found", "elapsed_s": "9"}
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("errno=0 errno_class=unknown", published)
+
     def test_projection_step_handles_every_field_empty(self):
-        published = self._run_projection_step({})
+        rc, _, published = self._run_projection_step({})
+        self.assertEqual(rc, 0)
         self.assertEqual(
             published,
             "day2-browser-failure: journey=unrecognised stage=unrecognised "
             "http=unrecognised code=unrecognised read=unrecognised "
-            "errno=unrecognised errno_class=unknown elapsed_s=unrecognised\n",
+            "errno=unrecognised errno_class=unknown busy=unrecognised "
+            "elapsed_s=unrecognised\n",
         )
+
+    # --- real-process failure modes: each must still publish a closed line, and
+    # none may make the step exit nonzero (that is what would fail the job).
+
+    def _write_step_script(self, tmp, body):
+        script = Path(tmp) / "step.sh"
+        script.write_text(body, encoding="utf-8")
+        return script
+
+    def _run_real(self, tmp, body):
+        script = self._write_step_script(tmp, body)
+        summary = Path(tmp) / "summary.txt"
+        env = dict(os.environ)
+        env["GITHUB_STEP_SUMMARY"] = str(summary)
+        completed = subprocess.run(
+            ["bash", "-e", str(script)], capture_output=True, text=True, env=env,
+            cwd=PLUGIN_DIR, check=False,
+        )
+        published = summary.read_text(encoding="utf-8") if summary.exists() else ""
+        return completed, published
+
+    def test_projection_step_survives_a_missing_log(self):
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            log = str(Path(tmp) / "absent.log")
+            rc, _, published = self._run_projection_step(mode="real", log_path=log)
+        self.assertEqual(rc, 0)
+        self.assertTrue(published.startswith("day2-browser-failure: journey=unrecognised "), published)
+        self.assertIn("code=none", published)
+        self.assertIn("busy=absent", published)
+
+    def test_projection_step_survives_an_empty_log(self):
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            log = Path(tmp) / "empty.log"
+            log.write_text("", encoding="utf-8")
+            rc, _, published = self._run_projection_step(mode="real", log_path=str(log))
+        self.assertEqual(rc, 0)
+        # A log with no timing line and no failure projects `journey=none` in the
+        # projector, and this step deliberately has no `none` arm for `journey`:
+        # it only runs after a real browser failure, so "no failure in the log"
+        # means the log is not the failing run's log. `unrecognised` says that
+        # honestly instead of publishing `journey=none` beside a failed gate.
+        self.assertIn("journey=unrecognised", published)
+        self.assertIn("stage=none", published)
+
+    def test_projection_step_survives_a_nonzero_projector_exit(self):
+        """A projector that exits 1 must degrade to `unrecognised`, not fail the step."""
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            run_text = self._projection_step()["run"]
+            body = run_text.replace(
+                "python3 bin/pilot-day2-failure-report.py",
+                "python3 -c 'import sys; sys.exit(1)'",
+            )
+            completed, published = self._run_real(tmp, body)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            published,
+            "day2-browser-failure: journey=unrecognised stage=unrecognised "
+            "http=unrecognised code=unrecognised read=unrecognised "
+            "errno=unrecognised errno_class=unknown busy=unrecognised "
+            "elapsed_s=unrecognised\n",
+        )
+
+    def test_projection_step_survives_a_missing_interpreter(self):
+        """No `python3` on PATH must degrade too, exactly like a nonzero exit."""
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            run_text = self._projection_step()["run"]
+            body = run_text.replace("python3 ", "day2-no-such-interpreter ", 1)
+            script = self._write_step_script(tmp, body)
+            summary = Path(tmp) / "summary.txt"
+            env = dict(os.environ)
+            env["GITHUB_STEP_SUMMARY"] = str(summary)
+            # Only the FIRST call is broken: the point is that one broken call
+            # cannot take the step down (the rest still run).
+            completed = subprocess.run(
+                ["bash", "-e", str(script)], capture_output=True, text=True, env=env,
+                cwd=PLUGIN_DIR, check=False,
+            )
+            published = summary.read_text(encoding="utf-8") if summary.exists() else ""
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("journey=unrecognised", published)
+        self.assertIn("code=none", published)
+
+    def test_projection_step_survives_a_fifo_at_the_log_path(self):
+        """A FIFO would block `open()`; the projector must refuse a non-regular file."""
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            fifo = Path(tmp) / "fifo.log"
+            os.mkfifo(fifo)
+            rc, _, published = self._run_projection_step(mode="real", log_path=str(fifo))
+        self.assertEqual(rc, 0)
+        self.assertTrue(published.startswith("day2-browser-failure: journey=unrecognised "), published)
+
+    def test_projection_step_is_conditioned_on_browser_failure_only(self):
+        """On a passing browser step the step is skipped: nothing is published.
+
+        GitHub evaluates `if:` before the step, so the published contract is
+        structural: the condition must name the browser step's `outcome`, and
+        `outcome` (per GitHub's contexts reference) is the pre-`continue-on-error`
+        result. A pass, a skip, or a cancellation therefore cannot trigger it.
+        """
+        step = self._projection_step()
+        self.assertEqual(" ".join(str(step["if"]).split()), _PILOT_DAY2_STEP_CONDITION)
+        self.assertIn("steps.%s.outcome == 'failure'" % self.BROWSER_STEP_ID, step["if"])
+        # The browser step must really carry that id, or the condition is dead.
+        browser = [
+            s for s in _yaml_parser().safe_load(workflow("pilot-gate.yml"))["jobs"]["responsive"]["steps"]
+            if isinstance(s, dict) and s.get("id") == self.BROWSER_STEP_ID
+        ]
+        self.assertEqual(len(browser), 1)
+
+    def test_guard_rejects_a_step_that_can_run_on_a_passing_run(self):
+        """F1/F2: on a green run the step must be skipped, so it must be gated."""
+        base = self.base()
+        condition = _PILOT_DAY2_STEP_CONDITION
+        self.assertIn("        if: " + condition + "\n", base)
+        for weakened in (
+            "always() && !cancelled()",
+            "always()",
+            # `!cancelled()` alone is not valid YAML (`!` starts a tag), so it
+            # cannot be a real regression here; `always()` is the weakening that
+            # can.
+            "success()",
+            "failure()",
+            "always() && !cancelled() && steps.day2_workflows_browser.conclusion == 'failure'",
+            "always() && !cancelled() && steps.day2_workflows_browser.outcome != 'success'",
+        ):
+            with self.subTest(weakened=weakened):
+                mutated = base.replace(
+                    "        if: " + condition + "\n", "        if: " + weakened + "\n", 1
+                )
+                self.assertNotEqual(mutated, base)
+                self.assertIn("DAY2_STEP_CONDITION", self.codes(mutated))
+
+    def test_guard_rejects_a_missing_degradation_of_any_selection(self):
+        """F1(b): a projector failure must degrade, never trip `bash -e`."""
+        base = self.base()
+        for name, field in _PILOT_DAY2_SELECTIONS.items():
+            with self.subTest(field=field):
+                old = (
+                    '          %s="$(python3 bin/pilot-day2-failure-report.py '
+                    "--log /tmp/day2-workflows-browser.log --field %s "
+                    "|| printf 'unrecognised')\"" % (name, field)
+                )
+                self.assertIn(old, base)
+                mutated = base.replace(
+                    old,
+                    '          %s="$(python3 bin/pilot-day2-failure-report.py '
+                    '--log /tmp/day2-workflows-browser.log --field %s)"' % (name, field),
+                    1,
+                )
+                self.assertIn("DAY2_STEP_DEGRADE", self.codes(mutated))
+
+    def test_guard_rejects_a_dropped_field_selection(self):
+        """F4: `busy` must be selected, or the published line cannot be trusted."""
+        base = self.base()
+        busy_block = (
+            '          day2_busy="$(python3 bin/pilot-day2-failure-report.py '
+            "--log /tmp/day2-workflows-browser.log --field busy "
+            "|| printf 'unrecognised')\"\n"
+        )
+        self.assertIn(busy_block, base)
+        mutated = base.replace(busy_block, "          day2_busy=absent\n", 1)
+        self.assertIn("DAY2_STEP_DEGRADE", self.codes(mutated))
+
+    def test_summary_writer_is_the_last_statement(self):
+        """Nothing may run after the publish, so nothing can fail after it."""
+        run_text = self._projection_step()["run"]
+        logical = [line.strip() for _, line in _logical_lines(run_text) if line.strip()]
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', logical[-1])
+        self.assertNotIn("continue-on-error", run_text.lower())
 
     def test_checker_fails_closed_on_a_document_without_the_projection(self):
         self.assertEqual(

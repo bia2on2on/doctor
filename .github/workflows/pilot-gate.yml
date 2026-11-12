@@ -2370,18 +2370,35 @@ jobs:
             "$verdict" "$fixture_status" "$browser_status" > /tmp/day2-workflows-evidence.md
           bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md "pilot-day2-workflows"
 
-      # ONE closed-vocabulary line about the Day-2 browser log, published on the
+      # ONE closed-vocabulary line about a Day-2 browser FAILURE, published on the
       # run summary. PR #346 closed every dynamic text surface: this adds the
       # diagnostic back in a form that can only ever carry frozen tokens and
-      # canonical bounded integers. The raw log stays where it already was (the
-      # job log via the pre-existing `tee`, and the artifact set); nothing from
-      # it is copied here. Token fields are enumerated to literals by a shell
-      # `case`; the two integer fields are copied only inside a digits-only arm,
-      # behind a length bound, exactly like the existing `bytes` projection.
+      # canonical bounded integers. Nothing is published on a passing run: the
+      # step is conditioned on the browser step having actually failed, so a green
+      # run stays green and no "failure" line appears beside it.
+      #
+      # The raw log is never copied anywhere new. It lives in exactly two places,
+      # both pre-existing: the public job output (the browser step pipes stdout
+      # through `tee`, so the FAIL text is already in the job log) and the
+      # runner-local file /tmp/day2-workflows-browser.log, which is not uploaded
+      # and dies with the runner. The artifact set is untouched.
+      #
+      # Robustness: this step must not be able to fail a job or lose the failure
+      # outcome. Each projector call ends with `|| printf 'unrecognised'` inside
+      # its command substitution, so a nonzero exit (missing interpreter,
+      # unreadable log, projector bug) yields the fixed token `unrecognised`
+      # instead of tripping `bash -e`. The form is deliberately a single
+      # assignment per variable (the pre-existing #346 guard requires exactly
+      # one), and the summary append is the last statement, so a failed append is
+      # reported through this step's own exit status, never suppressed.
+      #
+      # Token fields are enumerated to literals by a shell `case`; the two integer
+      # fields are copied only inside a digits-only arm, behind a length bound,
+      # exactly like the existing `bytes` projection.
       - name: Day-2 Operational Workflows — closed-vocabulary failure projection
-        if: always() && !cancelled()
+        if: always() && !cancelled() && steps.day2_workflows_browser.outcome == 'failure'
         run: |
-          day2_journey="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field journey)"
+          day2_journey="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field journey || printf 'unrecognised')"
           case "$day2_journey" in
             journey-A1-public) day2_journey_token=journey-A1-public ;;
             journey-A2-reschedule) day2_journey_token=journey-A2-reschedule ;;
@@ -2390,7 +2407,7 @@ jobs:
             journey-D-accountant) day2_journey_token=journey-D-accountant ;;
             *) day2_journey_token=unrecognised ;;
           esac
-          day2_stage="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field stage)"
+          day2_stage="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field stage || printf 'unrecognised')"
           case "$day2_stage" in
             otp-mobile) day2_stage_token=otp-mobile ;;
             otp-code) day2_stage_token=otp-code ;;
@@ -2402,7 +2419,7 @@ jobs:
             none) day2_stage_token=none ;;
             *) day2_stage_token=unrecognised ;;
           esac
-          day2_http="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field http)"
+          day2_http="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field http || printf 'unrecognised')"
           case "$day2_http" in
             ''|*[!0-9]*)
               safe_day2_http=unrecognised
@@ -2415,14 +2432,14 @@ jobs:
               fi
               ;;
           esac
-          day2_code="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field code)"
+          day2_code="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field code || printf 'unrecognised')"
           case "$day2_code" in
             CLINIC_BOOKING_BUSY) day2_code_token=CLINIC_BOOKING_BUSY ;;
             other) day2_code_token=other ;;
             none) day2_code_token=none ;;
             *) day2_code_token=unrecognised ;;
           esac
-          day2_read="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field read)"
+          day2_read="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field read || printf 'unrecognised')"
           case "$day2_read" in
             cancel_appointment) safe_day2_read=cancel_appointment ;;
             clinic) safe_day2_read=clinic ;;
@@ -2443,7 +2460,7 @@ jobs:
             none) safe_day2_read=none ;;
             *) safe_day2_read=unrecognised ;;
           esac
-          day2_errno="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field errno)"
+          day2_errno="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field errno || printf 'unrecognised')"
           case "$day2_errno" in
             ''|*[!0-9]*)
               safe_day2_errno=unrecognised
@@ -2456,6 +2473,8 @@ jobs:
                   day2_errno_class=deadlock
                 elif [ "$day2_errno" = "1205" ]; then
                   day2_errno_class=lock_wait_timeout
+                elif [ "$day2_errno" = "0" ]; then
+                  day2_errno_class=unknown
                 else
                   day2_errno_class=other
                 fi
@@ -2465,7 +2484,16 @@ jobs:
               fi
               ;;
           esac
-          day2_elapsed="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field elapsed_s)"
+          day2_busy="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field busy || printf 'unrecognised')"
+          case "$day2_busy" in
+            present) day2_busy_token=present ;;
+            not_found) day2_busy_token=not_found ;;
+            fetch_failed) day2_busy_token=fetch_failed ;;
+            stale_or_mismatch) day2_busy_token=stale_or_mismatch ;;
+            absent) day2_busy_token=absent ;;
+            *) day2_busy_token=unrecognised ;;
+          esac
+          day2_elapsed="$(python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log --field elapsed_s || printf 'unrecognised')"
           case "$day2_elapsed" in
             ''|*[!0-9]*)
               safe_day2_elapsed=unrecognised
@@ -2478,9 +2506,9 @@ jobs:
               fi
               ;;
           esac
-          printf 'day2-browser-failure: journey=%s stage=%s http=%s code=%s read=%s errno=%s errno_class=%s elapsed_s=%s\n' \
+          printf 'day2-browser-failure: journey=%s stage=%s http=%s code=%s read=%s errno=%s errno_class=%s busy=%s elapsed_s=%s\n' \
             "$day2_journey_token" "$day2_stage_token" "$safe_day2_http" "$day2_code_token" \
-            "$safe_day2_read" "$safe_day2_errno" "$day2_errno_class" "$safe_day2_elapsed" \
+            "$safe_day2_read" "$safe_day2_errno" "$day2_errno_class" "$day2_busy_token" "$safe_day2_elapsed" \
             >> "$GITHUB_STEP_SUMMARY"
 
       - uses: actions/upload-artifact@v4
