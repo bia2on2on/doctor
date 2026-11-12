@@ -2169,22 +2169,20 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
             {label.split(":")[0] for label in pinned_locations},
             "the demo lane's experimental runner pin is not in place",
         )
-        # The conditional pin must be discovered, not silently skipped: without
-        # it this test would pass while the seven coexistence lanes stayed
-        # unpinned in the place it cannot see.
+        # No conditional pin may remain: every Tooling job is now a literal
+        # `runs-on` (see the Tooling runner contract below). A conditional pin
+        # would let a Tooling lane silently resolve to `ubuntu-latest` again.
         conditional = [
             (label, value)
             for label, value in pinned_locations.items()
             if "inputs." in value and "ubuntu-24.04" in value
         ]
         self.assertEqual(
-            1,
+            0,
             len(conditional),
-            "the conditional coexistence pin was not found exactly once: "
-            f"{sorted(pinned_locations)}",
+            "no conditional pin may remain: "
+            f"{sorted(conditional)}",
         )
-        self.assertIn("real-wp-acceptance.yml", conditional[0][0])
-        self.assertIn("persian_coexistence", conditional[0][1])
 
         action = (ROOT / ".github" / "actions" / "playwright-browsers" / "action.yml").read_text(
             encoding="utf-8"
@@ -5504,6 +5502,108 @@ class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
                 mutated_ctrl = base.replace(anchor, anchor_block + indented, 1)
                 self.assertEqual(pilot_gate_public_output_violations(mutated_ctrl), [])
 
+
+# --- Tooling runner pin contract (runner-pin) ---------------------------------
+#
+# Every job that executes the shared Tooling action must run on a literal,
+# pinned runner label. A `*-latest` label or an unresolved expression would
+# let the job silently move to a new OS image again. This group is kept
+# separate from the other contract groups so a future diagnostics change
+# elsewhere in this file does not need to touch it.
+
+
+class ToolingRunnerPinContractTests(unittest.TestCase):
+    def _tooling_jobs(self):
+        yaml = _yaml_parser()
+        found = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                continue
+            jobs = document.get("jobs") or {}
+            if not isinstance(jobs, dict):
+                continue
+            for job_id, job in jobs.items():
+                if not isinstance(job, dict):
+                    continue
+                steps = job.get("steps") or []
+                uses_list = [
+                    step.get("uses")
+                    for step in steps
+                    if isinstance(step, dict) and "uses" in step
+                ]
+                if any(
+                    "wp-stack-tooling" in str(value) for value in uses_list
+                ):
+                    found.append((path.name, job_id, job.get("runs-on")))
+        return found
+
+    def test_tooling_jobs_use_literal_pinned_runners(self):
+        found = self._tooling_jobs()
+        self.assertTrue(found, "no Tooling jobs found; inventory is empty")
+        self.assertEqual(
+            17,
+            len(found),
+            "Tooling job inventory changed; expected 17 jobs, found: "
+            f"{sorted((name, job_id) for name, job_id, _ in found)}",
+        )
+        for workflow_name, job_id, runs_on in found:
+            label = f"{workflow_name}:{job_id}"
+            if isinstance(runs_on, list):
+                values = runs_on
+            else:
+                values = [runs_on]
+            for value in values:
+                self.assertIsInstance(
+                    value,
+                    str,
+                    f"{label}: runs-on must be a literal string, got {value!r}",
+                )
+                self.assertNotIn(
+                    "${{",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertNotIn(
+                    "inputs.",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertNotIn(
+                    "matrix.",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertFalse(
+                    value.endswith("-latest"),
+                    f"{label}: runs-on must not be a *-latest label: {value!r}",
+                )
+
+    def test_persian_coexistence_callers_have_no_runs_on(self):
+        yaml = _yaml_parser()
+        document = yaml.safe_load(
+            (WORKFLOWS / "persian-coexistence.yml").read_text(encoding="utf-8")
+        )
+        jobs = document.get("jobs") or {}
+        callers = [
+            (job_id, job)
+            for job_id, job in jobs.items()
+            if isinstance(job, dict)
+            and job.get("uses") == "./.github/workflows/real-wp-acceptance.yml"
+        ]
+        self.assertEqual(
+            7,
+            len(callers),
+            "expected 7 reusable-workflow callers, found: "
+            f"{sorted(job_id for job_id, _ in callers)}",
+        )
+        for job_id, job in callers:
+            self.assertNotIn(
+                "runs-on",
+                job,
+                f"persian-coexistence.yml:{job_id}: reusable caller must "
+                "not define its own runs-on",
+            )
 
 
 if __name__ == "__main__":
