@@ -91,14 +91,12 @@ jobs:
     # install the VERSIONED php8.3-* apt packages, and the ubuntu-latest label
     # moved to Ubuntu 26.04 where those packages do not exist
     # ("E: Unable to locate package libapache2-mod-php8.3"), so all seven failed
-    # at apt before doing any work. Only those callers are pinned; this
-    # workflow's own direct lanes (APACHE_PHP_SUFFIX empty, unversioned
-    # metapackages, green on 26.04) stay on ubuntu-latest. The job name and the
+    # at apt before doing any work. All lanes are pinned; the job name and the
     # matrix are unchanged, so the required status checks keep their names.
-    # Remove this expression and go back to `ubuntu-latest` once the versioned
+    # Remove this pin and go back to `ubuntu-latest` once the versioned
     # php8.3 packages exist for the current label, or once the lanes stop
     # needing versioned package names.
-    runs-on: ${{ inputs.persian_coexistence && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
       fail-fast: false

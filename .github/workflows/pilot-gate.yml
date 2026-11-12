@@ -170,7 +170,9 @@ jobs:
   # ============================================================
   staging-gate:
     name: Staging Gate (fresh install → restore drill)
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin, see
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    runs-on: ubuntu-24.04
     needs: release-artifact
     # Measured across 48 completed runs: max 14.8m, median 5.3m — the longest
     # job in the repository (fresh WordPress install + full restore drill). 30m
@@ -1334,7 +1336,9 @@ jobs:
   # ============================================================
   upgrade-test:
     name: Upgrade path (pinned pre-#191 source → candidate)
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin, see
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    runs-on: ubuntu-24.04
     needs: release-artifact
     # Measured across 48 completed runs: max 1.9m, median 0.9m. 10m is ~5x the
     # worst observed. The upgrade path is a release-acceptance contract and must

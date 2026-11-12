@@ -176,7 +176,9 @@ jobs:
   real-wordpress:
     name: Standalone on a non-empty site (${{ matrix.db_name }})
     needs: static
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin, see
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -658,7 +660,9 @@ jobs:
   teardown-safety:
     name: A–J teardown data safety (${{ matrix.database }})
     needs: static
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin, see
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
       fail-fast: false

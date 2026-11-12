@@ -2137,10 +2137,8 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         deliberately does not compare against today's date, so it cannot start
         failing because time passed.
         """
-        # A pin is any `runs-on:` value that NAMES ubuntu-24.04, whether literally
-        # or inside a conditional expression (the seven coexistence lanes are
-        # pinned through `${{ inputs.persian_coexistence && 'ubuntu-24.04' || ... }}`
-        # in real-wp-acceptance.yml, which a literal-line match would miss).
+        # A pin is any `runs-on:` value that names ubuntu-24.04, whether
+        # literally or in an expression; all current Tooling pins are literal.
         expiry = re.compile(r"EXPIRY\s+\d{4}-\d{2}-\d{2}")
         pinned_locations = {}
         for path in sorted(WORKFLOWS.glob("*.yml")):
@@ -2172,22 +2170,19 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
             {label.split(":")[0] for label in pinned_locations},
             "the demo lane's experimental runner pin is not in place",
         )
-        # The conditional pin must be discovered, not silently skipped: without
-        # it this test would pass while the seven coexistence lanes stayed
-        # unpinned in the place it cannot see.
+        # No expression naming this pinned label may remain: Tooling jobs are
+        # literal (see the Tooling runner contract below).
         conditional = [
             (label, value)
             for label, value in pinned_locations.items()
-            if "inputs." in value and "ubuntu-24.04" in value
+            if ("${{" in value or "inputs." in value) and "ubuntu-24.04" in value
         ]
         self.assertEqual(
-            1,
+            0,
             len(conditional),
-            "the conditional coexistence pin was not found exactly once: "
-            f"{sorted(pinned_locations)}",
+            "no conditional pin may remain: "
+            f"{sorted(conditional)}",
         )
-        self.assertIn("real-wp-acceptance.yml", conditional[0][0])
-        self.assertIn("persian_coexistence", conditional[0][1])
 
         action = (ROOT / ".github" / "actions" / "playwright-browsers" / "action.yml").read_text(
             encoding="utf-8"
@@ -5983,6 +5978,240 @@ class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
                 mutated_ctrl = base.replace(anchor, anchor_block + indented, 1)
                 self.assertEqual(pilot_gate_public_output_violations(mutated_ctrl), [])
 
+
+# --- Tooling runner pin contract (runner-pin) ---------------------------------
+#
+# Every job that executes the shared Tooling action must run on a literal,
+# pinned runner label. A `*-latest` label or an unresolved expression would
+# let the job silently move to a new OS image again. This group is kept
+# separate from the other contract groups so a future diagnostics change
+# elsewhere in this file does not need to touch it.
+
+
+class ToolingRunnerPinContractTests(unittest.TestCase):
+    def _tooling_jobs(self):
+        yaml = _yaml_parser()
+        found = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                continue
+            jobs = document.get("jobs") or {}
+            if not isinstance(jobs, dict):
+                continue
+            for job_id, job in jobs.items():
+                if not isinstance(job, dict):
+                    continue
+                steps = job.get("steps") or []
+                uses_list = [
+                    step.get("uses")
+                    for step in steps
+                    if isinstance(step, dict) and "uses" in step
+                ]
+                if any(
+                    "wp-stack-tooling" in str(value) for value in uses_list
+                ):
+                    found.append((path.name, job_id, job.get("runs-on")))
+        return found
+
+    def test_tooling_jobs_use_literal_pinned_runners(self):
+        found = self._tooling_jobs()
+        self.assertTrue(found, "no Tooling jobs found; inventory is empty")
+        self.assertEqual(
+            17,
+            len(found),
+            "Tooling job inventory changed; expected 17 jobs, found: "
+            f"{sorted((name, job_id) for name, job_id, _ in found)}",
+        )
+        for workflow_name, job_id, runs_on in found:
+            label = f"{workflow_name}:{job_id}"
+            if isinstance(runs_on, list):
+                values = runs_on
+            else:
+                values = [runs_on]
+            for value in values:
+                self.assertIsInstance(
+                    value,
+                    str,
+                    f"{label}: runs-on must be a literal string, got {value!r}",
+                )
+                self.assertNotIn(
+                    "${{",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertNotIn(
+                    "inputs.",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertNotIn(
+                    "matrix.",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertFalse(
+                    value.endswith("-latest"),
+                    f"{label}: runs-on must not be a *-latest label: {value!r}",
+                )
+
+    def test_persian_coexistence_callers_have_no_runs_on(self):
+        yaml = _yaml_parser()
+        document = yaml.safe_load(
+            (WORKFLOWS / "persian-coexistence.yml").read_text(encoding="utf-8")
+        )
+        jobs = document.get("jobs") or {}
+        callers = [
+            (job_id, job)
+            for job_id, job in jobs.items()
+            if isinstance(job, dict)
+            and job.get("uses") == "./.github/workflows/real-wp-acceptance.yml"
+        ]
+        self.assertEqual(
+            7,
+            len(callers),
+            "expected 7 reusable-workflow callers, found: "
+            f"{sorted(job_id for job_id, _ in callers)}",
+        )
+        for job_id, job in callers:
+            self.assertNotIn(
+                "runs-on",
+                job,
+                f"persian-coexistence.yml:{job_id}: reusable caller must "
+                "not define its own runs-on",
+            )
+
+
+# Resolve local composite actions rather than assuming all uses are direct.
+def _normal_action_ref(ref):
+    if not isinstance(ref, str):
+        return ""
+    ref = ref.strip().strip("'\"").strip().rstrip("/")
+    return ref[2:] if ref.startswith("./") else ref
+
+
+def _tooling_reachable(ref, load_action, visiting=None):
+    path = _normal_action_ref(ref)
+    if path == ".github/actions/wp-stack-tooling":
+        return True
+    raw = str(ref).strip().strip("'\"").strip() if isinstance(ref, str) else ""
+    if not (raw.startswith("./") or path.startswith(".github/actions/")):
+        return False
+    visiting = set() if visiting is None else visiting
+    if path in visiting:
+        return False
+    visiting = visiting | {path}
+    action = load_action(path)
+    runs = action.get("runs", {})
+    if runs.get("using") != "composite":
+        return False
+    return any(
+        _tooling_reachable(step.get("uses"), load_action, visiting)
+        for step in runs.get("steps", []) if isinstance(step, dict)
+    )
+
+
+def _runner_contract_violations(job, block):
+    value = job.get("runs-on")
+    values = value if isinstance(value, list) else [value]
+    failures = []
+    if not values or any(not isinstance(v, str) or "${{" in v or
+                         "inputs." in v or "matrix." in v or v.endswith("-latest")
+                         for v in values):
+        failures.append("runner must be literal and not latest")
+    lines = block.splitlines()
+    pin = next((i for i, line in enumerate(lines)
+                if line.strip().startswith("runs-on:")), None)
+    if pin is None:
+        failures.append("runner missing")
+    else:
+        adjacent = [lines[pin]]
+        i = pin - 1
+        while i >= 0 and lines[i].strip().startswith("#"):
+            adjacent.append(lines[i])
+            i -= 1
+        if not re.search(r"EXPIRY\s+\d{4}-\d{2}-\d{2}", "\n".join(adjacent)):
+            failures.append("expiry missing")
+    return failures
+
+
+class ToolingCompositeReachabilityContractTests(unittest.TestCase):
+    def test_local_action_and_reusable_workflow_reachability(self):
+        yaml = _yaml_parser()
+        documents = {p.name: yaml.safe_load(p.read_text(encoding="utf-8"))
+                     for p in sorted(WORKFLOWS.glob("*.yml"))}
+
+        def load_action(path):
+            root = (ROOT / path).resolve()
+            self.assertTrue(root.is_relative_to(ROOT.resolve()))
+            action_file = root / "action.yml"
+            self.assertTrue(action_file.is_file(), f"missing local action: {path}")
+            data = yaml.safe_load(action_file.read_text(encoding="utf-8"))
+            self.assertIsInstance(data, dict)
+            return data
+
+        direct, wrappers, tooling_workflows = [], [], set()
+        for name, document in documents.items():
+            for job_id, job in (document.get("jobs") or {}).items():
+                if not isinstance(job, dict):
+                    continue
+                refs = [step.get("uses") for step in job.get("steps", [])
+                        if isinstance(step, dict)]
+                is_direct = any(_normal_action_ref(ref) == ".github/actions/wp-stack-tooling"
+                                for ref in refs)
+                is_wrapper = any(_normal_action_ref(ref) != ".github/actions/wp-stack-tooling"
+                                 and _tooling_reachable(ref, load_action) for ref in refs)
+                if is_direct:
+                    direct.append((name, job_id))
+                if is_wrapper:
+                    wrappers.append((name, job_id))
+                if is_direct or is_wrapper:
+                    tooling_workflows.add(name)
+                    block = ci_job_block(workflow(name), job_id)
+                    self.assertEqual([], _runner_contract_violations(job, block),
+                                     f"{name}:{job_id}: invalid runner or expiry")
+        self.assertEqual(17, len(direct), f"direct Tooling inventory: {direct}")
+        self.assertEqual(0, len(wrappers), f"wrapper Tooling inventory: {wrappers}")
+        # Propagate through local reusable workflows, with a finite fixed point.
+        changed = True
+        while changed:
+            changed = False
+            for name, document in documents.items():
+                for job_id, job in (document.get("jobs") or {}).items():
+                    if not isinstance(job, dict):
+                        continue
+                    ref = _normal_action_ref(job.get("uses"))
+                    if ref.startswith(".github/workflows/") and ref.split("/")[-1] in tooling_workflows:
+                        self.assertNotIn("runs-on", job, f"{name}:{job_id}: reusable caller")
+                        if name not in tooling_workflows:
+                            tooling_workflows.add(name)
+                            changed = True
+
+    def test_reachability_mutations(self):
+        yaml = _yaml_parser()
+        text = workflow("classic-v1-remediation.yml")
+        action = "./.github/actions/wp-stack-tooling"
+        wrapper = "./.github/actions/example-wrapper"
+        actions = {".github/actions/example-wrapper": {"runs": {"using": "composite", "steps": [{"uses": action}]}}}
+        def load(path):
+            return actions[path]
+        def check(ref, runner):
+            mutated = text.replace(action, ref, 1).replace("runs-on: ubuntu-24.04", "runs-on: " + runner, 1)
+            job = yaml.safe_load(mutated)["jobs"]["http-profile"]
+            refs = [s.get("uses") for s in job["steps"] if isinstance(s, dict)]
+            reachable = any(_tooling_reachable(r, load) for r in refs)
+            return reachable, _runner_contract_violations(job, ci_job_block(mutated, "http-profile"))
+        for ref in (wrapper, action + "/", "'" + action + "'"):
+            reachable, failures = check(ref, "ubuntu-latest")
+            self.assertTrue(reachable, ref)
+            self.assertTrue(failures, ref)
+        reachable, failures = check(wrapper, "ubuntu-24.04")
+        self.assertTrue(reachable)
+        self.assertEqual([], failures)
+        actions[".github/actions/example-wrapper"]["runs"]["steps"] = [{"uses": wrapper}]
+        self.assertFalse(_tooling_reachable(wrapper, load))
+        actions[".github/actions/example-wrapper"]["runs"]["steps"].append({"uses": action})
+        self.assertTrue(_tooling_reachable(wrapper, load))
 
 
 class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
