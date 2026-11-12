@@ -112,12 +112,14 @@ Vocabulary
 ``code``           ``CLINIC_BOOKING_BUSY`` (wins wherever it appears),
                    ``other`` (a different code was printed), ``none``.
 ``read``           one of the 16 lock-read labels, ``none``, ``unrecognised``.
-                   Read ONLY from the harness's structured ``busy_diag=`` block
-                   (the last one in the failure text), never from free text that
-                   happens to spell ``read=`` — ``msg=`` at line 478 carries the
-                   server's own message and a Playwright call log is arbitrary.
-``errno``          canonical decimal 0..99999, else ``unrecognised``. Read from
-                   the same structured busy block as ``read``.
+                   BEST EFFORT, not a guarantee. Taken from the LAST
+                   ``busy_diag=`` marker onward, but that slice runs to the END of
+                   the failure block and the lookup takes the FIRST ``read=``
+                   token in it. Text inside that window — including untrusted
+                   ``msg=``/``sql_error=`` content — can therefore misattribute
+                   it. Measured counterexamples are listed below.
+``errno``          canonical decimal 0..99999, else ``unrecognised``. BEST EFFORT
+                   on the same window and under the same caveat as ``read``.
 ``errno_class``    ``deadlock`` (1213), ``lock_wait_timeout`` (1205), ``other``
                    (any other validated non-zero errno), ``unknown`` (no
                    validated errno, or errno ``0`` — a zero errno is "no driver
@@ -171,8 +173,12 @@ Limitations (each one is a fact about what the surfaces can say)
     runs for them and no `code=` can appear — 5 origins.
   * the 15 bare asserts carry one of 15 fixed literals or status-word templates
     that contain no `code=` — 15 origins.
-  So 2 of 22 origins can print a code, and 20 of 22 project `code=none` even when
-  `busy=present`. (Whether the carry-capable origins actually carry one is
+  So **2 of the 22 selected origins have a `code=` TEMPLATE of their own**, and
+  the other **20 do not**. That is a statement about the code those origins
+  *contain*; it is NOT a guarantee about what they *project*. `code` is scanned
+  over the WHOLE failure block, and text the handler appends — including
+  untrusted `sql_error=` — can carry a `code=` token, which then projects as
+  `other` on any origin. Measured: see the counterexample list below. (Whether the carry-capable origins actually carry one is
   conditional: `hold-countdown` prints a code only when the failing call was the
   busy one, and line 673 only when `hold_attempt['code']` is non-empty.) The per-origin table with measured projector output is in the
   PR body. No test in this repository enumerates all 22 origins; the tests pin
@@ -180,38 +186,53 @@ Limitations (each one is a fact about what the surfaces can say)
 * **`route=` is printed by the harness but not projected.** `format_busy_suffix`
   emits it, and it is a closed, useful token, but it is out of this change's
   declared field set; projecting it is deferred rather than half-done.
-* **`sql_error` is never read.** It is untrusted driver text.
-* **H5 residual (disclosed, not fixed): a marker in free text can still move
-  `read`/`errno`/`busy`.** `read`, `errno` and the busy `http` are read from the
-  LAST `busy_diag=` block onward, but that slice runs to the end of the failure
-  block, and `busy` itself is read from the FIRST `busy_diag=` anywhere in the
-  block. So if untrusted text in the block spells `busy_diag=`, or spells
-  `read=<label>`/`sql_errno=<int>` AFTER the real block, the projected values
-  follow it. Measured: of 14 adversarial inputs, 5 differ from the correct
-  projection.
-  **Second, decisive measurement (18 real message shapes plus 8 edge cases).**
-  Inputs built only from text that PHP, WordPress, PDO/mysqli, MySQL/MariaDB,
-  curl or Playwright can actually emit, placed both BEFORE and AFTER the
-  structured block: PHP stream/SSL `fread(): ... (errno=104)`, `Lost connection
-  to MySQL server during query`, `Error reading result set's header (errno:
-  2013)`, `SQLSTATE[40001]: Serialization failure: 1213 Deadlock found ...`,
-  `SQLSTATE[HY000]: General error: 2006 MySQL server has gone away`, WordPress
-  `Error establishing a database connection`, `cURL error 28 ... (errno 28)`,
-  multi-line Playwright call logs, URL query strings such as `?read=clinic`,
-  `data-read="clinic"` markup, DOM dumps, and real MySQL strings inside the
-  block's own `sql_error`. **All 18, and all 8 edge cases, project correctly.**
-  **What this does and does not establish.** None of the 18 tested real message
-  shapes produced a wrong attribution. A finite set does not prove absence:
-  crafted content can still misattribute `read`/`errno`. The mechanism is
-  narrower than a bare token: text after the block moves them **only** if it
-  carries its own literal `busy_diag=`, which re-anchors the `rfind`; a bare
-  `read=clinic sql_errno=99999` placed after the block does **not** move them.
-  No producer in this repository emits `busy_diag=` outside
-  `format_busy_suffix`, and MySQL error text spells `errno: NN` / `Errcode: NN`,
-  never `sql_errno=`. Suppressing the residual completely would need a structural
-  redesign (parse only the one block the harness is known to append and verify
-  its exact shape), which is deliberately out of scope here; it is recorded as a
-  disclosed adversarial-content limitation rather than silently accepted.
+* **`sql_error` is never used as a field source, but its content is not
+  quarantined.** No field is ever taken from the `sql_error` value itself. Its
+  text does, however, sit inside the failure block that every token scan reads,
+  so a `code=`, `read=` or `sql_errno=` spelling inside it can misattribute
+  those fields. Measured counterexamples are listed below.
+* **H5 residual (disclosed, not fixed): `read`/`errno`/`busy` attribution is
+  BEST EFFORT.** `read`, `errno` and the busy `http` are read from the LAST
+  `busy_diag=` marker onward, but that slice runs to the END of the failure
+  block and each lookup takes the FIRST matching token in the slice; `busy`
+  itself is read from the FIRST `busy_diag=` anywhere in the block. Free or
+  structured-but-incomplete text carrying these tokens can therefore
+  misattribute them. Measured counterexamples:
+  * a `busy_diag=not-found` block followed by bare `read=clinic sql_errno=1213`
+    projects `read=clinic errno=1213` — one marker, with no second marker of
+    any kind (an earlier revision asserted a narrower trigger here; that
+    assertion was false, and it held only for a COMPLETE block that already
+    printed its own `read=` before the bare text);
+  * `sql_error="… see code=ER_LOCK_DEADLOCK …"` through the real
+    `format_busy_suffix` projects `code=other` on an origin whose own message
+    carries no `code=` at all, so `code=none` is not guaranteed for the 20
+    code-template-less origins;
+  * `sql_error="read=clinic sql_errno=1213"` projects `read=clinic`; the closing
+    quote glues onto the errno value, so a marker at the very end of
+    `sql_error` yields `errno=unrecognised` and the same marker with trailing
+    text yields `errno=1213`.
+* **Natural-message measurement.** 18 message shapes that PHP, WordPress,
+  PDO/mysqli, MySQL/MariaDB, curl or Playwright can actually emit — PHP
+  stream/SSL `fread(): ... (errno=104)`, `Lost connection to MySQL server during
+  query`, `Error reading result set's header (errno: 2013)`, `SQLSTATE[40001]:
+  Serialization failure: 1213 Deadlock found ...`, `SQLSTATE[HY000]: General
+  error: 2006 MySQL server has gone away`, WordPress `Error establishing a
+  database connection`, `cURL error 28 ... (errno 28)`, multi-line Playwright
+  call logs, `?read=clinic` query strings, `data-read="clinic"` markup, DOM
+  dumps and real MySQL strings inside `sql_error` — were placed both BEFORE and
+  AFTER the structured block: none produced a wrong attribution, and the 8 edge
+  cases tested alongside them did not either. A finite set does not prove
+  absence, so this is evidence about those shapes only, not a guarantee.
+* **What IS guaranteed.** Exactly three things, each pinned by tests: the output
+  is ONE line (`render`), every field is drawn from its own closed vocabulary
+  (`is_closed`, with a fallback line when not), and integer fields are emitted
+  canonically inside their declared widths (`int_token`). Nothing in this module
+  guarantees which value a field receives when the input text carries a
+  conflicting token.
+* **Suppressing the residual completely** would need a structural redesign:
+  parse only the one block the harness is known to append and verify its exact
+  shape. That is deliberately out of scope here, so the behaviour is disclosed
+  rather than silently accepted.
 
 This is a best-effort single-line projection, not a proof about the log: a
 failure that prints none of these markers yields ``unrecognised`` fields, and
@@ -557,6 +578,9 @@ def project(text):
     # harness really uses, so `code=CLINIC_BOOKING_BUSY;` (a `;` from
     # `describe()`) and `code=CLINIC_BOOKING_BUSY |` (a `|` from
     # `visible_or_diagnose`) both read as the bare code.
+    # The scan covers the WHOLE failure block, so an origin whose own message has
+    # no `code=` can still project `other` when appended text (for example
+    # untrusted `sql_error=`) carries a `code=` token.
     code_spans = [
         (match.start(), match.group(1))
         for match in re.finditer(_CODE_TOKEN, failure)
@@ -579,9 +603,12 @@ def project(text):
     #   [route=<r>] [http=<status>] [viewport=<w>x<h>]
     # Everything BEFORE it may be free text: `msg=` at line 478 is the server's
     # own message, and a Playwright call log is arbitrary. Anchoring `read`,
-    # `errno` and the busy `http` to the LAST `busy_diag=` block therefore reads
-    # only the harness's structured values and ignores free text that happens to
-    # spell `read=`/`sql_errno=`.
+    # `errno` and the busy `http` to the LAST `busy_diag=` marker narrows the
+    # window that can affect them, but it does NOT close it: the slice runs to
+    # the END of the failure block and `_value_of` takes the FIRST match in it,
+    # so free text after the marker (and untrusted `sql_error=` text inside the
+    # structured block) can still supply these values. Attachment is best
+    # effort; the measured counterexamples are in the module docstring.
     block_start = failure.rfind("busy_diag=")
     structured = failure[block_start:] if block_start >= 0 else ""
 
@@ -631,8 +658,10 @@ def project(text):
     else:
         http = int_token(http_raw, *INTS["http"])
 
-    # `read` and `errno` come from the harness's structured busy block only (H5);
-    # free text earlier in the block cannot supply them.
+    # `read` and `errno` are searched in the busy window only (H5): text BEFORE
+    # the last `busy_diag=` marker cannot supply them. Within the window the
+    # first match wins, so text after the marker still can -- best effort, not a
+    # guarantee. See the module docstring's counterexample list.
     read_source = structured if block_start >= 0 else failure
     read = enum_token(_value_of(read_source, "read"), READS)
     errno = int_token(_value_of(read_source, "sql_errno"), *INTS["errno"])

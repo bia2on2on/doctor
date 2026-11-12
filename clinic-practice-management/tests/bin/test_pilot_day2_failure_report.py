@@ -1005,12 +1005,18 @@ class RoundTwoFidelityTest(unittest.TestCase):
         self.assertEqual(len(carry), 1, "only hold-countdown passes a probe")
 
     def test_only_the_two_carry_capable_origins_emit_a_code(self):
-        """H1: 2 of 22 origins carry `code=`; the other 20 project `code=none`.
+        """H1: 2 of 22 origins have a `code=` TEMPLATE of their own; 20 do not.
 
         The 22 counts selected failure origins in journey A1 -- 6 helper calls,
         15 explicit asserts and 1 explicit raise -- not every incidental
         exception a library might throw inside those calls. The handler's
         re-raises at lines 724/725 are not separate origins.
+
+        "20 do not" is a statement about the source text of those origins, NOT a
+        guarantee that they project `code=none`. `code` is scanned over the whole
+        failure block, so a `code=` spelling in appended text (untrusted
+        `sql_error=` included) projects `other` on any origin. This test asserts
+        only the source-level split and the two carry-capable shapes.
 
         Inputs are built from the real producers' output shapes. The carry-capable
         COUNT is asserted from the source first, so adding or removing a
@@ -1124,10 +1130,11 @@ class RoundTwoFidelityTest(unittest.TestCase):
         """H5: 18 real message shapes, before and after the block, all correct.
 
         The shapes are text PHP, WordPress, PDO/mysqli, MySQL/MariaDB, curl or
-        Playwright can actually emit. This is a finite set: it demonstrates no
-        observed misattribution, it does not prove absence. Crafted content that
-        adds a second literal `busy_diag=` can still move `read`/`errno`, which is
-        pinned as a limitation in its own test.
+        Playwright can actually emit. This is a finite set: it shows that none of
+        these shapes produced a wrong attribution, it does not prove absence.
+        Attribution remains best effort -- a `read=`/`sql_errno=` token anywhere
+        in the busy window, including in untrusted `sql_error=` text, can still
+        supply them. The counterexamples are listed in the module docstring.
         """
         real = ('busy_diag=booking.lock_read_failed read=slot sql_errno=1213 '
                 'sql_error="Deadlock found" route=hold/hold http=503 viewport=390x844')
@@ -1155,11 +1162,17 @@ class RoundTwoFidelityTest(unittest.TestCase):
                 self.assertEqual((fields["read"], fields["errno"]), ("slot", "1213"))
 
     def test_a_bare_read_token_after_the_block_does_not_move_attribution(self):
-        """H5 mechanism: only a SECOND literal `busy_diag=` re-anchors rfind.
+        """H5 boundary, narrowly: a COMPLETE block's own tokens win.
 
-        This is the precise boundary. A bare `read=clinic sql_errno=99999` after
-        the real block is ignored; the same text preceded by its own `busy_diag=`
-        is not. Documenting the exact trigger keeps the limitation honest.
+        When the structured block already printed its own `read=`/`sql_errno=`,
+        a bare `read=clinic sql_errno=99999` appended after it is ignored,
+        because the lookup takes the FIRST match in the window. A second marker
+        does re-anchor the window, so the appended values then win.
+
+        CAUTION: this is NOT a general statement that bare tokens are ignored.
+        With an INCOMPLETE block (for example `busy_diag=not-found`) the same
+        bare text DOES supply `read`/`errno`. Attribution is best effort; see
+        the module docstring's counterexample list.
         """
         real = ('busy_diag=booking.lock_read_failed read=slot sql_errno=1213 '
                 'route=hold/hold http=503')
