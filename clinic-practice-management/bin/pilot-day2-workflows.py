@@ -1477,10 +1477,20 @@ def main():
             ("journey-C-doctors", lambda: run_journey_c_doctors(browser, cfg)),
             ("journey-D-accountant", lambda: run_journey_d_accountant(browser, cfg)),
         ):
+            journey_started = time.monotonic()
             try:
                 fn()
             except Exception as exc:
                 fail(key, f"Day-2 browser journey failed ({key})", exc)
+            finally:
+                # Bounded, non-PII wall clock of this journey. It exists so the
+                # closed-vocabulary projection (bin/pilot-day2-failure-report.py)
+                # can report elapsed_s without reading anything else from the
+                # log, on PASS and on FAIL alike.
+                info(
+                    f"day2-journey-timing journey={key} "
+                    f"elapsed_s={int(time.monotonic() - journey_started)}"
+                )
         browser.close()
 
     with open("pilot-day2-workflows-results.json", "w", encoding="utf-8") as fh:
