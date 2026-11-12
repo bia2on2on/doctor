@@ -1007,6 +1007,11 @@ class RoundTwoFidelityTest(unittest.TestCase):
     def test_only_the_two_carry_capable_origins_emit_a_code(self):
         """H1: 2 of 22 origins carry `code=`; the other 20 project `code=none`.
 
+        The 22 counts selected failure origins in journey A1 -- 6 helper calls,
+        15 explicit asserts and 1 explicit raise -- not every incidental
+        exception a library might throw inside those calls. The handler's
+        re-raises at lines 724/725 are not separate origins.
+
         Inputs are built from the real producers' output shapes. The carry-capable
         COUNT is asserted from the source first, so adding or removing a
         probe-passing `visible_or_diagnose` call fails here.
@@ -1085,6 +1090,86 @@ class RoundTwoFidelityTest(unittest.TestCase):
         )
         nf = projector.project(self.fail_log(natural))
         self.assertEqual((nf["read"], nf["errno"]), ("slot", "1213"))
+
+    def test_h4_word_form_is_ignored_once_a_2xx_token_is_present(self):
+        """H4 boundary, measured: `none` wins over a word-form-only status.
+
+        `saw_only_success` is computed from `http=` TOKENS alone, so once it is
+        true the `HTTP 409` / `got 422` word fallback is skipped and the result is
+        `none`. This test pins that boundary so the documented wording cannot
+        drift into claiming more than the code does. It also shows the same text
+        WITHOUT a 2xx token resolving correctly, which proves the difference is
+        the token and not the text.
+        """
+        head = ("FAIL day2-A1-public — Day-2 browser journey failed "
+                "(journey-A1-public) — public booking stage=hold-countdown ")
+        # 2xx token present -> word form ignored -> none
+        self.assertEqual(
+            projector.project(head + "observed=q http=200 booking/confirm HTTP 409\n")["http"],
+            projector.NONE)
+        self.assertEqual(
+            projector.project(head + "observed=q http=200 expected 400 identity gate, "
+                                    "got 422\n")["http"],
+            projector.NONE)
+        # same text, no 2xx token -> the word form is used
+        self.assertEqual(
+            projector.project(head + "booking/confirm HTTP 503\n")["http"], "503")
+        self.assertEqual(
+            projector.project(head + "expected 400 identity gate, got 503\n")["http"], "503")
+        # and a real non-2xx token also beats the word form
+        self.assertEqual(
+            projector.project(head + "observed=q http=200; h http=409\n")["http"], "409")
+
+    def test_real_message_shapes_do_not_move_read_or_errno(self):
+        """H5: 18 real message shapes, before and after the block, all correct.
+
+        The shapes are text PHP, WordPress, PDO/mysqli, MySQL/MariaDB, curl or
+        Playwright can actually emit. This is a finite set: it demonstrates no
+        observed misattribution, it does not prove absence. Crafted content that
+        adds a second literal `busy_diag=` can still move `read`/`errno`, which is
+        pinned as a limitation in its own test.
+        """
+        real = ('busy_diag=booking.lock_read_failed read=slot sql_errno=1213 '
+                'sql_error="Deadlock found" route=hold/hold http=503 viewport=390x844')
+        head = "FAIL day2-A1-public — Day-2 browser journey failed (journey-A1-public) — "
+        body = "public booking stage=hold-countdown visible=0 | journey=A1-public "
+        shapes = [
+            "  - PHP Warning: fread(): SSL: Connection reset by peer (errno=104)",
+            "  - mysqli_sql_exception: Lost connection to MySQL server during query",
+            "  - Error reading result set's header (errno: 2013)",
+            "  - SQLSTATE[40001]: Serialization failure: 1213 Deadlock found",
+            "  - SQLSTATE[HY000]: General error: 2006 MySQL server has gone away",
+            "  - Error establishing a database connection",
+            "  - cURL error 28: Operation timed out (errno 28)",
+            '  - waiting for locator("[data-role=confirm-btn]")',
+            "  - Request URL: https://clinic.test/wp-json/x?read=clinic&slot=3",
+            '  - locator resolved to <div data-read="clinic">',
+        ]
+        for shape in shapes:
+            with self.subTest(after=shape[:40]):
+                fields = projector.project(head + body + real + "\n" + shape + "\n")
+                self.assertEqual((fields["read"], fields["errno"]), ("slot", "1213"))
+            with self.subTest(before=shape[:40]):
+                fields = projector.project(head + body.replace("| journey", "\n| journey")
+                                           + shape + "\n | journey=A1-public " + real + "\n")
+                self.assertEqual((fields["read"], fields["errno"]), ("slot", "1213"))
+
+    def test_a_bare_read_token_after_the_block_does_not_move_attribution(self):
+        """H5 mechanism: only a SECOND literal `busy_diag=` re-anchors rfind.
+
+        This is the precise boundary. A bare `read=clinic sql_errno=99999` after
+        the real block is ignored; the same text preceded by its own `busy_diag=`
+        is not. Documenting the exact trigger keeps the limitation honest.
+        """
+        real = ('busy_diag=booking.lock_read_failed read=slot sql_errno=1213 '
+                'route=hold/hold http=503')
+        head = ("FAIL day2-A1-public — Day-2 browser journey failed (journey-A1-public) — "
+                "public booking stage=hold-countdown visible=0 | journey=A1-public ")
+        bare = projector.project(head + real + "\n  - read=clinic sql_errno=99999\n")
+        self.assertEqual((bare["read"], bare["errno"]), ("slot", "1213"))
+        anchored = projector.project(
+            head + real + "\n  - busy_diag=fetch-failed read=clinic sql_errno=99999\n")
+        self.assertEqual((anchored["read"], anchored["errno"]), ("clinic", "99999"))
 
     # --- H2 ---------------------------------------------------------------
     def test_blank_line_does_not_end_the_block(self):

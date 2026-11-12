@@ -96,6 +96,19 @@ Vocabulary
                    otherwise ``none`` when only 2xx statuses were printed — that
                    means no failing request was observed, which is a fact the log
                    states, and is distinct from ``unrecognised``.
+                   **Boundary, measured:** the word-form step is skipped entirely
+                   once ``saw_only_success`` is true, because that flag is computed
+                   from ``http=`` tokens alone. So if a block holds at least one
+                   2xx ``http=`` token AND a failing status that appears only as a
+                   word form (``HTTP 409`` / ``got 422``) with no non-2xx token --
+                   and no structured busy ``http=`` -- the projection is ``none``,
+                   not that failing status. This combination does not arise in
+                   journey A1: the bare asserts that use the word forms (lines
+                   640, 657, 683, 690) emit no ``http=`` token at all, and every
+                   ``describe()``-bearing block pairs a real token with the code.
+                   It is reachable only with mixed or inconsistent input, which is
+                   what ``none`` means here: no failing request is supported by a
+                   token in this block.
 ``code``           ``CLINIC_BOOKING_BUSY`` (wins wherever it appears),
                    ``other`` (a different code was printed), ``none``.
 ``read``           one of the 16 lock-read labels, ``none``, ``unrecognised``.
@@ -136,7 +149,7 @@ Limitations (each one is a fact about what the surfaces can say)
   diagnostic was produced (see the ``busy`` row above).
 * **The busy suffix exists for journey A1 only** (`busy_suffix_for` is called
   once, in `run_journey_a_public_booking`), so A2/B/C/D can never be ``present``.
-* **``code=CLINIC_BOOKING_BUSY`` is visible on only 3 of the 22 journey-A1
+* **``code=CLINIC_BOOKING_BUSY`` is visible on only 2 of the 22 journey-A1
   failure origins.** The structured suffix itself contains no `code=` token:
   `format_busy_suffix` emits `busy_diag=`, `read=`, `sql_errno=`, ids, `route=`,
   `http=`, `viewport=`. So `code` can be the busy code only where *other* text in
@@ -175,16 +188,30 @@ Limitations (each one is a fact about what the surfaces can say)
   block. So if untrusted text in the block spells `busy_diag=`, or spells
   `read=<label>`/`sql_errno=<int>` AFTER the real block, the projected values
   follow it. Measured: of 14 adversarial inputs, 5 differ from the correct
-  projection, and of ~35 natural/realistic inputs (real MySQL driver strings
-  inside `sql_error`, Playwright call-log lines, WordPress REST bodies, harness
-  DOM state words, ordinary prose) **none** differs. Every differing input
-  required text containing a literal `busy_diag=`/`read=`/`sql_errno=` token
-  placed outside the single block the harness actually emits; MySQL error strings
-  carry `errno: NN` or `Errcode: NN`, never `sql_errno=`. Suppressing this
-  completely would need a structural redesign (parse only the one block the
-  harness is known to append and verify its exact shape), which is deliberately
-  out of scope here; it is recorded as a disclosed adversarial-content
-  limitation rather than silently accepted.
+  projection.
+  **Second, decisive measurement (18 real message shapes plus 8 edge cases).**
+  Inputs built only from text that PHP, WordPress, PDO/mysqli, MySQL/MariaDB,
+  curl or Playwright can actually emit, placed both BEFORE and AFTER the
+  structured block: PHP stream/SSL `fread(): ... (errno=104)`, `Lost connection
+  to MySQL server during query`, `Error reading result set's header (errno:
+  2013)`, `SQLSTATE[40001]: Serialization failure: 1213 Deadlock found ...`,
+  `SQLSTATE[HY000]: General error: 2006 MySQL server has gone away`, WordPress
+  `Error establishing a database connection`, `cURL error 28 ... (errno 28)`,
+  multi-line Playwright call logs, URL query strings such as `?read=clinic`,
+  `data-read="clinic"` markup, DOM dumps, and real MySQL strings inside the
+  block's own `sql_error`. **All 18, and all 8 edge cases, project correctly.**
+  **What this does and does not establish.** None of the 18 tested real message
+  shapes produced a wrong attribution. A finite set does not prove absence:
+  crafted content can still misattribute `read`/`errno`. The mechanism is
+  narrower than a bare token: text after the block moves them **only** if it
+  carries its own literal `busy_diag=`, which re-anchors the `rfind`; a bare
+  `read=clinic sql_errno=99999` placed after the block does **not** move them.
+  No producer in this repository emits `busy_diag=` outside
+  `format_busy_suffix`, and MySQL error text spells `errno: NN` / `Errcode: NN`,
+  never `sql_errno=`. Suppressing the residual completely would need a structural
+  redesign (parse only the one block the harness is known to append and verify
+  its exact shape), which is deliberately out of scope here; it is recorded as a
+  disclosed adversarial-content limitation rather than silently accepted.
 
 This is a best-effort single-line projection, not a proof about the log: a
 failure that prints none of these markers yields ``unrecognised`` fields, and
