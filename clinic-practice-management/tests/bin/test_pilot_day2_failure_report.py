@@ -572,10 +572,23 @@ class RealHarnessFormatTest(unittest.TestCase):
         self.assertEqual((fields["code"], fields["http"]), ("CLINIC_BOOKING_BUSY", "503"))
 
     def test_zero_errno_has_no_class(self):
-        """(d) A stored `sql_errno=0` must not be classed `other`."""
+        """(d) A stored `sql_errno=0` must not be classed `other`.
+
+        Specificity: this asserts the WHOLE classification for the input, not just
+        the pair, so an unrelated change to another mapping (e.g. `1213` no longer
+        meaning `deadlock`, or `0` drifting to `other`) cannot slip through. The
+        companion assertions below pin the neighbours that a deadlock-mapping
+        mutation would move.
+        """
         line = failure_line().replace("sql_errno=1213", "sql_errno=0")
         fields = projector.project(line)
         self.assertEqual((fields["errno"], fields["errno_class"]), ("0", "unknown"))
+        # The unchanged line still maps 1213 -> deadlock: a mutation that broke
+        # the deadlock mapping would change this and fail here.
+        same = projector.project(failure_line())  # carries sql_errno=1213
+        self.assertEqual((same["errno"], same["errno_class"]), ("1213", "deadlock"))
+        # And the two are genuinely different classifications, not both-unknown.
+        self.assertNotEqual(fields["errno_class"], same["errno_class"])
 
     def test_busy_details_on_a_continuation_line_are_found(self):
         """(e) The harness can emit the busy suffix on a later physical line.
@@ -896,7 +909,14 @@ class RoundTwoFidelityTest(unittest.TestCase):
         self.assertNotIn("code=", suffix)
 
     def test_code_is_busy_only_where_the_harness_also_prints_the_code(self):
-        """H1: enumerate the A1 paths and assert the exact split."""
+        """H1: the two carry-capable origins print the code; the rest cannot.
+
+        This pins the CATEGORIES, not an exhaustive inventory: journey A1 has 22
+        failure origins (6 `visible_or_diagnose` calls, 15 bare asserts, 1
+        explicit raise), of which only 2 can carry a `code=` -- the
+        `hold-countdown` stage and the line-673 raise. The list below is a
+        representative sample of the 15 fixed assert literals, not all of them.
+        """
         probe = self.busy_probe()
         # Paths whose own message DOES carry `code=`: describe()'s summary and
         # visible_or_diagnose's hold_attempt field (both real harness output).
@@ -918,8 +938,10 @@ class RoundTwoFidelityTest(unittest.TestCase):
                 self.assertEqual(fields["code"], projector.BUSY_CODE)
                 self.assertEqual(fields["busy"], "present")
 
-        # Paths whose message is a bare literal / status word: no `code=` is
-        # printed anywhere, so the projector must NOT invent one.
+        # A representative sample of the 15 bare-literal / status-word origins:
+        # these print no `code=` anywhere, so the projector must NOT invent one.
+        # The full inventory is 15 asserts + the 5 non-probe visible_or_diagnose
+        # stages; they all share this property, which the sample pins.
         without_code = (
             "public booking root missing",
             "booking/quote failed",
@@ -934,6 +956,135 @@ class RoundTwoFidelityTest(unittest.TestCase):
                 fields = projector.project(self.fail_log(self.reraises(text, probe)))
                 self.assertEqual(fields["busy"], "present")
                 self.assertEqual(fields["code"], projector.NONE)
+
+    def test_a1_failure_origin_counts_match_the_documented_inventory(self):
+        """H1: the documented counts are measured from the real source, not guessed.
+
+        Parses `run_journey_a_public_booking` and asserts the three category
+        counts the docstring states (6 `visible_or_diagnose`, 15 bare asserts,
+        1 explicit raise => 22 origins). If the harness gains or loses a failure
+        site, this fails and the documented inventory must be re-measured.
+        """
+        import ast as _ast
+        src = (BIN_DIR / "pilot-day2-workflows.py").read_text(encoding="utf-8")
+        tree = _ast.parse(src)
+        fn = next(
+            n for n in _ast.walk(tree)
+            if isinstance(n, _ast.FunctionDef) and n.name == "run_journey_a_public_booking"
+        )
+        vd, asserts, raises = [], [], []
+        for n in _ast.walk(fn):
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name) \
+                    and n.func.id == "visible_or_diagnose":
+                vd.append(n.lineno)
+            elif isinstance(n, _ast.Assert):
+                asserts.append(n.lineno)
+            elif isinstance(n, _ast.Raise):
+                raises.append(n)
+        # Two raises in the handler are NOT their own origin, identified by AST
+        # shape rather than by line number: the bare re-raise (`raise`, no
+        # exc) and the suffix re-raise (`raise ... from exc` that interpolates
+        # `| journey=A1-public`). Only `raise AssertionError(...)` at line 673
+        # is a distinct origin.
+        explicit = [
+            r for r in raises
+            if r.exc is not None
+            and "| journey=A1-public" not in (_ast.get_source_segment(src, r) or "")
+        ]
+        self.assertEqual(len(vd), 6)
+        self.assertEqual(len(asserts), 15)
+        self.assertEqual(len(explicit), 1)
+        self.assertEqual(len(vd) + len(asserts) + len(explicit), 22)
+        # Exactly one visible_or_diagnose call passes a probe (carry-capable).
+        carry = [
+            n for n in _ast.walk(fn)
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+            and n.func.id == "visible_or_diagnose"
+            and len(n.args) > 3 and not isinstance(n.args[3], _ast.Constant)
+        ]
+        self.assertEqual(len(carry), 1, "only hold-countdown passes a probe")
+
+    def test_only_the_two_carry_capable_origins_emit_a_code(self):
+        """H1: 2 of 22 origins carry `code=`; the other 20 project `code=none`.
+
+        Inputs are built from the real producers' output shapes. The carry-capable
+        COUNT is asserted from the source first, so adding or removing a
+        probe-passing `visible_or_diagnose` call fails here.
+        """
+        import ast as _ast
+        src = (BIN_DIR / "pilot-day2-workflows.py").read_text(encoding="utf-8")
+        tree = _ast.parse(src)
+        fn = next(
+            n for n in _ast.walk(tree)
+            if isinstance(n, _ast.FunctionDef) and n.name == "run_journey_a_public_booking"
+        )
+        carrying = [
+            n for n in _ast.walk(fn)
+            if isinstance(n, _ast.Call) and isinstance(n.func, _ast.Name)
+            and n.func.id == "visible_or_diagnose"
+            and len(n.args) > 3 and not isinstance(n.args[3], _ast.Constant)
+        ]
+        # Exactly ONE visible_or_diagnose call passes a probe (hold-countdown);
+        # combined with the line-673 raise that makes 2 carry-capable origins.
+        self.assertEqual(len(carrying), 1,
+                         "exactly one visible_or_diagnose call may pass a probe")
+        self.assertEqual(carrying[0].args[2].value, "hold-countdown")
+
+        # 1) hold-countdown via describe() only.
+        probe = self.busy_probe()
+        describe_text = (
+            "public booking stage=hold-countdown root_state=bookable visible=0 observed="
+            + probe.describe(0)
+        )
+        self.assertEqual(
+            projector.project(self.fail_log(self.reraises(describe_text, probe)))["code"],
+            projector.BUSY_CODE,
+        )
+        # 2) the line-673 explicit raise.
+        hold = probe.hold_attempts(0)[0]
+        explicit = (
+            "public booking stage=hold-request \u2014 hold rejected for the fixture slot "
+            f"slot={hold['slot_id']} http={hold['status']} code={hold['code']}"
+        )
+        self.assertEqual(
+            projector.project(self.fail_log(self.reraises(explicit, probe)))["code"],
+            projector.BUSY_CODE,
+        )
+        # 3) all five non-probe visible_or_diagnose stages -> code=none.
+        for stage in ("otp-mobile", "otp-code", "confirm-btn", "names-form", "receipt"):
+            msg = f"public booking stage={stage} root_state=bookable visible=0"
+            fields = projector.project(self.fail_log(self.reraises(msg, probe)))
+            self.assertEqual(fields["code"], projector.NONE, stage)
+            self.assertEqual(fields["busy"], "present", stage)
+            self.assertEqual(fields["stage"], stage, stage)
+
+    def test_h5_free_text_markers_are_a_disclosed_limitation(self):
+        """H5 residual, pinned as a KNOWN limitation (class ii: crafted text).
+
+        `read`/`errno` are anchored to the last `busy_diag=` block onward, and
+        `busy` to the first `busy_diag=` anywhere. Text that spells those tokens
+        AFTER the real block still wins. This test documents the behaviour so a
+        future fix has a failing baseline; it is not a claim of correctness.
+        """
+        real = ('busy_diag=booking.lock_read_failed read=slot sql_errno=1213 '
+                'route=hold/hold http=503')
+        injected = (
+            "public booking stage=hold-countdown visible=0"
+            " | journey=A1-public " + real +
+            "\nCall log:\n  - retry said busy_diag=fetch-failed read=clinic sql_errno=99999"
+        )
+        fields = projector.project(self.fail_log(injected))
+        # Documented current behaviour: the later free text wins for read/errno.
+        self.assertEqual(fields["read"], "clinic")
+        self.assertEqual(fields["errno"], "99999")
+        # ... while a purely natural message does not move:
+        natural = (
+            "public booking stage=hold-countdown visible=0"
+            " | journey=A1-public " + real +
+            "\nCall log:\n  - waiting for locator(\"[data-role=hold-countdown]\")"
+        )
+        nf = projector.project(self.fail_log(natural))
+        self.assertEqual((nf["read"], nf["errno"]), ("slot", "1213"))
 
     # --- H2 ---------------------------------------------------------------
     def test_blank_line_does_not_end_the_block(self):

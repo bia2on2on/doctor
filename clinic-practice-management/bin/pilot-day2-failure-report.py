@@ -136,21 +136,55 @@ Limitations (each one is a fact about what the surfaces can say)
   diagnostic was produced (see the ``busy`` row above).
 * **The busy suffix exists for journey A1 only** (`busy_suffix_for` is called
   once, in `run_journey_a_public_booking`), so A2/B/C/D can never be ``present``.
-* **``code=CLINIC_BOOKING_BUSY`` is only visible where the harness prints it.**
-  The structured suffix itself contains no `code=` token: `format_busy_suffix`
-  emits `busy_diag=`, `read=`, `sql_errno=`, ids, `route=`, `http=`, `viewport=`.
-  So `code` is the busy code only when the *other* text in the same block also
-  carries it — the `describe()` summary (`observed=… code=…`) or the
-  `hold_attempt=… code=…` field of `visible_or_diagnose`. On the many journey-A1
-  raise sites whose message is a bare literal or a status word (root missing,
-  switcher counts, availability, quote, `HTTP {n}`, `got {n}`, the receipt and
-  reference-code checks, and the `visible_or_diagnose` stages other than
-  `hold-countdown`), the harness prints no `code=` at all, so those failures
-  project `code=none` even when `busy=present`. They are listed in the PR body.
+* **``code=CLINIC_BOOKING_BUSY`` is visible on only 3 of the 22 journey-A1
+  failure origins.** The structured suffix itself contains no `code=` token:
+  `format_busy_suffix` emits `busy_diag=`, `read=`, `sql_errno=`, ids, `route=`,
+  `http=`, `viewport=`. So `code` can be the busy code only where *other* text in
+  the same block also prints it.
+  `run_journey_a_public_booking` has 22 failure origins, counted from the AST of
+  that one function: 6 `visible_or_diagnose(...)` calls (lines 636, 641, 664,
+  678, 684, 691), 15 bare `assert` statements (lines 527, 537, 586, 593, 603,
+  608, 614, 619, 626, 640, 646, 657, 683, 690, 693), and 1 explicit
+  `raise AssertionError` (line 673); the handler's own `raise` at line 725
+  re-raises whatever it caught and is not a separate origin.
+  Of those 22, **2 origins can carry `code=`** and **20 cannot**:
+  * `hold-countdown` (line 664) is the only `visible_or_diagnose` call that passes
+    `probe`/`hold_attempt`, so its block can carry `observed=… code=…` from
+    `describe()` and/or `hold_attempt=… code=…` — 1 origin, carry-capable.
+  * the explicit `raise` at line 673 concatenates `' code=' + hold_attempt['code']`
+    — 1 origin, carry-capable.
+  * the other 5 `visible_or_diagnose` stages (`otp-mobile`, `otp-code`,
+    `confirm-btn`, `names-form`, `receipt`) pass no `probe`, so `describe()` never
+    runs for them and no `code=` can appear — 5 origins.
+  * the 15 bare asserts carry one of 15 fixed literals or status-word templates
+    that contain no `code=` — 15 origins.
+  So 2 of 22 origins can print a code, and 20 of 22 project `code=none` even when
+  `busy=present`. (Whether the carry-capable origins actually carry one is
+  conditional: `hold-countdown` prints a code only when the failing call was the
+  busy one, and line 673 only when `hold_attempt['code']` is non-empty.) The per-origin table with measured projector output is in the
+  PR body. No test in this repository enumerates all 22 origins; the tests pin
+  representative shapes for each category, not an exhaustive inventory.
 * **`route=` is printed by the harness but not projected.** `format_busy_suffix`
   emits it, and it is a closed, useful token, but it is out of this change's
   declared field set; projecting it is deferred rather than half-done.
 * **`sql_error` is never read.** It is untrusted driver text.
+* **H5 residual (disclosed, not fixed): a marker in free text can still move
+  `read`/`errno`/`busy`.** `read`, `errno` and the busy `http` are read from the
+  LAST `busy_diag=` block onward, but that slice runs to the end of the failure
+  block, and `busy` itself is read from the FIRST `busy_diag=` anywhere in the
+  block. So if untrusted text in the block spells `busy_diag=`, or spells
+  `read=<label>`/`sql_errno=<int>` AFTER the real block, the projected values
+  follow it. Measured: of 14 adversarial inputs, 5 differ from the correct
+  projection, and of ~35 natural/realistic inputs (real MySQL driver strings
+  inside `sql_error`, Playwright call-log lines, WordPress REST bodies, harness
+  DOM state words, ordinary prose) **none** differs. Every differing input
+  required text containing a literal `busy_diag=`/`read=`/`sql_errno=` token
+  placed outside the single block the harness actually emits; MySQL error strings
+  carry `errno: NN` or `Errcode: NN`, never `sql_errno=`. Suppressing this
+  completely would need a structural redesign (parse only the one block the
+  harness is known to append and verify its exact shape), which is deliberately
+  out of scope here; it is recorded as a disclosed adversarial-content
+  limitation rather than silently accepted.
 
 This is a best-effort single-line projection, not a proof about the log: a
 failure that prints none of these markers yields ``unrecognised`` fields, and
