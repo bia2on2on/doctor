@@ -878,22 +878,20 @@ class RoundTwoFidelityTest(unittest.TestCase):
         )
 
     def fail_log(self, exc_text):
-        """The exact bytes `fail()` writes."""
-        import io
-        from contextlib import redirect_stdout
-        self.harness.results.clear()
-        self.harness.failures.clear()
-        buffer = io.StringIO()
-        with redirect_stdout(buffer):
-            self.harness.fail(
-                "journey-A1-public",
-                "Day-2 browser journey failed (journey-A1-public)",
-                exc_text,
-            )
-        return buffer.getvalue()
+        """A FAIL log line as projector INPUT (fixture, not `fail()` bytes).
+
+        `fail()` no longer prints exception text (see
+        Day2HarnessDbStderrAdversarialTest); the projector must still handle
+        log text in this historical shape safely, so these projector tests
+        construct that shape literally instead of via `fail()`.
+        """
+        return (
+            "FAIL journey-A1-public — Day-2 browser journey failed "
+            f"(journey-A1-public) — {exc_text}\n"
+        )
 
     def reraises(self, exc_text, probe):
-        """Journey A1's second raise site, verbatim (line 724)."""
+        """Origin text for a projector fixture (simulated, not harness output)."""
         suffix = self.suffix(probe)
         if suffix:
             return f"{exc_text} | journey=A1-public {suffix}"
@@ -1372,6 +1370,81 @@ class RoundTwoGapTest(unittest.TestCase):
             "INFO day2-journey-timing journey=journey-A1-public elapsed_s=9\n"
         )
         self.assertEqual(projector.project(text)["elapsed_s"], "7")
+
+
+class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
+    """Fake database stderr must never reach stdout, results or projection.
+
+    Executes the real production path — `pilot-day2-workflows.db()` with a
+    fake `mysql` on PATH whose stderr carries a valid-looking token, SQL-like
+    text and lock-like text, then `fail()` exactly as `main()` calls it in
+    its journey exception handler — and asserts none of the injected text
+    appears in the raised exception, in stdout, in the stored results
+    detail, or in the failure-report projection of that stdout. A failing
+    journey must still be recorded as a failure.
+    """
+
+    TOKENS = (
+        "SYNTH_TOKEN_9f3",
+        "SYNTH_MOBILE_123",
+        "SYNTH_LOCK_77",
+        "Deadlock found",
+        "SELECT id FROM",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("day2_harness_adv", HARNESS)
+        sys.path.insert(0, str(BIN_DIR))
+        cls.harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.harness)
+
+    def test_fake_db_stderr_never_reaches_any_surface(self):
+        harness = self.harness
+        with tempfile.TemporaryDirectory() as tmp:
+            fake = Path(tmp) / "mysql"
+            fake.write_text(
+                "#!/bin/sh\n"
+                "echo \"ERROR 1213 (40001): Deadlock found SYNTH_TOKEN_9f3 "
+                "SQLLIKE SELECT id FROM cpms_patients WHERE mobile='SYNTH_MOBILE_123' "
+                "LOCKLIKE lock_data=SYNTH_LOCK_77\" >&2\n"
+                "exit 1\n",
+                encoding="utf-8",
+            )
+            fake.chmod(0o755)
+            old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = tmp + os.pathsep + old_path
+            try:
+                with self.assertRaises(RuntimeError) as raised:
+                    harness.db("SELECT 1")
+            finally:
+                os.environ["PATH"] = old_path
+
+        raised_text = str(raised.exception)
+        self.assertIn("db_failed rc=1", raised_text)
+        for token in self.TOKENS:
+            self.assertNotIn(token, raised_text)
+
+        harness.results.clear()
+        harness.failures.clear()
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            harness.fail(
+                "journey-A1-public",
+                "Day-2 browser journey failed (journey-A1-public)",
+                raised.exception,
+            )
+        stdout = buffer.getvalue()
+        self.assertTrue(stdout.startswith("FAIL journey-A1-public"))
+        self.assertIn("error_kind=runtime", stdout)
+        # A failing test must still fail: the journey is recorded as failed.
+        self.assertEqual(harness.failures, ["journey-A1-public"])
+        self.assertEqual(harness.results[-1]["status"], "FAIL")
+        results_detail = harness.results[-1]["detail"]
+        for token in self.TOKENS:
+            self.assertNotIn(token, stdout)
+            self.assertNotIn(token, results_detail)
+            self.assertNotIn(token, projector.render(projector.project(stdout)))
 
 
 if __name__ == "__main__":

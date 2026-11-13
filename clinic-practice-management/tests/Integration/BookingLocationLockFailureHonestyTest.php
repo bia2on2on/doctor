@@ -167,8 +167,8 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
         self::assertIsArray($context);
         $this->assertBoundedContext($context);
         self::assertSame('location', $context['read'] ?? null);
+        $this->assertSyntheticValuesAbsentFromStoredContext($context);
         foreach (self::syntheticValues() as $value) {
-            self::assertStringNotContainsString($value, (string) $rows[count($rows) - 1]['context_json']);
             // Unescaped Unicode avoids false positives from \u0642 containing "42".
             self::assertStringNotContainsString($value, (string) wp_json_encode($response->get_data(), JSON_UNESCAPED_UNICODE));
         }
@@ -189,8 +189,8 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
         $context = $this->lastDiagnostic();
         $this->assertBoundedContext($context);
         self::assertSame('location_active', $context['read'] ?? null);
+        $this->assertSyntheticValuesAbsentFromStoredContext($context);
         foreach (self::syntheticValues() as $value) {
-            self::assertStringNotContainsString($value, (string) wp_json_encode($context, JSON_UNESCAPED_UNICODE));
             self::assertStringNotContainsString($value, (string) wp_json_encode($response->get_data(), JSON_UNESCAPED_UNICODE));
         }
     }
@@ -619,6 +619,40 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
             ]);
             if ($key !== 'read') {
                 self::assertIsInt($value);
+            }
+        }
+    }
+
+    /**
+     * Structural absence check for the stored diagnostic context.
+     *
+     * The context is already decoded from JSON by the caller. Allowed keys,
+     * value types and the closed `read` vocabulary are asserted by
+     * assertBoundedContext(); here every synthetic marker is asserted absent
+     * from the context's STRING values only. Integer identifiers (location,
+     * clinic, slot, ...) are legitimate stored values and are never scanned
+     * as text — a substring scan over the serialized JSON would falsely fail
+     * whenever an identifier's decimal digits happen to contain a marker
+     * such as "42".
+     *
+     * @param array<string, mixed> $context
+     */
+    private function assertSyntheticValuesAbsentFromStoredContext(array $context): void
+    {
+        $this->assertBoundedContext($context);
+        self::assertContains($context['read'] ?? null, [
+            'slot', 'confirm_hold', 'confirm_slot', 'reschedule_appointment',
+            'reschedule_first_slot', 'reschedule_second_slot', 'staff_create_slot',
+            'no_show_appointment', 'cancel_appointment', 'location_active',
+            'location_timezone', 'location', 'organization_active', 'organization',
+            'clinic', 'persisted_slot',
+        ], 'stored read label must be a member of the closed producer vocabulary');
+        foreach ($context as $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+            foreach (self::syntheticValues() as $marker) {
+                self::assertStringNotContainsString($marker, $value);
             }
         }
     }

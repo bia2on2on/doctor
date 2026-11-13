@@ -79,10 +79,35 @@ def ok(key, title, detail=""):
     print(f"PASS {key} — {title}" + (f" — {detail}" if detail else ""))
 
 
+def _error_kind(err):
+    """Closed vocabulary for an exception's type — never its text."""
+    if isinstance(err, AssertionError):
+        return "assertion"
+    if isinstance(err, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(err, TimeoutError):
+        return "timeout"
+    if isinstance(err, RuntimeError):
+        return "runtime"
+    if isinstance(err, ValueError):
+        return "value"
+    if isinstance(err, TypeError):
+        return "type"
+    if isinstance(err, KeyError):
+        return "key"
+    return "other"
+
+
 def fail(key, title, err):
+    # Fixed schema only: the journey key, the caller's fixed title and a
+    # closed error-kind token. Exception text is never printed or stored:
+    # it can carry database stderr, SQL, lock data or page content, and this
+    # line is piped to the public job log. The failure itself is unchanged —
+    # `failures` still records the key and main() still exits nonzero.
+    kind = _error_kind(err)
     failures.append(key)
-    results.append({"key": key, "status": "FAIL", "detail": str(err)})
-    print(f"FAIL {key} — {title} — {err}")
+    results.append({"key": key, "status": "FAIL", "detail": f"error_kind={kind}"})
+    print(f"FAIL {key} — {title} — error_kind={kind}")
 
 
 def info(line):
@@ -146,7 +171,10 @@ def db(sql):
         timeout=30,
     )
     if out.returncode != 0:
-        raise RuntimeError(f"db query failed: {out.stderr.strip()[:300]}")
+        # Never carry database stderr: it can contain SQL, lock data or
+        # values. Only the bounded canonical exit code is reported.
+        rc = out.returncode if isinstance(out.returncode, int) and -255 <= out.returncode <= 255 else "unknown"
+        raise RuntimeError(f"db_failed rc={rc} detail_withheld=1")
     return out.stdout.strip()
 
 
@@ -157,7 +185,12 @@ def db1(sql):
     cell = raw.split("\n")[0].strip()
     if not cell or cell.upper() == "NULL":
         return 0
-    return int(float(cell))
+    try:
+        return int(float(cell))
+    except (TypeError, ValueError, OverflowError):
+        # Database output is untrusted text; never let its bytes ride the
+        # exception (Python's conversion error would quote the cell).
+        raise RuntimeError("db_value_not_numeric") from None
 
 
 def dbrows(sql):
@@ -721,7 +754,9 @@ def run_journey_a_public_booking(browser, cfg):
         except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
             suffix = ""
         if suffix:
-            raise AssertionError(f"{exc} | journey=A1-public {suffix}") from exc
+            # Keep the allow-listed busy suffix, drop the original exception
+            # text (it can carry database or page free text).
+            raise AssertionError(f"journey_failed | journey=A1-public {suffix}") from None
         raise
     finally:
         ctx_pub.close()
@@ -896,7 +931,7 @@ def parse_board_envelope(payload):
         raise AssertionError(f"reception board 'data' is not an object: {type(data).__name__}")
     date = data.get("date")
     if not isinstance(date, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is None:
-        raise AssertionError(f"reception board 'data.date' is not a Y-m-d string: {date!r}")
+        raise AssertionError("reception board 'data.date' is not a Y-m-d string")
     appointments = data.get("appointments")
     if not isinstance(appointments, list):
         raise AssertionError(f"reception board 'data.appointments' is not a list: {type(appointments).__name__}")
@@ -906,9 +941,9 @@ def parse_board_envelope(payload):
             raise AssertionError("reception board appointment entry is not an object")
         row_id = row.get("id")
         if not isinstance(row_id, int) or isinstance(row_id, bool) or row_id <= 0:
-            raise AssertionError(f"reception board appointment id is not a positive int: {row_id!r}")
+            raise AssertionError("reception board appointment id is not a positive int")
         if not isinstance(row.get("status"), str) or row["status"] == "":
-            raise AssertionError(f"reception board appointment {row_id} has no status")
+            raise AssertionError("reception board appointment has no status")
         ids.append(row_id)
     return {"date": date, "appointment_ids": ids}
 
@@ -932,16 +967,15 @@ def anchor_reception_rows(cfg, target_date=None):
     env["WP_HOME"] = WP_DIR
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
     out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
     if proc.returncode != 0 or "DAY2_ANCHOR_OK" not in out:
-        raise AssertionError(
-            "reception row anchor failed: exit="
-            f"{proc.returncode} detail={(err or out)[:300]}"
-        )
+        # Subprocess stdout/stderr are untrusted free text; report only the
+        # bounded canonical exit code, never the bytes.
+        rc = proc.returncode if isinstance(proc.returncode, int) and -255 <= proc.returncode <= 255 else "unknown"
+        raise AssertionError(f"reception_anchor_failed rc={rc} detail_withheld=1")
     match = re.search(r"\bdate=(\d{4}-\d{2}-\d{2})\b", out)
     if not match:
-        raise AssertionError(f"reception row anchor returned no date: {out[:200]}")
-    info(out)
+        raise AssertionError("reception_anchor_date_missing")
+    info(f"reception_anchor date={match.group(1)}")
     return match.group(1)
 
 
@@ -981,8 +1015,8 @@ def select_reception_scope_and_load_board(page, cfg):
     assert board_info.value.status == 200, "reception board load failed"
     try:
         return board_info.value.json()
-    except Exception as exc:  # malformed body is a failure, never a silent pass
-        raise AssertionError(f"reception board response is not decodable JSON: {exc}") from exc
+    except Exception:  # malformed body is a failure, never a silent pass
+        raise AssertionError("reception board response is not decodable JSON") from None
 
 
 def run_journey_b_receptionist(browser, cfg):

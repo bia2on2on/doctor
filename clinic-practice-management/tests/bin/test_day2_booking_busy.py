@@ -477,7 +477,10 @@ class PublicationPathTest(unittest.TestCase):
                                    "failures": module.failures}, ensure_ascii=False)
         for output in (stdout, results_json):
             assert_no_values(self, output)
-            self.assertIn("error_category=deadlock", output)
+            # `fail()` now emits a fixed schema only (closed error-kind
+            # token); exception text — including the busy suffix — is never
+            # printed or stored, so no value can ride it to any surface.
+            self.assertIn("error_kind=assertion", output)
         self.assertEqual(["journey-A1-public"], module.failures)
         self.assertTrue(stdout.startswith("FAIL journey-A1-public"))
 
