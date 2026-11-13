@@ -11,6 +11,7 @@ use ClinicCore\Application\System\QueueDiagnosis;
 use ClinicCore\Application\System\SystemHealthService;
 use ClinicCore\Auth\RolesAndCapabilities;
 use ClinicCore\Bootstrap\App;
+use ClinicCore\Domain\Backup\BackupVerificationErrorCodes;
 use ClinicCore\Domain\Licensing\LicenseStatus;
 use ClinicCore\Domain\Time\PersianDigits;
 use ClinicCore\Infrastructure\Licensing\LicenseGatewayException;
@@ -457,8 +458,32 @@ final class SystemPage
     {
         self::guard('cpms_backup_verify');
         $id = trim((string) ($_POST['backup_id'] ?? ''));
-        $v = App::backupService()->verifyBackup($id);
-        self::notify('تأیید بکاپ ' . $id . ': ' . ($v['ok'] ? 'سالم ✅' : 'ناسالم ⛔ ' . implode('; ', $v['errors'])), $v['ok']);
+        try {
+            $verification = App::backupService()->verifyBackup( $id );
+        } catch ( \Throwable ) {
+            self::notify(
+                'تأیید بکاپ ناموفق است. [' . BackupVerificationErrorCodes::VERIFICATION_FAILED . '] جزئیات فنی حذف شده‌اند.'
+            );
+
+            return;
+        }
+
+        $ok       = (bool) ( $verification['ok'] ?? false );
+        $errors   = BackupVerificationErrorCodes::safe_error_categories( (array) ( $verification['errors'] ?? array() ) );
+        $warnings = BackupVerificationErrorCodes::safe_warning_categories( (array) ( $verification['warnings'] ?? array() ) );
+        if ( ! $ok && $errors === array() ) {
+            $errors = array( BackupVerificationErrorCodes::VERIFICATION_FAILED );
+        }
+        $categories = $ok ? $warnings : $errors;
+        $message    = 'تأیید بکاپ: ' . ( $ok ? 'سالم ✅' : 'ناسالم ⛔' );
+        if ( $categories !== array() ) {
+            $message .= ' [' . implode( '; ', $categories ) . ']';
+        }
+        if ( ! $ok ) {
+            $message .= ' جزئیات فنی حذف شده‌اند.';
+        }
+
+        self::notify( $message, $ok );
     }
 
     public static function restoreApply(): void
@@ -597,8 +622,20 @@ final class SystemPage
         App::replaceExplicitScope( $scope );
         $channel = (string) ($_POST['channel'] ?? 'stable');
         $s = App::settings();
-        $s->set('update.channel', in_array($channel, ['stable', 'beta'], true) ? $channel : 'stable');
-        $s->set('update.check_interval_hours', max(1, min(168, (int) ($_POST['interval_hours'] ?? 24))));
+        try {
+            // One atomic transition with a controlled, sanitized failure:
+            // a settings write failure must not surface as a raw error
+            // (or as a false success notice after a partial write).
+            $s->set_many(
+                [
+                    'update.channel'              => in_array( $channel, [ 'stable', 'beta' ], true ) ? $channel : 'stable',
+                    'update.check_interval_hours' => max( 1, min( 168, (int) ( $_POST['interval_hours'] ?? 24 ) ) ), // phpcs:ignore WordPress.Security.NonceVerification.Missing -- nonce verified by guard() before every caller
+                ]
+            );
+        } catch ( \RuntimeException ) {
+            self::notify( 'ذخیرهٔ تنظیمات به‌روزرسانی انجام نشد؛ لطفاً دوباره تلاش کنید.' );
+            return;
+        }
         self::notify('تنظیمات به‌روزرسانی ذخیره شد', true);
     }
 

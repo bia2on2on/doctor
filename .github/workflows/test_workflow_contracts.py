@@ -13,6 +13,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 WORKFLOWS = ROOT / ".github" / "workflows"
+#: The workflow's `defaults.run.working-directory`; the Day-2 step's `bin/...`
+#: paths are relative to it, so behavioural tests must use it as their cwd.
+PLUGIN_DIR = ROOT / "clinic-practice-management"
 PUBLISHER = ROOT / ".github" / "scripts" / "post-pr-evidence.sh"
 COMMENTER = ROOT / ".github" / "scripts" / "pr-evidence-comment.sh"
 SAFE_PILOT_EVIDENCE = ROOT / "clinic-practice-management" / "bin" / "pilot-safe-evidence.py"
@@ -38,6 +41,451 @@ def ci_job_block(text, job_key):
             end = index
             break
     return "\n".join(lines[start:end])
+
+
+def _logical_lines(text):
+    """Join shell line-continuations (trailing backslash) into logical lines.
+
+    Yields (first_line_number, logical_line). Multi-line commands in run:
+    blocks would otherwise look like unredirected writers on their first
+    physical line.
+    """
+    buffer = None
+    start = 1
+    for index, line in enumerate(text.splitlines()):
+        if buffer is None:
+            buffer = line
+            start = index + 1
+        else:
+            buffer += " " + line.strip()
+        stripped_right = line.rstrip()
+        if stripped_right.endswith("\\"):
+            buffer = buffer.rstrip()[:-1].rstrip() + " "
+            continue
+        yield start, buffer
+        buffer = None
+    if buffer is not None:
+        yield start, buffer
+
+
+def _yaml_parser():
+    global _YAML_PARSER
+    parser = globals().get("_YAML_PARSER")
+    if parser is None:
+        try:
+            import yaml  # noqa: PLC0415 - optional dependency, imported lazily.
+        except ImportError as exc:
+            raise AssertionError(
+                "PyYAML is required for the Integration raw-output guard; "
+                "install it (`python3 -m pip install pyyaml`)."
+            ) from exc
+        _YAML_PARSER = yaml
+        return yaml
+    return parser
+
+
+def _ci_document(text):
+    document = _yaml_parser().safe_load(text)
+    if not isinstance(document, dict):
+        raise AssertionError("ci.yml did not parse to a mapping")
+    return document
+
+
+def integration_job_document(text):
+    """Return the parsed `integration` job mapping from ci.yml text."""
+    jobs = _ci_document(text).get("jobs") or {}
+    job = jobs.get("integration")
+    if not isinstance(job, dict):
+        raise AssertionError("job not found in ci.yml: integration")
+    return job
+
+
+# --- Integration raw-output guard -------------------------------------------
+#
+# Scope: the ci.yml `integration` job ONLY. Unit/build/WPCS/release jobs are
+# known, pre-existing raw-output surfaces and are deliberately out of scope
+# for this guard (they are reported as open security debt, not fixed here).
+#
+# The guard parses ci.yml as YAML first: every `run` string — inline or
+# block scalar — is dedented by the parser, so block-scalar lines, bash -c /
+# sh -c bodies and python -c / heredoc bodies are all examined as real
+# command text (the previous line-oriented guard missed them whenever the
+# YAML key prefixing was absent).
+#
+# A static guard cannot prove absence of all leaks. Known limitations,
+# deliberately accepted and disclosed:
+#   * a variable holding raw content (`LOG=/tmp/x.log; cat "$LOG"`) — taint is
+#     not tracked across expansions or logical lines;
+#   * a python file read through a variable path (`open(path)`) — only raw
+#     literals are matched;
+#   * `ET.parse(...)`/counts-only gates cannot be distinguished from
+#     publishers by a regex and are allowed (they print fixed counts only, by
+#     construction and by review; this guard does not verify it);
+#   * a python expression without `print`/`write` emits nothing and is not a
+#     publication, so the rules key on read/print primitives;
+#   * quoted bodies cannot contain the enclosing quote character, so chunk
+#     boundaries are quote-bounded;
+#   * wrapper commands (sudo/command/exec/env/nice/time) are unwrapped with
+#     a bounded skip of their option words — nested/value-taking long
+#     options outside the known set are not tracked;
+#   * since Round 51 also detected: `$(<file)` reads, encoders/transformers
+#     of raw paths (base64/gzip/zcat/tar/sort/uniq/cut/diff; xxd/od/strings
+#     were already dump utilities) and cp/mv/ln of a raw path;
+#   * since Round 52 also detected: install of a raw path, dd with a raw
+#     if=/of= operand, and openssl base64/enc with a raw path.
+#
+# Anything not enumerated below is not claimed to be checked. Violations are
+# (rule, step_name, excerpt); an empty list means the job is clean under the
+# enumerated rules only.
+
+_RAW_LITERAL_RE = re.compile(
+    r"/tmp/[^\s'\";|()]*(?:\.(?:log|out|err)\b|"
+    r"[^\s'\";|()]*junit[^\s'\";|()]*\.xml\b)")
+# Command position: line start, after a shell separator, after a reserved
+# word (then/do/else/if/!/while/until), after `$(`, after `-exec`, after
+# `xargs`. Deliberately does NOT treat every whitespace as command position
+# (that would flag `echo cat x` arguments).
+_CMD_POS = r"(?:^|[|;(&]\s*|\b(?:then|do|else|if|while|until)\s+!?\s*|!\s*|\$\(\s*|-exec\s+|xargs\s+)"
+_DUMP_UTIL_RE = re.compile(
+    _CMD_POS + r"(cat|tail|head|less|more|od|xxd|strings|nl|tac)(?:\s|$)")
+_GREP_RAW_RE = re.compile(_CMD_POS + r"grep\b")
+_SED_RAW_RE = re.compile(_CMD_POS + r"sed\b")
+_AWK_RAW_RE = re.compile(_CMD_POS + r"awk\b")
+_QUIET_RE = re.compile(r"(?:^|\s)(?:-[A-Za-z]*q[A-Za-z]*|--quiet)(?=\s|$)")
+_REDIRECT_TMP_RE = re.compile(r'>\s*"?/tmp/')
+_PY_READ_PRIMITIVE_RE = re.compile(r"\.read\s*\(|read_text\s*\(|readlines\s*\(|writelines\s*\(")
+_PY_ITER_OPEN_RE = re.compile(r"(?m)^\s*for\s+\w+\s+in\s+open\s*\(")
+_PY_PRINT_RE = re.compile(r"print\s*\(|sys\.stdout\.write\s*\(|sys\.stderr\.write\s*\(")
+# A shell/python option word: short or long, with an optional value either
+# attached via '=' or as the following non-dash word (e.g. `-o pipefail`).
+_OPT = r"--?[A-Za-z][A-Za-z0-9_-]*(?:\s+(?!-)[^\s'\"]+|=[^\s'\"]+)?"
+_BASH_C_RE = re.compile(
+    r"(?:bash|sh)(?:\s+" + _OPT + r")*\s+-[A-Za-z0-9]*c[A-Za-z0-9]*\s*(['\"])(.*?)\1",
+    re.DOTALL)
+_PY_C_RE = re.compile(
+    r"python[0-9.]*(?:\s+" + _OPT + r")*\s+-c\s*(['\"])(.*?)\1",
+    re.DOTALL)
+# Encoders/transformers that read their raw file argument and emit transformed
+# bytes (base64 of a raw capture is still raw content). od/xxd/strings are
+# already dump utilities.
+_TRANSFORM_UTIL_RE = re.compile(
+    _CMD_POS + r"(base64|gzip|zcat|tar|sort|uniq|cut|diff)(?:\s|$)")
+# cp/mv/ln/install of a raw capture path to another path defeats the
+# raw-class naming boundary (the copy is no longer matched by
+# _RAW_LITERAL_RE). dd with a raw if=/of= operand and openssl base64/enc
+# with a raw path are the same class: bytes of the raw capture end up in
+# a new file. Conservative flagging; no completeness claim.
+_RAW_PATH_CMD_RE = re.compile(
+    _CMD_POS + r"(cp|mv|ln|install)(?:\s|$)")
+_DD_CMD_RE = re.compile(_CMD_POS + r"dd(?:\s|$)")
+_DD_OPERAND_RE = re.compile(r"(?:if|of)=" + _RAW_LITERAL_RE.pattern)
+_OPENSSL_RAW_RE = re.compile(
+    _CMD_POS + r"openssl\s+(?:base64|enc)(?:\s|$)")
+# bash $(<file) is a read of the file's full contents.
+_RAW_SUBSHELL_READ_RE = re.compile(
+    r"\$\(\s*<\s*" + _RAW_LITERAL_RE.pattern)
+_PY_HEREDOC_RE = re.compile(
+    r"python[0-9.]*\s+(?:-[A-Za-z]+\s+)*-\s*<<\s*(?:-\s*)?(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+
+
+# Wrapper commands that exec their arguments transparently: the wrapped
+# command is where publication happens, so the wrappers are unwrapped before
+# the per-command rules are applied (bounded: at most 4 nesting levels).
+_WRAP_HEAD_RE = re.compile(r"^\s*(sudo|command|exec|env|nice|time)\b")
+_WRAP_OPT_WITH_VALUE = frozenset(
+    ['-n', '-u', '-g', '-C', '-D', '-T', '-o', '-a',
+     '--user', '--group', '--chdir', '--adjustment', '--unset'])
+_WRAP_ASSIGN_RE = re.compile(r"^\s+[A-Za-z_][A-Za-z0-9_]*=[^\s]*")
+_WRAP_WORD_RE = re.compile(r"^\s+(-{1,2}[A-Za-z0-9][^\s]*)")
+_WRAP_VALUE_RE = re.compile(r"^\s+(?!-)[^\s]+")
+_WRAP_DDASH_RE = re.compile(r"^\s+--(?:\s|$)")
+
+
+def _unwrap_wrapped_command(cmd):
+    """Strip leading wrapper commands (sudo/command/exec/env/nice/time).
+
+    Skips each wrapper's option words and (for env/sudo) VAR=value words,
+    and a bare `--` end-of-options word. Returns the innermost command.
+    Blind spots retained deliberately: `env` reading a script file,
+    `sudo -E`-style flags are skipped fine, but long options whose separate
+    value is not in _WRAP_OPT_WITH_VALUE leave the value word in place
+    (which simply fails to match any raw rule) — disclosed, not chased.
+    """
+    for _ in range(4):
+        head = _WRAP_HEAD_RE.match(cmd)
+        if head is None:
+            return cmd
+        rest = cmd[head.end():]
+        while True:
+            dash = _WRAP_DDASH_RE.match(rest)
+            if dash:
+                rest = rest[dash.end():]
+                continue
+            word = _WRAP_WORD_RE.match(rest)
+            if word:
+                rest = rest[word.end():]
+                if word.group(1) in _WRAP_OPT_WITH_VALUE:
+                    value = _WRAP_VALUE_RE.match(rest)
+                    if value:
+                        rest = rest[value.end():]
+                continue
+            if head.group(1) in ('env', 'sudo'):
+                assign = _WRAP_ASSIGN_RE.match(rest)
+                if assign:
+                    rest = rest[assign.end():]
+                    continue
+            break
+        cmd = rest.strip()
+    return cmd.strip()
+
+
+def _python_chunks(run_text):
+    """Yield the bodies of python -c scripts and python heredocs in a run
+    string, as single multi-line chunks."""
+    for match in _PY_C_RE.finditer(run_text):
+        yield match.group(2)
+    for match in _PY_HEREDOC_RE.finditer(run_text):
+        tag = match.group(2)
+        closing = re.compile(r"(?m)^[ \t]*" + re.escape(tag) + r"[ \t]*$")
+        end = closing.search(run_text, match.end())
+        if end is not None:
+            yield run_text[match.end():end.start()]
+
+
+def _shell_chunks(run_text):
+    """Yield the bodies of bash -c / sh -c scripts as shell text."""
+    for match in _BASH_C_RE.finditer(run_text):
+        yield match.group(2)
+
+
+def _split_quote_aware(text, pipelines):
+    """Split shell text on top-level separators (outside quotes).
+
+    pipelines=True splits on `;`, `&&`, `||` and newlines (pipeline
+    boundaries). pipelines=False splits only on `|` (command boundaries
+    inside one pipeline).
+    """
+    parts, buf, quote = [], "", None
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if quote is not None:
+            buf += char
+            if char == quote:
+                quote = None
+            index += 1
+            continue
+        if char in "'\"":
+            quote = char
+            buf += char
+            index += 1
+            continue
+        two = text[index:index + 2]
+        if pipelines and two in ("&&", "||"):
+            parts.append(buf)
+            buf = ""
+            index += 2
+            continue
+        if pipelines and char in ";\n":
+            parts.append(buf)
+            buf = ""
+            index += 1
+            continue
+        if not pipelines and char == "|":
+            parts.append(buf)
+            buf = ""
+            index += 1
+            continue
+        buf += char
+        index += 1
+    parts.append(buf)
+    return [part for part in parts if part.strip()]
+
+
+def _cmd_violations(command_text, step_name):
+    """Apply every shell rule to one run string or subshell body.
+
+    Raw-capture content flows down a pipeline (`grep ... /tmp/x.log | tail`),
+    so tool rules are evaluated per pipeline: a raw literal anywhere in the
+    pipeline reaches every consumer in it. Redirection and quiet exemptions
+    are evaluated on the individual command, never on a neighbour.
+    """
+    violations = []
+    for line_no, line in _logical_lines(command_text):
+        stripped = line.strip()
+        if stripped.startswith("#"):
+            continue
+        if re.search(r"(^|\s)set\s+-[A-Za-z]*x(\s|$)", line):
+            violations.append(("set-x", step_name, stripped[:160]))
+        if _RAW_SUBSHELL_READ_RE.search(line):
+            violations.append(("raw-subshell-read", step_name, stripped[:160]))
+        # (E) Piping stderr into another stdout producer without a file
+        # (`2>&1 | cmd`). `2>&1 ||` (the boolean-OR idiom) is NOT flagged.
+        if re.search(r"2>&1\s*\|(?!\|)", line):
+            violations.append(("stderr-pipe-to-stdout", step_name, stripped[:160]))
+        for pipeline in _split_quote_aware(line, pipelines=True):
+            commands = _split_quote_aware(pipeline, pipelines=False)
+            pipe_raw = _RAW_LITERAL_RE.search(pipeline) is not None
+            for index, command in enumerate(commands):
+                cmd = _unwrap_wrapped_command(command.strip())
+                excerpt = cmd[:160]
+                raw_in_cmd = _RAW_LITERAL_RE.search(cmd) is not None
+                redirect = _REDIRECT_TMP_RE.search(cmd) is not None
+                downstream = commands[index + 1:]
+                piped_to_python = any(
+                    re.match(r"python[0-9.]*\b", later.strip()) for later in downstream
+                )
+                # (A) `tee` (any use) — raw stdout fan-out is the failure
+                # mode this contract exists to forbid. No exceptions.
+                if re.search(r"(^|[\s|;(])tee(\s|$)", cmd):
+                    violations.append(("tee", step_name, excerpt))
+                # (A2) Encoders/transformers of a raw capture path: the
+                # output still contains raw bytes (base64 is encoding, not
+                # redaction). No exceptions.
+                if _TRANSFORM_UTIL_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-transform", step_name, excerpt))
+                # (A3) cp/mv/ln/install of a raw capture path: the copy
+                # leaves the raw-class naming boundary. No exceptions.
+                if _RAW_PATH_CMD_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
+                # (A3b) dd with a raw if=/of= operand: raw bytes are copied.
+                # if= read side leaks the raw capture; of= of a raw path is
+                # flagged conservatively (it names a raw-class file).
+                if _DD_CMD_RE.search(cmd) and _DD_OPERAND_RE.search(cmd):
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
+                # (A3c) openssl base64/enc with a raw path: encoding is not
+                # redaction; the output still carries (encoded or encrypted)
+                # copies of the raw bytes. No exceptions.
+                if _OPENSSL_RAW_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-path-duplicate", step_name, excerpt))
+                # (B) Dump utilities on raw capture paths (.log/.out/.err or
+                # junit-named .xml). No exceptions.
+                if _DUMP_UTIL_RE.search(cmd) and pipe_raw:
+                    violations.append(("raw-log-dump", step_name, excerpt))
+                # (B2) grep/sed/awk reading a raw path. Allowed only when the
+                # output is suppressed (grep -q / --quiet) or redirected to a
+                # file — never when it reaches stdout.
+                if _GREP_RAW_RE.search(cmd) and pipe_raw:
+                    if not _QUIET_RE.search(cmd) and not redirect:
+                        violations.append(("grep-raw", step_name, excerpt))
+                if _SED_RAW_RE.search(cmd) and pipe_raw:
+                    if not redirect:
+                        violations.append(("sed-raw", step_name, excerpt))
+                if _AWK_RAW_RE.search(cmd) and pipe_raw:
+                    if not redirect:
+                        violations.append(("awk-raw", step_name, excerpt))
+                # (D) Raw writers that must be redirected to a /tmp capture
+                # file or piped into a boundary projector.
+                if re.match(r"php\b", cmd) and "vendor/bin/phpunit" in cmd \
+                        and not redirect and not piped_to_python:
+                    violations.append(("phpunit-raw", step_name, excerpt))
+                if re.match(r"composer\b", cmd) and not redirect:
+                    violations.append(("composer-raw", step_name, excerpt))
+                if "install-wp-tests.sh" in cmd and not redirect \
+                        and not cmd.startswith("echo"):
+                    violations.append(("install-wp-tests-raw", step_name, excerpt))
+                if re.match(r"php\b", cmd) \
+                        and "multi-clinic-rest-bootstrap-probe.php" in cmd \
+                        and not redirect:
+                    violations.append(("red1-probe-raw", step_name, excerpt))
+                # (D2) php -r scripts that open a raw capture path print
+                # captured output to stdout; no bounded-projection exception.
+                if re.match(r"php\s+-r\b", cmd) and raw_in_cmd:
+                    violations.append(("php-r-raw", step_name, excerpt))
+    return violations
+
+
+def _python_violations(chunk, step_name):
+    """Python-specific rules: no printing captured raw content."""
+    violations = []
+    raw = _RAW_LITERAL_RE.search(chunk)
+    if raw is None:
+        return violations
+    excerpt = " ".join(chunk.split())[:160]
+    # (P1) Full-content read of a raw capture path (open(...).read(),
+    # read_text(), readlines(), writelines()) — never publishable.
+    if _PY_READ_PRIMITIVE_RE.search(chunk):
+        violations.append(("python-raw-read", step_name, excerpt))
+    # (P2) Line-iteration over an open() raw literal with a print of what was
+    # iterated — the classic full-dump shape.
+    if _PY_ITER_OPEN_RE.search(chunk) and _PY_PRINT_RE.search(chunk):
+        violations.append(("python-raw-iter-print", step_name, excerpt))
+    return violations
+
+
+def integration_raw_output_violations(ci_yml_text):
+    """Raw-log-write violations inside the ci.yml `integration` job.
+
+    Parses the workflow as YAML and examines every `run` script in every
+    step of the Integration job: block scalars and inline `run:` commands are
+    both dedented by the parser; bash -c / sh -c bodies are analyzed as
+    shell; python -c bodies and python heredocs are analyzed as python.
+    The Integration job is the only scope — Unit/build/WPCS/release jobs carry
+    known pre-existing debt that is deliberately out of scope here.
+
+    Returns a list of (rule, step_name, excerpt) tuples; an empty list means
+    the job is clean under the enumerated rules (not proof of no leaks).
+    """
+    job = integration_job_document(ci_yml_text)
+    violations = []
+    for step in job.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        run = step.get("run")
+        if not isinstance(run, str):
+            continue
+        step_name = str(step.get("name") or "<unnamed>")
+        violations.extend(_cmd_violations(run, step_name))
+        for chunk in _python_chunks(run):
+            violations.extend(_python_violations(chunk, step_name))
+        for sub in _shell_chunks(run):
+            violations.extend(_cmd_violations(sub, step_name))
+            for chunk in _python_chunks(sub):
+                violations.extend(_python_violations(chunk, step_name))
+    return violations
+
+
+_BOUNDED_PROJECTION_TOKENS = (
+    'integration_evidence.py" junit',
+    'integration_evidence.py" suites',
+    'integration_evidence.py" evidence',
+    'integration_evidence.py" terminal',
+    "python3 - <<",
+)
+_FAILURE_EXIT_RE = re.compile(r'exit\s+"?\$?(?:\{)?(?:phpunit_status|TEST_RC|bin_tests_rc|ledger_status|result|PROBE_RC)')
+
+
+def junit_projection_before_failure_exit_violations(slice_text):
+    """A step that runs PHPUnit and exits nonzero must print a bounded JUnit
+    failure summary BEFORE the exit — never after, never raw.
+
+    Tokens that count as a bounded JUnit failure summary (fixed schema, counts
+    and source-verified identifiers only):
+      bin/integration_evidence.py junit|suites|evidence|terminal ...
+      an inline python heredoc printing JUnit counts (python3 - <<...)
+    Checks, per step block: every failure-path `exit` AFTER the first
+    `vendor/bin/phpunit` occurrence must be preceded (same step) by one of
+    those tokens.
+    """
+    violations = []
+    step_blocks = re.split(r"(?m)^      - name: ", slice_text)[1:]
+    for block in step_blocks:
+        name = block.splitlines()[0].strip() if block.splitlines() else "<unknown>"
+        phpunit_at = block.find("vendor/bin/phpunit")
+        if phpunit_at == -1:
+            continue
+        for match in _FAILURE_EXIT_RE.finditer(block):
+            if match.start() < phpunit_at:
+                continue
+            prefix = block[: match.start()]
+            if not any(token in prefix for token in _BOUNDED_PROJECTION_TOKENS):
+                line_no = prefix.count("\n") + 1
+                violations.append((
+                    "junit-projection-missing",
+                    line_no,
+                    "{0}: failure exit without a preceding bounded JUnit summary".format(name),
+                ))
+    return violations
 
 
 def ci_step_block(job_text, step_name):
@@ -502,8 +950,8 @@ class CompanionIsolationTests(unittest.TestCase):
         self.assertIn("python3 bin/pilot-bench-report.py --test", text)
         self.assertIn("working-directory: ${{ github.workspace }}/clinic-practice-management", text)
 
-    def test_all_fifteen_evidence_publishers_use_shared_fail_loud_router(self):
-        for filename, expected_count in (("closure-gate.yml", 2), ("pilot-gate.yml", 13)):
+    def test_all_twelve_evidence_publishers_use_shared_fail_loud_router(self):
+        for filename, expected_count in (("closure-gate.yml", 2), ("pilot-gate.yml", 10)):
             with self.subTest(filename=filename):
                 text = workflow(filename)
                 self.assertEqual(text.count(".github/scripts/post-pr-evidence.sh"), expected_count)
@@ -587,12 +1035,12 @@ class CompanionIsolationTests(unittest.TestCase):
         self.assertNotIn('exit "${code}"', block, block)
         self.assertNotIn("if ! python3 .github/scripts/companion-compat/evaluate.py", block, block)
 
-    def test_failure_dump_guards_and_bounds_are_preserved(self):
+    def test_failure_dump_publication_is_removed(self):
         text = workflow("pilot-gate.yml")
-        self.assertEqual(text.count("- name: Debug dump به PR"), 3)
-        self.assertEqual(text.count("if: failure()"), 3)
-        self.assertEqual(text.count('tail -50 "$f"'), 3)
-        self.assertEqual(text.count("bash \"$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh\" /tmp/debug.md"), 3)
+        self.assertEqual(text.count("- name: Debug dump به PR"), 0)
+        self.assertEqual(text.count("if: failure()"), 0)
+        self.assertEqual(text.count('tail -50 "$f"'), 0)
+        self.assertEqual(text.count("bash \"$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh\" /tmp/debug.md"), 0)
 
     def test_closure_evidence_redacts_full_and_masked_install_identifiers(self):
         text = workflow("closure-gate.yml")
@@ -733,7 +1181,8 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
 
         doctor_setup = pilot.split("- name: Doctor Portal fixture", 1)[1].split("\n      - name:", 1)[0]
         self.assertIn('cat /tmp/doctor-portal.env >> "$GITHUB_ENV"', doctor_setup)
-        self.assertIn("grep '^DOCTOR_PORTAL_FIXTURE_OK '", doctor_setup)
+        self.assertIn("grep -q '^DOCTOR_PORTAL_FIXTURE_OK '", doctor_setup)
+        self.assertIn("Doctor Portal fixture environment loaded; values withheld.", doctor_setup)
         self.assertNotIn("log_tail=", doctor_setup)
         self.assertNotIn("tail -c", doctor_setup)
         self.assertNotIn("DOCTOR_PORTAL_PUBLIC", doctor_setup)
@@ -753,7 +1202,9 @@ class FixtureEnvironmentContractTests(unittest.TestCase):
         evidence = pilot.split("- name: Post Doctor Portal evidence to PR", 1)[1].split("\n      - name:", 1)[0]
         self.assertNotIn("DOCTOR_PORTAL_PUBLIC", evidence)
         self.assertNotIn("doctor-portal.env", evidence)
-        self.assertIn("DOCTOR_PORTAL_FIXTURE_OK", evidence)
+        self.assertNotIn("doctor-portal-fixture.log", evidence)
+        self.assertNotIn("doctor-portal.log", evidence)
+        self.assertIn("pilot-doctor-portal:", evidence)
 
         self.assertNotIn("FINANCE_BOARD_ACCOUNTANT_PUBLIC", finance_fixture)
         self.assertIn("FINANCE_BOARD_ACCOUNTANT_FIXTURE_OK", finance_fixture)
@@ -778,6 +1229,64 @@ class SharedCommentTransportTests(unittest.TestCase):
             if re.search(r"(?m)^\s*gh pr comment ", text):
                 offenders.append(path.name)
         self.assertEqual(offenders, [], "route PR evidence through pr-evidence-comment.sh")
+
+    def test_no_workflow_posts_commit_comments_directly(self):
+        """No workflow may POST to the commit-comments endpoint.
+
+        P1/P2 published raw acceptance output (acceptance log, shell proof,
+        fixture users, login JSON, management-portal diagnostics) as commit
+        comments on a public repository. Re-adding that endpoint anywhere
+        re-opens the raw-output publication path.
+        """
+        offenders = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            text = path.read_text(encoding="utf-8")
+            if "commits/$GITHUB_SHA/comments" in text:
+                offenders.append(path.name)
+        self.assertEqual(offenders, [], "commit comments are a public raw-output channel")
+
+    def test_real_wp_acceptance_publishes_no_raw_evidence_comment(self):
+        """P1/P2 must stay removed from real-wp-acceptance.yml.
+
+        The removed steps embedded the full acceptance log, shell proof,
+        fixture users (wp user list), login JSON and management-portal
+        diagnostics into commit comments. This test fails if any of those
+        publication markers return.
+        """
+        text = workflow("real-wp-acceptance.yml")
+        for marker in (
+            "Publish evidence as commit comment",
+            "Publish Management Portal browser diagnostics",
+            "mp-diag.md",
+            "evidence-comment.md",
+            "commits/$GITHUB_SHA/comments",
+        ):
+            self.assertNotIn(marker, text, f"removed publication marker returned: {marker}")
+
+    def test_pilot_gate_publishes_no_debug_dump(self):
+        """P3/P4 must stay removed from pilot-gate.yml.
+
+        The three removed Debug dump steps published tail -50 of about 25
+        raw logs (including /tmp/leak.txt and /tmp/leak2.txt, which list
+        PHI-match hits) to PR comments. This test fails if any of those
+        publication markers return.
+        """
+        text = workflow("pilot-gate.yml")
+        for marker in (
+            "Debug dump به PR",
+            'tail -50 "$f"',
+            "/tmp/debug.md",
+            "pilot-gate-debug",
+            "pilot-responsive-debug",
+            "pilot-debug-dump",
+        ):
+            self.assertNotIn(marker, text, f"removed publication marker returned: {marker}")
+
+    def test_real_wp_acceptance_uses_least_privilege_contents(self):
+        """contents: write existed only for the removed commit comments."""
+        text = workflow("real-wp-acceptance.yml")
+        self.assertNotIn("contents: write", text)
+        self.assertIn("contents: read", text)
 
     def test_every_family_uses_a_distinct_marker(self):
         families = []
@@ -1198,6 +1707,158 @@ class EvidenceTargetRuntimeTests(unittest.TestCase):
 _MIGRATION_VERSION_RE = re.compile(r"^(\d{4}_\d{2}_\d{2}_\d{4})_")
 
 
+class IntegrationPublicationBoundaryTests(unittest.TestCase):
+    """Static contracts pinning the Integration job's publication boundary.
+
+    These tests pin the SHAPES of the publication boundary after the
+    adversarial review: raw probe output is never echoed or mirrored, idents
+    reach PR annotations only through the source-verified projector, coverage
+    guard summaries carry fixed tokens only, and no artifact path ships a raw
+    log. They intentionally do not re-derive behavior the Python contract
+    suite (bin/test_integration_evidence.py) already executes.
+    """
+
+    def setUp(self):
+        self.ci = workflow("ci.yml")
+        self.integration = ci_job_block(self.ci, "integration")
+
+    # --- RED-1 probe publication boundary ---
+
+    def test_red1_step_never_echoes_raw_probe_output(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        self.assertNotIn("cat /tmp/red1-probe.log", step)
+        self.assertNotIn("tee /tmp/red1-probe.log", step)
+        # The fixed-schema projection is the only thing published.
+        self.assertIn("red1-probe /tmp/red1-probe.log", step)
+
+    def test_red1_probe_source_emits_fixed_schema_lines_and_fatal_handler(self):
+        probe = (ROOT / "clinic-practice-management" / "tests" / "bin"
+                 / "multi-clinic-rest-bootstrap-probe.php").read_text(encoding="utf-8")
+        self.assertIn("RED1_PROBE v1 ", probe)
+        self.assertIn("register_shutdown_function", probe)
+        self.assertIn("event=fatal", probe)
+        # INVALID-exit paths carry a fixed reason token.
+        for token in ("plugin_file", "autoload", "test_library", "core", "database",
+                      "bootstrap", "migration", "precondition"):
+            self.assertIn("'reason' => '{0}'".format(token), probe)
+
+    def test_red1_projection_is_the_only_pr_mirror_of_the_probe(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        body = step.split("red1-probe-comment.md")[0]
+        self.assertIn("red1-probe /tmp/red1-probe.log", body)
+        self.assertNotIn("cat ", body.split("echo '```'", 1)[-1])
+
+    # --- GitHub annotations: source-verified idents only ---
+
+    def test_failure_annotations_use_the_source_verified_projector(self):
+        part1 = ci_step_block(self.integration, "Surface test failures (part 1)")
+        part2 = ci_step_block(self.integration, "Surface test failures (part 2)")
+        for block in (part1, part2):
+            self.assertIn("annotate /tmp/phpunit-int-junit.xml", block)
+        self.assertNotIn("grep -oE", part1)
+        self.assertNotIn("grep -oE", part2)
+
+    # --- Coverage guard: mandatory JUnit cross-check, fixed tokens only ---
+
+    def test_coverage_guard_invocation_passes_the_junit_cross_check(self):
+        step = ci_step_block(self.integration,
+                             "AuthorizationService coverage guard (fail-closed; includes negative-control self-test)")
+        self.assertIn("--phpunit-junit /tmp/authz-coverage/junit.xml", step)
+
+    def test_coverage_guard_publishes_no_raw_summary_token(self):
+        guard = (ROOT / "clinic-practice-management" / "bin"
+                 / "authorization-coverage-guard.py").read_text(encoding="utf-8")
+        # Dict-key emission of the raw summary line must not exist; the
+        # positive control already asserts the key is absent from results.
+        self.assertNotIn('"terminal_summary":', guard)
+        self.assertIn("terminal_verdict", guard)
+        self.assertIn("check_junit", guard)
+
+    # --- No raw logs in artifacts ---
+
+    def test_no_uploaded_artifact_path_is_a_raw_log(self):
+        raw_paths = ("/tmp/phpunit-int.log", "/tmp/red1-probe.log",
+                     "/tmp/cpms-conn-diag.jsonl", "/tmp/custom-role-race.log",
+                     "/tmp/custom-role-archive-race.log", "/tmp/heartbeat-recovery-mysql.log",
+                     "/tmp/authz-coverage/phpunit.log", "/tmp/authz-coverage/clover.xml",
+                     "/tmp/custom-role-mariadb.log", "/tmp/custom-role-archive-migration.log",
+                     "/tmp/custom-role-archive.log", "/tmp/first-practice-mariadb.log")
+        # Split the job into step blocks and inspect upload-artifact steps only.
+        step_blocks = re.split(r"(?m)^      - name: ", self.integration)[1:]
+        uploads = [b for b in step_blocks if "uses: actions/upload-artifact" in b]
+        self.assertTrue(uploads, "expected at least one upload-artifact step in the Integration job")
+        for block in uploads:
+            for raw in raw_paths:
+                self.assertNotIn(raw, block, raw + " must never be uploaded")
+            # Inspect only the `path: |` payload lines, not comments.
+            lines = block.splitlines()
+            for index, line in enumerate(lines):
+                if line.strip() == "path: |":
+                    indent = len(line) - len(line.lstrip())
+                    for payload in lines[index + 1:]:
+                        payload_indent = len(payload) - len(payload.lstrip())
+                        if payload.strip() and payload_indent <= indent:
+                            break
+                        self.assertNotIn(".log", payload)
+                        self.assertNotIn(".jsonl", payload)
+                        self.assertNotIn("clover.xml", payload)
+                        self.assertNotIn(".junit", payload)
+
+    # --- Source emitters: hashing removed, fixed vocabularies ---
+
+    def test_bounded_evidence_publishes_no_hashes_and_exact_vocab(self):
+        text = (ROOT / "clinic-practice-management" / "tests" / "Support"
+                / "BoundedEvidence.php").read_text(encoding="utf-8")
+        for line in text.splitlines():
+            if "sha256" in line.lower() or "sha-256" in line.lower():
+                self.assertIn("NOT published", line)
+        self.assertNotIn("hash(", text)
+        # FD vocabulary is exactly the four categories.
+        self.assertIn("'dev-null', 'pipe', 'socket', 'other'", text)
+        # Race outcome vocabulary is source-exact: the 16 reason codes only.
+        self.assertNotIn("CUSTOM_ROLE_MUTATION_FAILED", text)
+        self.assertNotIn("CUSTOM_ROLE_ARCHIVED", text)
+        self.assertNotIn("CUSTOM_ROLE_DEACTIVATED", text)
+        self.assertNotIn("CUSTOM_ROLE_REACTIVATED", text)
+        self.assertIn("CUSTOM_ROLE_ASSIGNMENT_DEFINITION_NOT_ACTIVE", text)
+        self.assertIn("CUSTOM_ROLE_MEMBERSHIP_REFERENCES", text)
+
+    def test_projector_has_no_hashing_and_no_sha256_fields(self):
+        text = (ROOT / "bin" / "integration_evidence.py").read_text(encoding="utf-8")
+        self.assertNotIn("hashlib", text)
+        self.assertNotIn("statement_sha256'", text)
+        self.assertNotIn("assignment_lock_query_sha256'", text)
+        self.assertNotIn("waiter_lock_query_sha256'", text)
+
+    def test_connection_diagnostics_emits_only_bounded_chain_shapes(self):
+        text = (ROOT / "clinic-practice-management" / "tests" / "Support"
+                / "ConnectionDiagnostics.php").read_text(encoding="utf-8")
+        self.assertIn("is_int($priority)", text)
+        self.assertIn("closure#", text)
+        self.assertNotIn("get_debug_type($fn)", text)
+
+    # --- Table-facts test lives on the real database ---
+
+    def test_table_facts_test_is_integration_not_unit(self):
+        integration = ROOT / "clinic-practice-management" / "tests" / "Integration" / "WpSqlFailureLedgerIntegrationTest.php"
+        unit = ROOT / "clinic-practice-management" / "tests" / "Unit" / "Support" / "WpSqlFailureLedgerTest.php"
+        self.assertTrue(integration.is_file())
+        self.assertIn("WP_UnitTestCase", integration.read_text(encoding="utf-8"))
+        self.assertNotIn("127.0.0.1", unit.read_text(encoding="utf-8"))
+        self.assertNotIn("wordpress_test", unit.read_text(encoding="utf-8"))
+
+    # --- Verdict semantics preserved (fail-closed, no gate weakening) ---
+
+    def test_red1_step_still_exits_with_the_probe_rc(self):
+        step = ci_step_block(self.integration, "Process-fresh multi-Clinic REST bootstrap probe (RED 1)")
+        self.assertIn('exit "${PROBE_RC:-1}"', step)
+
+    def test_full_suite_step_still_requires_terminal_summary(self):
+        step = ci_step_block(self.integration, "Run integration tests")
+        self.assertIn("terminal summary", step)
+        self.assertIn("phpunit_status", step)
+
+
 def link_production_at_baseline(source: Path, target: Path, baseline: str) -> None:
     """Symlink a production tree with its migrations truncated at `baseline`.
 
@@ -1478,10 +2139,8 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         deliberately does not compare against today's date, so it cannot start
         failing because time passed.
         """
-        # A pin is any `runs-on:` value that NAMES ubuntu-24.04, whether literally
-        # or inside a conditional expression (the seven coexistence lanes are
-        # pinned through `${{ inputs.persian_coexistence && 'ubuntu-24.04' || ... }}`
-        # in real-wp-acceptance.yml, which a literal-line match would miss).
+        # A pin is any `runs-on:` value that names ubuntu-24.04, whether
+        # literally or in an expression; all current Tooling pins are literal.
         expiry = re.compile(r"EXPIRY\s+\d{4}-\d{2}-\d{2}")
         pinned_locations = {}
         for path in sorted(WORKFLOWS.glob("*.yml")):
@@ -1513,22 +2172,19 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
             {label.split(":")[0] for label in pinned_locations},
             "the demo lane's experimental runner pin is not in place",
         )
-        # The conditional pin must be discovered, not silently skipped: without
-        # it this test would pass while the seven coexistence lanes stayed
-        # unpinned in the place it cannot see.
+        # No expression naming this pinned label may remain: Tooling jobs are
+        # literal (see the Tooling runner contract below).
         conditional = [
             (label, value)
             for label, value in pinned_locations.items()
-            if "inputs." in value and "ubuntu-24.04" in value
+            if ("${{" in value or "inputs." in value) and "ubuntu-24.04" in value
         ]
         self.assertEqual(
-            1,
+            0,
             len(conditional),
-            "the conditional coexistence pin was not found exactly once: "
-            f"{sorted(pinned_locations)}",
+            "no conditional pin may remain: "
+            f"{sorted(conditional)}",
         )
-        self.assertIn("real-wp-acceptance.yml", conditional[0][0])
-        self.assertIn("persian_coexistence", conditional[0][1])
 
         action = (ROOT / ".github" / "actions" / "playwright-browsers" / "action.yml").read_text(
             encoding="utf-8"
@@ -1656,6 +2312,4632 @@ class Day2DiagnosticSuiteCiWiringTests(unittest.TestCase):
             self.assertIn(class_name, cases)
             for method in methods:
                 self.assertIn(method, cases[class_name], class_name)
+
+class IntegrationJobLogHygieneContractTest(unittest.TestCase):
+    """Non-vacuous static contract for the ci.yml Integration job's stdout.
+
+    The job's raw logs must never reach stdout/stderr/PR surfaces. Every raw
+    writer is redirected to /tmp; only bounded fixed-text projections may be
+    printed. These tests fail on deliberately violating fixtures, proving the
+    contract is not vacuous, and on the real workflow slice (which must stay
+    clean).
+    """
+
+    def _integration_slice(self):
+        return ci_job_block(workflow("ci.yml"), "integration")
+
+    def test_integration_job_has_no_raw_log_writes(self):
+        violations = integration_raw_output_violations(workflow("ci.yml"))
+        self.assertEqual(
+            [],
+            violations,
+            "Integration job raw-log violations:\n"
+            + "\n".join("{0}:{1}: {2}".format(*v) for v in violations),
+        )
+
+    def test_integration_job_prints_bounded_junit_summary_before_failure_exit(self):
+        violations = junit_projection_before_failure_exit_violations(self._integration_slice())
+        self.assertEqual(
+            [],
+            violations,
+            "Integration job failure paths without preceding bounded JUnit summary:\n"
+            + "\n".join("{0}:{1}: {2}".format(*v) for v in violations),
+        )
+
+    def test_contract_fails_on_deliberately_violating_fixtures(self):
+        # Deliberate violations are injected into a PARSED COPY of the real
+        # ci.yml — never into the real workflow file. Each class of violation
+        # must be detected, proving the contract is not vacuous. The injected
+        # steps exercise the shapes a line-oriented guard misses: indented
+        # block-scalar lines, bash -c bodies and python -c / heredoc bodies.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
+        fixtures = {
+            "tee": ("tee", 'php vendor/bin/phpunit > /tmp/x.log 2>&1 | tee /tmp/y.log'),
+            "raw-log-dump-inline": ("raw-log-dump", 'cat /tmp/x.log'),
+            "raw-log-dump-tail": ("raw-log-dump", 'tail -n 50 /tmp/x.log'),
+            "raw-log-dump-block-scalar": ("raw-log-dump",
+                'cat /tmp/x.log\n'),
+            "raw-log-dump-indented": ("raw-log-dump",
+                'tail -n 240 /tmp/x.log\ngrep -E "^Tests:" /tmp/x.log\n'),
+            "raw-log-dump-after-then": ("raw-log-dump",
+                'if [ -s /tmp/x.log ]; then cat /tmp/x.log; fi'),
+            "bash-c-raw-dump": ("raw-log-dump",
+                "bash -c 'cat /tmp/x.log'"),
+            "bash-c-tail": ("raw-log-dump",
+                'bash -ec "tail -n 20 /tmp/x.log"'),
+            "sh-c-raw-dump": ("raw-log-dump",
+                "sh -c 'head -5 /tmp/x.log'"),
+            "grep-raw": ("grep-raw", 'grep -E "^Tests:" /tmp/x.log'),
+            "grep-raw-after-semicolon": ("grep-raw",
+                'php vendor/bin/phpunit > /tmp/x.log 2>&1; grep -E "^OK" /tmp/x.log'),
+            "sed-raw": ("sed-raw", "sed -n '1,40p' /tmp/x.log"),
+            "awk-raw": ("awk-raw", "awk '{print}' /tmp/x.log"),
+            "set-x": ("set-x", 'set -x'),
+            "phpunit-raw": ("phpunit-raw", 'php vendor/bin/phpunit'),
+            "composer-raw": ("composer-raw", 'composer install --prefer-dist'),
+            "install-wp-tests-raw": ("install-wp-tests-raw",
+                'bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3'),
+            "red1-probe-raw": ("red1-probe-raw",
+                'php tests/bin/multi-clinic-rest-bootstrap-probe.php'),
+            "stderr-pipe-to-stdout": ("stderr-pipe-to-stdout",
+                'php vendor/bin/phpunit 2>&1 | grep -E FAIL'),
+            "python-c-raw-dump": ("python-raw-read",
+                'python3 -c "print(open(\'/tmp/x.log\').read())"'),
+            "python-c-multiline-raw-dump": ("python-raw-read",
+                "python3 -c 'import sys\ndata = open(\"/tmp/x.out\").read()\nprint(data)'"),
+            "python-c-raw-iter-print": ("python-raw-iter-print",
+                "python3 -c 'for line in open(\"/tmp/x.log\"):\n    print(line)'"),
+            "python-heredoc-raw-dump": ("python-raw-read",
+                "python3 - <<'EOF'\ndata = open('/tmp/x.err').read()\nprint(data)\nEOF"),
+            "python-heredoc-raw-iter-print": ("python-raw-iter-print",
+                "python3 - <<'EOF'\nfor line in open('/tmp/x.log'):\n    print(line)\nEOF"),
+            "php-r-raw": ("php-r-raw",
+                'php -r "var_export(file_get_contents(\'/tmp/x.log\'));"'),
+        }
+        for label, (expected_rule, run) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_round51_guard_additions_fail_on_deliberately_violating_fixtures(self):
+        # Round 51 reviewer LOW 4b: options before -c, wrapper commands
+        # (sudo/command/exec/env/nice/time) and the encoder/duplicate raw
+        # classes. Each fixture must be rejected; the real workflow file is
+        # never modified. Not a completeness claim: the guard is static and
+        # cannot prove absence of all leaks.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
+        fixtures = {
+            "bash-o-pipefail-c": ("raw-log-dump",
+                "bash -o pipefail -c 'cat /tmp/x.log'"),
+            "bash-long-opt-c": ("raw-log-dump",
+                "bash --noprofile -c 'cat /tmp/x.log'"),
+            "sh-o-pipefail-c": ("raw-log-dump",
+                "sh -o pipefail -c 'tail /tmp/a.log'"),
+            "python-dash-I-c": ("python-raw-read",
+                'python3 -I -c "print(open(\'/tmp/y.log\').read())"'),
+            "python-dash-W-c": ("python-raw-read",
+                'python3 -W ignore -c "print(open(\'/tmp/y.log\').read())"'),
+            "sudo-cat": ("raw-log-dump", "sudo cat /tmp/x.log"),
+            "sudo-ddash-cat": ("raw-log-dump", "sudo -- cat /tmp/x.log"),
+            "sudo-user-cat": ("raw-log-dump", "sudo --user deploy cat /tmp/x.log"),
+            "command-cat": ("raw-log-dump", "command cat /tmp/x.log"),
+            "exec-cat": ("raw-log-dump", "exec cat /tmp/x.log"),
+            "env-cat": ("raw-log-dump", "env cat /tmp/x.log"),
+            "env-assign-grep": ("grep-raw", "env FOO=bar grep pat /tmp/x.log"),
+            "env-i-cat": ("raw-log-dump", "env -i cat /tmp/x.log"),
+            "nice-cat": ("raw-log-dump", "nice cat /tmp/x.log"),
+            "nice-n-cat": ("raw-log-dump", "nice -n 5 cat /tmp/x.log"),
+            "nice-adjustment-cat": ("raw-log-dump",
+                "nice --adjustment 5 cat /tmp/x.log"),
+            "time-cat": ("raw-log-dump", "time cat /tmp/x.log"),
+            "time-p-cat": ("raw-log-dump", "time -p cat /tmp/x.log"),
+            "nested-wrap-cat": ("raw-log-dump", "sudo nice -n 5 cat /tmp/x.log"),
+            "raw-subshell-read": ("raw-subshell-read",
+                'leak=$(</tmp/x.log); echo "$leak"'),
+            "base64-raw": ("raw-transform", "base64 /tmp/x.log"),
+            "gzip-raw": ("raw-transform", "gzip -dc /tmp/x.log"),
+            "zcat-raw": ("raw-transform", "zcat /tmp/x.log"),
+            "tar-raw": ("raw-transform", "tar -cf - /tmp/x.log"),
+            "sort-raw": ("raw-transform", "sort /tmp/x.log"),
+            "uniq-raw": ("raw-transform", "uniq /tmp/x.log"),
+            "cut-raw": ("raw-transform", "cut -d: -f1 /tmp/x.log"),
+            "diff-raw": ("raw-transform", "diff /tmp/x.log /tmp/y.log"),
+            "cp-raw": ("raw-path-duplicate", "cp /tmp/x.log /tmp/copy.txt"),
+            "mv-raw": ("raw-path-duplicate", "mv /tmp/x.log /tmp/moved.txt"),
+            "ln-raw": ("raw-path-duplicate", "ln -s /tmp/x.log /tmp/link.txt"),
+        }
+        for label, (expected_rule, run) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_round52_raw_path_duplicate_additions_fail_on_deliberately_violating_fixtures(self):
+        # Round 52 LOW-5.1: install, dd (raw if=/of= operands) and openssl
+        # base64/enc extend the raw-path-duplicate class. Each fixture must
+        # be rejected; the real workflow file is never modified. Not a
+        # completeness claim.
+        yaml = _yaml_parser()
+        real_document = yaml.safe_load(workflow("ci.yml"))
+
+        def violating_text(name, run):
+            document = json.loads(json.dumps(real_document))
+            document["jobs"]["integration"]["steps"].append(
+                {"name": name, "run": run})
+            return yaml.safe_dump(document)
+
+        fixtures = {
+            "install-raw": ("raw-path-duplicate",
+                "install /tmp/x.log /tmp/installed.txt"),
+            "install-flags-raw": ("raw-path-duplicate",
+                "install -m 644 /tmp/x.log /tmp/installed.txt"),
+            "install-d-raw": ("raw-path-duplicate",
+                "install -D /tmp/a.log /dest/x.log"),
+            "dd-if-raw": ("raw-path-duplicate",
+                "dd if=/tmp/x.log of=/tmp/blob.bin"),
+            "dd-if-raw-bs": ("raw-path-duplicate",
+                "dd if=/tmp/x.log of=/tmp/blob.bin bs=4k"),
+            "dd-of-raw-conservative": ("raw-path-duplicate",
+                "dd if=/dev/zero of=/tmp/x.log bs=1M count=1"),
+            "openssl-base64-raw": ("raw-path-duplicate",
+                "openssl base64 -in /tmp/x.log"),
+            "openssl-base64-out-raw": ("raw-path-duplicate",
+                "openssl base64 -in /tmp/x.log -out /tmp/enc.txt"),
+            "openssl-enc-raw": ("raw-path-duplicate",
+                "openssl enc -aes-256-cbc -in /tmp/x.log -out /tmp/enc.bin -pass pass:dummy"),
+            "openssl-enc-decode-raw": ("raw-path-duplicate",
+                "openssl enc -d -in /tmp/enc.bin -out /tmp/y.log -pass pass:dummy"),
+        }
+        for label, (expected_rule, run) in fixtures.items():
+            with self.subTest(violation=label):
+                violations = integration_raw_output_violations(
+                    violating_text("DeliberatelyBad", run))
+                rules = {v[0] for v in violations}
+                self.assertIn(
+                    expected_rule,
+                    rules,
+                    "fixture {0} was not rejected with rule {1} (got {2})".format(
+                        label, expected_rule, sorted(rules)),
+                )
+
+    def test_junit_projection_contract_fails_on_deliberately_violating_fixture(self):
+        fixture = (
+            '  integration:\n'
+            '    steps:\n'
+            '      - name: Run thing\n'
+            '        run: |\n'
+            '          phpunit_status=0\n'
+            '          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \\\n'
+            '            --bootstrap tests/integration-bootstrap.php tests/Integration \\\n'
+            '            > /tmp/phpunit-int.log 2>&1 || phpunit_status=$?\n'
+            '          if [ "$phpunit_status" -ne 0 ]; then\n'
+            '            exit "$phpunit_status"\n'
+            '          fi\n'
+        )
+        violations = junit_projection_before_failure_exit_violations(fixture)
+        self.assertEqual(1, len(violations))
+        self.assertEqual("junit-projection-missing", violations[0][0])
+CLASSIC_V1 = "classic-v1-remediation.yml"
+PROJECTION_MARKER = "# cpms-fixed-schema-projection"
+CANARY = "CANARY9f8a87af"
+CANARY_SQL = "SELECT password FROM wp_users FOR UPDATE"
+CANARY_TOKEN = "ghp_1234567890abcdefghij"
+
+
+def classic_v1_projection_blocks(text):
+    """Extract the executable fixed-schema projection heredocs from the workflow."""
+    blocks = []
+    for match in re.finditer(r"<<'PY'(?:\s*\|\|\s*true)?\n(.*?)\n\s*PY\b", text, re.S):
+        block = match.group(1)
+        if PROJECTION_MARKER in block:
+            import textwrap
+
+            blocks.append(textwrap.dedent(block))
+    return blocks
+
+
+def run_projection(block, args, env_extra=None):
+    with tempfile.TemporaryDirectory() as tmp:
+        script = Path(tmp) / "projection.py"
+        script.write_text(block, encoding="utf-8")
+        env = dict(os.environ)
+        env.pop("GITHUB_STEP_SUMMARY", None)
+        if env_extra:
+            env.update(env_extra)
+        return subprocess.run(
+            [sys.executable, str(script), *args],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=60,
+        )
+
+
+class ClassicV1RemediationPublicationContractTests(unittest.TestCase):
+    """classic-v1-remediation.yml must never publish raw test output.
+
+    Public surfaces (annotations, step summary, artifacts) may carry ONLY
+    strict integers and verdict words from closed sets. Raw JUnit text,
+    test names, log lines, exception text and free-form JSON derived from
+    test/perf output must stay in local files that are neither printed
+    nor uploaded. The projection heredocs are executed against crafted
+    adversarial inputs to prove this with the real code path.
+    """
+
+    maxDiff = None
+
+    def test_no_raw_junit_or_log_extraction_patterns(self):
+        text = workflow(CLASSIC_V1)
+        for forbidden in (
+            "case.get('name'",
+            'case.get("name"',
+            "node.text",
+            ".get('message')",
+            '[:900]',
+            "iter('testcase')",
+            'tail -',
+            "| tee",
+            "tee -a",
+            "cat /tmp/classic",
+            "$line",
+            "str(e)",
+            "json.dumps(summary",
+            "::notice::BASELINE ",
+            "::error::CANDIDATE ",
+        ):
+            self.assertNotIn(forbidden, text, forbidden)
+
+    def test_artifacts_upload_only_fixed_schema_summaries(self):
+        text = workflow(CLASSIC_V1)
+        uploads = re.findall(r"uses: actions/upload-artifact@v4\n(.*?)(?=\n  \w|\n  - uses:|\Z)", text, re.S)
+        self.assertGreaterEqual(len(uploads), 2, "both jobs must keep an evidence artifact")
+        for block in uploads:
+            paths = re.findall(r"^\s+(/tmp/\S+)$", block, re.M)
+            self.assertTrue(paths, block)
+            for path in paths:
+                self.assertIn("summary", path, path)
+                self.assertNotIn(".log", path, path)
+                self.assertNotIn(".xml", path, path)
+                self.assertNotIn(".json", path, path)
+
+    def test_annotations_match_fixed_schema_only(self):
+        text = workflow(CLASSIC_V1)
+        fixed_literals = {
+            "::notice::HTTP seed fixture-ok",
+            "::notice::HTTP seed env-ok",
+            "::notice::HTTP seed source-ok",
+        }
+        schema = re.compile(
+            r"::(notice|error)::(TESTS|PERF|EXIT|HTTP_PROFILE|BASELINE_PREPARE|FIXTURE|SEED|PROFILE)\b"
+        )
+        evidence_printer = "print(line if line.startswith('###') else '::notice::' + line)"
+        seen = 0
+        for line in text.splitlines():
+            if "::notice::" not in line and "::error::" not in line and "::warning::" not in line:
+                continue
+            seen += 1
+            if any(literal in line for literal in fixed_literals):
+                continue
+            if evidence_printer in line:
+                continue
+            self.assertRegex(line, schema, line)
+            for forbidden in ("json.dumps", "str(e)", "case.get", "$line", "{", "message"):
+                self.assertNotIn(forbidden, line, line)
+        self.assertGreater(seen, 5, "the scan must actually observe annotation sites")
+
+    def test_verdict_vocabulary_is_closed(self):
+        text = workflow(CLASSIC_V1)
+        verdicts = set(re.findall(r"verdict=([A-Z]+)", text))
+        self.assertTrue(verdicts, "verdict publications must exist")
+        self.assertLessEqual(verdicts, {"PASS", "FAIL", "OK", "UNAVAILABLE"}, verdicts)
+
+    def test_projection_blocks_exist(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        self.assertGreaterEqual(len(blocks), 3, "tests, evidence and HTTP projections must exist")
+
+    def test_candidate_job_still_fails_and_selection_is_unchanged(self):
+        text = workflow(CLASSIC_V1)
+        self.assertNotIn("continue-on-error", text)
+        for line in text.splitlines():
+            if "vendor/bin/phpunit" in line and "candidate-" in line:
+                self.assertNotIn("|| true", line, line)
+                self.assertNotIn("|| rc", line, line)
+        self.assertIn("--log-junit /tmp/classic-v1/candidate-", text)
+        self.assertIn("--log-junit /tmp/classic-v1/baseline-", text)
+        self.assertIn("ClassicV1CriticalRemediationTest.php", text)
+        self.assertIn("if: failure()", text)
+
+    # ---------------------------------------------------------------
+    # Adversarial: execute the real projection code extracted from the
+    # workflow against JUnit/JSON carrying canary secrets and SQL.
+    # ---------------------------------------------------------------
+
+    def _canary_junit(self):
+        # Internally consistent: declared totals equal the actual testcase
+        # children (one failure, one error, one skipped), so the expected
+        # verdict below is FAIL on the counts, not UNAVAILABLE on mismatch.
+        return (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<testsuites><testsuite name="classic" tests="3" failures="1" errors="1" skipped="1">'
+            '<testcase name="testLeakCanaryMethod" classname="CanaryClass">'
+            '<failure message="' + CANARY + " " + CANARY_TOKEN + " " + CANARY_SQL + '">'
+            "raw body " + CANARY + " " + CANARY_SQL + "</failure>"
+            "</testcase>"
+            '<testcase name="testCanaryError" classname="CanaryClass">'
+            '<error message="' + CANARY + '">' + CANARY_SQL + "</error>"
+            "</testcase>"
+            '<testcase name="testCanarySkipped" classname="CanaryClass"><skipped/></testcase>'
+            "</testsuite></testsuites>\n"
+        )
+
+    def test_adversarial_junit_projection_leaks_nothing(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        tests_blocks = [b for b in blocks if "project(sys.argv[1], sys.argv[2])" in b]
+        self.assertGreaterEqual(len(tests_blocks), 2, "notice and error TESTS projections must exist")
+        for block in tests_blocks:
+            is_error = "::error::TESTS" in block
+            prefix = "::error::" if is_error else "::notice::"
+            label = "CANDIDATE" if is_error else "BASELINE"
+            with tempfile.TemporaryDirectory() as tmp:
+                xml_path = Path(tmp) / "result.xml"
+                xml_path.write_text(self._canary_junit(), encoding="utf-8")
+                result = run_projection(block, [str(xml_path), label])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            expected = (
+                prefix + "TESTS label=" + label
+                + " tests=3 failures=1 errors=1 skipped=1 verdict=FAIL"
+            )
+            self.assertEqual(result.stdout.strip(), expected, result.stdout)
+            for canary in (CANARY, CANARY_TOKEN, CANARY_SQL, "testLeakCanaryMethod", "CanaryClass"):
+                self.assertNotIn(canary, result.stdout)
+                self.assertNotIn(canary, result.stderr)
+
+    def test_adversarial_projection_missing_and_malformed_inputs(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        block = [b for b in blocks if "project(sys.argv[1], sys.argv[2])" in b][0]
+        result = run_projection(block, ["/nonexistent/result.xml", "BASELINE"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.stdout.strip(),
+            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE",
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            bad = Path(tmp) / "bad.xml"
+            bad.write_text(
+                '<testsuites><testsuite tests="notanint" failures="1" errors="0" skipped="0"/></testsuites>',
+                encoding="utf-8",
+            )
+            result = run_projection(block, [str(bad), "BASELINE"])
+        self.assertIn("verdict=UNAVAILABLE", result.stdout)
+        self.assertNotIn("notanint", result.stdout)
+
+    def test_adversarial_evidence_projection_leaks_nothing(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        evidence = [b for b in blocks if "baseline-exit.txt" in b]
+        self.assertEqual(len(evidence), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "baseline-mysql.xml").write_text(self._canary_junit(), encoding="utf-8")
+            (base / "candidate-mysql.xml").write_text(
+                '<testsuites><testsuite tests="5" failures="0" errors="0" skipped="2">'
+                "<testcase/><testcase/><testcase/>"
+                "<testcase><skipped/></testcase><testcase><skipped/></testcase>"
+                "</testsuite></testsuites>",
+                encoding="utf-8",
+            )
+            (base / "baseline-mysql.json").write_text(
+                json.dumps({"samples": {CANARY: [{"ms": 1, "queries": 2}], "op": [{"ms": 2, "queries": 1}, {"ms": 3, "queries": 1}]}}),
+                encoding="utf-8",
+            )
+            (base / "candidate-mysql.json").write_text(
+                json.dumps({"samples": {"op": [{"ms": 1, "queries": 1}]}}), encoding="utf-8"
+            )
+            (base / "baseline-exit.txt").write_text("1\n", encoding="utf-8")
+            summary = base / "summary-mysql.txt"
+            step_summary = base / "step-summary.md"
+            result = run_projection(
+                evidence[0],
+                [str(base), "mysql", str(summary)],
+                env_extra={"GITHUB_STEP_SUMMARY": str(step_summary)},
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            published = result.stdout + summary.read_text(encoding="utf-8") + step_summary.read_text(encoding="utf-8")
+        for canary in (CANARY, CANARY_TOKEN, CANARY_SQL, "testLeakCanaryMethod"):
+            self.assertNotIn(canary, published)
+        self.assertIn("TESTS label=BASELINE tests=3 failures=1 errors=1 skipped=1 verdict=FAIL", published)
+        self.assertIn("TESTS label=CANDIDATE tests=5 failures=0 errors=0 skipped=2 verdict=PASS", published)
+        self.assertIn("PERF label=BASELINE samples=3 verdict=OK", published)
+        self.assertIn("EXIT label=BASELINE code=1 verdict=FAIL", published)
+
+    # ---------------------------------------------------------------
+    # Round 2: canonical bounded counts, total projection, recursive
+    # consistency, producer-shape validation. All run the REAL blocks
+    # extracted from the workflow, never copies.
+    # ---------------------------------------------------------------
+
+    def _tests_block(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        return [b for b in blocks if "project(sys.argv[1], sys.argv[2])" in b][0]
+
+    def _project_xml(self, block, xml_text, label="BASELINE"):
+        with tempfile.TemporaryDirectory() as tmp:
+            xml_path = Path(tmp) / "result.xml"
+            xml_path.write_text(xml_text, encoding="utf-8")
+            return run_projection(block, [str(xml_path), label])
+
+    def test_canonical_count_validation_hostile_inputs(self):
+        block = self._tests_block()
+        template = (
+            '<testsuites><testsuite tests="{v}" failures="0" errors="0" skipped="0">'
+            "<testcase/></testsuite></testsuites>"
+        )
+        hostile = [
+            " 1", "1 ", "1&#10;", "1&#13;", "+1", "-1", "01", "00", "1.0", "1e3",
+            "0x1", "", " ", "\u0661", "\uff11", "9" * 5000, "1000001", "9999999",
+            CANARY + "1234567890",
+        ]
+        for value in hostile:
+            with self.subTest(value=value[:24]):
+                result = self._project_xml(block, template.format(v=value))
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(
+                    result.stdout.strip(),
+                    "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE",
+                    value[:24],
+                )
+        # Missing attribute is malformed too.
+        result = self._project_xml(
+            block,
+            '<testsuites><testsuite failures="0" errors="0" skipped="0"><testcase/></testsuite></testsuites>',
+        )
+        self.assertIn("verdict=UNAVAILABLE", result.stdout)
+        # Canonical zero is a valid COUNT, but zero executed tests can no
+        # longer be reported as PASS (round 3): the verdict is FAIL.
+        result = self._project_xml(
+            block,
+            '<testsuites><testsuite tests="0" failures="0" errors="0" skipped="0"/></testsuites>',
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=FAIL",
+        )
+
+    def test_nested_suites_use_outermost_totals_and_recursive_cases(self):
+        block = self._tests_block()
+        xml = (
+            '<testsuite tests="3" failures="1" errors="0" skipped="0">'
+            '<testsuite tests="1" failures="1" errors="0" skipped="0">'
+            "<testcase><failure/></testcase>"
+            "</testsuite>"
+            "<testcase/><testcase/>"
+            "</testsuite>"
+        )
+        result = self._project_xml(block, xml)
+        self.assertEqual(
+            result.stdout.strip(),
+            "::notice::TESTS label=BASELINE tests=3 failures=1 errors=0 skipped=0 verdict=FAIL",
+        )
+
+    def test_declared_totals_mismatch_is_unavailable_never_pass(self):
+        block = self._tests_block()
+        cases = [
+            # Declares no failure but a failure child exists.
+            '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0"><testcase><failure/></testcase></testsuite></testsuites>',
+            # Declares 2 tests, only 1 testcase.
+            '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="0"><testcase/></testsuite></testsuites>',
+            # Declares a skip that has no skipped child.
+            '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="1"><testcase/></testsuite></testsuites>',
+            # Declares no error but an error child exists.
+            '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0"><testcase><error/></testcase></testsuite></testsuites>',
+        ]
+        for xml in cases:
+            with self.subTest(xml=xml[:60]):
+                result = self._project_xml(block, xml)
+                self.assertIn("verdict=UNAVAILABLE", result.stdout)
+                self.assertNotIn("verdict=PASS", result.stdout)
+
+    def test_projector_exception_paths_are_total(self):
+        block = self._tests_block()
+        # 5000-digit attribute crashed the previous lenient parser; the
+        # length check must reject it before int() and still emit a line.
+        result = self._project_xml(
+            block,
+            '<testsuites><testsuite tests="' + "9" * 5000 + '" failures="0" errors="0" skipped="0"/></testsuites>',
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("verdict=UNAVAILABLE", result.stdout)
+        # Oversized file (over the 8 MiB bound) is rejected before parsing.
+        with tempfile.TemporaryDirectory() as tmp:
+            big = Path(tmp) / "big.xml"
+            big.write_bytes(b"<testsuites>" + b" " * (8388608 + 1))
+            result = run_projection(block, [str(big), "BASELINE"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("verdict=UNAVAILABLE", result.stdout)
+        # Truncated XML still yields the fixed line, never parse text.
+        result = self._project_xml(block, "<testsuites><testsuite tests='1'")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn("verdict=UNAVAILABLE", result.stdout)
+        # A DOCTYPE (entity-expansion surface) is rejected outright.
+        result = self._project_xml(
+            block,
+            '<?xml version="1.0"?><!DOCTYPE testsuites [<!ENTITY x "' + CANARY + '">]>'
+            '<testsuites><testsuite tests="0" failures="0" errors="0" skipped="0"/></testsuites>',
+        )
+        self.assertIn("verdict=UNAVAILABLE", result.stdout)
+        self.assertNotIn(CANARY, result.stdout)
+
+    # ---------------------------------------------------------------
+    # Round 3: encoding-independent XML hardening (parser-level DTD /
+    # entity rejection, strict UTF-8) and per-suite consistency with
+    # stricter PASS conditions. Same real extracted blocks.
+    # ---------------------------------------------------------------
+
+    def _project_xml_bytes(self, block, data, label="BASELINE"):
+        with tempfile.TemporaryDirectory() as tmp:
+            xml_path = Path(tmp) / "result.xml"
+            xml_path.write_bytes(data)
+            return run_projection(block, [str(xml_path), label])
+
+    def test_non_utf8_and_dtd_junit_is_unavailable(self):
+        block = self._tests_block()
+        unavailable = (
+            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE"
+        )
+        inner = (
+            '<?xml version="1.0" encoding="{enc}"?>'
+            '<!DOCTYPE testsuites [<!ENTITY x "' + CANARY + '">]>'
+            '<testsuites><testsuite tests="1" failures="1" errors="0" skipped="0">'
+            "<testcase><failure>&x;</failure></testcase></testsuite></testsuites>"
+        )
+        cases = {
+            "utf16-with-bom": inner.format(enc="UTF-16").encode("utf-16"),
+            "utf16le-no-bom": inner.format(enc="UTF-16").encode("utf-16le"),
+            "utf16be-with-bom": b"\xfe\xff" + inner.format(enc="UTF-16").encode("utf-16be"),
+            "utf32-with-bom": inner.format(enc="UTF-32").encode("utf-32"),
+            "utf32be-no-bom": inner.format(enc="UTF-32").encode("utf-32be"),
+        }
+        for name, data in cases.items():
+            with self.subTest(name=name):
+                result = self._project_xml_bytes(block, data)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout.strip(), unavailable)
+                self.assertNotIn(CANARY, result.stdout)
+                self.assertNotIn(CANARY, result.stderr)
+        valid_body = (
+            "<testsuites><testsuite tests=\"1\" failures=\"0\" errors=\"0\" skipped=\"0\">"
+            "<testcase/></testsuite></testsuites>"
+        )
+        more = {
+            # UTF-8 bytes declaring a different encoding.
+            "foreign-encoding-decl": (
+                '<?xml version="1.0" encoding="ISO-8859-1"?>' + valid_body
+            ).encode("utf-8"),
+            "utf16-encoding-decl": (
+                '<?xml version="1.0" encoding="UTF-16"?>' + valid_body
+            ).encode("utf-8"),
+            # UTF-8 BOM is never emitted by PHPUnit's JUnit logger.
+            "utf8-bom": b"\xef\xbb\xbf" + valid_body.encode("utf-8"),
+            # NUL byte anywhere rejects the input.
+            "nul-byte": (valid_body + "\x00").encode("utf-8"),
+            # Undecodable bytes.
+            "undecodable": b"<?xml version=\"1.0\"?><testsuites>\xc3\x28</testsuites>",
+        }
+        for name, data in more.items():
+            with self.subTest(name=name):
+                result = self._project_xml_bytes(block, data)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout.strip(), unavailable)
+        # An honest UTF-8 declaration with the same body still projects.
+        result = self._project_xml_bytes(
+            block, ('<?xml version="1.0" encoding="UTF-8"?>' + valid_body).encode("utf-8")
+        )
+        self.assertIn("verdict=PASS", result.stdout)
+
+    def test_per_suite_consistency_cannot_cancel_across_suites(self):
+        block = self._tests_block()
+        cases = [
+            # Skipped counts compensate across suites: aggregates match
+            # (tests=2, skipped=1) but each suite is individually wrong.
+            '<testsuites>'
+            '<testsuite tests="1" failures="0" errors="0" skipped="1"><testcase/></testsuite>'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase><skipped/></testcase></testsuite>'
+            "</testsuites>",
+            # Failure counts compensate across suites: aggregate failures
+            # declared (1) equals aggregate actual (1), per-suite it is not.
+            '<testsuites>'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0"><testcase><failure/></testcase></testsuite>'
+            '<testsuite tests="1" failures="1" errors="0" skipped="0"><testcase/></testsuite>'
+            "</testsuites>",
+            # A nested suite that under-declares its own failure is caught
+            # even though the outer suite's aggregate is correct.
+            '<testsuite tests="1" failures="1" errors="0" skipped="0">'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            "<testcase><failure/></testcase>"
+            "</testsuite></testsuite>",
+        ]
+        for xml in cases:
+            with self.subTest(xml=xml[:60]):
+                result = self._project_xml(block, xml)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("verdict=UNAVAILABLE", result.stdout)
+                self.assertNotIn("verdict=PASS", result.stdout)
+
+    def test_zero_all_skipped_and_warning_only_are_not_pass(self):
+        block = self._tests_block()
+        prefix = "::notice::TESTS label=BASELINE "
+        cases = [
+            (
+                '<testsuites><testsuite tests="0" failures="0" errors="0" skipped="0"/></testsuites>',
+                prefix + "tests=0 failures=0 errors=0 skipped=0 verdict=FAIL",
+            ),
+            (
+                '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="2">'
+                "<testcase><skipped/></testcase><testcase><skipped/></testcase>"
+                "</testsuite></testsuites>",
+                prefix + "tests=2 failures=0 errors=0 skipped=2 verdict=FAIL",
+            ),
+            # Warning-only, with a declared warnings count (PHPUnit 9.6 emits both).
+            (
+                '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0" warnings="1">'
+                "<testcase><warning/></testcase></testsuite></testsuites>",
+                prefix + "tests=1 failures=0 errors=0 skipped=0 verdict=FAIL",
+            ),
+            # Warning-only without a declared warnings attribute.
+            (
+                '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0">'
+                "<testcase><warning/></testcase></testsuite></testsuites>",
+                prefix + "tests=1 failures=0 errors=0 skipped=0 verdict=FAIL",
+            ),
+            # A declared warnings count that contradicts the children is
+            # inconsistent data, not a verdict.
+            (
+                '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0" warnings="0">'
+                "<testcase><warning/></testcase></testsuite></testsuites>",
+                prefix + "tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE",
+            ),
+        ]
+        for xml, expected in cases:
+            with self.subTest(expected=expected[-30:]):
+                result = self._project_xml(block, xml)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), expected)
+        # Partial skips with real executions still PASS.
+        result = self._project_xml(
+            block,
+            '<testsuites><testsuite tests="2" failures="0" errors="0" skipped="1">'
+            "<testcase/><testcase><skipped/></testcase></testsuite></testsuites>",
+        )
+        self.assertEqual(
+            result.stdout.strip(),
+            prefix + "tests=2 failures=0 errors=0 skipped=1 verdict=PASS",
+        )
+
+    def test_evidence_block_applies_same_encoding_and_pass_rules(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        evidence = [b for b in blocks if "baseline-exit.txt" in b][0]
+        valid = (
+            '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0">'
+            "<testcase/></testsuite></testsuites>"
+        )
+        utf16_candidate = (
+            '<?xml version="1.0" encoding="UTF-16"?>'
+            '<!DOCTYPE testsuites [<!ENTITY x "' + CANARY + '">]>' + valid
+        ).encode("utf-16")
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for db_file in ("baseline-mysql.json", "candidate-mysql.json"):
+                (base / db_file).write_text(
+                    json.dumps({"samples": {"op": [{"ms": 1, "queries": 1}]}}), encoding="utf-8"
+                )
+            (base / "baseline-exit.txt").write_text("1\n", encoding="utf-8")
+            summary = base / "summary-mysql.txt"
+            step_summary = base / "step-summary.md"
+            env = {"GITHUB_STEP_SUMMARY": str(step_summary)}
+            # UTF-16 candidate: UNAVAILABLE, the step fails, no canary
+            # anywhere it publishes (stdout, artifact, step summary).
+            (base / "baseline-mysql.xml").write_text(valid, encoding="utf-8")
+            (base / "candidate-mysql.xml").write_bytes(utf16_candidate)
+            bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(bad.returncode, 1, bad.stdout + bad.stderr)
+            published = bad.stdout + summary.read_text(encoding="utf-8") + step_summary.read_text(encoding="utf-8")
+            self.assertIn("TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", published)
+            self.assertNotIn(CANARY, published)
+            self.assertNotIn(CANARY, bad.stderr)
+            # Zero-test candidate: FAIL diagnostic, but the evidence step
+            # itself still exits 0 — only UNAVAILABLE (and PHPUnit's own
+            # exit code, which is unchanged) can fail the job.
+            (base / "candidate-mysql.xml").write_text(
+                '<testsuites><testsuite tests="0" failures="0" errors="0" skipped="0"/></testsuites>',
+                encoding="utf-8",
+            )
+            zero = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(zero.returncode, 0, zero.stdout + zero.stderr)
+            self.assertIn("TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=FAIL", zero.stdout)
+            # UTF-16 baseline: visible UNAVAILABLE, baseline semantics
+            # (no step failure) unchanged with a healthy candidate.
+            (base / "baseline-mysql.xml").write_bytes(utf16_candidate)
+            (base / "candidate-mysql.xml").write_text(valid, encoding="utf-8")
+            base_bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(base_bad.returncode, 0, base_bad.stdout + base_bad.stderr)
+            self.assertIn("TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", base_bad.stdout)
+            self.assertNotIn(CANARY, base_bad.stdout)
+
+    # ---------------------------------------------------------------
+    # Round 4: whole-document consistency — no testcase or result
+    # element may live outside a counted testsuite. Same real blocks.
+    # ---------------------------------------------------------------
+
+    _VALID_SUITE = (
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        "<testcase/></testsuite>"
+    )
+
+    def test_orphan_result_elements_are_unavailable(self):
+        block = self._tests_block()
+        unavailable = (
+            "::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE"
+        )
+        cases = {}
+        for tag in ("failure", "error", "skipped", "warning"):
+            cases["orphan-" + tag] = (
+                "<testsuites>" + self._VALID_SUITE
+                + "<testcase><" + tag + "/></testcase></testsuites>"
+            )
+        cases["testcase-directly-under-root"] = "<testsuites><testcase/></testsuites>"
+        cases["bare-testcase-next-to-suite"] = (
+            "<testsuites>" + self._VALID_SUITE + "<testcase/></testsuites>"
+        )
+        cases["result-element-directly-under-root"] = (
+            "<testsuites>" + self._VALID_SUITE + "<failure/></testsuites>"
+        )
+        cases["valid-nested-plus-orphan"] = (
+            "<testsuites>"
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+            "<testcase/>"
+            "</testsuite></testsuite>"
+            "<testcase><error/></testcase>"
+            "</testsuites>"
+        )
+        cases["orphan-canary"] = (
+            "<testsuites>" + self._VALID_SUITE
+            + '<testcase><failure message="' + CANARY + '">' + CANARY + "</failure></testcase></testsuites>"
+        )
+        for name, xml in cases.items():
+            with self.subTest(name=name):
+                result = self._project_xml(block, xml)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
+                self.assertEqual(result.stdout.strip(), unavailable)
+                self.assertNotIn(CANARY, result.stdout)
+                self.assertNotIn(CANARY, result.stderr)
+
+    def test_healthy_producer_shaped_nested_documents_still_project(self):
+        # Shaped like the resolved PHPUnit 9.6 JUnit logger: nested suites
+        # whose declared counts (including warnings) are propagated to the
+        # parents, testcase children only failure/error/skipped/warning.
+        block = self._tests_block()
+        prefix = "::notice::TESTS label=BASELINE "
+        healthy = (
+            '<?xml version="1.0" encoding="UTF-8"?>\n'
+            "<testsuites>"
+            '<testsuite name="classic" tests="3" assertions="9" errors="0" warnings="0" failures="1" skipped="1" time="1.5">'
+            '<testsuite name="SomeTest" file="/tmp/SomeTest.php" tests="3" assertions="9" errors="0" warnings="0" failures="1" skipped="1" time="1.5">'
+            '<testcase name="testA" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="1" assertions="3" time="0.5"/>'
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"><failure type="AssertionFailedError">x</failure></testcase>'
+            '<testcase name="testC" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="3" assertions="3" time="0.5"><skipped/></testcase>'
+            "</testsuite></testsuite></testsuites>"
+        )
+        result = self._project_xml(block, healthy)
+        self.assertEqual(
+            result.stdout.strip(),
+            prefix + "tests=3 failures=1 errors=0 skipped=1 verdict=FAIL",
+        )
+        # Same shape with all tests passing: PASS.
+        passing = healthy.replace('failures="1"', 'failures="0"').replace(
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"><failure type="AssertionFailedError">x</failure></testcase>',
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"/>',
+        )
+        result = self._project_xml(block, passing)
+        self.assertEqual(
+            result.stdout.strip(),
+            prefix + "tests=3 failures=0 errors=0 skipped=1 verdict=PASS",
+        )
+        # Producer-shaped with a declared, matching warning: consistent,
+        # so FAIL — never UNAVAILABLE from the consistency checks alone.
+        warned = passing.replace('warnings="0"', 'warnings="1"').replace(
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"/>',
+            '<testcase name="testB" class="SomeTest" classname="SomeTest" file="/tmp/SomeTest.php" line="2" assertions="3" time="0.5"><warning type="Warning">x</warning></testcase>',
+        )
+        result = self._project_xml(block, warned)
+        self.assertEqual(
+            result.stdout.strip(),
+            prefix + "tests=3 failures=0 errors=0 skipped=1 verdict=FAIL",
+        )
+
+    def test_evidence_block_rejects_orphans_identically(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        evidence = [b for b in blocks if "baseline-exit.txt" in b][0]
+        valid = "<testsuites>" + self._VALID_SUITE + "</testsuites>"
+        orphan_candidate = (
+            "<testsuites>" + self._VALID_SUITE
+            + '<testcase><failure message="' + CANARY + '"/></testcase></testsuites>'
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            for db_file in ("baseline-mysql.json", "candidate-mysql.json"):
+                (base / db_file).write_text(
+                    json.dumps({"samples": {"op": [{"ms": 1, "queries": 1}]}}), encoding="utf-8"
+                )
+            (base / "baseline-exit.txt").write_text("1\n", encoding="utf-8")
+            summary = base / "summary-mysql.txt"
+            step_summary = base / "step-summary.md"
+            env = {"GITHUB_STEP_SUMMARY": str(step_summary)}
+            # Orphan in the candidate: UNAVAILABLE, evidence step fails,
+            # canary reaches no surface (stdout, artifact, step summary).
+            (base / "baseline-mysql.xml").write_text(valid, encoding="utf-8")
+            (base / "candidate-mysql.xml").write_text(orphan_candidate, encoding="utf-8")
+            bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(bad.returncode, 1, bad.stdout + bad.stderr)
+            published = bad.stdout + summary.read_text(encoding="utf-8") + step_summary.read_text(encoding="utf-8")
+            self.assertIn("TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", published)
+            self.assertNotIn(CANARY, published)
+            self.assertNotIn(CANARY, bad.stderr)
+            # Orphan in the baseline only: visible UNAVAILABLE, step ok.
+            (base / "baseline-mysql.xml").write_text(orphan_candidate, encoding="utf-8")
+            (base / "candidate-mysql.xml").write_text(valid, encoding="utf-8")
+            base_bad = run_projection(evidence, [str(base), "mysql", str(summary)], env_extra=env)
+            self.assertEqual(base_bad.returncode, 0, base_bad.stdout + base_bad.stderr)
+            self.assertIn("TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", base_bad.stdout)
+            self.assertNotIn(CANARY, base_bad.stdout)
+
+    def test_evidence_candidate_unavailable_fails_but_baseline_does_not(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        evidence = [b for b in blocks if "baseline-exit.txt" in b][0]
+        valid_candidate = (
+            '<testsuites><testsuite tests="1" failures="0" errors="0" skipped="0">'
+            "<testcase/></testsuite></testsuites>"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / "baseline-mysql.xml").write_text("<broken", encoding="utf-8")
+            (base / "candidate-mysql.xml").write_text(valid_candidate, encoding="utf-8")
+            (base / "baseline-mysql.json").write_text("{broken", encoding="utf-8")
+            (base / "candidate-mysql.json").write_text("{broken", encoding="utf-8")
+            (base / "baseline-exit.txt").write_text("300\n", encoding="utf-8")
+            summary = base / "summary-mysql.txt"
+            ok = run_projection(evidence, [str(base), "mysql", str(summary)])
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertIn("TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", ok.stdout)
+            self.assertIn("EXIT label=BASELINE verdict=UNAVAILABLE", ok.stdout)
+            self.assertNotIn("Traceback", ok.stderr)
+            # Now the candidate is the malformed one: the step must fail
+            # (exit 1) while still publishing the fixed-schema summary.
+            (base / "baseline-mysql.xml").write_text(valid_candidate, encoding="utf-8")
+            (base / "candidate-mysql.xml").write_text("<broken", encoding="utf-8")
+            bad = run_projection(evidence, [str(base), "mysql", str(summary)])
+            self.assertEqual(bad.returncode, 1, bad.stdout + bad.stderr)
+            self.assertIn("TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE", bad.stdout)
+            self.assertIn("verdict=UNAVAILABLE", summary.read_text(encoding="utf-8"))
+
+    def test_http_summary_shape_validation(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        http = [b for b in blocks if "HTTP_PROFILE" in b][0]
+
+        def profile(payload):
+            return {"schema": 1, "kind": "authenticated_real_http", "summary": payload}
+
+        cases = [
+            (profile({"op": {"n": 3, "median_ms": 1.5, "median_queries": 2}}), "operations=1 verdict=OK"),
+            (profile({"op": {"n": 1000000, "median_ms": 1, "median_queries": 1}}), "operations=1 verdict=OK"),
+            (profile({"op": {"n": 1000001, "median_ms": 1, "median_queries": 1}}), "verdict=UNAVAILABLE"),
+            (profile({"op": {"n": True, "median_ms": 1, "median_queries": 1}}), "verdict=UNAVAILABLE"),
+            (profile({"op": {"n": 3}}), "verdict=UNAVAILABLE"),
+            (profile({"op": {"n": 3, "median_ms": "fast", "median_queries": 1}}), "verdict=UNAVAILABLE"),
+            (profile([{"n": 3}]), "verdict=UNAVAILABLE"),
+            (profile({}), "verdict=UNAVAILABLE"),
+            ({"summary": {"op": {"n": 3, "median_ms": 1, "median_queries": 1}}}, "verdict=UNAVAILABLE"),
+            ({"schema": 1, "kind": "other", "summary": {"op": {"n": 3, "median_ms": 1, "median_queries": 1}}}, "verdict=UNAVAILABLE"),
+        ]
+        for payload, expected in cases:
+            with self.subTest(expected=expected, payload=str(payload)[:60]):
+                with tempfile.TemporaryDirectory() as tmp:
+                    base = Path(tmp)
+                    good = base / "baseline.json"
+                    good.write_text(json.dumps(payload), encoding="utf-8")
+                    summary = base / "summary.txt"
+                    result = run_projection(http, [str(good), str(good), str(summary)])
+                    published = result.stdout + summary.read_text(encoding="utf-8")
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(expected, published)
+                self.assertNotIn(CANARY, published)
+        # Canary operation key with a fully valid shape: count only.
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            good = base / "baseline.json"
+            good.write_text(json.dumps(profile({CANARY: {"n": 12, "median_ms": 1, "median_queries": 1}})), encoding="utf-8")
+            summary = base / "summary.txt"
+            result = run_projection(http, [str(good), str(good), str(summary)])
+            published = result.stdout + summary.read_text(encoding="utf-8")
+        self.assertIn("operations=1 verdict=OK", published)
+        self.assertNotIn(CANARY, published)
+
+    def test_adversarial_http_projection_leaks_nothing(self):
+        blocks = classic_v1_projection_blocks(workflow(CLASSIC_V1))
+        http = [b for b in blocks if "HTTP_PROFILE" in b]
+        self.assertEqual(len(http), 1)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            good = base / "baseline.json"
+            good.write_text(json.dumps({"schema": 1, "kind": "authenticated_real_http", "summary": {CANARY: {"n": 3, "median_ms": 1, "median_queries": 2}, "op2": {"n": 12, "median_ms": 2, "median_queries": 4}}}), encoding="utf-8")
+            bad = base / "candidate.json"
+            bad.write_text("{not json " + CANARY, encoding="utf-8")
+            summary = base / "summary.txt"
+            result = run_projection(http[0], [str(good), str(bad), str(summary)])
+            self.assertEqual(result.returncode, 0, result.stderr)
+            published = result.stdout + summary.read_text(encoding="utf-8")
+        self.assertNotIn(CANARY, published)
+        self.assertIn("HTTP_PROFILE label=BASELINE operations=2 verdict=OK", published)
+        self.assertIn("HTTP_PROFILE label=CANDIDATE operations=0 verdict=UNAVAILABLE", published)
+
+
+_PILOT_EXPECTED_JOBS = {
+    "release-artifact": set(),
+    "staging-gate": {"release-artifact"},
+    "upgrade-test": {"release-artifact"},
+    "responsive": {"release-artifact"},
+}
+
+_PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY = {
+    "/tmp/cpms-inner-zip-evidence.md": "pilot-inner-zip",
+    "/tmp/pilot-benchmark-status.md": "pilot-benchmark",
+    "/tmp/resp-evidence.md": "pilot-responsive-evidence",
+    "/tmp/journey-evidence.md": "pilot-otp-journey",
+    "/tmp/slice3-evidence.md": "pilot-slice3-chooser",
+    "/tmp/portal-cancel-evidence.md": "pilot-portal-cancel",
+    "/tmp/portal-profile-evidence.md": "pilot-portal-profile",
+    "/tmp/doctor-portal-evidence.md": "pilot-doctor-portal",
+    "/tmp/reception-evidence.md": "pilot-reception",
+    "/tmp/day2-workflows-evidence.md": "pilot-day2-workflows",
+}
+
+_PILOT_EVIDENCE_FAMILIES = frozenset(_PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY.values())
+_PILOT_EVIDENCE_BODY_BASENAME_TO_PATH = {
+    path.rsplit("/", 1)[-1]: path for path in _PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY
+}
+
+_PILOT_ALLOWED_GITHUB_ENV_FILES = frozenset({
+    "/tmp/resp-public-page.env",
+    "/tmp/otp-journey.env",
+    "/tmp/slice3.env",
+    "/tmp/portal-cancel.env",
+    "/tmp/portal-profile.env",
+    "/tmp/doctor-portal.env",
+    "/tmp/finance-board.env",
+    "/tmp/reception.env",
+    "/tmp/reports.env",
+    "/tmp/day2-workflows.env",
+})
+
+_PILOT_ALLOWED_LOCAL_REDIRECT_VARS = {
+    "MANIFEST": '"$BENCH/manifest.jsonl"',
+    "log": '"/tmp/resp-${engine}.log"',
+}
+
+_PILOT_EVIDENCE_CLOSED_TOKENS = frozenset({
+    "PASS",
+    "FAIL",
+    "WARN",
+    "NOT_RUN",
+    "UNAVAILABLE",
+    "unavailable",
+})
+
+_PILOT_SUMMARY_CLOSED_TOKENS = _PILOT_EVIDENCE_CLOSED_TOKENS | frozenset({
+    "CLEAN",
+    "OK",
+    "READY",
+    "ok",
+    "refused",
+    "not_probed",
+    "not_run",
+    "present_denied_403",
+    "absent",
+    "quiescence_not_reached",
+    "enqueue_refused",
+    "precheck_refused",
+    "collect_refused",
+    "aggregate_refused",
+    "unknown_refusal",
+})
+
+# --- Day-2 browser failure projection (closed vocabulary) -------------------
+#
+# The ONE extra summary line `day2-browser-failure: ...` is the only dynamic
+# diagnostic this repository publishes about the intermittent Day-2 browser
+# failure. Its fields are produced by `bin/pilot-day2-failure-report.py` and
+# additionally re-validated in `pilot-gate.yml` by per-field `case` arms that
+# assign either a literal below or a digits-only, length-bounded copy (the same
+# shape already accepted for `safe_bytes`).
+#
+# The five journey ids of `bin/pilot-day2-workflows.py` `main()`, the seven
+# stage markers of `visible_or_diagnose()`/`hold-request`, and the sixteen
+# `read` labels of `BookingService::assert_read_succeeded()` call sites. These
+# must stay byte-identical to the projector's `JOURNEYS`/`STAGES`/`READS`; the
+# test suite asserts that, so drift fails closed instead of widening output.
+_PILOT_DAY2_JOURNEYS = (
+    "journey-A1-public",
+    "journey-A2-reschedule",
+    "journey-B-reception",
+    "journey-C-doctors",
+    "journey-D-accountant",
+)
+_PILOT_DAY2_STAGES = (
+    "otp-mobile",
+    "otp-code",
+    "hold-countdown",
+    "hold-request",
+    "confirm-btn",
+    "names-form",
+    "receipt",
+)
+_PILOT_DAY2_READS = (
+    "cancel_appointment",
+    "clinic",
+    "confirm_hold",
+    "confirm_slot",
+    "location",
+    "location_active",
+    "location_timezone",
+    "no_show_appointment",
+    "organization",
+    "organization_active",
+    "persisted_slot",
+    "reschedule_appointment",
+    "reschedule_first_slot",
+    "reschedule_second_slot",
+    "slot",
+    "staff_create_slot",
+)
+_PILOT_DAY2_CODES = ("CLINIC_BOOKING_BUSY", "other", "none")
+_PILOT_DAY2_ERRNO_CLASSES = ("deadlock", "lock_wait_timeout", "other", "unknown")
+#: `busy` states: the found row, the three degraded `busy_diag=` states with
+#: hyphens mapped to underscores, and "no `busy_diag=` token at all".
+_PILOT_DAY2_BUSY = ("present", "not_found", "fetch_failed", "stale_or_mismatch", "absent")
+_PILOT_DAY2_SUMMARY_CLOSED_TOKENS = frozenset(
+    _PILOT_DAY2_JOURNEYS
+    + _PILOT_DAY2_STAGES
+    + _PILOT_DAY2_READS
+    + _PILOT_DAY2_CODES
+    + _PILOT_DAY2_ERRNO_CLASSES
+    + _PILOT_DAY2_BUSY
+    + ("none", "unrecognised")
+)
+#: Registered into the generic summary vocabulary so the existing taint check
+#: accepts these fixed literals. This widens nothing observable: every member is
+#: a frozen token, and `pilot_day2_projection_violations()` below additionally
+#: pins the exact line shape, the exact set of accepted tokens per field, and the
+#: digits-only/length-bounded copies for the integer fields.
+_PILOT_SUMMARY_CLOSED_TOKENS = _PILOT_SUMMARY_CLOSED_TOKENS | _PILOT_DAY2_SUMMARY_CLOSED_TOKENS
+
+#: The exact fixed shape of the projected summary line: the format string, then
+#: the nine `"$var"` arguments in order. Anything else is a violation.
+_PILOT_DAY2_SUMMARY_FORMAT = (
+    "day2-browser-failure: journey=%s stage=%s http=%s code=%s read=%s "
+    "errno=%s errno_class=%s busy=%s elapsed_s=%s"
+)
+_PILOT_DAY2_SUMMARY_VARS = (
+    "$day2_journey_token",
+    "$day2_stage_token",
+    "$safe_day2_http",
+    "$day2_code_token",
+    "$safe_day2_read",
+    "$safe_day2_errno",
+    "$day2_errno_class",
+    "$day2_busy_token",
+    "$safe_day2_elapsed",
+)
+#: Largest accepted `errno`/`elapsed_s` width; longer tokens are `unrecognised`.
+_PILOT_DAY2_INT_MAX_DIGITS = 5
+#: Largest accepted HTTP status width.
+_PILOT_DAY2_HTTP_MAX_DIGITS = 3
+#: Exact `--field` selections of the projection step: variable -> projector
+#: field. Each assignment must end with `|| printf 'unrecognised'` inside its
+#: command substitution, so a projector failure (missing interpreter, nonzero
+#: exit) yields the fixed token instead of tripping `bash -e` and can never empty
+#: the line. `busy` has to be selected too, or the published line would lie.
+_PILOT_DAY2_SELECTIONS = {
+    "day2_journey": "journey",
+    "day2_stage": "stage",
+    "day2_http": "http",
+    "day2_code": "code",
+    "day2_read": "read",
+    "day2_errno": "errno",
+    "day2_busy": "busy",
+    "day2_elapsed": "elapsed_s",
+}
+#: The step may only run when the Day-2 browser step itself failed. `outcome` is
+#: the pre-`continue-on-error` result, so the condition stays true even if that
+#: step is ever given `continue-on-error`; `always()` is kept so the `if:` cannot
+#: be short-circuited by an earlier failure in the job.
+_PILOT_DAY2_STEP_CONDITION = (
+    "always() && !cancelled() && steps.day2_workflows_browser.outcome == 'failure'"
+)
+_PILOT_DAY2_DIGITS_ONLY_GUARD = re.compile(
+    r"if \[ \"\$\{#([A-Za-z_][A-Za-z0-9_]*)\}\" -le ([0-9]{1,2}) \]; then"
+)
+
+_PILOT_POST_CALL_RE = re.compile(
+    r'^bash "\$GITHUB_WORKSPACE/\.github/scripts/post-pr-evidence\.sh" '
+    r'(/tmp/[A-Za-z0-9._-]+\.md) "([a-z0-9-]+)"$'
+)
+_PILOT_DIRECT_EVIDENCE_COMMENT_RE = re.compile(r"pr-evidence-comment(?:\.sh)?\b")
+_PILOT_EVIDENCE_READER_RE = re.compile(
+    _CMD_POS + r"(cat|grep|egrep|fgrep|tail|head|sed|awk|cut|paste|sort|uniq|jq|curl)(?:\s|$)"
+)
+_PILOT_PRINTF_CALL_RE = re.compile(
+    r"^printf '([^'\r\n]+)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
+)
+_PILOT_ECHO_CALL_RE = re.compile(
+    r"^echo '([^'\r\n]+)'\s*>\s*(/tmp/[A-Za-z0-9._-]+\.md)$"
+)
+_PILOT_SUMMARY_ECHO_RE = re.compile(
+    r"^echo '([^'\r\n]+)'\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
+)
+_PILOT_SUMMARY_PRINTF_RE = re.compile(
+    r"^printf '([^'\r\n]+)'((?:\s+\"\$[A-Za-z_][A-Za-z0-9_]*\")*)\s*>>\s*\"\$GITHUB_STEP_SUMMARY\"$"
+)
+_PILOT_WORKFLOW_CMD_NAMES = (
+    "error",
+    "warning",
+    "notice",
+    "debug",
+    "group",
+    "endgroup",
+    "add-mask",
+    "set-output",
+    "save-state",
+    "stop-commands",
+)
+_PILOT_WORKFLOW_CMD_RAW_RE = re.compile(
+    r"::(" + "|".join(_PILOT_WORKFLOW_CMD_NAMES) + r")\b",
+    re.IGNORECASE,
+)
+# Intentional friction: only lowercase standalone fixed single-quoted
+# ::(error|warning|notice):: literals (matching the 43 existing annotations in
+# pilot-gate.yml, plus newline-terminated single-quoted printf) are exempted;
+# uppercase/mixed-case fixed literals (e.g. echo '::ERROR::fixed') are rejected.
+_PILOT_STANDALONE_FIXED_ECHO_PRINTF_RE = re.compile(
+    r"(?:echo[ \t]+'(::(?:error|warning|notice)::[^'\r\n]+)'"
+    r"|printf[ \t]+'(::(?:error|warning|notice)::[^'%\r\n\\]+\\n)')"
+    r"(?=[ \t]*(?:$|&&|\|\||[;\}])|[ \t]+#)"
+)
+_PILOT_SHELL_CONTROL_KW_RE = re.compile(
+    r"(?:then|do|else|elif|if|while|until)(?=[ \t])"
+)
+_PILOT_SHELL_WORD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_PILOT_ANSIC_ESCAPES = {
+    "a": "\a",
+    "b": "\b",
+    "e": "\x1b",
+    "E": "\x1b",
+    "f": "\f",
+    "n": "\n",
+    "r": "\r",
+    "t": "\t",
+    "v": "\v",
+    "\\": "\\",
+    "'": "'",
+    '"': '"',
+}
+# Runner internal ##[command] syntax (ActionCommand.TryParse matches IndexOf("##[")
+# anywhere on a line, dispatching commands with OrdinalIgnoreCase) and Azure-inherited
+# ##vso[...] syntax, rejected conservatively (including fixed ##[group] markers).
+_PILOT_HASH_BRACKET_CMD_RE = re.compile(
+    r"##(?:vso\[|\[)",
+    re.IGNORECASE,
+)
+_PILOT_WORKFLOW_CMD_NEUTRALISE_RES = (
+    re.compile(r"\$'"),
+    re.compile(
+        r"\\+(?:[xX][0-9A-Fa-f]{1,2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8}|[0-7]{1,3}|[abefnrtv\\'\"?])(?![A-Za-z0-9_])"
+    ),
+    re.compile(
+        r"%(?:\d+\$)?[-+ #0]*(?:\d+|\*(?:\d+\$)?)?(?:\.(?:\d+|\*(?:\d+\$)?))?[hljztL]*[diouxXeEfFgGaAcCsSpnbB%]"
+    ),
+    re.compile(r"\$\{[^{}\r\n]*\}|\$\([^()\r\n]*\)|\$[A-Za-z_][A-Za-z0-9_]*|\$[0-9@#?*!$-]"),
+)
+_PILOT_PHP_CLASS_LHS_RE = re.compile(
+    r"(?<![A-Za-z0-9_$%\\])\\?[A-Za-z_][A-Za-z0-9_]*(?:\\[A-Za-z_][A-Za-z0-9_]*)*$"
+)
+_PILOT_WORKFLOW_CMD_RHS_RE = re.compile(r"^(?:::|\s+[^:;\r\n()]*::)")
+
+
+def _iter_yaml_strings(node):
+    """Yield every string key and string value inside a parsed YAML node."""
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if isinstance(key, str):
+                yield key
+            yield from _iter_yaml_strings(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_yaml_strings(item)
+    elif isinstance(node, str):
+        yield node
+
+
+def _is_shell_word_boundary(line, start_idx, end_idx):
+    before_ok = start_idx == 0 or line[start_idx - 1] in " \t|&;(){}"
+    after_ok = end_idx == len(line) or line[end_idx] in " \t|&;()#"
+    return before_ok and after_ok
+
+
+def _parse_heredoc_delimiter(line, start_idx):
+    """Parse a Bash heredoc delimiter word starting at `start_idx`, applying Bash quote removal."""
+    idx = start_idx
+    length = len(line)
+    while idx < length and line[idx] in " \t":
+        idx += 1
+    if idx >= length or line[idx] in "|&;()<>#":
+        return None
+    word_start = idx
+    chars = []
+    while idx < length:
+        ch = line[idx]
+        if ch in " \t|&;()<>":
+            break
+        if ch == "$" and idx + 1 < length and line[idx + 1] == "'":
+            idx += 2
+            while idx < length and line[idx] != "'":
+                if line[idx] == "\\" and idx + 1 < length:
+                    esc = line[idx + 1]
+                    if esc in _PILOT_ANSIC_ESCAPES:
+                        chars.append(_PILOT_ANSIC_ESCAPES[esc])
+                        idx += 2
+                    elif (
+                        esc == "x"
+                        and idx + 3 < length
+                        and all(c in "0123456789abcdefABCDEF" for c in line[idx + 2 : idx + 4])
+                    ):
+                        chars.append(chr(int(line[idx + 2 : idx + 4], 16)))
+                        idx += 4
+                    else:
+                        chars.append(esc)
+                        idx += 2
+                else:
+                    chars.append(line[idx])
+                    idx += 1
+            if idx < length and line[idx] == "'":
+                idx += 1
+            continue
+        if ch == "'":
+            idx += 1
+            while idx < length and line[idx] != "'":
+                chars.append(line[idx])
+                idx += 1
+            if idx < length and line[idx] == "'":
+                idx += 1
+            continue
+        if ch == '"':
+            idx += 1
+            while idx < length and line[idx] != '"':
+                if line[idx] == "\\" and idx + 1 < length and line[idx + 1] in '"\\$`':
+                    chars.append(line[idx + 1])
+                    idx += 2
+                else:
+                    chars.append(line[idx])
+                    idx += 1
+            if idx < length and line[idx] == '"':
+                idx += 1
+            continue
+        if ch == "\\":
+            if idx + 1 < length:
+                chars.append(line[idx + 1])
+                idx += 2
+            else:
+                idx += 1
+            continue
+        chars.append(ch)
+        idx += 1
+    if idx == word_start:
+        return None
+    return "".join(chars), idx
+
+
+def _advance_shell_line(raw_line, ctx_stack, pending_heredocs):
+    """Advance `ctx_stack` (`[kind, case_depth]`) and `pending_heredocs` across `raw_line`."""
+    idx = 0
+    length = len(raw_line)
+    while idx < length:
+        top = ctx_stack[-1][0] if ctx_stack else None
+        ch = raw_line[idx]
+        if top == "'":
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+        elif top == "$'":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+        elif top == '"':
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if raw_line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if raw_line[idx : idx + 2] == "$(":
+                ctx_stack.append(["$(", 0])
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == '"':
+                ctx_stack.pop()
+            idx += 1
+        elif top == "`":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.pop()
+            idx += 1
+        elif top in ("$((", "arith_("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["arith_(", 0])
+                idx += 1
+                continue
+            if raw_line[idx : idx + 2] == "))" and top == "$((":
+                ctx_stack.pop()
+                idx += 2
+                continue
+            if ch == ")" and top == "arith_(":
+                ctx_stack.pop()
+            idx += 1
+        else:
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if raw_line[idx : idx + 2] == "$'":
+                ctx_stack.append(["$'", 0])
+                idx += 2
+                continue
+            if ch in ("'", '"'):
+                ctx_stack.append([ch, 0])
+                idx += 1
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == "#" and (idx == 0 or raw_line[idx - 1] in " \t|&;()"):
+                return True
+            if raw_line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if raw_line[idx : idx + 2] in ("$(", "<(", ">("):
+                ctx_stack.append([raw_line[idx : idx + 2], 0])
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["(", 0])
+                idx += 1
+                continue
+            if ch == ")" and top in ("$(", "<(", ">(", "("):
+                if ctx_stack[-1][1] == 0:
+                    ctx_stack.pop()
+                idx += 1
+                continue
+            if (
+                ch == "<"
+                and raw_line[idx : idx + 2] == "<<"
+                and raw_line[idx : idx + 3] != "<<<"
+                and (idx == 0 or raw_line[idx - 1] != "<")
+            ):
+                strip_tabs = raw_line[idx : idx + 3] == "<<-"
+                op_end = idx + (3 if strip_tabs else 2)
+                parsed = _parse_heredoc_delimiter(raw_line, op_end)
+                if parsed is not None:
+                    delim, next_idx = parsed
+                    pending_heredocs.append((delim, strip_tabs))
+                    idx = next_idx
+                    continue
+            if top in ("$(", "<(", ">(", "("):
+                word_m = _PILOT_SHELL_WORD_RE.match(raw_line, idx)
+                if word_m and _is_shell_word_boundary(raw_line, idx, word_m.end()):
+                    word = word_m.group(0)
+                    if word == "case":
+                        ctx_stack[-1][1] += 1
+                    elif word == "esac" and ctx_stack[-1][1] > 0:
+                        ctx_stack[-1][1] -= 1
+                    idx = word_m.end()
+                    continue
+            idx += 1
+    return False
+
+
+def _scan_run_units(run_text):
+    """Classify LF-delimited lines of `run_text` into `('payload' | 'code_top' | 'code_nested', line)`.
+
+    Splits on `\\n` (preserving `\\r` so `EOF\\r` does not match `EOF`) and matches
+    heredoc terminators with exact Bash semantics (`raw_line == delim` for `<<`,
+    `raw_line.lstrip('\\t') == delim` for `<<-`). Unterminated heredocs leave
+    remaining lines classified as `'payload'` so they are scanned with
+    `allow_fixed_echo=False` rather than skipped.
+    """
+    if not run_text:
+        return []
+    body = run_text[:-1] if run_text.endswith("\n") else run_text
+    raw_lines = body.split("\n")
+    ctx_stack = []
+    pending_heredocs = []
+    active_heredocs = []
+    units = []
+    prev_continued_nested = False
+    prev_continued_after_pipe = False
+
+    for raw_line in raw_lines:
+        if active_heredocs:
+            delim, strip_tabs = active_heredocs[0]
+            candidate = raw_line.lstrip("\t") if strip_tabs else raw_line
+            if candidate == delim:
+                active_heredocs.pop(0)
+            else:
+                units.append(("payload", raw_line))
+            continue
+
+        entry_top = (
+            len(ctx_stack) == 0
+            and not prev_continued_nested
+            and not prev_continued_after_pipe
+        )
+        stripped = raw_line.strip()
+        if len(ctx_stack) == 0 and (not stripped or stripped.startswith("#")) and not prev_continued_nested:
+            if pending_heredocs:
+                active_heredocs.extend(pending_heredocs)
+                pending_heredocs.clear()
+            prev_continued_after_pipe = False
+            continue
+
+        if entry_top:
+            units.append(("code_top", stripped))
+        elif stripped:
+            if ctx_stack and ctx_stack[-1][0] in ("$(", "<(", ">(", "(") and stripped.startswith("#"):
+                continue
+            units.append(("code_nested", stripped))
+
+        ended_in_comment = _advance_shell_line(raw_line, ctx_stack, pending_heredocs)
+        trailing_bs = len(raw_line) - len(raw_line.rstrip("\\"))
+        top_after = ctx_stack[-1][0] if ctx_stack else None
+        continues = (
+            not ended_in_comment
+            and top_after not in ("'", "$'")
+            and trailing_bs % 2 == 1
+        )
+        if continues:
+            before_bs = raw_line[:-1].rstrip(" \t")
+            prev_continued_after_pipe = (
+                before_bs.endswith("|") and not before_bs.endswith("||")
+            ) or before_bs.endswith("|&")
+            prev_continued_nested = len(ctx_stack) > 0
+        else:
+            prev_continued_after_pipe = False
+            prev_continued_nested = False
+            if pending_heredocs:
+                active_heredocs.extend(pending_heredocs)
+                pending_heredocs.clear()
+    return units
+
+
+def _strip_standalone_fixed_workflow_commands(line):
+    """Mask approved standalone top-level fixed single-quoted `echo`/`printf` notices only.
+
+    Never masks inside quotes (`'...'`, `"..."`, `$'...'`), command substitutions
+    (`$(...)`, backticks), process substitutions (`<(...)`, `>(...)`), subshells
+    (`(...)`), pipelines (`|`, `|&`), redirections (`>`, `<`), or piped/redirected
+    `{ ... }` brace groups.
+    """
+    idx = 0
+    length = len(line)
+    ctx_stack = []
+    brace_stack = []
+    piped_or_redirected_braces = set()
+    next_brace_id = 0
+    candidate_spans = []
+    at_cmd_start = True
+
+    while idx < length:
+        top = ctx_stack[-1][0] if ctx_stack else None
+        ch = line[idx]
+        if top == "'":
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top == "$'":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "'":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top == '"':
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if line[idx : idx + 2] == "$(":
+                ctx_stack.append(["$(", 0])
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if ch == '"':
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top == "`":
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "`":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top in ("$((", "arith_("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["arith_(", 0])
+                idx += 1
+                continue
+            if line[idx : idx + 2] == "))" and top == "$((":
+                ctx_stack.pop()
+                idx += 2
+                continue
+            if ch == ")" and top == "arith_(":
+                ctx_stack.pop()
+            idx += 1
+            continue
+        if top in ("$(", "<(", ">(", "("):
+            if ch == "\\" and idx + 1 < length:
+                idx += 2
+                continue
+            if line[idx : idx + 2] == "$'":
+                ctx_stack.append(["$'", 0])
+                idx += 2
+                continue
+            if ch in ("'", '"'):
+                ctx_stack.append([ch, 0])
+                idx += 1
+                continue
+            if ch == "`":
+                ctx_stack.append(["`", 0])
+                idx += 1
+                continue
+            if line[idx : idx + 3] == "$((":
+                ctx_stack.append(["$((", 0])
+                idx += 3
+                continue
+            if line[idx : idx + 2] in ("$(", "<(", ">("):
+                ctx_stack.append([line[idx : idx + 2], 0])
+                idx += 2
+                continue
+            if ch == "(":
+                ctx_stack.append(["(", 0])
+                idx += 1
+                continue
+            if ch == ")":
+                if ctx_stack[-1][1] == 0:
+                    ctx_stack.pop()
+                idx += 1
+                continue
+            word_m = _PILOT_SHELL_WORD_RE.match(line, idx)
+            if word_m and _is_shell_word_boundary(line, idx, word_m.end()):
+                word = word_m.group(0)
+                if word == "case":
+                    ctx_stack[-1][1] += 1
+                elif word == "esac" and ctx_stack[-1][1] > 0:
+                    ctx_stack[-1][1] -= 1
+                idx = word_m.end()
+                continue
+            idx += 1
+            continue
+
+        if ch in " \t":
+            idx += 1
+            continue
+        if ch == "#" and (idx == 0 or line[idx - 1] in " \t|&;()"):
+            break
+        if ch == ";":
+            at_cmd_start = True
+            idx += 1
+            continue
+        if line[idx : idx + 2] in ("&&", "||"):
+            at_cmd_start = True
+            idx += 2
+            continue
+        if ch == "|":
+            at_cmd_start = False
+            idx += 2 if line[idx : idx + 2] == "|&" else 1
+            continue
+        if ch == "&":
+            at_cmd_start = False
+            idx += 1
+            continue
+        if ch == "{" and at_cmd_start and (idx + 1 == length or line[idx + 1] in " \t"):
+            brace_stack.append(next_brace_id)
+            next_brace_id += 1
+            at_cmd_start = True
+            idx += 1
+            continue
+        if ch == "}" and brace_stack:
+            bid = brace_stack.pop()
+            rest = line[idx + 1 :].lstrip(" \t")
+            if (rest.startswith("|") and not rest.startswith("||")) or re.match(r"^(?:\d*[<>]|&>)", rest):
+                piped_or_redirected_braces.add(bid)
+            at_cmd_start = False
+            idx += 1
+            continue
+
+        if at_cmd_start:
+            kw_m = _PILOT_SHELL_CONTROL_KW_RE.match(line, idx)
+            if kw_m and (idx == 0 or not (line[idx - 1].isalnum() or line[idx - 1] == "_")):
+                idx = kw_m.end()
+                at_cmd_start = True
+                continue
+            fixed_m = _PILOT_STANDALONE_FIXED_ECHO_PRINTF_RE.match(line, idx)
+            if fixed_m:
+                literal = fixed_m.group(1) or fixed_m.group(2)
+                body = literal.split("::", 2)[2]
+                if not (_PILOT_WORKFLOW_CMD_RAW_RE.search(body) or _PILOT_HASH_BRACKET_CMD_RE.search(body)):
+                    candidate_spans.append((idx, fixed_m.end(), tuple(brace_stack)))
+                    idx = fixed_m.end()
+                    at_cmd_start = False
+                    continue
+
+        at_cmd_start = False
+        if ch == "\\" and idx + 1 < length:
+            idx += 2
+            continue
+        if line[idx : idx + 2] == "$'":
+            ctx_stack.append(["$'", 0])
+            idx += 2
+            continue
+        if ch in ("'", '"'):
+            ctx_stack.append([ch, 0])
+            idx += 1
+            continue
+        if ch == "`":
+            ctx_stack.append(["`", 0])
+            idx += 1
+            continue
+        if line[idx : idx + 3] == "$((":
+            ctx_stack.append(["$((", 0])
+            idx += 3
+            continue
+        if line[idx : idx + 2] in ("$(", "<(", ">("):
+            ctx_stack.append([line[idx : idx + 2], 0])
+            idx += 2
+            continue
+        if ch == "(":
+            ctx_stack.append(["(", 0])
+            idx += 1
+            continue
+        idx += 1
+
+    chars = list(line)
+    for start, end, enclosing_braces in candidate_spans:
+        if any(bid in piped_or_redirected_braces for bid in enclosing_braces):
+            continue
+        for pos in range(start, end):
+            chars[pos] = " "
+    return "".join(chars)
+
+
+def _has_piped_compound_or_captured_fn_workflow_cmd(run_text, units):
+    """Return offending snippet if a workflow-command token sits inside a piped/redirected compound block or captured/piped function."""
+    if not (_PILOT_WORKFLOW_CMD_RAW_RE.search(run_text) or _PILOT_HASH_BRACKET_CMD_RE.search(run_text)):
+        return None
+
+    open_blocks = []
+    close_for_open = {"{": "}", "if": "fi", "for": "done", "while": "done", "until": "done", "case": "esac"}
+    token_re = re.compile(r"(?:\{|\}|\b(?:if|fi|for|while|until|done|case|esac)\b)")
+    for kind, text_line in units:
+        line_has_cmd = bool(
+            _PILOT_WORKFLOW_CMD_RAW_RE.search(text_line)
+            or _PILOT_HASH_BRACKET_CMD_RE.search(text_line)
+        )
+        if kind != "code_top":
+            if line_has_cmd:
+                for blk in open_blocks:
+                    blk[1] = True
+            continue
+        masked = re.sub(r"'[^']*'|\"(?:\\.|[^\"\\])*\"", lambda m: " " * len(m.group(0)), text_line)
+        masked = re.sub(r"(?:^|[ \t|&;()])#.*$", "", masked)
+        for tm in token_re.finditer(masked):
+            tok = tm.group(0)
+            if tok in close_for_open:
+                if tok == "{":
+                    after = masked[tm.end() :]
+                    if after and after[0] not in " \t":
+                        continue
+                open_blocks.append([close_for_open[tok], line_has_cmd])
+            elif tok in ("}", "fi", "done", "esac"):
+                for b_idx in range(len(open_blocks) - 1, -1, -1):
+                    if open_blocks[b_idx][0] == tok:
+                        _, blk_has_cmd = open_blocks.pop(b_idx)
+                        has_any = blk_has_cmd or line_has_cmd
+                        rest = masked[tm.end() :].lstrip(" \t")
+                        if has_any and (
+                            (rest.startswith("|") and not rest.startswith("||"))
+                            or re.match(r"^(?:\d*[<>]|&>)", rest)
+                        ):
+                            return text_line[:160]
+                        break
+        if line_has_cmd:
+            for blk in open_blocks:
+                blk[1] = True
+
+    fn_def_re = re.compile(
+        r"(?:^|[;\n{])[ \t]*(?:function[ \t]+)?([A-Za-z_][A-Za-z0-9_]*)[ \t]*(?:\(\))?[ \t]*\{",
+        re.MULTILINE,
+    )
+    fn_bodies = {}
+    fn_spans = {}
+    for fm in fn_def_re.finditer(run_text):
+        fname = fm.group(1)
+        brace_idx = fm.end() - 1
+        depth = 0
+        end_idx = len(run_text)
+        pos = brace_idx
+        while pos < len(run_text):
+            if run_text[pos] == "'":
+                end_q = run_text.find("'", pos + 1)
+                pos = (end_q + 1) if end_q != -1 else len(run_text)
+                continue
+            if run_text[pos] == "{":
+                depth += 1
+            elif run_text[pos] == "}":
+                depth -= 1
+                if depth == 0:
+                    end_idx = pos + 1
+                    break
+            pos += 1
+        fn_bodies[fname] = run_text[brace_idx:end_idx]
+        fn_spans[fname] = (fm.start(), end_idx)
+
+    tainted_fns = {
+        fname
+        for fname, body in fn_bodies.items()
+        if _PILOT_WORKFLOW_CMD_RAW_RE.search(body) or _PILOT_HASH_BRACKET_CMD_RE.search(body)
+    }
+    changed = True
+    while changed and tainted_fns:
+        changed = False
+        for fname, body in fn_bodies.items():
+            if fname in tainted_fns:
+                continue
+            if any(re.search(r"\b" + re.escape(tf) + r"\b", body) for tf in tainted_fns):
+                tainted_fns.add(fname)
+                changed = True
+
+    nested_lines = [line for kind, line in units if kind == "code_nested"]
+    for fname in tainted_fns:
+        span_start, span_end = fn_spans[fname]
+        outside = run_text[:span_start] + "\n" + run_text[span_end:]
+        fn_call_pat = re.compile(
+            r"(?:\$\([^)\n]*\b" + re.escape(fname) + r"\b"
+            r"|`[^`\n]*\b" + re.escape(fname) + r"\b"
+            r"|[<>]\([^)\n]*\b" + re.escape(fname) + r"\b"
+            r"|\b" + re.escape(fname) + r"\b[^\n;|&]*?(?:\|(?!\|)|\d*>>?|&>))"
+        )
+        m_call = fn_call_pat.search(outside)
+        if m_call:
+            return m_call.group(0)[:160]
+        for nline in nested_lines:
+            if re.search(r"\b" + re.escape(fname) + r"\b", nline):
+                return nline[:160]
+    return None
+
+
+def _has_unapproved_workflow_command(line, *, allow_fixed_echo=True):
+    """Return True if `line` contains any unapproved GitHub Actions workflow command token."""
+    if _PILOT_HASH_BRACKET_CMD_RE.search(line):
+        return True
+    if not _PILOT_WORKFLOW_CMD_RAW_RE.search(line):
+        return False
+    if "${{" in line:
+        return True
+
+    remainder = _strip_standalone_fixed_workflow_commands(line) if allow_fixed_echo else line
+    if not _PILOT_WORKFLOW_CMD_RAW_RE.search(remainder):
+        return False
+
+    neutralised = remainder
+    for pattern in _PILOT_WORKFLOW_CMD_NEUTRALISE_RES:
+        neutralised = pattern.sub(lambda m: " " * len(m.group(0)), neutralised)
+
+    for match in _PILOT_WORKFLOW_CMD_RAW_RE.finditer(remainder):
+        cmd_name = match.group(1)
+        if "-" in cmd_name:
+            return True
+        lhs = neutralised[:match.start()]
+        rhs = remainder[match.end():]
+        if not _PILOT_PHP_CLASS_LHS_RE.search(lhs):
+            return True
+        if _PILOT_WORKFLOW_CMD_RHS_RE.match(rhs):
+            return True
+    return False
+_PILOT_SHELL_EVAL_RE = re.compile(
+    _CMD_POS
+    + r"(?:(?:command|builtin|env|sudo|exec)\s+)*(?:[A-Za-z_][A-Za-z0-9_]*=[^\s;|&]+\s+)*eval(?:\s|$)"
+)
+_PILOT_VAR_INDIRECTION_RE = re.compile(
+    r"(?:\$\{![A-Za-z_][A-Za-z0-9_]*|"
+    r"\b(?:declare|typeset|local|export|readonly)\s+(?:-[A-Za-z]+\s+)*-[A-Za-z]*n\b|"
+    r"\bprintf\s+(?:-[A-Za-z]+\s+)*-v\b)"
+)
+_PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE = re.compile(
+    r"\bGITHUB_(?:OUTPUT|STATE|PATH)\b"
+)
+_PILOT_GITHUB_ALIAS_ENV_RE = re.compile(
+    r"\bGITHUB_(?:STEP_SUMMARY|ENV|OUTPUT|STATE|PATH)\b"
+)
+_PILOT_BARE_VAR_REDIRECT_RE = re.compile(
+    r'(?<![=-])(?:\d*>>?)\s*(?:"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)(?=\s|$|[;|&)])'
+)
+_PILOT_CMD_SUB_REDIRECT_RE = re.compile(
+    r'(?<![=-])(?:\d*>>?)\s*["\']?(?:\$\(|`)'
+)
+_PILOT_BARE_VAR_TEE_RE = re.compile(
+    r'\btee\b(?:\s+-[A-Za-z]+)*\s+(?:"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"|\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?)(?=\s|$|[;|&)])'
+)
+_PILOT_GITHUB_ENV_APPEND_RE = re.compile(
+    r"^cat (/tmp/[A-Za-z0-9._-]+\.env) >> \"\$GITHUB_ENV\"$"
+)
+_PILOT_TMP_ENV_PATH_RE = re.compile(r"/tmp/[A-Za-z0-9._-]+\.env\b")
+_PILOT_FIXTURE_LOG_READ_RE = re.compile(
+    _CMD_POS
+    + r"(?:(?:cat|tail|head|sed|awk|cut)\b[^\n;|]*?/tmp/[A-Za-z0-9._-]*fixture[A-Za-z0-9._-]*\.log\b|"
+    + r"grep\b(?![^\n;|]*?(?:^|\s)-[A-Za-z]*q)[^\n;|]*?/tmp/[A-Za-z0-9._-]*fixture[A-Za-z0-9._-]*\.log\b)"
+)
+
+
+def _mask_shell_comments_and_single_quotes(run_text):
+    """Mask comment lines and single-line single-quoted strings with equal-length spaces."""
+    no_comments = re.sub(r"(?m)^\s*#[^\n]*", lambda m: " " * len(m.group(0)), run_text)
+    return re.sub(r"'[^'\n]*'", lambda m: "'" + (" " * (len(m.group(0)) - 2)) + "'", no_comments)
+
+
+def _extract_var_assignments_with_spans(var_name, run_text):
+    """Return `(assign_start, rhs_end, rhs_str)` for every assignment to `var_name` in `run_text`."""
+    assignments = []
+    masked = _mask_shell_comments_and_single_quotes(run_text)
+    pattern = re.compile(
+        r"(?:^|[;|&\n{]|\)\s*|\b(?:then|else|do)\s+)\s*"
+        r"(?:(?:export|declare|typeset|local|readonly)(?:\s+-[A-Za-z]+)*\s+)?"
+        + re.escape(var_name)
+        + r"=(?!=)",
+        re.MULTILINE,
+    )
+    for match in pattern.finditer(masked):
+        start = match.end()
+        tail_real = run_text[start:]
+        rhs_match = re.match(
+            r"(\$\(\([^)\n]*\)\)|'[^'\n]*'|\"[^\"\n]*\"|[^\s;|&)\n]+)",
+            tail_real,
+        )
+        if rhs_match:
+            assignments.append((match.start(), start + rhs_match.end(), rhs_match.group(1).strip()))
+    return assignments
+
+
+def _extract_var_assignments(var_name, run_text):
+    """Return every RHS assigned to `var_name` at command position in `run_text`."""
+    return [rhs for _, _, rhs in _extract_var_assignments_with_spans(var_name, run_text)]
+
+
+def _has_non_simple_var_mutation(var_name, run_text):
+    """Detect `+=`, `read`, `for`, `let`, or `((...))` mutations of `var_name`."""
+    masked = _mask_shell_comments_and_single_quotes(run_text)
+    esc = re.escape(var_name)
+    if re.search(rf"(?<![A-Za-z0-9_]){esc}\+=", masked):
+        return True
+    if re.search(rf"\b(?:read\s+(?:-[A-Za-z]+\s+)*|for\s+){esc}\b", masked):
+        return True
+    if re.search(rf"\(\([^)]*\b{esc}\s*(?:[+\-*/%&|^]?=|\+\+|--)", masked):
+        return True
+    if re.search(rf"\blet\b[^\n;]*\b{esc}\b", masked):
+        return True
+    return False
+
+
+def _is_strictly_digit_guarded_copy(src_var, copy_start, copy_end, run_text, inherited_env):
+    """Verify `target="$src_var"` lies inside the post-digit-check arm of an immutable `src_var`."""
+    if src_var in inherited_env or _has_non_simple_var_mutation(src_var, run_text):
+        return False
+    src_assignments = _extract_var_assignments_with_spans(src_var, run_text)
+    if len(src_assignments) != 1:
+        return False
+    _, src_assign_end, _ = src_assignments[0]
+
+    masked = _mask_shell_comments_and_single_quotes(run_text)
+    case_re = re.compile(
+        r'case\s+"\$' + re.escape(src_var) + r'"\s+in\b(.*?)\besac\b',
+        re.DOTALL,
+    )
+    case_matches = list(case_re.finditer(masked))
+    if len(case_matches) != 1:
+        return False
+    case_match = case_matches[0]
+    if src_assign_end >= case_match.start():
+        return False
+
+    body_start, body_end = case_match.span(1)
+    real_body = run_text[body_start:body_end]
+    masked_body = masked[body_start:body_end]
+    if re.search(r"\bcase\b", masked_body):
+        return False
+
+    first_terminator = masked_body.find(";;")
+    if first_terminator < 0:
+        return False
+    first_arm_real = real_body[:first_terminator]
+    if not re.match(r"^\s*''\|\*\[!0-9\]\*\)", first_arm_real):
+        return False
+    if re.search(rf"\$\{{?{re.escape(src_var)}\b", first_arm_real):
+        return False
+
+    validated_region_start = body_start + first_terminator + 2
+    return validated_region_start <= copy_start and copy_end <= body_end
+
+
+def _verify_pilot_var_allowlist(var_name, run_text, inherited_env, closed_tokens, allow_int_arith):
+    """Verify every assignment to `var_name` in `run_text` is allow-listed.
+
+    Returns a list of reason strings (empty when safe).
+    """
+    reasons = []
+    if var_name in inherited_env:
+        reasons.append(f"variable ${var_name} comes from workflow/job/step env without closed mapping")
+    if _has_non_simple_var_mutation(var_name, run_text):
+        reasons.append(f"variable ${var_name} mutated via +=, read, for, let, or ((...))")
+    assignments = _extract_var_assignments_with_spans(var_name, run_text)
+    if not assignments:
+        reasons.append(f"variable ${var_name} has no local allowlisted assignment")
+        return reasons
+    for assign_start, rhs_end, rhs in assignments:
+        unquoted = rhs[1:-1] if (len(rhs) >= 2 and rhs[0] == rhs[-1] == "'") else rhs
+        if unquoted in closed_tokens and "$" not in rhs and "`" not in rhs:
+            continue
+        if allow_int_arith and re.fullmatch(r"\$\(\([A-Za-z0-9_ +*/%-]+\)\)", rhs):
+            continue
+        src_match = re.fullmatch(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', rhs)
+        if src_match and _is_strictly_digit_guarded_copy(
+            src_match.group(1), assign_start, rhs_end, run_text, inherited_env
+        ):
+            continue
+        reasons.append(f"variable ${var_name} assigned non-allowlisted RHS: {rhs}")
+    return reasons
+
+
+def pilot_gate_public_output_violations(text):
+    r"""Static regression tripwire for public output surfaces in `.github/workflows/pilot-gate.yml`.
+
+    IMPORTANT SCOPE NOTE: This guard is a static REGRESSION tripwire against
+    accidental reintroduction of untrusted/dynamic data on public GitHub output
+    surfaces in `pilot-gate.yml`. It is NOT a security boundary and NOT a proof
+    of absence of leaks.
+
+    Surfaces checked after parsing YAML (`yaml.safe_load`):
+      1. PR evidence comments (`post-pr-evidence.sh` & `pr-evidence-comment.sh`):
+         zero direct references to `pr-evidence-comment.sh` anywhere; exact 10
+         `(body_path, family)` pairs; each evidence body file may appear ONLY
+         inside its owning `post-pr-evidence.sh` step on exactly two lines (one
+         single-line single-quoted truncating `printf`/`echo > <body_path>`
+         with closed-token or strictly digit-guarded variables, followed by one
+         `post-pr-evidence.sh <body_path> "<family>"` call); no `cat`/`grep`/
+         `tail`/`head`/`sed`/`awk`/`cut` inside any `post-pr-evidence.sh` step.
+      2. `$GITHUB_STEP_SUMMARY`: no compound `{ ... } >> "$GITHUB_STEP_SUMMARY"`;
+         every write is a single-line single-quoted `echo` or `printf` with
+         closed-token, arithmetic-integer, or strictly digit-guarded variables.
+      3. Workflow commands (`::error`, `::warning`, `::notice`, `::debug`,
+         `::group`, `::endgroup`, `::add-mask`, `::set-output`, `::save-state`,
+         `::stop-commands`, case-insensitively, plus `##[...]` and `##vso[...]`):
+         detected across `run:` steps and non-`run` YAML string keys/values
+         (including workflow/job/step `env:`, `name:`, `with:`), excluding only
+         real PHP `Class::member` / `\Ns\Class::member` scope-resolution tokens
+         whose left side is a genuine class identifier path (after neutralising
+         escapes, `printf` formats, and `$` expansions) and whose right side has
+         no workflow-command `::` delimiter. Fixed-literal exemption applies
+         ONLY to standalone top-level simple-command single-quoted lowercase
+         `echo '::(error|warning|notice)::...'` or newline-terminated
+         `printf '::(error|warning|notice)::...\n'` at top-level statement
+         boundaries (`;`, `&&`, `||`, unpiped/unredirected `{ `, or shell
+         control keywords `if`/`then`/`else`/`elif`/`do`/`while`/`until`) —
+         NEVER inside `$(...)`, backticks, `<(...)`, `>(...)`, subshells `(...)`,
+         enclosing quotes, pipelines (`|`/`|&`), redirections (`>`/`<`),
+         piped/redirected compound blocks, functions captured in substitutions
+         or pipelines, heredoc bodies, or non-`run` YAML strings. Heredocs use
+         Bash delimiter quote removal (`<<EOF`, `<<'EOF'`, `<<"EOF"`, `<<\EOF`,
+         `<<$'EOF'`, mixed quotes, multiple heredocs per line, ignoring `<<` in
+         quotes and `<<<` here-strings) and exact LF-line terminator matching
+         (`raw_line == delim` for `<<`, `raw_line.lstrip('\t') == delim` for
+         `<<-`, preserving `\r` so `EOF `, `EOF\r`, `EOF\u00a0`, leading spaces
+         on `<<` or `<<-`, and case mismatches do not terminate); heredoc
+         payload lines (including `#`-leading lines and unterminated heredoc
+         bodies) are scanned with `allow_fixed_echo=False`.
+      4. `$GITHUB_ENV`, `$GITHUB_OUTPUT`, dynamic indirection & fixture echoes:
+         `GITHUB_OUTPUT`/`GITHUB_STATE`/`GITHUB_PATH` forbidden; `eval`,
+         `${!var}`, `declare -n`, `printf -v`, `env:` aliases of GitHub command
+         files, command-substitution redirects, bare-variable `tee`, and
+         unallowlisted bare-variable shell redirects rejected; `GITHUB_ENV`
+         receives only `cat /tmp/<allowed>.env >> "$GITHUB_ENV"`; no stdout
+         dump or non-quiet `grep` of `/tmp/*.env` or `/tmp/*fixture*.log`.
+
+    Known static-analysis blind spots (disclosed, not claimed covered):
+      - Indirect scripts invoked from `run:` (`php ...`, `python3 ...`,
+        `bash ...`, `wp eval-file ...`, composite actions) inherit runner
+        environment variables and can emit workflow commands or write command
+        files internally without being parsed by this YAML guard.
+      - Split-string or computed constructions that never spell `::<command>`,
+        `##[`, `##vso[`, or `GITHUB_STEP_SUMMARY`/`GITHUB_ENV`/`GITHUB_OUTPUT`
+        contiguously in the YAML text and do not redirect through shell
+        `>`/`>>`/`tee` (for example `printf ':%s' ':ERROR::...'`,
+        `echo ':'':error::...'`, `python3 -c 'print("##" + "[error]" + x)'`,
+        character-code assembly, or
+        `open(os.environ["GITHUB_" + "STEP_SUMMARY"], "a")` in inline
+        Python/PHP), as well as whole-command execution via a shell variable
+        (`$CMD`) without `eval`, are not statically detectable here.
+      - Multi-statement file-descriptor plumbing (`exec > /tmp/file` / `exec 3>&1`
+        or background FIFO co-processes) that diverts stdout of a standalone
+        fixed `echo '::error::...'` across separate statements and later
+        concatenates it with dynamic data via `paste`/`tr` is not tracked across
+        statements (steps such as `Restore Drill` legitimately redirect whole
+        step logs via `exec > >(tee -i /tmp/restore.log) 2>&1`).
+      - Intentional friction: fixed single-quoted uppercase/mixed-case
+        `::ERROR::`/`::Error::` literals, fixed annotations with `file=/line=/title=`
+        parameters, fixed `##[group]`/`##[...]` markers, an 11th evidence family,
+        or a 5th job are rejected unless explicitly reviewed and updated.
+      - Raw workflow job logs remain public on a public repository (including
+        `tee` / `cat` / `head` stdout lines and runner-rendered step `env:`
+        headers populated via `$GITHUB_ENV`).
+    """
+    violations = []
+    doc = _yaml_parser().safe_load(text)
+    if not isinstance(doc, dict):
+        return [("YAML_ROOT", "<document>", "pilot-gate.yml did not parse to a mapping")]
+
+    workflow_env = doc.get("env") if isinstance(doc.get("env"), dict) else {}
+    workflow_env_dump = _yaml_parser().safe_dump(workflow_env, allow_unicode=True)
+    if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(workflow_env_dump):
+        violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", "<workflow-env>", workflow_env_dump[:160]))
+    if _PILOT_GITHUB_ALIAS_ENV_RE.search(workflow_env_dump):
+        violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", "<workflow-env>", workflow_env_dump[:160]))
+    for wf_str in _iter_yaml_strings(workflow_env):
+        for wf_line in wf_str.splitlines() or [wf_str]:
+            if _has_unapproved_workflow_command(wf_line, allow_fixed_echo=False):
+                violations.append(("ANNOTATION_NON_LITERAL", "<workflow-env>", wf_line[:160]))
+
+    jobs = doc.get("jobs") or {}
+    if set(jobs.keys()) != set(_PILOT_EXPECTED_JOBS.keys()):
+        violations.append((
+            "JOB_SET",
+            "<jobs>",
+            f"expected jobs {sorted(_PILOT_EXPECTED_JOBS)}, got {sorted(jobs.keys())}",
+        ))
+    for job_name, expected_needs in _PILOT_EXPECTED_JOBS.items():
+        job_obj = jobs.get(job_name)
+        if not isinstance(job_obj, dict):
+            continue
+        raw_needs = job_obj.get("needs")
+        if raw_needs is None:
+            needs_set = set()
+        elif isinstance(raw_needs, str):
+            needs_set = {raw_needs}
+        else:
+            needs_set = set(raw_needs)
+        if needs_set != expected_needs:
+            violations.append((
+                "JOB_NEEDS",
+                job_name,
+                f"expected needs={sorted(expected_needs)}, got {sorted(needs_set)}",
+            ))
+
+    seen_families = []
+
+    for job_name, job_obj in jobs.items():
+        if not isinstance(job_obj, dict):
+            continue
+        job_env = job_obj.get("env") if isinstance(job_obj.get("env"), dict) else {}
+        job_env_dump = _yaml_parser().safe_dump(job_env, allow_unicode=True)
+        if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(job_env_dump):
+            violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", job_name, job_env_dump[:160]))
+        if _PILOT_GITHUB_ALIAS_ENV_RE.search(job_env_dump):
+            violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", job_name, job_env_dump[:160]))
+        for jb_str in _iter_yaml_strings(job_env):
+            for jb_line in jb_str.splitlines() or [jb_str]:
+                if _has_unapproved_workflow_command(jb_line, allow_fixed_echo=False):
+                    violations.append(("ANNOTATION_NON_LITERAL", job_name, jb_line[:160]))
+
+        steps = job_obj.get("steps") or []
+        for index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            step_label = f"{job_name}:{step.get('name') or f'step#{index}'}"
+            step_env = step.get("env") if isinstance(step.get("env"), dict) else {}
+            step_meta = {k: v for k, v in step.items() if k != "run"}
+            step_meta_dump = _yaml_parser().safe_dump(step_meta, allow_unicode=True)
+            if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(step_meta_dump):
+                violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", step_label, step_meta_dump[:160]))
+            if _PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE.search(step_meta_dump):
+                violations.append(("GITHUB_OUTPUT_FORBIDDEN", step_label, step_meta_dump[:160]))
+            elif _PILOT_GITHUB_ALIAS_ENV_RE.search(step_meta_dump):
+                violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", step_label, step_meta_dump[:160]))
+            for meta_key in ("name", "env", "with"):
+                if meta_key not in step:
+                    continue
+                for meta_str in _iter_yaml_strings(step.get(meta_key)):
+                    for meta_line in meta_str.splitlines() or [meta_str]:
+                        if _has_unapproved_workflow_command(meta_line, allow_fixed_echo=False):
+                            violations.append(("ANNOTATION_NON_LITERAL", step_label, meta_line[:160]))
+
+            for basename, owned_path in _PILOT_EVIDENCE_BODY_BASENAME_TO_PATH.items():
+                if owned_path in step_meta_dump or basename in step_meta_dump:
+                    violations.append(("EVIDENCE_BODY_FOREIGN_STEP", step_label, owned_path))
+
+            run_text = step.get("run")
+            if not isinstance(run_text, str):
+                continue
+
+            inherited_env = {}
+            inherited_env.update(workflow_env)
+            inherited_env.update(job_env)
+            inherited_env.update(step_env)
+
+            logical = [(ln, line.strip()) for ln, line in _logical_lines(run_text) if line.strip()]
+            owned_body_path = None
+
+            # --- Surface 0: direct pr-evidence-comment.sh & dynamic indirection
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                if _PILOT_DIRECT_EVIDENCE_COMMENT_RE.search(line):
+                    violations.append(("DIRECT_PR_EVIDENCE_COMMENT_CALL", step_label, line[:160]))
+                if _PILOT_SHELL_EVAL_RE.search(line):
+                    violations.append(("DYNAMIC_SHELL_EVAL", step_label, line[:160]))
+                if _PILOT_VAR_INDIRECTION_RE.search(line):
+                    violations.append(("DYNAMIC_VAR_INDIRECTION", step_label, line[:160]))
+                if _PILOT_GITHUB_FORBIDDEN_FILE_ENV_RE.search(line):
+                    violations.append(("GITHUB_OUTPUT_FORBIDDEN", step_label, line[:160]))
+                if "${{" in line and _PILOT_GITHUB_ALIAS_ENV_RE.search(line):
+                    violations.append(("DYNAMIC_GITHUB_FILE_ALIAS", step_label, line[:160]))
+                if _PILOT_CMD_SUB_REDIRECT_RE.search(line):
+                    violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                if _PILOT_BARE_VAR_TEE_RE.search(line):
+                    violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                for redir_match in _PILOT_BARE_VAR_REDIRECT_RE.finditer(line):
+                    redir_var = redir_match.group(1) or redir_match.group(2)
+                    if redir_var in ("GITHUB_STEP_SUMMARY", "GITHUB_ENV"):
+                        continue
+                    expected_rhs = _PILOT_ALLOWED_LOCAL_REDIRECT_VARS.get(redir_var)
+                    if expected_rhs is None or redir_var in inherited_env or _has_non_simple_var_mutation(redir_var, run_text):
+                        violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+                        continue
+                    local_assigns = _extract_var_assignments(redir_var, run_text)
+                    if local_assigns != [expected_rhs]:
+                        violations.append(("DYNAMIC_REDIRECT_TARGET", step_label, line[:160]))
+
+            # --- Surface 1: post-pr-evidence.sh steps ------------------------
+            if "post-pr-evidence.sh" in run_text:
+                for _, line in logical:
+                    if not line.startswith("#") and _PILOT_EVIDENCE_READER_RE.search(line):
+                        violations.append((
+                            "EVIDENCE_FORBIDDEN_READER",
+                            step_label,
+                            line[:160],
+                        ))
+                post_indexed = [
+                    (idx, line)
+                    for idx, (_, line) in enumerate(logical)
+                    if not line.startswith("#") and "post-pr-evidence.sh" in line
+                ]
+                if len(post_indexed) != 1:
+                    violations.append((
+                        "EVIDENCE_CALL_COUNT",
+                        step_label,
+                        f"expected 1 post-pr-evidence.sh logical line, got {len(post_indexed)}",
+                    ))
+                else:
+                    post_idx, post_line = post_indexed[0]
+                    call_match = _PILOT_POST_CALL_RE.fullmatch(post_line)
+                    if not call_match:
+                        violations.append((
+                            "EVIDENCE_CALL_SHAPE",
+                            step_label,
+                            post_line[:160],
+                        ))
+                    else:
+                        body_path, family = call_match.group(1), call_match.group(2)
+                        seen_families.append(family)
+                        if _PILOT_EXPECTED_EVIDENCE_BODY_TO_FAMILY.get(body_path) != family:
+                            violations.append((
+                                "EVIDENCE_BODY_FAMILY_MISMATCH",
+                                step_label,
+                                f"{body_path} -> {family}",
+                            ))
+                        else:
+                            owned_body_path = body_path
+                        body_basename = body_path.rsplit("/", 1)[-1]
+                        if re.search(r"[};)]\s*>>?\s*" + re.escape(body_path) + r"\b", run_text):
+                            violations.append((
+                                "EVIDENCE_COMPOUND_REDIRECT",
+                                step_label,
+                                body_path,
+                            ))
+                        body_refs = [
+                            (idx, line)
+                            for idx, (_, line) in enumerate(logical)
+                            if not line.startswith("#")
+                            and idx != post_idx
+                            and (body_path in line or body_basename in line)
+                        ]
+                        if not body_refs:
+                            violations.append((
+                                "EVIDENCE_BODY_MISSING_WRITER",
+                                step_label,
+                                body_path,
+                            ))
+                        elif len(body_refs) > 1:
+                            violations.append((
+                                "EVIDENCE_BODY_WRITER",
+                                step_label,
+                                f"expected exactly 1 writer line for {body_path}, got {len(body_refs)}",
+                            ))
+                        for ref_idx, ref_line in body_refs:
+                            if ref_idx > post_idx:
+                                violations.append((
+                                    "EVIDENCE_BODY_WRITER",
+                                    step_label,
+                                    f"writer/reference after post-pr-evidence.sh: {ref_line[:120]}",
+                                ))
+                            p_match = _PILOT_PRINTF_CALL_RE.fullmatch(ref_line)
+                            e_match = _PILOT_ECHO_CALL_RE.fullmatch(ref_line)
+                            if p_match and p_match.group(3) == body_path:
+                                fmt_text = p_match.group(1)
+                                if "\\n" in fmt_text[:-2]:
+                                    violations.append((
+                                        "EVIDENCE_BODY_WRITER",
+                                        step_label,
+                                        f"multi-line printf format forbidden: {ref_line[:120]}",
+                                    ))
+                                var_names = re.findall(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', p_match.group(2))
+                                for var_name in var_names:
+                                    for reason in _verify_pilot_var_allowlist(
+                                        var_name,
+                                        run_text,
+                                        inherited_env,
+                                        _PILOT_EVIDENCE_CLOSED_TOKENS,
+                                        allow_int_arith=False,
+                                    ):
+                                        violations.append((
+                                            "EVIDENCE_VAR_TAINTED",
+                                            step_label,
+                                            reason,
+                                        ))
+                            elif e_match and e_match.group(2) == body_path:
+                                pass
+                            else:
+                                violations.append((
+                                    "EVIDENCE_BODY_WRITER",
+                                    step_label,
+                                    ref_line[:160],
+                                ))
+
+            # Exclusive evidence-body ownership across ALL steps: no step may
+            # reference any evidence body file other than its own owned_body_path.
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                for basename, candidate_path in _PILOT_EVIDENCE_BODY_BASENAME_TO_PATH.items():
+                    if candidate_path == owned_body_path:
+                        continue
+                    if candidate_path in line or basename in line:
+                        violations.append((
+                            "EVIDENCE_BODY_FOREIGN_STEP",
+                            step_label,
+                            line[:160],
+                        ))
+
+            # --- Surface 2: $GITHUB_STEP_SUMMARY -----------------------------
+            if "GITHUB_STEP_SUMMARY" in run_text:
+                if re.search(r"[};)]\s*>>?\s*\"?\$GITHUB_STEP_SUMMARY\"?", run_text):
+                    violations.append((
+                        "SUMMARY_COMPOUND_REDIRECT",
+                        step_label,
+                        "compound block redirect to $GITHUB_STEP_SUMMARY",
+                    ))
+                for _, line in logical:
+                    if line.startswith("#") or "GITHUB_STEP_SUMMARY" not in line:
+                        continue
+                    s_echo = _PILOT_SUMMARY_ECHO_RE.fullmatch(line)
+                    s_printf = _PILOT_SUMMARY_PRINTF_RE.fullmatch(line)
+                    if s_echo:
+                        continue
+                    if s_printf:
+                        fmt_text = s_printf.group(1)
+                        if "\\n" in fmt_text[:-2]:
+                            violations.append((
+                                "SUMMARY_WRITER_SHAPE",
+                                step_label,
+                                f"multi-line summary printf forbidden: {line[:120]}",
+                            ))
+                        var_names = re.findall(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', s_printf.group(2))
+                        for var_name in var_names:
+                            for reason in _verify_pilot_var_allowlist(
+                                var_name,
+                                run_text,
+                                inherited_env,
+                                _PILOT_SUMMARY_CLOSED_TOKENS,
+                                allow_int_arith=True,
+                            ):
+                                violations.append((
+                                    "SUMMARY_VAR_TAINTED",
+                                    step_label,
+                                    reason,
+                                ))
+                    else:
+                        violations.append((
+                            "SUMMARY_WRITER_SHAPE",
+                            step_label,
+                            line[:160],
+                        ))
+
+            # --- Surface 3: all workflow commands (::name::, ##[, ##vso[) ----
+            units = _scan_run_units(run_text)
+            surface3_candidates = []
+            elided_buf = ""
+            elided_allow = True
+            spaced_buf = ""
+            spaced_allow = True
+            for kind, unit_line in units:
+                allow_fixed = kind == "code_top"
+                surface3_candidates.append((unit_line, allow_fixed))
+                if unit_line.endswith("\\"):
+                    before_bs = unit_line[:-1]
+                    elided_buf += before_bs
+                    elided_allow = (
+                        elided_allow
+                        and allow_fixed
+                        and before_bs.endswith((" ", "\t"))
+                    )
+                    piece = before_bs.rstrip()
+                    spaced_buf = f"{spaced_buf} {piece}".strip() if spaced_buf else piece
+                    spaced_allow = spaced_allow and allow_fixed
+                else:
+                    if elided_buf:
+                        elided_buf += unit_line
+                        surface3_candidates.append((elided_buf, elided_allow and allow_fixed))
+                        elided_buf = ""
+                        elided_allow = True
+                    if spaced_buf:
+                        joined_sp = f"{spaced_buf} {unit_line}".strip()
+                        surface3_candidates.append((joined_sp, spaced_allow and allow_fixed))
+                        spaced_buf = ""
+                        spaced_allow = True
+            if elided_buf:
+                surface3_candidates.append((elided_buf, False))
+            if spaced_buf:
+                surface3_candidates.append((spaced_buf, False))
+
+            dedup_surface3 = {}
+            for cand_line, cand_allow in surface3_candidates:
+                if cand_line:
+                    dedup_surface3[cand_line] = dedup_surface3.get(cand_line, True) and cand_allow
+            for cand_line, cand_allow in dedup_surface3.items():
+                if _has_unapproved_workflow_command(cand_line, allow_fixed_echo=cand_allow):
+                    violations.append((
+                        "ANNOTATION_NON_LITERAL",
+                        step_label,
+                        cand_line[:160],
+                    ))
+            wrapped_hit = _has_piped_compound_or_captured_fn_workflow_cmd(run_text, units)
+            if wrapped_hit is not None:
+                violations.append((
+                    "ANNOTATION_NON_LITERAL",
+                    step_label,
+                    wrapped_hit,
+                ))
+
+            # --- Surface 4: $GITHUB_ENV & fixture .env / fixture.log echoes --
+            for _, line in logical:
+                if line.startswith("#"):
+                    continue
+                if "GITHUB_ENV" in line:
+                    env_match = _PILOT_GITHUB_ENV_APPEND_RE.fullmatch(line)
+                    if not env_match or env_match.group(1) not in _PILOT_ALLOWED_GITHUB_ENV_FILES:
+                        violations.append((
+                            "GITHUB_ENV_WRITER_SHAPE",
+                            step_label,
+                            line[:160],
+                        ))
+                    continue
+
+                for env_path in _PILOT_TMP_ENV_PATH_RE.findall(line):
+                    allowed_non_echo = (
+                        line == f"test -s {env_path}"
+                        or re.fullmatch(r"echo '[^']*'", line) is not None
+                        or re.search(r"file_put_contents\('" + re.escape(env_path) + r"'", line) is not None
+                        or re.search(r"\[(?: !)? -[fs] " + re.escape(env_path) + r"\b", line) is not None
+                        or re.fullmatch(r"grep -q '[^']+' " + re.escape(env_path), line) is not None
+                        or (
+                            f"--env-file {env_path}" in line
+                            and "pilot-safe-evidence.py" in line
+                            and ">/dev/null" in line
+                        )
+                    )
+                    if not allowed_non_echo:
+                        violations.append((
+                            "FIXTURE_ENV_STDOUT_ECHO",
+                            step_label,
+                            line[:160],
+                        ))
+
+            for _, line in logical:
+                if not line.startswith("#") and _PILOT_FIXTURE_LOG_READ_RE.search(line):
+                    violations.append((
+                        "FIXTURE_LOG_STDOUT_ECHO",
+                        step_label,
+                        line[:160],
+                    ))
+
+    if set(seen_families) != _PILOT_EVIDENCE_FAMILIES or len(seen_families) != len(_PILOT_EVIDENCE_FAMILIES):
+        violations.append((
+            "EVIDENCE_FAMILY_SET",
+            "<pilot-gate>",
+            f"expected {sorted(_PILOT_EVIDENCE_FAMILIES)}, got {seen_families}",
+        ))
+
+    return violations
+
+
+# --- Day-2 closed-vocabulary projection: dedicated structural checker -------
+#
+# `pilot_gate_public_output_violations()` proves that the Day-2 projection step's
+# `printf` arguments are fixed tokens or digits-only, length-bounded copies. That
+# is necessary but not sufficient: it cannot prove the *set* of accepted tokens
+# is the intended one, nor that a rejected value falls back to a fixed token
+# rather than being passed through. This checker pins both, field by field, and
+# it is checked against deliberately broken in-memory copies of the workflow so
+# a regression cannot pass silently.
+
+_DAY2_VAR_TO_FIELD = {
+    "$day2_journey_token": "journey",
+    "$day2_stage_token": "stage",
+    "$safe_day2_http": "http",
+    "$day2_code_token": "code",
+    "$safe_day2_read": "read",
+    "$safe_day2_errno": "errno",
+    "$day2_errno_class": "errno_class",
+    "$day2_busy_token": "busy",
+    "$safe_day2_elapsed": "elapsed_s",
+}
+#: Fields whose accepted values are a closed literal set (and nothing else).
+_DAY2_ENUM_TOKENS = {
+    "journey": frozenset(_PILOT_DAY2_JOURNEYS) | {"unrecognised"},
+    "stage": frozenset(_PILOT_DAY2_STAGES) | {"none", "unrecognised"},
+    "code": frozenset(_PILOT_DAY2_CODES) | {"unrecognised"},
+    "read": frozenset(_PILOT_DAY2_READS) | {"none", "unrecognised"},
+    "errno_class": frozenset(_PILOT_DAY2_ERRNO_CLASSES),
+    "busy": frozenset(_PILOT_DAY2_BUSY) | {"unrecognised"},
+}
+#: Integer fields that may also carry the closed token `none` (it means "no
+#: failing request was observed", not "the log did not say"). Only `http`.
+_DAY2_NONE_ALLOWED_INTS = frozenset({"http"})
+#: Integer fields: the only *copied* values allowed, plus their digit bound.
+_DAY2_INT_TOKENS = {
+    "http": _PILOT_DAY2_HTTP_MAX_DIGITS,
+    "errno": _PILOT_DAY2_INT_MAX_DIGITS,
+    "elapsed_s": _PILOT_DAY2_INT_MAX_DIGITS,
+}
+
+
+def _day2_projection_step(text):
+    """Return the projection step's `run:` text, or None when it is absent."""
+    step = _day2_projection_step_dict(text)
+    return step.get("run") if step else None
+
+
+def _day2_projection_step_dict(text):
+    """Return the whole projection step mapping, or None when it is absent.
+
+    The `if:` condition and the selected fields live outside `run:`, so the
+    condition checks need the step mapping rather than just its script.
+    """
+    doc = _yaml_parser().safe_load(text)
+    if not isinstance(doc, dict):
+        return None
+    jobs = doc.get("jobs") or {}
+    job = jobs.get("responsive") if isinstance(jobs, dict) else None
+    steps = job.get("steps") if isinstance(job, dict) else None
+    if not isinstance(steps, list):
+        return None
+    found = [
+        step
+        for step in steps
+        if isinstance(step, dict)
+        and isinstance(step.get("name"), str)
+        and step["name"].startswith("Day-2 Operational Workflows — closed-vocabulary")
+    ]
+    if len(found) != 1 or not isinstance(found[0].get("run"), str):
+        return None
+    return found[0]
+
+
+def pilot_day2_projection_violations(text):
+    """Structural, field-by-field validation of the Day-2 summary projection.
+
+    Rejects (fail closed, never widens): a missing/duplicated shape, a `printf`
+    whose format or argument order is not the fixed one, an argument that is not
+    a registered variable, an enum field that accepts a token outside its closed
+    set (or has no catch-all that assigns a fixed token), an integer field that
+    is copied without a digits-only rejection arm, without a `\${#...}` length
+    bound at or below the registered width, or with a catch-all that keeps the
+    unvalidated value.
+    """
+    violations = []
+    step = _day2_projection_step_dict(text)
+    if step is None:
+        return [("DAY2_PROJECTION_STEP", "<responsive>", "projection step missing or duplicated")]
+    run_text = step["run"]
+
+    # --- the step may run only after a REAL failure of the browser step, and it
+    # must not be able to fail the job on its own. Both properties are structural.
+    condition = " ".join(str(step.get("if", "")).split())
+    if condition != _PILOT_DAY2_STEP_CONDITION:
+        violations.append((
+            "DAY2_STEP_CONDITION", "<responsive>",
+            f"projection step must run only on browser failure: {condition or '<none>'}",
+        ))
+    for name, field in _PILOT_DAY2_SELECTIONS.items():
+        degraded = re.search(
+            r"(?m)^\s*" + re.escape(name)
+            + r'="\$\(python3 bin/pilot-day2-failure-report\.py'
+            r" --log /tmp/day2-workflows-browser\.log --field ([a-z_]+)"
+            r" \|\| printf 'unrecognised'\)\"\s*$",
+            run_text,
+        )
+        if not degraded:
+            violations.append((
+                "DAY2_STEP_DEGRADE", name,
+                "projector call is not degraded with `|| printf 'unrecognised'`",
+            ))
+        elif degraded.group(1) != field:
+            violations.append((
+                "DAY2_STEP_DEGRADE", name,
+                f"selects field {degraded.group(1)}, expected {field}",
+            ))
+    selected = set(re.findall(r"--field ([a-z_]+)", run_text))
+    if selected != set(_PILOT_DAY2_SELECTIONS.values()):
+        violations.append((
+            "DAY2_STEP_DEGRADE", "<responsive>",
+            f"field selections differ: {sorted(selected)} != "
+            f"{sorted(_PILOT_DAY2_SELECTIONS.values())}",
+        ))
+
+    logical = [line.strip() for _, line in _logical_lines(run_text) if line.strip()]
+    writes = [
+        line for line in logical
+        if "GITHUB_STEP_SUMMARY" in line
+    ]
+    if len(writes) != 1:
+        return [("DAY2_SUMMARY_WRITER", "<responsive>", f"expected 1 summary writer, got {len(writes)}")]
+    writer = writes[0]
+    if logical[-1] != writer:
+        violations.append((
+            "DAY2_STEP_DEGRADE", "<responsive>",
+            "summary writer must be the last statement, so nothing can fail after publishing",
+        ))
+    expected_call = (
+        "printf '" + _PILOT_DAY2_SUMMARY_FORMAT + "\\n' "
+        + " ".join('"%s"' % var for var in _PILOT_DAY2_SUMMARY_VARS)
+        + ' >> "$GITHUB_STEP_SUMMARY"'
+    )
+    # Line-continuation joining can leave doubled spaces; normalise those only.
+    # Any other difference (format, token order, extra argument) still fails.
+    normalise = lambda value: re.sub(r"[ \t]+", " ", value).strip()
+    if normalise(writer) != normalise(expected_call):
+        violations.append(("DAY2_SUMMARY_SHAPE", "<responsive>", normalise(writer)[:200]))
+        return violations
+
+    for var in _PILOT_DAY2_SUMMARY_VARS:
+        if var not in _DAY2_VAR_TO_FIELD:
+            violations.append(("DAY2_SUMMARY_VAR", var, "argument is not a registered projection variable"))
+
+    for var, field in _DAY2_VAR_TO_FIELD.items():
+        if field == "errno_class":
+            for reason in _day2_errno_class_guard(run_text, var):
+                violations.append(("DAY2_ENUM_DERIVED", field, reason))
+        elif field in _DAY2_ENUM_TOKENS:
+            assigned, catch_all = _day2_enum_arms(run_text, var)
+            expected = _DAY2_ENUM_TOKENS[field]
+            if not assigned:
+                violations.append(("DAY2_ENUM_ARMS", field, f"no case arms assign {var}"))
+                continue
+            if None in assigned:
+                violations.append((
+                    "DAY2_ENUM_DYNAMIC", field,
+                    f"{var} has an arm whose RHS is not a bare literal",
+                ))
+            extra = {value for value in assigned if value is not None} - expected
+            if extra:
+                violations.append((
+                    "DAY2_ENUM_WIDENED", field,
+                    f"accepted tokens outside the closed vocabulary: {sorted(extra)[:5]}",
+                ))
+            if not catch_all or None in catch_all:
+                violations.append((
+                    "DAY2_ENUM_CATCHALL", field,
+                    f"{var} has no fixed-token catch-all arm",
+                ))
+        else:
+            bound = _DAY2_INT_TOKENS[field]
+            for reason in _day2_int_is_strict_copy(
+                run_text, var, bound, allow_none=field in _DAY2_NONE_ALLOWED_INTS
+            ):
+                violations.append(("DAY2_INT_GUARD", field, reason))
+            if field in _DAY2_NONE_ALLOWED_INTS:
+                for reason in _day2_none_override_guard(run_text, var):
+                    violations.append(("DAY2_INT_GUARD", field, reason))
+
+    # The step must never mask the gate result nor invent one.
+    lowered = run_text.lower()
+    if "continue-on-error" in lowered or "|| true" in lowered:
+        violations.append(("DAY2_STEP_SWALLOW", "<responsive>", "projection step swallows failures"))
+    if "::error::" in lowered or "::warning::" in lowered or "::notice::" in lowered:
+        violations.append(("DAY2_STEP_ANNOTATION", "<responsive>", "projection step emits an annotation"))
+    if "set -e" in lowered:
+        violations.append(("DAY2_STEP_MASKING", "<responsive>", "projection step can fail the gate"))
+    return violations
+
+
+def _day2_errno_class_guard(run_text, var):
+    """`errno_class` must be derived from the validated errno, never copied.
+
+    Accepted shape (exactly one assignment per token, all inside the errno
+    `case`): ``unknown`` in the digits-only rejection arm, and
+    ``deadlock``/``lock_wait_timeout``/``other`` behind literal comparisons with
+    `$day2_errno` inside the accepting arm. No assignment may interpolate a
+    variable, so no errno value other than the three literals can be published.
+    """
+    reasons = []
+    name = var.lstrip("$")
+    assigns = _extract_var_assignments(name, run_text)
+    literals = set()
+    for rhs in assigns:
+        value = rhs.strip()
+        if re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            literals.add(value)
+        else:
+            reasons.append(f"{var} assigned a non-literal RHS: {rhs}")
+    expected = set(_PILOT_DAY2_ERRNO_CLASSES)
+    if not expected <= literals:
+        reasons.append(f"{var} is missing classes: {sorted(expected - literals)}")
+    extra = literals - expected
+    if extra:
+        reasons.append(f"{var} publishes unregistered classes: {sorted(extra)}")
+    for comparison in ("1213", "1205"):
+        if not re.search(
+            r"\[ \"\$day2_errno\" = \"" + comparison + r"\" \]",
+            run_text,
+        ):
+            reasons.append(f"{var} is not derived from the literal errno {comparison}")
+    if re.search(r"(?m)^\s*\*\).*" + re.escape(name) + r"=\$", run_text):
+        reasons.append(f"{var} has a catch-all that keeps a variable value")
+    return reasons
+
+
+#: The only accepted shape of a post-`case` fixed-token override: a literal
+#: `if [ "$src" = "none" ]` test assigning the literal `none`. Anything else
+#: (a different literal, an interpolated RHS, an `else`) is rejected.
+_DAY2_NONE_OVERRIDE = (
+    r'(?m)^\s*if \[ "\${src}" = "none" \]; then\n'
+    r'\s*{name}=none\n'
+    r'\s*fi\s*$'
+)
+
+
+def _day2_none_override_guard(run_text, var):
+    """Reasons why a `none` override for `var` is not a literal-to-literal copy.
+
+    `http` gains `none` through ONE post-`case` statement, because the
+    pre-existing guard requires `''|*[!0-9]*)` to stay the first arm and to not
+    reference its own source. The override must therefore be exactly
+    ``if [ "$<src>" = "none" ]; then <var>=none; fi``: a literal comparison on a
+    variable that is itself validated by the digits-only `case` above it, and a
+    literal assignment. No interpolation is allowed on either side.
+    """
+    name = var.lstrip("$")
+    expected = _DAY2_NONE_OVERRIDE.format(src=re.escape("day2_" + name.split("_", 2)[-1]), name=re.escape(name))
+    # Derive the source name the same way the step does: safe_day2_http <- day2_http.
+    src = "day2_" + name[len("safe_day2_"):] if name.startswith("safe_day2_") else None
+    if src is None:
+        return [f"{var} is not a safe_day2_* variable"]
+    expected = _DAY2_NONE_OVERRIDE.format(src=re.escape(src), name=re.escape(name))
+    found = re.findall(expected, run_text)
+    if len(found) != 1:
+        return [f"{var} must have exactly one literal `none` override, found {len(found)}"]
+    # A `none` override must not be reachable through an interpolated RHS anywhere.
+    for rhs in _extract_var_assignments(name, run_text):
+        if "none" in rhs and rhs != "none" and not rhs.startswith('"$'):
+            return [f"{var} has a non-literal `none`-ish assignment: {rhs}"]
+    return []
+
+
+def _day2_enum_arms(run_text, var):
+    """Everything `var` may end up holding, and whether a catch-all exists.
+
+    Returns ``(assigned_literals, catch_all_literals)``. Both are computed from
+    the shell text only: an arm whose RHS is not a bare literal is reported as
+    the special value ``None`` so the caller fails closed.
+    """
+    name = var.lstrip("$")
+    assigned, catch_all = set(), set()
+    for match in re.finditer(
+        r"(?m)^\s*(?P<pattern>[^\n]*?)\)\s*" + re.escape(name) + r"=(?P<rhs>[^\n]*?)\s*;;$",
+        run_text,
+    ):
+        pattern = match.group("pattern").strip()
+        rhs = match.group("rhs").strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", rhs):
+            assigned.add(None)
+            if pattern == "*":
+                catch_all.add(None)
+            continue
+        assigned.add(rhs)
+        if pattern == "*":
+            catch_all.add(rhs)
+    return assigned, catch_all
+
+
+#: Each validated integer is a copy of exactly one projector field variable.
+_DAY2_COPY_SOURCES = {
+    "safe_day2_http": ("day2_http",),
+    "safe_day2_errno": ("day2_errno",),
+    "safe_day2_elapsed": ("day2_elapsed",),
+}
+
+
+def _day2_int_is_strict_copy(run_text, var, bound, allow_none=False):
+    """Reasons why `var` is not a fixed token or a digits-bounded copy.
+
+    The accepted shape is exactly the one used for the pre-existing `bytes`
+    projection: a digits-only rejection arm that assigns the fixed token, then a
+    ``${#src}`` length bound, then the quoted copy inside the accepting arm. An
+    integer field registered in `_DAY2_NONE_ALLOWED_INTS` may additionally have a
+    single literal `none` arm that assigns `none`.
+    """
+    name = var.lstrip("$")
+    reasons = []
+    assigns = _extract_var_assignments(name, run_text)
+    fixed = ("unrecognised", "none") if allow_none else ("unrecognised",)
+    copies = [
+        rhs for rhs in assigns
+        if (len(rhs) >= 2 and rhs[0] == rhs[-1] == '"')
+        or rhs in fixed
+    ]
+    if len(assigns) != len(copies):
+        reasons.append(f"{var} has a non-token assignment: {assigns}")
+    sources = [
+        match.group(1)
+        for match in (re.fullmatch(r'"\$([A-Za-z_][A-Za-z0-9_]*)"', rhs) for rhs in assigns)
+        if match is not None
+    ]
+    unexpected = [src for src in sources if src not in _DAY2_COPY_SOURCES.get(name, ())]
+    if unexpected:
+        reasons.append(f"{var} copies an unexpected variable: {sorted(set(unexpected))}")
+    if not sources:
+        reasons.append(f"{var} is never a validated copy")
+        return reasons
+
+    guard = re.search(
+        r"(?m)^\s*''\|\*\[!0-9\]\*\)\s*" + re.escape(name) + r"=unrecognised(?:\s*;;|\s*$)",
+        run_text,
+    )
+    first_copy = run_text.find(name + '="$')
+    if not guard:
+        reasons.append(f"{var} has no ''|*[!0-9]*) -> unrecognised rejection arm")
+    elif first_copy >= 0 and guard.start() > first_copy:
+        reasons.append(f"{var} is copied before its digits-only rejection arm")
+
+    bounds = {}
+    for match in _PILOT_DAY2_DIGITS_ONLY_GUARD.finditer(run_text):
+        bounds.setdefault(match.group(1), []).append(int(match.group(2)))
+    for src in set(sources):
+        if src not in bounds:
+            reasons.append(f"{var} has no ${{#{src}}} length bound")
+        elif min(bounds[src]) > bound:
+            reasons.append(f"{var} length bound {min(bounds[src])} exceeds width {bound}")
+    return reasons
+
+
+class PilotGatePublicOutputStructuralGuardTests(unittest.TestCase):
+    """YAML-parsed structural guard + non-vacuity checks for pilot-gate.yml."""
+
+    def test_pilot_gate_passes_structural_public_output_guard(self):
+        violations = pilot_gate_public_output_violations(workflow("pilot-gate.yml"))
+        self.assertEqual(violations, [])
+
+    def test_guard_rejects_in_memory_cat_raw_log_in_evidence_body(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(anchor, base)
+        mutated_cat = base.replace(
+            anchor,
+            "          cat /tmp/raw.log >> /tmp/doctor-portal-evidence.md\n" + anchor,
+            1,
+        )
+        violations_cat = pilot_gate_public_output_violations(mutated_cat)
+        codes_cat = {code for code, _, _ in violations_cat}
+        self.assertEqual(
+            {"EVIDENCE_FORBIDDEN_READER", "EVIDENCE_BODY_WRITER"},
+            {"EVIDENCE_FORBIDDEN_READER", "EVIDENCE_BODY_WRITER"} & codes_cat,
+            f"expected both reader and writer violations, got {violations_cat}",
+        )
+
+        # Also verify variable-tainted printf into an evidence body is rejected.
+        var_anchor = "            verdict=PASS\n"
+        self.assertIn(var_anchor, base)
+        mutated_var = base.replace(
+            var_anchor,
+            '            verdict="$(head -n1 /tmp/doctor-portal.log)"\n',
+            1,
+        )
+        codes_var = {code for code, _, _ in pilot_gate_public_output_violations(mutated_var)}
+        self.assertIn("EVIDENCE_VAR_TAINTED", codes_var)
+
+    def test_guard_rejects_in_memory_grep_smoke_log_in_step_summary(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          printf \'workflow-smokes: %s\\n\' "$smoke_verdict" >> "$GITHUB_STEP_SUMMARY"'
+        self.assertIn(anchor, base)
+        mutated = base.replace(
+            anchor,
+            '          grep -E \'^(PASS|FAIL)\' /tmp/smoke.log >> "$GITHUB_STEP_SUMMARY"',
+            1,
+        )
+        violations = pilot_gate_public_output_violations(mutated)
+        codes = {code for code, _, _ in violations}
+        self.assertIn("SUMMARY_WRITER_SHAPE", codes, f"expected summary violation, got {violations}")
+
+    def test_guard_rejects_in_memory_raw_error_annotation(self):
+        base = workflow("pilot-gate.yml")
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+        mutated = base.replace(
+            anchor,
+            '            echo "::error::doctor-portal-browser failed: fail_lines=$(grep \'^FAIL\' /tmp/doctor-portal.log)"',
+            1,
+        )
+        violations = pilot_gate_public_output_violations(mutated)
+        codes = {code for code, _, _ in violations}
+        self.assertIn("ANNOTATION_NON_LITERAL", codes, f"expected annotation violation, got {violations}")
+
+    def test_guard_rejects_in_memory_github_env_and_fixture_env_echoes(self):
+        base = workflow("pilot-gate.yml")
+        anchor = '          cat /tmp/resp-public-page.env >> "$GITHUB_ENV"'
+        self.assertIn(anchor, base)
+
+        mutated_stdout_echo = base.replace(
+            anchor,
+            anchor + "\n          cat /tmp/resp-public-page.env",
+            1,
+        )
+        codes_stdout = {code for code, _, _ in pilot_gate_public_output_violations(mutated_stdout_echo)}
+        self.assertIn("FIXTURE_ENV_STDOUT_ECHO", codes_stdout)
+
+        mutated_env_echo = base.replace(
+            anchor,
+            anchor + '\n          echo "RESP_PUBLIC_PAGE=$respPermalink" >> "$GITHUB_ENV"',
+            1,
+        )
+        codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env_echo)}
+        self.assertIn("GITHUB_ENV_WRITER_SHAPE", codes_env)
+
+    def test_guard_workflow_commands_reject_concat_params_and_non_annotation_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        # Single-quoted fixed printf literal (no % format, no dynamic text) is accepted.
+        accepted_printf = base.replace(
+            anchor,
+            "            printf '::notice::doctor-portal-browser: fixed literal notice\\n'",
+            1,
+        )
+        self.assertEqual(pilot_gate_public_output_violations(accepted_printf), [])
+
+        rejected_mutations = [
+            "            echo '::error::fixed-prefix'\"$SECRET\"",
+            "            echo '::error::fixed-prefix'$SECRET",
+            "            echo '::error::fixed'; echo \"::error::$SECRET\"",
+            "            printf '::error::%s\\n' \"$SECRET\"",
+            "            echo '::error::${{ github.actor }}'",
+            "            echo \"::error file=foo.php,line=1::$SECRET\"",
+            "            echo '::error file=foo.php,line=1::fixed message'",
+            "            echo \"::warning title=leak::$SECRET\"",
+            "            echo \"::notice file=bar.php::$SECRET\"",
+            "            echo \"::debug::$SECRET\"",
+            "            echo \"::group::$SECRET\"",
+            "            echo \"::endgroup::$SECRET\"",
+            "            echo \"::add-mask::$SECRET\"",
+            "            echo \"::set-output name=leak::$SECRET\"",
+            "            echo \"::save-state name=leak::$SECRET\"",
+            "            echo \"::stop-commands::$SECRET\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_rejects_direct_pr_evidence_comment_calls_anywhere(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # 1. Direct call added in an arbitrary non-evidence step.
+        non_evidence_anchor = "          echo 'synthetic-seed: PASS' >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(non_evidence_anchor, base)
+        mutated_run = base.replace(
+            non_evidence_anchor,
+            non_evidence_anchor
+            + '\n          bash "$GITHUB_WORKSPACE/.github/scripts/pr-evidence-comment.sh" --marker pilot-extra --body-file /tmp/raw.md',
+            1,
+        )
+        codes_run = {code for code, _, _ in pilot_gate_public_output_violations(mutated_run)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_run)
+
+        # 2. Direct call replacing post-pr-evidence.sh inside an evidence step.
+        evidence_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(evidence_anchor, base)
+        mutated_replace = base.replace(
+            evidence_anchor,
+            '          bash "$GITHUB_WORKSPACE/.github/scripts/pr-evidence-comment.sh" --marker pilot-doctor-portal --body-file /tmp/doctor-portal-evidence.md',
+            1,
+        )
+        codes_replace = {code for code, _, _ in pilot_gate_public_output_violations(mutated_replace)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_replace)
+
+        # 3. Reference hidden in step env metadata.
+        env_anchor = "          FIXTURE_OUTCOME: ${{ steps.doctor_portal_fixture.outcome }}"
+        self.assertIn(env_anchor, base)
+        mutated_env = base.replace(
+            env_anchor,
+            env_anchor + "\n          COMMENT_HELPER: .github/scripts/pr-evidence-comment.sh",
+            1,
+        )
+        codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env)}
+        self.assertIn("DIRECT_PR_EVIDENCE_COMMENT_CALL", codes_env)
+
+    def test_guard_rejects_foreign_step_or_extra_line_writing_evidence_body(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # 1. Foreign step writing or appending to an evidence body path.
+        foreign_anchor = "          python3 bin/pilot-doctor-portal.py | tee /tmp/doctor-portal.log"
+        self.assertIn(foreign_anchor, base)
+        for foreign_write in (
+            "          echo 'pilot-doctor-portal: PASS' > /tmp/doctor-portal-evidence.md",
+            "          printf 'extra\\n' >> /tmp/resp-evidence.md",
+        ):
+            with self.subTest(foreign_write=foreign_write.strip()):
+                mutated_foreign = base.replace(foreign_anchor, foreign_anchor + "\n" + foreign_write, 1)
+                codes_foreign = {code for code, _, _ in pilot_gate_public_output_violations(mutated_foreign)}
+                self.assertIn("EVIDENCE_BODY_FOREIGN_STEP", codes_foreign)
+
+        # 2. Owning step appending or writing a second line to its own body path.
+        post_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/doctor-portal-evidence.md "pilot-doctor-portal"'
+        self.assertIn(post_anchor, base)
+        mutated_extra_before = base.replace(
+            post_anchor,
+            "          echo 'pilot-doctor-portal: PASS' >> /tmp/doctor-portal-evidence.md\n" + post_anchor,
+            1,
+        )
+        codes_before = {code for code, _, _ in pilot_gate_public_output_violations(mutated_extra_before)}
+        self.assertIn("EVIDENCE_BODY_WRITER", codes_before)
+
+        mutated_after = base.replace(
+            post_anchor,
+            post_anchor + "\n          echo 'pilot-doctor-portal: PASS' > /tmp/doctor-portal-evidence.md",
+            1,
+        )
+        codes_after = {code for code, _, _ in pilot_gate_public_output_violations(mutated_after)}
+        self.assertIn("EVIDENCE_BODY_WRITER", codes_after)
+
+    def test_guard_rejects_eval_and_detectable_dynamic_github_file_redirection(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "          echo 'synthetic-seed: PASS' >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(anchor, base)
+
+        cases = [
+            ('          eval \'cat /tmp/seed.json >> "$GITHUB_STEP_SUMMARY"\'', "DYNAMIC_SHELL_EVAL"),
+            ('          target_var=GITHUB_STEP_SUMMARY\n          echo \'ok\' >> "${!target_var}"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          declare -n out_ref=GITHUB_ENV\n          echo "X=1" >> "$out_ref"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          printf -v dyn_target \'%s\' "/tmp/out"\n          echo \'ok\' >> "$dyn_target"', "DYNAMIC_VAR_INDIRECTION"),
+            ('          echo "leak=1" >> "$GITHUB_OUTPUT"', "GITHUB_OUTPUT_FORBIDDEN"),
+            ('          OUT=/tmp/alias\n          echo \'ok\' >> "$OUT"', "DYNAMIC_REDIRECT_TARGET"),
+            ('          echo \'ok\' >> "$(printf /tmp/alias)"', "DYNAMIC_REDIRECT_TARGET"),
+            ('          OUT=/tmp/alias\n          echo \'ok\' | tee -a "$OUT"', "DYNAMIC_REDIRECT_TARGET"),
+        ]
+        for snippet, expected_code in cases:
+            with self.subTest(expected_code=expected_code, snippet=snippet.strip()):
+                mutated = base.replace(anchor, anchor + "\n" + snippet, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn(expected_code, codes)
+
+        env_anchor = "          SMOKE_OUTCOME: ${{ steps.workflow_smokes.outcome }}"
+        self.assertIn(env_anchor, base)
+        mutated_step_env_alias = base.replace(
+            env_anchor,
+            env_anchor + "\n          SUMMARY_ALIAS: ${{ env.GITHUB_STEP_SUMMARY }}",
+            1,
+        )
+        codes_alias = {code for code, _, _ in pilot_gate_public_output_violations(mutated_step_env_alias)}
+        self.assertIn("DYNAMIC_GITHUB_FILE_ALIAS", codes_alias)
+
+    def test_guard_rejects_numeric_case_reassignment_after_digit_check(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # Reproduce the exact case-branch reassignment bypass on `bytes` -> `safe_bytes`.
+        case_arm_anchor = (
+            "            *)\n"
+            "              if [ \"${#bytes}\" -le 10 ]; then\n"
+            "                safe_bytes=\"$bytes\""
+        )
+        self.assertIn(case_arm_anchor, base)
+        for reassign_stmt in (
+            '              bytes="$(head -n1 /tmp/raw.log)"',
+            '              export bytes="$(head -n1 /tmp/raw.log)"',
+            '              { bytes="$(head -n1 /tmp/raw.log)"; }',
+            '              bytes+="-leak"',
+        ):
+            with self.subTest(reassign_stmt=reassign_stmt.strip()):
+                mutated_reassign = base.replace(
+                    case_arm_anchor,
+                    "            *)\n"
+                    f"{reassign_stmt}\n"
+                    "              if [ \"${#bytes}\" -le 10 ]; then\n"
+                    "                safe_bytes=\"$bytes\"",
+                    1,
+                )
+                codes_reassign = {code for code, _, _ in pilot_gate_public_output_violations(mutated_reassign)}
+                self.assertIn("EVIDENCE_VAR_TAINTED", codes_reassign)
+                self.assertIn("SUMMARY_VAR_TAINTED", codes_reassign)
+
+        # Reject copying `$bytes` inside the non-digit rejection arm `''|*[!0-9]*)`.
+        reject_arm_anchor = (
+            "            ''|*[!0-9]*)\n"
+            "              safe_bytes=unavailable"
+        )
+        self.assertIn(reject_arm_anchor, base)
+        mutated_wrong_arm = base.replace(
+            reject_arm_anchor,
+            "            ''|*[!0-9]*)\n"
+            "              safe_bytes=\"$bytes\"",
+            1,
+        )
+        codes_wrong_arm = {code for code, _, _ in pilot_gate_public_output_violations(mutated_wrong_arm)}
+        self.assertIn("EVIDENCE_VAR_TAINTED", codes_wrong_arm)
+        self.assertIn("SUMMARY_VAR_TAINTED", codes_wrong_arm)
+
+        # Reject copying `$N` outside `case "$N" in ... esac`.
+        audit_anchor = "          printf 'audit-verification: PASS chain_verify=OK rows=%s\\n' \"$audit_rows\" >> \"$GITHUB_STEP_SUMMARY\""
+        self.assertIn(audit_anchor, base)
+        mutated_outside_case = base.replace(
+            audit_anchor,
+            "          audit_rows=\"$N\"\n" + audit_anchor,
+            1,
+        )
+        codes_outside = {code for code, _, _ in pilot_gate_public_output_violations(mutated_outside_case)}
+        self.assertIn("SUMMARY_VAR_TAINTED", codes_outside)
+
+    def test_guard_conscious_friction_rejects_extra_evidence_family_and_extra_job(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        # Conscious friction: an 11th evidence family requires explicit guard review.
+        day2_anchor = '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/day2-workflows-evidence.md "pilot-day2-workflows"'
+        self.assertIn(day2_anchor, base)
+        extra_family_step = (
+            day2_anchor
+            + "\n      - name: Unreviewed 11th evidence family\n"
+            + "        run: |\n"
+            + "          echo 'pilot-eleventh: PASS' > /tmp/eleventh-evidence.md\n"
+            + '          bash "$GITHUB_WORKSPACE/.github/scripts/post-pr-evidence.sh" /tmp/eleventh-evidence.md "pilot-eleventh"'
+        )
+        codes_family = {
+            code for code, _, _ in pilot_gate_public_output_violations(base.replace(day2_anchor, extra_family_step, 1))
+        }
+        self.assertIn("EVIDENCE_BODY_FAMILY_MISMATCH", codes_family)
+        self.assertIn("EVIDENCE_FAMILY_SET", codes_family)
+
+        # Conscious friction: a 5th job in pilot-gate.yml requires explicit guard review.
+        extra_job_yaml = (
+            base
+            + "\n  extra-unreviewed-job:\n"
+            + "    runs-on: ubuntu-24.04\n"
+            + "    steps:\n"
+            + "      - run: echo ok\n"
+        )
+        codes_job = {code for code, _, _ in pilot_gate_public_output_violations(extra_job_yaml)}
+        self.assertIn("JOB_SET", codes_job)
+
+    def test_guard_rejects_escaped_newline_and_printf_format_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        rejected_mutations = [
+            "            printf 'x\\n::error::%s\\n' \"$VAR\"",
+            "            printf 'x\\r::error::%s\\n' \"$VAR\"",
+            "            printf 'x\\t::warning::%s\\n' \"$VAR\"",
+            "            printf '%s::error::%s' \"$A\" \"$B\"",
+            "            printf '%d::warning::%s\\n' 1 \"$B\"",
+            "            printf '%b::notice::%s\\n' '\\n' \"$B\"",
+            "            printf 'x\\n::add-mask::%s\\n' \"$VAR\"",
+            "            printf 'x\\n::stop-commands::%s\\n' \"$VAR\"",
+            "            echo $'a\\n::add-mask::'\"$VAR\"",
+            "            echo $'a\\n::stop-commands::'\"$VAR\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_rejects_var_prefix_ansic_herestring_and_heredoc_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        single_line_mutations = [
+            "            echo \"${NL}::error::$VAR\"",
+            "            echo \"$NL::error::$VAR\"",
+            "            echo \"$(printf '\\n')::error::$VAR\"",
+            "            echo $'a\\n::error::'\"$VAR\"",
+            "            cat <<< \"::error::$VAR\"",
+        ]
+        for replacement in single_line_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        heredoc_mutation = (
+            "            cat <<EOF\n"
+            "            preamble\n"
+            "            ::error::$VAR\n"
+            "            EOF"
+        )
+        codes_heredoc = {
+            code for code, _, _ in pilot_gate_public_output_violations(base.replace(anchor, heredoc_mutation, 1))
+        }
+        self.assertIn("ANNOTATION_NON_LITERAL", codes_heredoc)
+
+    def test_guard_rejects_inline_cat_tee_sed_awk_python_and_php_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        inline_emitters = [
+            "            cat /tmp/prefix.txt - <<< \"::error::$VAR\"",
+            "            printf 'x\\n::error::%s\\n' \"$VAR\" | tee /tmp/out.log",
+            "            sed \"s/^/::error::/\" /tmp/doctor-portal.log",
+            "            awk '{print \"::error::\" $0}' /tmp/doctor-portal.log",
+            "            python3 -c 'import os; print(\"::error::\" + os.environ.get(\"VAR\", \"\"))'",
+            "            python3 -c \"import os; print('x\\\\n::error::' + os.environ.get('VAR', ''))\"",
+            "            php -r 'echo \"::error::\" . getenv(\"VAR\") . \"\\n\";'",
+            "            php -r 'echo \"x\\n::error::\" . getenv(\"VAR\");'",
+        ]
+        for replacement in inline_emitters:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+    def test_guard_accepts_namespaced_php_scope_resolution_comments_and_fixed_printf(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        wp_eval_anchor = "          wp eval-file bin/pilot-smoke.php --path=\"$WP_DIR\" --allow-root 2>&1 | tee /tmp/smoke.log"
+        self.assertIn(wp_eval_anchor, base)
+
+        accepted_edits = [
+            wp_eval_anchor + "\n          wp eval 'echo Foo::bar(), \\Foo\\Bar::baz(), \\Foo\\Bar::error(\"ok\");' --path=\"$WP_DIR\" --allow-root",
+            wp_eval_anchor + "\n          php -r 'echo Foo::bar() . \\Foo\\Bar::baz() . \\Foo\\Bar::notice(\"ok\");'",
+            wp_eval_anchor + "\n          # Guard regression comment: printf 'x\\n::error::%s\\n' \"$VAR\" must never execute",
+            wp_eval_anchor + "\n          printf '::notice::pilot-smoke: fixed literal notice\\n'",
+        ]
+        for edit_text in accepted_edits:
+            with self.subTest(edit_text=edit_text.splitlines()[-1].strip()):
+                mutated = base.replace(wp_eval_anchor, edit_text, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated), [])
+
+    def test_guard_rejects_case_variant_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        rejected_mutations = [
+            "            printf 'x\\n::ERROR::%s\\n' \"$VAR\"",
+            "            echo \"::Error::$VAR\"",
+            "            echo \"::NOTICE::$VAR\"",
+            "            echo \"::WaRnInG::$VAR\"",
+            "            echo \"::DEBUG::$VAR\"",
+            "            echo \"::GROUP::$VAR\"",
+            "            echo \"::ENDGROUP::$VAR\"",
+            "            echo \"::Add-Mask::$VAR\"",
+            "            echo \"::ADD-MASK::$VAR\"",
+            "            echo \"::SET-OUTPUT name=x::$VAR\"",
+            "            echo \"::Save-State name=x::$VAR\"",
+            "            printf 'x\\n::Stop-Commands::%s\\n' \"$VAR\"",
+            "            php -r 'echo \"::ERROR::\" . getenv(\"V\");'",
+            "            python3 -c 'import os; print(\"::ERROR::\" + os.environ.get(\"V\", \"\"))'",
+            "            cat <<< \"::ERROR::$VAR\"",
+            "            echo '::ERROR::doctor-portal-browser: fixed uppercase literal'",
+            "            echo '::Error::doctor-portal-browser: fixed mixed-case literal'",
+            "            printf '::NOTICE::doctor-portal-browser: fixed uppercase notice\\n'",
+            "            echo \"::ER\\\n            ROR::$VAR\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        heredoc_uppercase = (
+            "            cat <<EOF\n"
+            "            preamble\n"
+            "            ::ERROR::$VAR\n"
+            "            EOF"
+        )
+        with self.subTest(replacement="heredoc_uppercase"):
+            codes_heredoc = {
+                code for code, _, _ in pilot_gate_public_output_violations(base.replace(anchor, heredoc_uppercase, 1))
+            }
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_heredoc)
+
+    def test_guard_rejects_hash_bracket_and_vso_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+        anchor = "            echo '::error::doctor-portal-browser: Doctor Portal browser acceptance failed; dynamic diagnostics withheld'"
+        self.assertIn(anchor, base)
+
+        rejected_mutations = [
+            "            echo \"##[error]$VAR\"",
+            "            echo \"##[ERROR]$VAR\"",
+            "            printf 'x\\n##[error]%s\\n' \"$VAR\"",
+            "            echo \"##[warning]$VAR\"",
+            "            echo \"##[notice]$VAR\"",
+            "            echo \"##[debug]$VAR\"",
+            "            echo \"##[group]$VAR\"",
+            "            echo \"##[endgroup]$VAR\"",
+            "            echo \"##[command]$VAR\"",
+            "            echo \"##[section]$VAR\"",
+            "            echo \"##[add-matcher]$VAR\"",
+            "            echo \"##[remove-matcher]$VAR\"",
+            "            echo \"##[stop-commands]$VAR\"",
+            "            echo '##[group]fixed group header'",
+            "            echo \"##vso[task.logissue type=error]$VAR\"",
+            "            echo \"##VSO[task.setvariable variable=x]$VAR\"",
+            "            python3 -c 'print(\"##[error]\" + \"x\")'",
+            "            php -r 'echo \"##[error]\" . getenv(\"V\");'",
+            "            cat <<< \"##[error]$VAR\"",
+            "            cat <<< \"##vso[task.logissue type=error]$VAR\"",
+            "            echo \"##[\\\n            error]$VAR\"",
+        ]
+        for replacement in rejected_mutations:
+            with self.subTest(replacement=replacement.strip()):
+                mutated = base.replace(anchor, replacement, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        heredoc_hash_bracket = (
+            "            cat <<EOF\n"
+            "            preamble\n"
+            "            ##[error]$VAR\n"
+            "            EOF"
+        )
+        with self.subTest(replacement="heredoc_hash_bracket"):
+            codes_heredoc = {
+                code for code, _, _ in pilot_gate_public_output_violations(base.replace(anchor, heredoc_hash_bracket, 1))
+            }
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_heredoc)
+
+        multiline_quote_hash_bracket = (
+            "            echo \"preamble\n"
+            "            ##[error]$VAR\""
+        )
+        with self.subTest(replacement="multiline_quote_hash_bracket"):
+            codes_multiline_quote = {
+                code
+                for code, _, _ in pilot_gate_public_output_violations(
+                    base.replace(anchor, multiline_quote_hash_bracket, 1)
+                )
+            }
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_multiline_quote)
+
+    def test_guard_rejects_hash_bracket_and_vso_in_step_and_env_metadata(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        step_env_anchor = "          SMOKE_OUTCOME: ${{ steps.workflow_smokes.outcome }}"
+        self.assertIn(step_env_anchor, base)
+        for env_addition in (
+            "\n          MARKER_PREFIX: '##[error]'",
+            "\n          VSO_PREFIX: '##vso[task.logissue type=error]'",
+            "\n          UPPER_PREFIX: '::ERROR::'",
+        ):
+            with self.subTest(scope="step.env", addition=env_addition.strip()):
+                mutated = base.replace(step_env_anchor, step_env_anchor + env_addition, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        step_name_anchor = "      - name: Post Doctor Portal evidence to PR"
+        self.assertIn(step_name_anchor, base)
+        with self.subTest(scope="step.name"):
+            mutated_name = base.replace(
+                step_name_anchor,
+                "      - name: 'Post Doctor Portal evidence to PR ##[error]'",
+                1,
+            )
+            codes_name = {code for code, _, _ in pilot_gate_public_output_violations(mutated_name)}
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_name)
+
+        step_with_anchor = "          apt-log-dir: /tmp"
+        self.assertIn(step_with_anchor, base)
+        with self.subTest(scope="step.with"):
+            mutated_with = base.replace(
+                step_with_anchor,
+                "          apt-log-dir: '/tmp/##[error]'",
+                1,
+            )
+            codes_with = {code for code, _, _ in pilot_gate_public_output_violations(mutated_with)}
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_with)
+
+        wf_env_anchor = "  DB_MAIN: cpms_main"
+        self.assertIn(wf_env_anchor, base)
+        with self.subTest(scope="workflow.env"):
+            mutated_wf_env = base.replace(
+                wf_env_anchor,
+                wf_env_anchor + "\n  WF_MARKER: '##[error]'",
+                1,
+            )
+            codes_wf_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_wf_env)}
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_wf_env)
+
+        job_env_anchor = "      DB_MAIN: cpms_main"
+        self.assertIn(job_env_anchor, base)
+        with self.subTest(scope="job.env"):
+            mutated_job_env = base.replace(
+                job_env_anchor,
+                job_env_anchor + "\n      JOB_MARKER: '##vso[task.logissue type=error]'",
+                1,
+            )
+            codes_job_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_job_env)}
+            self.assertIn("ANNOTATION_NON_LITERAL", codes_job_env)
+
+    def test_guard_accepts_mixed_case_php_scope_resolution_and_hash_bracket_comments(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        wp_eval_anchor = "          wp eval-file bin/pilot-smoke.php --path=\"$WP_DIR\" --allow-root 2>&1 | tee /tmp/smoke.log"
+        self.assertIn(wp_eval_anchor, base)
+
+        accepted_run_edits = [
+            wp_eval_anchor + "\n          wp eval 'echo \\Foo\\Bar::Error(\"ok\"); echo Foo::NOTICE;'",
+            wp_eval_anchor + "\n          wp eval 'echo Foo::bar(), \\Foo\\Bar::baz(), \\Foo\\Bar::Error(\"ok\"), Foo::WARNING;' --path=\"$WP_DIR\" --allow-root",
+            wp_eval_anchor + "\n          # Shell comment: ##[error] and ##vso[task.logissue type=error] and ::ERROR:: are not executed",
+        ]
+        for edit_text in accepted_run_edits:
+            with self.subTest(edit_text=edit_text.splitlines()[-1].strip()):
+                mutated = base.replace(wp_eval_anchor, edit_text, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated), [])
+
+        yaml_comment_mutated = "# YAML comment mentioning ##[error] and ##vso[task.logissue type=error]\n" + base
+        self.assertEqual(pilot_gate_public_output_violations(yaml_comment_mutated), [])
+
+    def test_guard_rejects_nested_and_quoted_fixed_workflow_commands(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        accepted_standalone = [
+            "          printf '::notice::fixed notice line\\n'\n",
+            "          printf '::warning::fixed warning line\\n'\n",
+            "          printf '::error::fixed error line\\n'\n",
+            "          if true; then echo '::notice::fixed conditional notice'; fi\n",
+        ]
+        for snippet in accepted_standalone:
+            with self.subTest(scope="accepted_standalone", snippet=snippet.strip()):
+                mutated = base.replace(anchor, anchor_block + snippet, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated), [])
+
+        nested_forms = [
+            ("cmdsub_echo", 'echo "$(echo \'::error::fixed\')$VAR"'),
+            ("backtick_echo", 'echo "`echo \'::error::fixed\'`$VAR"'),
+            ("printf_cmdsub_echo", 'printf \'%s\\n\' "$(echo \'::error::fixed\')"'),
+            ("var_capture_echo", 'x=$(echo \'::error::fixed\'); echo "$x$VAR"'),
+            ("cmdsub_printf_notice", 'echo "$(printf \'::notice::fixed\\n\')$VAR"'),
+            ("cmdsub_hash_bracket", 'echo "x$(echo \'##[error]fixed\')"'),
+        ]
+
+        for label, expr in nested_forms:
+            with self.subTest(scope="run", case=label):
+                mutated_run = base.replace(anchor, anchor_block + f"          {expr}\n", 1)
+                codes_run = {code for code, _, _ in pilot_gate_public_output_violations(mutated_run)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_run)
+
+            with self.subTest(scope="heredoc", case=label):
+                heredoc_block = (
+                    "          cat <<EOF >/dev/null\n"
+                    f"          {expr}\n"
+                    "          EOF\n"
+                )
+                mutated_hd = base.replace(anchor, anchor_block + heredoc_block, 1)
+                codes_hd = {code for code, _, _ in pilot_gate_public_output_violations(mutated_hd)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_hd)
+
+        for label, expr in nested_forms:
+            with self.subTest(scope="step.env", case=label):
+                yaml_safe = expr.replace("\\", "\\\\").replace('"', '\\"')
+                mutated_env = base.replace(
+                    anchor,
+                    "      - name: Runtime SDK contract (built ZIP, no network)\n"
+                    f'        env:\n          STEP_NESTED: "{yaml_safe}"\n'
+                    "        run: python3 tests/bin/release-runtime-contract.py\n",
+                    1,
+                )
+                codes_env = {code for code, _, _ in pilot_gate_public_output_violations(mutated_env)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_env)
+
+    def test_guard_heredoc_exact_bash_terminators_and_quotes(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        rejected_blocks = [
+            (
+                "trailing_space_hash_bracket",
+                "cat <<EOF\nEOF \n##[error]$VAR\nEOF\n",
+            ),
+            (
+                "trailing_space_hash_comment_payload",
+                "cat <<EOF\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "leading_spaces_on_no_dash_heredoc",
+                "cat <<EOF\n  EOF\n::error::$VAR\nEOF\n",
+            ),
+            (
+                "leading_spaces_hash_payload_on_no_dash_heredoc",
+                "cat <<EOF\n  EOF\n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "single_quoted_delim_trailing_space",
+                "cat <<'EOF'\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "double_quoted_delim_trailing_space",
+                'cat <<"EOF"\nEOF \n# ::error::$VAR\nEOF\n',
+            ),
+            (
+                "backslash_delim_trailing_space",
+                "cat <<\\EOF\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "ansic_delim_trailing_space",
+                "cat <<$'EOF'\nEOF \n# ::error::$VAR\nEOF\n",
+            ),
+            (
+                "two_heredocs_one_line_second_payload",
+                "cat <<EOF1 >/dev/null; cat <<'EOF2'\nok\nEOF1\n# ::error::$VAR\nEOF2\n",
+            ),
+            (
+                "unterminated_heredoc_uppercase_error",
+                "cat <<EOF\n::ERROR::$VAR\n",
+            ),
+        ]
+        for label, block_lines in rejected_blocks:
+            indented = "".join(
+                f"          {line}" for line in block_lines.splitlines(keepends=True)
+            )
+            with self.subTest(kind="rejected", case=label):
+                mutated = base.replace(anchor, anchor_block + indented, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        for cr_label, cr_payload in (
+            ("trailing_cr_hash_bracket", "##[error]$VAR"),
+            ("trailing_cr_hash_prefixed_v2", "# ::error::$VAR"),
+        ):
+            with self.subTest(kind="rejected", case=cr_label):
+                cr_step_new = (
+                    "      - name: Runtime SDK contract (built ZIP, no network)\n"
+                    '        run: "python3 tests/bin/release-runtime-contract.py\\n'
+                    f'cat <<EOF\\nEOF\\r\\n{cr_payload}\\nEOF\\n"\n'
+                )
+                mutated_cr = base.replace(anchor, cr_step_new, 1)
+                codes_cr = {code for code, _, _ in pilot_gate_public_output_violations(mutated_cr)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes_cr)
+
+        accepted_blocks = [
+            (
+                "dash_heredoc_tab_indented_terminator",
+                "          cat <<-EOF >/dev/null\n"
+                "          \thello\n"
+                "          \tEOF\n"
+                "          # real shell comment after terminator: ##[error]$VAR\n",
+            ),
+            (
+                "single_quoted_delim_exact",
+                "          cat <<'EOF' >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "double_quoted_delim_exact",
+                '          cat <<"EOF" >/dev/null\n'
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "backslash_delim_exact",
+                "          cat <<\\EOF >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "ansic_delim_exact",
+                "          cat <<$'EOF' >/dev/null\n"
+                "          plain payload\n"
+                "          EOF\n"
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "two_heredocs_one_line_clean",
+                "          cat <<EOF1 >/dev/null; cat <<'EOF2' >/dev/null\n"
+                "          first body\n"
+                "          EOF1\n"
+                "          second body\n"
+                "          EOF2\n"
+                "          # real shell comment after both: ##[error]$VAR\n",
+            ),
+            (
+                "double_lt_inside_quotes_not_heredoc",
+                '          echo "bitshift <<EOF inside quotes" >/dev/null\n'
+                "          # real shell comment: ##[error]$VAR\n",
+            ),
+            (
+                "real_shell_comment_hash_bracket",
+                "          # shell comment with ##[error] and ::ERROR:: markers\n",
+            ),
+        ]
+        for label, block_text in accepted_blocks:
+            with self.subTest(kind="accepted", case=label):
+                mutated_ok = base.replace(anchor, anchor_block + block_text, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated_ok), [])
+
+        with self.subTest(kind="accepted", case="yaml_comment_hash_bracket"):
+            yaml_comment_doc = "# YAML comment with ##[error] marker\n" + base
+            self.assertEqual(pilot_gate_public_output_violations(yaml_comment_doc), [])
+
+    def test_guard_round5_red_team_nesting_wrappers_and_heredoc_edge_cases(self):
+        base = workflow("pilot-gate.yml")
+        self.assertEqual(pilot_gate_public_output_violations(base), [])
+
+        anchor = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: python3 tests/bin/release-runtime-contract.py\n"
+        )
+        anchor_block = (
+            "      - name: Runtime SDK contract (built ZIP, no network)\n"
+            "        run: |\n"
+            "          python3 tests/bin/release-runtime-contract.py\n"
+        )
+        self.assertIn(anchor, base)
+
+        red_team_probes = [
+            ("RT01_procsub_in", 'cat <(echo \'::error::fixed\') <(echo "$VAR") | tr -d \'\\n\''),
+            ("RT02_procsub_out", 'echo \'::error::fixed\' > >(sed "s/fixed/$VAR/")'),
+            ("RT03_subshell_pipe", '(echo \'::error::fixed\'; echo "$VAR") | tr -d \'\\n\''),
+            ("RT04_brace_pipe_single_line", '{ echo \'::error::fixed\'; echo "$VAR"; } | tr -d \'\\n\''),
+            ("RT05_brace_pipe_multiline", "{\n  echo '::error::fixed'\n  echo \"$VAR\"\n} | tr -d '\\n'"),
+            ("RT06_if_pipe_multiline", "if true; then\n  echo '::error::fixed'\nfi | tr -d '\\n'"),
+            ("RT07_pipe_xargs", 'echo \'::error::fixed\' | xargs -I{} echo "{}$VAR"'),
+            ("RT08_pipe_tee", "echo '::error::fixed' | tee /tmp/p.txt"),
+            ("RT09_pipe_cat", "echo '::error::fixed' | cat - /tmp/s.txt"),
+            ("RT10_printf_no_newline_concat", 'printf \'::error::fixed\'; echo "$VAR"'),
+            ("RT11_echo_minus_n_concat", 'echo -n \'::error::fixed\'; echo "$VAR"'),
+            ("RT12_fn_captured_in_cmdsub", "emit_p() {\n  echo '::error::fixed'\n}\necho \"$(emit_p)$VAR\""),
+            ("RT13_fn_piped", "emit_p() {\n  echo '::error::fixed'\n}\nemit_p | tr -d '\\n'"),
+            ("RT14_multiline_cmdsub", "x=$(\n  echo '::error::fixed'\n)\necho \"$x$VAR\""),
+            ("RT15_cmdsub_case_arm_paren", "x=$(case a in a) true; echo '::error::fixed';; esac)\necho \"$x$VAR\""),
+            ("RT16_adjacent_hash_not_comment", 'echo \'::error::fixed\'#"$VAR"'),
+            ("RT17_heredoc_after_and_list", "true && cat <<EOF\nEOF \n##[error]$VAR\nEOF"),
+            ("RT18_heredoc_before_pipe", "cat <<EOF | cat\nEOF \n##[error]$VAR\nEOF"),
+            ("RT19_heredoc_inside_cmdsub", 'x="$(cat <<EOF\nEOF \n##[error]$VAR\nEOF\n)"\necho "$x"'),
+            ("RT20_heredoc_nbsp_terminator", "cat <<EOF\nEOF\u00a0\n##[error]$VAR\nEOF"),
+            ("RT21_dash_heredoc_trailing_tab", "cat <<-EOF\n\tEOF\t\n##[error]$VAR\nEOF"),
+            ("RT22_dash_heredoc_leading_spaces", "cat <<-EOF\n  EOF\n##[error]$VAR\nEOF"),
+            ("RT23_heredoc_case_mismatch_terminator", "cat <<EOF\neof\n##[error]$VAR\nEOF"),
+            ("RT24_heredoc_punct_delim", "cat <<'END-MARK.1!'\nEND-MARK.1! \n##[error]$VAR\nEND-MARK.1!"),
+            ("RT25_unquoted_heredoc_bs_split", "cat <<EOF\n::ER\\\nROR::$VAR\nEOF"),
+            ("RT26_heredoc_bs_joined_fixed_echo", "tr '\\n\\\\' '  ' <<'EOF' | sed \"s/^ *echo *'//;s/' *$/$VAR/\"\necho \\\n  '::error::fixed'\nEOF"),
+            ("RT27_transitive_fn_capture", "f2() {\n  echo '::error::fixed'\n}\nf1() {\n  f2\n}\necho \"$(f1)$VAR\""),
+            ("RT28_backslash_split_echo_word", "ech\\\no '::error::fixed'"),
+        ]
+        for probe_id, snippet in red_team_probes:
+            indented = "".join(f"          {ln}\n" for ln in snippet.split("\n"))
+            with self.subTest(probe=probe_id):
+                mutated = base.replace(anchor, anchor_block + indented, 1)
+                codes = {code for code, _, _ in pilot_gate_public_output_violations(mutated)}
+                self.assertIn("ANNOTATION_NON_LITERAL", codes)
+
+        accepted_controls = [
+            ("brace_redirect_without_workflow_cmd", '{ echo "INFO clean"; } > /tmp/clean-check.log'),
+            ("top_level_fn_invocation_only", "local_notice() {\n  echo '::notice::fixed helper'\n}\nlocal_notice"),
+            ("here_string_not_heredoc", 'cat <<<"plain text" >/dev/null\n# comment after here-string: ##[error]$VAR'),
+        ]
+        for ctrl_id, snippet in accepted_controls:
+            indented = "".join(f"          {ln}\n" for ln in snippet.split("\n"))
+            with self.subTest(control=ctrl_id):
+                mutated_ctrl = base.replace(anchor, anchor_block + indented, 1)
+                self.assertEqual(pilot_gate_public_output_violations(mutated_ctrl), [])
+
+
+# --- Tooling runner pin contract (runner-pin) ---------------------------------
+#
+# Every job that executes the shared Tooling action must run on a literal,
+# pinned runner label. A `*-latest` label or an unresolved expression would
+# let the job silently move to a new OS image again. This group is kept
+# separate from the other contract groups so a future diagnostics change
+# elsewhere in this file does not need to touch it.
+
+
+class ToolingRunnerPinContractTests(unittest.TestCase):
+    def _tooling_jobs(self):
+        yaml = _yaml_parser()
+        found = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            document = yaml.safe_load(path.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                continue
+            jobs = document.get("jobs") or {}
+            if not isinstance(jobs, dict):
+                continue
+            for job_id, job in jobs.items():
+                if not isinstance(job, dict):
+                    continue
+                steps = job.get("steps") or []
+                uses_list = [
+                    step.get("uses")
+                    for step in steps
+                    if isinstance(step, dict) and "uses" in step
+                ]
+                if any(
+                    "wp-stack-tooling" in str(value) for value in uses_list
+                ):
+                    found.append((path.name, job_id, job.get("runs-on")))
+        return found
+
+    def test_tooling_jobs_use_literal_pinned_runners(self):
+        found = self._tooling_jobs()
+        self.assertTrue(found, "no Tooling jobs found; inventory is empty")
+        self.assertEqual(
+            17,
+            len(found),
+            "Tooling job inventory changed; expected 17 jobs, found: "
+            f"{sorted((name, job_id) for name, job_id, _ in found)}",
+        )
+        for workflow_name, job_id, runs_on in found:
+            label = f"{workflow_name}:{job_id}"
+            if isinstance(runs_on, list):
+                values = runs_on
+            else:
+                values = [runs_on]
+            for value in values:
+                self.assertIsInstance(
+                    value,
+                    str,
+                    f"{label}: runs-on must be a literal string, got {value!r}",
+                )
+                self.assertNotIn(
+                    "${{",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertNotIn(
+                    "inputs.",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertNotIn(
+                    "matrix.",
+                    value,
+                    f"{label}: runs-on must be literal, not an expression: {value!r}",
+                )
+                self.assertFalse(
+                    value.endswith("-latest"),
+                    f"{label}: runs-on must not be a *-latest label: {value!r}",
+                )
+
+    def test_persian_coexistence_callers_have_no_runs_on(self):
+        yaml = _yaml_parser()
+        document = yaml.safe_load(
+            (WORKFLOWS / "persian-coexistence.yml").read_text(encoding="utf-8")
+        )
+        jobs = document.get("jobs") or {}
+        callers = [
+            (job_id, job)
+            for job_id, job in jobs.items()
+            if isinstance(job, dict)
+            and job.get("uses") == "./.github/workflows/real-wp-acceptance.yml"
+        ]
+        self.assertEqual(
+            7,
+            len(callers),
+            "expected 7 reusable-workflow callers, found: "
+            f"{sorted(job_id for job_id, _ in callers)}",
+        )
+        for job_id, job in callers:
+            self.assertNotIn(
+                "runs-on",
+                job,
+                f"persian-coexistence.yml:{job_id}: reusable caller must "
+                "not define its own runs-on",
+            )
+
+
+# Resolve local composite actions rather than assuming all uses are direct.
+def _normal_action_ref(ref):
+    if not isinstance(ref, str):
+        return ""
+    ref = ref.strip().strip("'\"").strip().rstrip("/")
+    return ref[2:] if ref.startswith("./") else ref
+
+
+def _tooling_reachable(ref, load_action, visiting=None):
+    path = _normal_action_ref(ref)
+    if path == ".github/actions/wp-stack-tooling":
+        return True
+    raw = str(ref).strip().strip("'\"").strip() if isinstance(ref, str) else ""
+    if not (raw.startswith("./") or path.startswith(".github/actions/")):
+        return False
+    visiting = set() if visiting is None else visiting
+    if path in visiting:
+        return False
+    visiting = visiting | {path}
+    action = load_action(path)
+    runs = action.get("runs", {})
+    if runs.get("using") != "composite":
+        return False
+    return any(
+        _tooling_reachable(step.get("uses"), load_action, visiting)
+        for step in runs.get("steps", []) if isinstance(step, dict)
+    )
+
+
+def _runner_contract_violations(job, block):
+    value = job.get("runs-on")
+    values = value if isinstance(value, list) else [value]
+    failures = []
+    if not values or any(not isinstance(v, str) or "${{" in v or
+                         "inputs." in v or "matrix." in v or v.endswith("-latest")
+                         for v in values):
+        failures.append("runner must be literal and not latest")
+    lines = block.splitlines()
+    pin = next((i for i, line in enumerate(lines)
+                if line.strip().startswith("runs-on:")), None)
+    if pin is None:
+        failures.append("runner missing")
+    else:
+        adjacent = [lines[pin]]
+        i = pin - 1
+        while i >= 0 and lines[i].strip().startswith("#"):
+            adjacent.append(lines[i])
+            i -= 1
+        if not re.search(r"EXPIRY\s+\d{4}-\d{2}-\d{2}", "\n".join(adjacent)):
+            failures.append("expiry missing")
+    return failures
+
+
+class ToolingCompositeReachabilityContractTests(unittest.TestCase):
+    def test_local_action_and_reusable_workflow_reachability(self):
+        yaml = _yaml_parser()
+        documents = {p.name: yaml.safe_load(p.read_text(encoding="utf-8"))
+                     for p in sorted(WORKFLOWS.glob("*.yml"))}
+
+        def load_action(path):
+            root = (ROOT / path).resolve()
+            self.assertTrue(root.is_relative_to(ROOT.resolve()))
+            action_file = root / "action.yml"
+            self.assertTrue(action_file.is_file(), f"missing local action: {path}")
+            data = yaml.safe_load(action_file.read_text(encoding="utf-8"))
+            self.assertIsInstance(data, dict)
+            return data
+
+        direct, wrappers, tooling_workflows = [], [], set()
+        for name, document in documents.items():
+            for job_id, job in (document.get("jobs") or {}).items():
+                if not isinstance(job, dict):
+                    continue
+                refs = [step.get("uses") for step in job.get("steps", [])
+                        if isinstance(step, dict)]
+                is_direct = any(_normal_action_ref(ref) == ".github/actions/wp-stack-tooling"
+                                for ref in refs)
+                is_wrapper = any(_normal_action_ref(ref) != ".github/actions/wp-stack-tooling"
+                                 and _tooling_reachable(ref, load_action) for ref in refs)
+                if is_direct:
+                    direct.append((name, job_id))
+                if is_wrapper:
+                    wrappers.append((name, job_id))
+                if is_direct or is_wrapper:
+                    tooling_workflows.add(name)
+                    block = ci_job_block(workflow(name), job_id)
+                    self.assertEqual([], _runner_contract_violations(job, block),
+                                     f"{name}:{job_id}: invalid runner or expiry")
+        self.assertEqual(17, len(direct), f"direct Tooling inventory: {direct}")
+        self.assertEqual(0, len(wrappers), f"wrapper Tooling inventory: {wrappers}")
+        # Propagate through local reusable workflows, with a finite fixed point.
+        changed = True
+        while changed:
+            changed = False
+            for name, document in documents.items():
+                for job_id, job in (document.get("jobs") or {}).items():
+                    if not isinstance(job, dict):
+                        continue
+                    ref = _normal_action_ref(job.get("uses"))
+                    if ref.startswith(".github/workflows/") and ref.split("/")[-1] in tooling_workflows:
+                        self.assertNotIn("runs-on", job, f"{name}:{job_id}: reusable caller")
+                        if name not in tooling_workflows:
+                            tooling_workflows.add(name)
+                            changed = True
+
+    def test_reachability_mutations(self):
+        yaml = _yaml_parser()
+        text = workflow("classic-v1-remediation.yml")
+        action = "./.github/actions/wp-stack-tooling"
+        wrapper = "./.github/actions/example-wrapper"
+        actions = {".github/actions/example-wrapper": {"runs": {"using": "composite", "steps": [{"uses": action}]}}}
+        def load(path):
+            return actions[path]
+        def check(ref, runner):
+            mutated = text.replace(action, ref, 1).replace("runs-on: ubuntu-24.04", "runs-on: " + runner, 1)
+            job = yaml.safe_load(mutated)["jobs"]["http-profile"]
+            refs = [s.get("uses") for s in job["steps"] if isinstance(s, dict)]
+            reachable = any(_tooling_reachable(r, load) for r in refs)
+            return reachable, _runner_contract_violations(job, ci_job_block(mutated, "http-profile"))
+        for ref in (wrapper, action + "/", "'" + action + "'"):
+            reachable, failures = check(ref, "ubuntu-latest")
+            self.assertTrue(reachable, ref)
+            self.assertTrue(failures, ref)
+        reachable, failures = check(wrapper, "ubuntu-24.04")
+        self.assertTrue(reachable)
+        self.assertEqual([], failures)
+        actions[".github/actions/example-wrapper"]["runs"]["steps"] = [{"uses": wrapper}]
+        self.assertFalse(_tooling_reachable(wrapper, load))
+        actions[".github/actions/example-wrapper"]["runs"]["steps"].append({"uses": action})
+        self.assertTrue(_tooling_reachable(wrapper, load))
+
+
+class Day2ClosedVocabularyProjectionTests(unittest.TestCase):
+    """The published Day-2 line cannot carry anything outside its vocabulary.
+
+    Layer 1: the projector's own tests (clinic-practice-management/tests/bin/
+    test_pilot_day2_failure_report.py) prove hostile log text collapses.
+    Layer 2, here: the *workflow* can only ever pass closed tokens or
+    digits-bounded copies into the line, the accepted token set is exactly the
+    intended one per field, and the pre-existing annotation guard still rejects
+    dynamic `::error::`/`::warning::`/`::notice::`.
+    """
+
+    #: First shell line of the projection step; mutation anchor.
+    ANCHOR = (
+        '          day2_journey="$(python3 bin/pilot-day2-failure-report.py '
+        "--log /tmp/day2-workflows-browser.log --field journey "
+        "|| printf 'unrecognised')\""
+    )
+    SWALLOW_PREFIX = "          continue-on-error: true"
+    INTEGERS_GUARD_HEAD = '          case "$day2_http" in\n'
+
+    def base(self):
+        text = workflow("pilot-gate.yml")
+        self.assertIn(self.ANCHOR, text)
+        return text
+
+    def codes(self, text):
+        """Violation codes of the dedicated Day-2 projection checker."""
+        return {code for code, _, _ in pilot_day2_projection_violations(text)}
+
+    def guard_codes(self, text):
+        """Violation codes of the pre-existing pilot-gate public-output guard."""
+        return {code for code, _, _ in pilot_gate_public_output_violations(text)}
+
+    def test_pilot_gate_publishes_exactly_one_closed_day2_projection(self):
+        base = self.base()
+        self.assertEqual(pilot_day2_projection_violations(base), [])
+        self.assertEqual(base.count("day2-browser-failure: journey=%s"), 1)
+        # The projection lives in its own step, not inside the evidence-body step
+        # whose single-writer contract must stay untouched.
+        evidence_step = base.split(
+            "- name: Post Day-2 Operational Workflows evidence to PR", 1
+        )[1].split("\n      - name:", 1)[0]
+        self.assertNotIn("day2-browser-failure", evidence_step)
+        self.assertNotIn("pilot-day2-failure-report.py", evidence_step)
+
+    def test_ci_runs_the_projector_tests_without_swallowing_failure(self):
+        text = workflow("ci.yml")
+        self.assertIn(
+            "python3 -m unittest discover -s tests/bin "
+            "-p 'test_pilot_day2_failure_report.py' -v",
+            text,
+        )
+        block = text.split("- name: Day-2 closed-vocabulary projection tests", 1)[1]
+        block = block.split("\n      - name:", 1)[0]
+        self.assertIn("working-directory: ${{ github.workspace }}/clinic-practice-management", block)
+        for swallow in ("|| true", "continue-on-error"):
+            self.assertNotIn(swallow, block)
+
+    def test_new_tokens_are_registered_and_do_not_widen_evidence_bodies(self):
+        self.assertLessEqual(_PILOT_DAY2_SUMMARY_CLOSED_TOKENS, _PILOT_SUMMARY_CLOSED_TOKENS)
+        for token in (
+            "journey-A1-public",
+            "hold-countdown",
+            "CLINIC_BOOKING_BUSY",
+            "persisted_slot",
+            "lock_wait_timeout",
+            "unrecognised",
+        ):
+            self.assertIn(token, _PILOT_SUMMARY_CLOSED_TOKENS)
+        # Summary-only: the evidence-body vocabulary stays exactly as reviewed.
+        self.assertEqual(
+            _PILOT_EVIDENCE_CLOSED_TOKENS,
+            frozenset({"PASS", "FAIL", "WARN", "NOT_RUN", "UNAVAILABLE", "unavailable"}),
+        )
+
+    def test_token_constants_match_the_projector_vocabulary(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "day2_projector",
+            ROOT / "clinic-practice-management" / "bin" / "pilot-day2-failure-report.py",
+        )
+        projector = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(projector)
+        self.assertEqual(tuple(_PILOT_DAY2_JOURNEYS), projector.JOURNEYS)
+        self.assertEqual(tuple(_PILOT_DAY2_STAGES), projector.STAGES)
+        self.assertEqual(tuple(_PILOT_DAY2_READS), projector.READS)
+        self.assertEqual(tuple(_PILOT_DAY2_CODES), projector.ENUMS["code"][:3])
+
+    def test_guard_still_rejects_dynamic_annotations(self):
+        base = self.base()
+        anchor = (
+            "            echo '::error::day2-workflows-browser: Day-2 Operational "
+            "Workflows browser acceptance failed; dynamic diagnostics withheld'"
+        )
+        self.assertIn(anchor, base)
+        replacements = (
+            '            echo "::error::day2-workflows-browser failed: $(cat /tmp/day2-workflows-browser.log)"',
+            "            printf '::error::%s\\\\n' \"$DAY2_FAIL\"",
+            '            echo "::warning::day2: $day2_journey"',
+            '            echo "::notice::day2: $safe_day2_errno"',
+            '            echo "##[error]$day2_code_token"',
+        )
+        for replacement in replacements:
+            with self.subTest(replacement=replacement.strip()[:60]):
+                mutated = base.replace(anchor, replacement, 1)
+                self.assertIn("ANNOTATION_NON_LITERAL", self.guard_codes(mutated))
+
+    def test_guard_rejects_widening_any_field_vocabulary(self):
+        base = self.base()
+        mutations = {
+            "journey": (
+                "            journey-A1-public) day2_journey_token=journey-A1-public ;;",
+                "            journey-A1-public) day2_journey_token=journey-Z9-extra ;;",
+            ),
+            "stage": (
+                "            hold-countdown) day2_stage_token=hold-countdown ;;",
+                "            hold-countdown) day2_stage_token=stage-from-log ;;",
+            ),
+            "read": (
+                "            slot) safe_day2_read=slot ;;",
+                "            slot) safe_day2_read=slot_or_anything_else ;;",
+            ),
+            "code": (
+                "            other) day2_code_token=other ;;",
+                "            other) day2_code_token=code_from_log ;;",
+            ),
+            "errno_class": (
+                "                  day2_errno_class=lock_wait_timeout",
+                "                  day2_errno_class=$day2_errno",
+            ),
+        }
+        for field, (old, new) in mutations.items():
+            with self.subTest(field=field):
+                self.assertIn(old, base)
+                codes = self.codes(base.replace(old, new, 1))
+                self.assertTrue(
+                    codes
+                    & {
+                        "DAY2_ENUM_WIDENED",
+                        "DAY2_ENUM_DYNAMIC",
+                        "DAY2_ENUM_ARMS",
+                        "DAY2_ENUM_DERIVED",
+                        "DAY2_ENUM_CATCHALL",
+                        "SUMMARY_VAR_TAINTED",
+                    },
+                    f"{field} mutation was accepted: {sorted(codes)}",
+                )
+
+    def test_guard_rejects_unvalidated_integer_paths(self):
+        base = self.base()
+        head = self.INTEGERS_GUARD_HEAD
+        self.assertIn(head + "            ''|*[!0-9]*)", base)
+        mutations = (
+            (head + "            ''|*[!0-9]*)", head + "            x-never)"),
+            ('if [ "${#day2_http}" -le 3 ]; then', "if true; then"),
+            ('"$safe_day2_errno" "$day2_errno_class"', '"$day2_errno" "$day2_errno_class"'),
+            ("                safe_day2_elapsed=unrecognised\n", "                safe_day2_elapsed=$day2_elapsed\n"),
+            ('if [ "${#day2_elapsed}" -le 5 ]; then', 'if [ "${#day2_elapsed}" -le 99 ]; then'),
+        )
+        for old, new in mutations:
+            with self.subTest(mutation=old.strip().splitlines()[-1][:50]):
+                self.assertIn(old, base)
+                codes = self.codes(base.replace(old, new, 1))
+                self.assertTrue(
+                    codes
+                    & {
+                        "DAY2_INT_GUARD",
+                        "DAY2_SUMMARY_SHAPE",
+                        "SUMMARY_VAR_TAINTED",
+                        "EVIDENCE_VAR_TAINTED",
+                        "DAY2_ENUM_DERIVED",
+                    },
+                    f"integer mutation was accepted: {sorted(codes)}",
+                )
+
+    def test_guard_rejects_shape_annotations_and_swallowing(self):
+        base = self.base()
+        shape_mutations = (
+            ("errno_class=%s busy=%s elapsed_s=%s", "errno_class=%s busy=%s elapsed_s=%s extra=%s"),
+            ("errno_class=%s busy=%s", "busy=%s errno_class=%s"),
+            ("journey=%s stage=%s http=%s", "stage=%s journey=%s http=%s"),
+            ("day2-browser-failure: journey=", "day2-failure: journey="),
+        )
+        for old, new in shape_mutations:
+            with self.subTest(shape=old[:34]):
+                self.assertIn(old, base)
+                self.assertIn("DAY2_SUMMARY_SHAPE", self.codes(base.replace(old, new, 1)))
+
+        step_prefixes = (
+            "          echo '::warning::day2 projection degraded'",
+            self.SWALLOW_PREFIX,
+            "          set -e",
+            "          python3 bin/pilot-day2-failure-report.py --log /tmp/day2-workflows-browser.log || true",
+        )
+        for append in step_prefixes:
+            with self.subTest(append=append.strip()[:40]):
+                mutated = base.replace(self.ANCHOR, append + "\n" + self.ANCHOR, 1)
+                codes = self.codes(mutated)
+                self.assertTrue(
+                    codes & {"DAY2_STEP_ANNOTATION", "DAY2_STEP_SWALLOW", "DAY2_STEP_MASKING"},
+                    f"step-level mutation was accepted: {sorted(codes)}",
+                )
+
+    def test_guard_rejects_a_missing_or_duplicated_step_and_extra_writer(self):
+        base = self.base()
+        step_name = "      - name: Day-2 Operational Workflows — closed-vocabulary failure projection\n"
+        self.assertIn(step_name, base)
+        without_step = base.replace(step_name, "      - name: removed\n", 1)
+        self.assertIn("DAY2_PROJECTION_STEP", self.codes(without_step))
+
+        writer_tail = '            >> "$GITHUB_STEP_SUMMARY"\n'
+        self.assertIn(writer_tail, base)
+        extra_writer = base.replace(
+            writer_tail,
+            writer_tail
+            + "          echo 'day2-browser-failure: journey=none' >> \"$GITHUB_STEP_SUMMARY\"\n",
+            1,
+        )
+        self.assertIn("DAY2_SUMMARY_WRITER", self.codes(extra_writer))
+
+
+    # --- behavioural proof: run the REAL step text under `bash -e`, exactly as
+    # GitHub does for a `run:` block, and assert what it publishes. Two modes:
+    #
+    #   stub    — each `--field <name>` invocation is replaced by `${STUB_<name>}`,
+    #             which is how the `case`/copy logic is driven with hostile values.
+    #   real    — the step is run verbatim against the real projector and a real
+    #             log file (an absolute, test-owned path), so a missing log, an
+    #             empty log, a nonzero projector exit and a missing interpreter
+    #             are all exercised as real process failures.
+
+    STEP_FIELDS = ("journey", "stage", "http", "code", "read", "errno", "busy", "elapsed_s")
+
+    #: The browser step's `id` the projection step is conditioned on.
+    BROWSER_STEP_ID = "day2_workflows_browser"
+
+    def _projection_step(self):
+        step = _day2_projection_step_dict(workflow("pilot-gate.yml"))
+        self.assertIsNotNone(step)
+        return step
+
+    def _run_projection_step(self, values=None, *, mode="stub", log_path=None,
+                             field_values=None, field_fails=False, field_hang=False):
+        """Execute the step's shell under `bash -e`; return (rc, stdout, summary).
+
+        `bash -e` is the interpreter GitHub uses for a `run:` block, so the
+        failure semantics under test are the real ones: an uncaught nonzero exit
+        anywhere aborts the step with that status.
+        """
+        run_text = self._projection_step()["run"]
+        body = run_text
+        log_path = log_path or "/tmp/day2-workflows-browser.log"
+        if mode == "stub":
+            for field in self.STEP_FIELDS:
+                body = body.replace(
+                    "$(python3 bin/pilot-day2-failure-report.py "
+                    "--log /tmp/day2-workflows-browser.log --field %s || printf 'unrecognised')" % field,
+                    "$(printf '%%s' \"${STUB_%s-unrecognised}\" || printf 'unrecognised')" % field,
+                )
+            self.assertNotIn("pilot-day2-failure-report.py", body)
+        else:
+            body = body.replace("/tmp/day2-workflows-browser.log", log_path)
+        with tempfile.TemporaryDirectory(prefix="day2-step-") as tmp:
+            script = Path(tmp) / "step.sh"
+            summary = Path(tmp) / "summary.txt"
+            script.write_text(body, encoding="utf-8")
+            env = dict(os.environ)
+            env["GITHUB_STEP_SUMMARY"] = str(summary)
+            for field in self.STEP_FIELDS:
+                env["STUB_" + field] = str((values or {}).get(field, "unrecognised"))
+            if field_values is not None:
+                env["DAY2_TEST_FIELD"] = json.dumps(field_values)
+            completed = subprocess.run(
+                ["bash", "-e", str(script)], capture_output=True, text=True, env=env,
+                cwd=PLUGIN_DIR, check=False,
+            )
+            published = summary.read_text(encoding="utf-8") if summary.exists() else ""
+            return completed.returncode, completed.stdout, published
+
+    def test_projection_step_publishes_a_closed_line_for_legitimate_values(self):
+        cases = (
+            ({"journey": "journey-A1-public", "stage": "hold-countdown", "http": "503",
+              "code": "CLINIC_BOOKING_BUSY", "read": "slot", "errno": "1213",
+              "busy": "present", "elapsed_s": "51"},
+             "journey=journey-A1-public stage=hold-countdown http=503 "
+             "code=CLINIC_BOOKING_BUSY read=slot errno=1213 errno_class=deadlock "
+             "busy=present elapsed_s=51"),
+            ({"journey": "journey-A2-reschedule", "stage": "receipt", "http": "409",
+              "code": "other", "read": "reschedule_second_slot", "errno": "1205",
+              "busy": "absent", "elapsed_s": "7"},
+             "journey=journey-A2-reschedule stage=receipt http=409 code=other "
+             "read=reschedule_second_slot errno=1205 errno_class=lock_wait_timeout "
+             "busy=absent elapsed_s=7"),
+            ({"journey": "journey-B-reception", "stage": "none", "http": "unrecognised",
+              "code": "none", "read": "none", "errno": "unrecognised",
+              "busy": "not_found", "elapsed_s": "unrecognised"},
+             "journey=journey-B-reception stage=none http=unrecognised code=none "
+             "read=none errno=unrecognised errno_class=unknown busy=not_found "
+             "elapsed_s=unrecognised"),
+            # H4: only successful statuses were observed -> the closed token
+            # `none`, published verbatim through the step's literal arm.
+            ({"journey": "journey-A1-public", "stage": "hold-countdown", "http": "none",
+              "code": "none", "read": "none", "errno": "unrecognised",
+              "busy": "absent", "elapsed_s": "51"},
+             "journey=journey-A1-public stage=hold-countdown http=none code=none "
+             "read=none errno=unrecognised errno_class=unknown busy=absent "
+             "elapsed_s=51"),
+        )
+        for values, expected in cases:
+            with self.subTest(journey=values["journey"]):
+                rc, _, published = self._run_projection_step(values)
+                self.assertEqual(rc, 0)
+                self.assertEqual(published, "day2-browser-failure: " + expected + "\n")
+
+    def test_projection_step_collapses_hostile_values_at_runtime(self):
+        hostile = "x9; ::error::canary ##[error] $(id) `id` /etc/passwd"
+        cases = (
+            ({"journey": hostile, "stage": hostile, "http": "2000", "code": hostile,
+              "read": hostile, "errno": "999999", "busy": hostile,
+              "elapsed_s": "99999999"},
+             "journey=unrecognised stage=unrecognised http=unrecognised "
+             "code=unrecognised read=unrecognised errno=unrecognised "
+             "errno_class=unknown busy=unrecognised elapsed_s=unrecognised"),
+            ({"journey": "journey-C-doctors", "stage": "none", "http": "50x",
+              "code": "other", "read": "nosuchread", "errno": "12130",
+              "busy": "fetch_failed", "elapsed_s": "00000051"},
+             "journey=journey-C-doctors stage=none http=unrecognised code=other "
+             "read=unrecognised errno=12130 errno_class=other busy=fetch_failed "
+             "elapsed_s=unrecognised"),
+        )
+        rc, _, published = self._run_projection_step(cases[0][0])
+        self.assertEqual(rc, 0)
+        self.assertEqual(published, "day2-browser-failure: " + cases[0][1] + "\n")
+        for canary in ("::error::", "##[", "$(id)", "`id`", "/etc/passwd", "canary"):
+            self.assertNotIn(canary, published)
+
+        # A canonical integer that is merely out of *length* range collapses,
+        # while any other digits-only value (e.g. errno=12130) stays a number --
+        # the errno *class* then reports `other` rather than guessing.
+        rc, _, published = self._run_projection_step(cases[1][0])
+        self.assertEqual(rc, 0)
+        self.assertNotIn("http=50x", published)
+        self.assertNotIn("00000051", published)
+        self.assertIn("errno=12130", published)
+        self.assertIn("errno_class=other", published)
+
+    def test_projection_step_treats_a_zero_errno_as_unknown(self):
+        """`(int) $dbh->errno` is 0 when no driver error is pending: no class."""
+        rc, _, published = self._run_projection_step(
+            {"journey": "journey-A1-public", "stage": "hold-request", "http": "503",
+             "code": "CLINIC_BOOKING_BUSY", "read": "slot", "errno": "0",
+             "busy": "not_found", "elapsed_s": "9"}
+        )
+        self.assertEqual(rc, 0)
+        self.assertIn("errno=0 errno_class=unknown", published)
+
+    def test_projection_step_handles_every_field_empty(self):
+        rc, _, published = self._run_projection_step({})
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            published,
+            "day2-browser-failure: journey=unrecognised stage=unrecognised "
+            "http=unrecognised code=unrecognised read=unrecognised "
+            "errno=unrecognised errno_class=unknown busy=unrecognised "
+            "elapsed_s=unrecognised\n",
+        )
+
+    # --- real-process failure modes: each must still publish a closed line, and
+    # none may make the step exit nonzero (that is what would fail the job).
+
+    def _write_step_script(self, tmp, body):
+        script = Path(tmp) / "step.sh"
+        script.write_text(body, encoding="utf-8")
+        return script
+
+    def _run_real(self, tmp, body):
+        script = self._write_step_script(tmp, body)
+        summary = Path(tmp) / "summary.txt"
+        env = dict(os.environ)
+        env["GITHUB_STEP_SUMMARY"] = str(summary)
+        completed = subprocess.run(
+            ["bash", "-e", str(script)], capture_output=True, text=True, env=env,
+            cwd=PLUGIN_DIR, check=False,
+        )
+        published = summary.read_text(encoding="utf-8") if summary.exists() else ""
+        return completed, published
+
+    def test_projection_step_survives_a_missing_log(self):
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            log = str(Path(tmp) / "absent.log")
+            rc, _, published = self._run_projection_step(mode="real", log_path=log)
+        self.assertEqual(rc, 0)
+        self.assertTrue(published.startswith("day2-browser-failure: journey=unrecognised "), published)
+        self.assertIn("code=none", published)
+        self.assertIn("busy=absent", published)
+
+    def test_projection_step_survives_an_empty_log(self):
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            log = Path(tmp) / "empty.log"
+            log.write_text("", encoding="utf-8")
+            rc, _, published = self._run_projection_step(mode="real", log_path=str(log))
+        self.assertEqual(rc, 0)
+        # A log with no timing line and no failure projects `journey=none` in the
+        # projector, and this step deliberately has no `none` arm for `journey`:
+        # it only runs after a real browser failure, so "no failure in the log"
+        # means the log is not the failing run's log. `unrecognised` says that
+        # honestly instead of publishing `journey=none` beside a failed gate.
+        self.assertIn("journey=unrecognised", published)
+        self.assertIn("stage=none", published)
+
+    def test_projection_step_survives_a_nonzero_projector_exit(self):
+        """A projector that exits 1 must degrade to `unrecognised`, not fail the step."""
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            run_text = self._projection_step()["run"]
+            body = run_text.replace(
+                "python3 bin/pilot-day2-failure-report.py",
+                "python3 -c 'import sys; sys.exit(1)'",
+            )
+            completed, published = self._run_real(tmp, body)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            published,
+            "day2-browser-failure: journey=unrecognised stage=unrecognised "
+            "http=unrecognised code=unrecognised read=unrecognised "
+            "errno=unrecognised errno_class=unknown busy=unrecognised "
+            "elapsed_s=unrecognised\n",
+        )
+
+    def test_projection_step_survives_a_missing_interpreter(self):
+        """No `python3` on PATH must degrade too, exactly like a nonzero exit."""
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            run_text = self._projection_step()["run"]
+            body = run_text.replace("python3 ", "day2-no-such-interpreter ", 1)
+            script = self._write_step_script(tmp, body)
+            summary = Path(tmp) / "summary.txt"
+            env = dict(os.environ)
+            env["GITHUB_STEP_SUMMARY"] = str(summary)
+            # Only the FIRST call is broken: the point is that one broken call
+            # cannot take the step down (the rest still run).
+            completed = subprocess.run(
+                ["bash", "-e", str(script)], capture_output=True, text=True, env=env,
+                cwd=PLUGIN_DIR, check=False,
+            )
+            published = summary.read_text(encoding="utf-8") if summary.exists() else ""
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertIn("journey=unrecognised", published)
+        self.assertIn("code=none", published)
+
+    def test_projection_step_survives_a_fifo_at_the_log_path(self):
+        """A FIFO would block `open()`; the projector must refuse a non-regular file."""
+        with tempfile.TemporaryDirectory(prefix="day2-realmode-") as tmp:
+            fifo = Path(tmp) / "fifo.log"
+            os.mkfifo(fifo)
+            rc, _, published = self._run_projection_step(mode="real", log_path=str(fifo))
+        self.assertEqual(rc, 0)
+        self.assertTrue(published.startswith("day2-browser-failure: journey=unrecognised "), published)
+
+    def test_projection_step_is_conditioned_on_browser_failure_only(self):
+        """On a passing browser step the step is skipped: nothing is published.
+
+        GitHub evaluates `if:` before the step, so the published contract is
+        structural: the condition must name the browser step's `outcome`, and
+        `outcome` (per GitHub's contexts reference) is the pre-`continue-on-error`
+        result. A pass, a skip, or a cancellation therefore cannot trigger it.
+        """
+        step = self._projection_step()
+        self.assertEqual(" ".join(str(step["if"]).split()), _PILOT_DAY2_STEP_CONDITION)
+        self.assertIn("steps.%s.outcome == 'failure'" % self.BROWSER_STEP_ID, step["if"])
+        # The browser step must really carry that id, or the condition is dead.
+        browser = [
+            s for s in _yaml_parser().safe_load(workflow("pilot-gate.yml"))["jobs"]["responsive"]["steps"]
+            if isinstance(s, dict) and s.get("id") == self.BROWSER_STEP_ID
+        ]
+        self.assertEqual(len(browser), 1)
+
+    def test_guard_rejects_a_step_that_can_run_on_a_passing_run(self):
+        """F1/F2: on a green run the step must be skipped, so it must be gated."""
+        base = self.base()
+        condition = _PILOT_DAY2_STEP_CONDITION
+        self.assertIn("        if: " + condition + "\n", base)
+        for weakened in (
+            "always() && !cancelled()",
+            "always()",
+            # `!cancelled()` alone is not valid YAML (`!` starts a tag), so it
+            # cannot be a real regression here; `always()` is the weakening that
+            # can.
+            "success()",
+            "failure()",
+            "always() && !cancelled() && steps.day2_workflows_browser.conclusion == 'failure'",
+            "always() && !cancelled() && steps.day2_workflows_browser.outcome != 'success'",
+        ):
+            with self.subTest(weakened=weakened):
+                mutated = base.replace(
+                    "        if: " + condition + "\n", "        if: " + weakened + "\n", 1
+                )
+                self.assertNotEqual(mutated, base)
+                self.assertIn("DAY2_STEP_CONDITION", self.codes(mutated))
+
+    def test_guard_rejects_a_missing_degradation_of_any_selection(self):
+        """F1(b): a projector failure must degrade, never trip `bash -e`."""
+        base = self.base()
+        for name, field in _PILOT_DAY2_SELECTIONS.items():
+            with self.subTest(field=field):
+                old = (
+                    '          %s="$(python3 bin/pilot-day2-failure-report.py '
+                    "--log /tmp/day2-workflows-browser.log --field %s "
+                    "|| printf 'unrecognised')\"" % (name, field)
+                )
+                self.assertIn(old, base)
+                mutated = base.replace(
+                    old,
+                    '          %s="$(python3 bin/pilot-day2-failure-report.py '
+                    '--log /tmp/day2-workflows-browser.log --field %s)"' % (name, field),
+                    1,
+                )
+                self.assertIn("DAY2_STEP_DEGRADE", self.codes(mutated))
+
+    def test_guard_rejects_a_tainted_none_override(self):
+        """The `http=none` override must be literal-to-literal on both sides.
+
+        `none` cannot be a `case` arm: the pre-existing guard requires
+        `''|*[!0-9]*)` to remain the FIRST arm and to not reference its own
+        source, so `none` (not digits) is produced by that arm's fixed token and
+        then replaced by one post-`case` literal comparison. Every relaxed form
+        must be rejected.
+        """
+        base = self.base()
+        good = (
+            '          if [ "$day2_http" = "none" ]; then\n'
+            "            safe_day2_http=none\n"
+            "          fi\n"
+        )
+        self.assertIn(good, base)
+        bad = {
+            "rhs interpolates": ('            safe_day2_http=none', '            safe_day2_http="$day2_http"'),
+            "wildcard test": ('if [ "$day2_http" = "none" ]; then', 'if [ -n "$day2_http" ]; then'),
+            "other literal": ('[ "$day2_http" = "none" ]', '[ "$day2_http" = "200" ]'),
+            "duplicated": (good, good + good),
+            "removed": (good, ""),
+            "else branch": ("            safe_day2_http=none\n          fi",
+                            "            safe_day2_http=none\n          else\n            safe_day2_http=none\n          fi"),
+        }
+        for label, (old, new) in bad.items():
+            with self.subTest(label=label):
+                mutated = base.replace(old, new, 1)
+                self.assertNotEqual(mutated, base, label)
+                codes = self.codes(mutated) | self.guard_codes(mutated)
+                self.assertIn(
+                    "DAY2_INT_GUARD", codes,
+                    f"{label} was accepted: {sorted(codes)}",
+                )
+
+    def test_guard_rejects_a_dropped_field_selection(self):
+        """F4: `busy` must be selected, or the published line cannot be trusted."""
+        base = self.base()
+        busy_block = (
+            '          day2_busy="$(python3 bin/pilot-day2-failure-report.py '
+            "--log /tmp/day2-workflows-browser.log --field busy "
+            "|| printf 'unrecognised')\"\n"
+        )
+        self.assertIn(busy_block, base)
+        mutated = base.replace(busy_block, "          day2_busy=absent\n", 1)
+        self.assertIn("DAY2_STEP_DEGRADE", self.codes(mutated))
+
+    def test_projection_step_reports_an_unwritable_summary_as_nonzero(self):
+        """H6: the ONE way the step can fail is a broken `$GITHUB_STEP_SUMMARY`.
+
+        Run the real step text under `bash -e` with the summary path pointing at
+        a directory (unwritable) and at an unset variable. Both must exit
+        NONZERO — the append is the last statement, so its failure is the step's
+        failure, and it is deliberately not suppressed. This matters little in
+        practice: the step only runs after the browser step has already failed,
+        so the job verdict is unchanged either way — but the step must not
+        pretend it published something it did not.
+        """
+        run_text = self._projection_step()["run"]
+        with tempfile.TemporaryDirectory(prefix="day2-summary-") as tmp:
+            script = Path(tmp) / "step.sh"
+            script.write_text(run_text, encoding="utf-8")
+            log = Path(tmp) / "day2.log"
+            log.write_text(
+                "FAIL journey-A1-public — Day-2 browser journey failed "
+                "(journey-A1-public) — public booking root missing\n",
+                encoding="utf-8",
+            )
+            body = script.read_text(encoding="utf-8").replace(
+                "/tmp/day2-workflows-browser.log", str(log)
+            )
+            script.write_text(body, encoding="utf-8")
+
+            # (a) summary path is a DIRECTORY -> the append cannot succeed
+            env = dict(os.environ)
+            env["GITHUB_STEP_SUMMARY"] = tmp
+            completed = subprocess.run(
+                ["bash", "-e", str(script)], capture_output=True, text=True,
+                env=env, cwd=PLUGIN_DIR, check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0, "expected a nonzero exit")
+            # `printf` fails BEFORE writing, so nothing is published. That is the
+            # honest outcome: the step must not claim a line it did not write.
+            self.assertNotIn("day2-browser-failure: journey=", completed.stdout)
+            self.assertIn("Is a directory", completed.stderr)
+
+            # (b) the variable is UNSET entirely -> same class of failure
+            env2 = dict(os.environ)
+            env2.pop("GITHUB_STEP_SUMMARY", None)
+            completed2 = subprocess.run(
+                ["bash", "-e", str(script)], capture_output=True, text=True,
+                env=env2, cwd=PLUGIN_DIR, check=False,
+            )
+            self.assertNotEqual(completed2.returncode, 0, "expected a nonzero exit")
+
+    def test_summary_writer_is_the_last_statement(self):
+        """Nothing may run after the publish, so nothing can fail after it."""
+        run_text = self._projection_step()["run"]
+        logical = [line.strip() for _, line in _logical_lines(run_text) if line.strip()]
+        self.assertIn('>> "$GITHUB_STEP_SUMMARY"', logical[-1])
+        self.assertNotIn("continue-on-error", run_text.lower())
+
+    def test_checker_fails_closed_on_a_document_without_the_projection(self):
+        self.assertEqual(
+            self.codes("name: x\non: push\njobs: {}\n"),
+            {"DAY2_PROJECTION_STEP"},
+        )
 
 
 if __name__ == "__main__":

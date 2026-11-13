@@ -75,13 +75,18 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/classic-v1
-          mysql --protocol=TCP -h 127.0.0.1 -P ${{ matrix.port }} -uroot -proot -NBe 'SELECT VERSION()' | tee /tmp/classic-v1/db-version.txt
+          mysql --protocol=TCP -h 127.0.0.1 -P ${{ matrix.port }} -uroot -proot -NBe 'SELECT VERSION()' > /tmp/classic-v1/db-version.txt
           if [ "${{ matrix.database }}" = mariadb ]; then grep -q '^11\.4\.13-MariaDB' /tmp/classic-v1/db-version.txt; else grep -q '^8\.' /tmp/classic-v1/db-version.txt; fi
           git rev-parse HEAD > /tmp/classic-v1/candidate-sha.txt
           php -v | head -1 > /tmp/classic-v1/php-version.txt
       - name: Install locked test dependencies and WordPress
         run: |
           composer install --prefer-dist --no-progress --no-interaction
+          # The classic runs deliberately do NOT use the composer.lock PHPUnit:
+          # this require resolves the newest 9.6.x on the runner (the exact
+          # patch is not pinned in this repository). The workflow projectors
+          # are written against that 9.6 JUnit shape (nested suites with
+          # propagated counts, a warnings attribute and <warning> children).
           composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
           bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3 ${{ matrix.port }}
       - name: Prepare archived baseline with identical regression tests
@@ -95,11 +100,12 @@ jobs:
           # Regenerate Composer paths against the archived production source;
           # never load candidate src through a copied autoload map.
           cd /tmp/classic-v1/baseline/clinic-practice-management
-          composer dump-autoload --no-interaction 2>&1 | tee /tmp/classic-v1/baseline-prepare.log
+          composer dump-autoload --no-interaction > /tmp/classic-v1/baseline-prepare.log 2>&1
       - name: Expose baseline preparation failure
         if: failure()
         run: |
-          { echo '### Baseline preparation failed'; echo '```'; tail -60 /tmp/classic-v1/baseline-prepare.log 2>/dev/null || true; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          { echo '### Baseline preparation failed'; echo 'verdict=FAIL'; } >> "$GITHUB_STEP_SUMMARY"
+          echo '::error::BASELINE_PREPARE verdict=FAIL'
       - name: Execute baseline regressions (failures are evidence, not a pass)
         run: |
           set -o pipefail
@@ -110,20 +116,163 @@ jobs:
           files=[os.path.join(os.getcwd(),'tests/Integration/ClassicV1CriticalRemediationTest.php'),os.path.join(os.getcwd(),'tests/Integration/ClassicV1PerformanceProbeTest.php')]
           open('/tmp/classic-v1/baseline-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
           PY
-          CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --configuration /tmp/classic-v1/baseline-suite.xml --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php 2>&1 | tee /tmp/classic-v1/baseline-${{ matrix.database }}.log || rc=$?
+          CPMS_PERF_OUTPUT=/tmp/classic-v1/baseline-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --configuration /tmp/classic-v1/baseline-suite.xml --log-junit /tmp/classic-v1/baseline-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php > /tmp/classic-v1/baseline-${{ matrix.database }}.log 2>&1 || rc=$?
           echo "$rc" > /tmp/classic-v1/baseline-exit.txt
-          grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/baseline-${{ matrix.database }}.log || true
-          python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml <<'PY' || true
-          import os, sys, xml.etree.ElementTree as ET
-          p=sys.argv[1]
-          if os.path.isfile(p):
-              root=ET.parse(p).getroot()
-              for case in root.iter('testcase'):
-                  for tag in ('failure','error'):
-                      node=case.find(tag)
-                      if node is not None:
-                          text=(node.get('message') or node.text or '').replace('%','%25').replace('\r','%0D').replace('\n','%0A')[:900]
-                          print('::notice::BASELINE '+case.get('name','test')+' '+text)
+          python3 - /tmp/classic-v1/baseline-${{ matrix.database }}.xml BASELINE <<'PY'
+          # cpms-fixed-schema-projection
+          import sys, xml.etree.ElementTree as ET
+          import xml.parsers.expat as expat
+          MAX_COUNT = 1000000
+          MAX_SUITES = 10000
+          MAX_XML_BYTES = 8388608
+          def canon_count(raw):
+              if not isinstance(raw, str) or raw == '' or len(raw) > 7:
+                  return None
+              for ch in raw:
+                  if ch not in '0123456789':
+                      return None
+              if len(raw) > 1 and raw[0] == '0':
+                  return None
+              value = int(raw)
+              return value if value <= MAX_COUNT else None
+          def parse_junit(blob):
+              if blob is None or len(blob) > MAX_XML_BYTES:
+                  return None
+              if blob.startswith(b'\xef\xbb\xbf') or blob.startswith(b'\xff\xfe') or blob.startswith(b'\xfe\xff') or b'\x00' in blob:
+                  return None
+              try:
+                  text = blob.decode('utf-8')
+              except Exception:
+                  return None
+              holder = {'root': None, 'stack': []}
+              parser = expat.ParserCreate()
+              def fail(*args):
+                  raise ValueError('invalid')
+              def xml_decl(version, encoding, standalone):
+                  if encoding is not None and encoding.lower() != 'utf-8':
+                      fail()
+              def start_element(name, attrs):
+                  element = ET.Element(name, dict(attrs))
+                  if holder['stack']:
+                      holder['stack'][-1].append(element)
+                  elif holder['root'] is None:
+                      holder['root'] = element
+                  else:
+                      fail()
+                  holder['stack'].append(element)
+              def end_element(name):
+                  if not holder['stack']:
+                      fail()
+                  holder['stack'].pop()
+              parser.StartElementHandler = start_element
+              parser.EndElementHandler = end_element
+              parser.StartDoctypeDeclHandler = fail
+              parser.EntityDeclHandler = fail
+              parser.ExternalEntityRefHandler = fail
+              parser.XmlDeclHandler = xml_decl
+              try:
+                  parser.Parse(text, True)
+              except Exception:
+                  return None
+              if holder['stack'] or holder['root'] is None:
+                  return None
+              return holder['root']
+          TAG_KEYS = {'failure': 'failures', 'error': 'errors', 'skipped': 'skipped', 'warning': 'warnings'}
+          def suite_counts(suite):
+              counts = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              for element in suite.iter():
+                  if element.tag != 'testcase':
+                      continue
+                  counts['tests'] += 1
+                  seen = set()
+                  for child in element:
+                      if child.tag in TAG_KEYS and child.tag not in seen:
+                          seen.add(child.tag)
+                          counts[TAG_KEYS[child.tag]] += 1
+              return counts
+          def suites_consistent(root, outer):
+              suites = [el for el in root.iter() if el.tag == 'testsuite']
+              if not outer or not suites or len(suites) > MAX_SUITES:
+                  return None
+              for suite in suites:
+                  actual = suite_counts(suite)
+                  for key in ('tests', 'failures', 'errors', 'skipped'):
+                      value = canon_count(suite.get(key))
+                      if value is None or value != actual[key]:
+                          return None
+                  declared_warnings = suite.get('warnings')
+                  if declared_warnings is not None:
+                      value = canon_count(declared_warnings)
+                      if value is None or value != actual['warnings']:
+                          return None
+              totals = {}
+              for key in ('tests', 'failures', 'errors', 'skipped'):
+                  total = 0
+                  for suite in outer:
+                      total += canon_count(suite.get(key))
+                      if total > MAX_COUNT:
+                          return None
+                  totals[key] = total
+              totals['warnings'] = 0
+              for suite in outer:
+                  totals['warnings'] += suite_counts(suite)['warnings']
+                  if totals['warnings'] > MAX_COUNT:
+                      return None
+              doc = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              stack = [(root, False)]
+              while stack:
+                  element, inside = stack.pop()
+                  if element.tag == 'testsuite':
+                      inside = True
+                  if element.tag == 'testcase':
+                      if not inside:
+                          return None
+                      doc['tests'] += 1
+                  elif element.tag in TAG_KEYS:
+                      if not inside:
+                          return None
+                      doc[TAG_KEYS[element.tag]] += 1
+                  for child in element:
+                      stack.append((child, inside))
+              if doc['tests'] != totals['tests'] or doc['failures'] != totals['failures'] or doc['errors'] != totals['errors'] or doc['skipped'] != totals['skipped'] or doc['warnings'] != totals['warnings']:
+                  return None
+              return totals
+          def pass_verdict(totals):
+              if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
+                  return 'PASS'
+              return 'FAIL'
+          def verdict_for(path):
+              try:
+                  with open(path, 'rb') as handle:
+                      blob = handle.read(MAX_XML_BYTES + 1)
+              except Exception:
+                  return None
+              if len(blob) > MAX_XML_BYTES:
+                  return None
+              root = parse_junit(blob)
+              if root is None:
+                  return None
+              if root.tag == 'testsuite':
+                  outer = [root]
+              elif root.tag == 'testsuites':
+                  outer = root.findall('testsuite')
+              else:
+                  return None
+              return suites_consistent(root, outer)
+          def project(path, label):
+              if label not in ('BASELINE', 'CANDIDATE'):
+                  print('::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
+                  return
+              totals = verdict_for(path)
+              if totals is None:
+                  print('::notice::TESTS label=' + label + ' tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
+                  return
+              verdict = pass_verdict(totals)
+              print('::notice::TESTS label=' + label + ' tests=%d failures=%d errors=%d skipped=%d verdict=%s' % (totals['tests'], totals['failures'], totals['errors'], totals['skipped'], verdict))
+          try:
+              project(sys.argv[1], sys.argv[2])
+          except Exception:
+              print('::notice::TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
           PY
       - name: Reset database before candidate on the same runner
         run: |
@@ -136,66 +285,417 @@ jobs:
           files=[os.path.join(os.getcwd(),'tests/Integration/'+f) for f in ['ClassicV1CriticalRemediationTest.php','ClassicV1PerformanceProbeTest.php','SmsOtpDispatchTest.php','OtpSecurityTest.php','SmsClinicAuthorizationTest.php','ClinicalFlowTest.php','Phase11ReceptionAppointmentCancelRedTest.php','Phase2JobScopeRedFoundationTest.php','MigrationTest.php','OtpFlowTest.php','OtpAuditAtomicityTest.php']]
           open('/tmp/classic-v1/candidate-suite.xml','w').write('<phpunit><testsuites><testsuite name="classic">'+''.join('<file>'+f+'</file>' for f in files)+'</testsuite></testsuites></phpunit>')
           PY
-          CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --configuration /tmp/classic-v1/candidate-suite.xml --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php 2>&1 | tee /tmp/classic-v1/candidate-${{ matrix.database }}.log
-      - name: Expose candidate regression failures
+          CPMS_PERF_OUTPUT=/tmp/classic-v1/candidate-${{ matrix.database }}.json php -d memory_limit=1G vendor/bin/phpunit --configuration /tmp/classic-v1/candidate-suite.xml --log-junit /tmp/classic-v1/candidate-${{ matrix.database }}.xml --bootstrap tests/integration-bootstrap.php > /tmp/classic-v1/candidate-${{ matrix.database }}.log 2>&1
+      - name: Report candidate regression counts (fixed schema)
         if: failure()
         run: |
-          python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml <<'PY' || true
-          import os, sys, xml.etree.ElementTree as ET
-          p=sys.argv[1]
-          if os.path.isfile(p):
-              root=ET.parse(p).getroot()
-              for case in root.iter('testcase'):
-                  for tag in ('failure','error'):
-                      node=case.find(tag)
-                      if node is not None:
-                          text=(node.get('message') or node.text or '').replace('%','%25').replace('\r','%0D').replace('\n','%0A')[:900]
-                          print('::error::CANDIDATE '+case.get('name','test')+' '+text)
+          python3 - /tmp/classic-v1/candidate-${{ matrix.database }}.xml CANDIDATE <<'PY'
+          # cpms-fixed-schema-projection
+          import sys, xml.etree.ElementTree as ET
+          import xml.parsers.expat as expat
+          MAX_COUNT = 1000000
+          MAX_SUITES = 10000
+          MAX_XML_BYTES = 8388608
+          def canon_count(raw):
+              if not isinstance(raw, str) or raw == '' or len(raw) > 7:
+                  return None
+              for ch in raw:
+                  if ch not in '0123456789':
+                      return None
+              if len(raw) > 1 and raw[0] == '0':
+                  return None
+              value = int(raw)
+              return value if value <= MAX_COUNT else None
+          def parse_junit(blob):
+              if blob is None or len(blob) > MAX_XML_BYTES:
+                  return None
+              if blob.startswith(b'\xef\xbb\xbf') or blob.startswith(b'\xff\xfe') or blob.startswith(b'\xfe\xff') or b'\x00' in blob:
+                  return None
+              try:
+                  text = blob.decode('utf-8')
+              except Exception:
+                  return None
+              holder = {'root': None, 'stack': []}
+              parser = expat.ParserCreate()
+              def fail(*args):
+                  raise ValueError('invalid')
+              def xml_decl(version, encoding, standalone):
+                  if encoding is not None and encoding.lower() != 'utf-8':
+                      fail()
+              def start_element(name, attrs):
+                  element = ET.Element(name, dict(attrs))
+                  if holder['stack']:
+                      holder['stack'][-1].append(element)
+                  elif holder['root'] is None:
+                      holder['root'] = element
+                  else:
+                      fail()
+                  holder['stack'].append(element)
+              def end_element(name):
+                  if not holder['stack']:
+                      fail()
+                  holder['stack'].pop()
+              parser.StartElementHandler = start_element
+              parser.EndElementHandler = end_element
+              parser.StartDoctypeDeclHandler = fail
+              parser.EntityDeclHandler = fail
+              parser.ExternalEntityRefHandler = fail
+              parser.XmlDeclHandler = xml_decl
+              try:
+                  parser.Parse(text, True)
+              except Exception:
+                  return None
+              if holder['stack'] or holder['root'] is None:
+                  return None
+              return holder['root']
+          TAG_KEYS = {'failure': 'failures', 'error': 'errors', 'skipped': 'skipped', 'warning': 'warnings'}
+          def suite_counts(suite):
+              counts = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              for element in suite.iter():
+                  if element.tag != 'testcase':
+                      continue
+                  counts['tests'] += 1
+                  seen = set()
+                  for child in element:
+                      if child.tag in TAG_KEYS and child.tag not in seen:
+                          seen.add(child.tag)
+                          counts[TAG_KEYS[child.tag]] += 1
+              return counts
+          def suites_consistent(root, outer):
+              suites = [el for el in root.iter() if el.tag == 'testsuite']
+              if not outer or not suites or len(suites) > MAX_SUITES:
+                  return None
+              for suite in suites:
+                  actual = suite_counts(suite)
+                  for key in ('tests', 'failures', 'errors', 'skipped'):
+                      value = canon_count(suite.get(key))
+                      if value is None or value != actual[key]:
+                          return None
+                  declared_warnings = suite.get('warnings')
+                  if declared_warnings is not None:
+                      value = canon_count(declared_warnings)
+                      if value is None or value != actual['warnings']:
+                          return None
+              totals = {}
+              for key in ('tests', 'failures', 'errors', 'skipped'):
+                  total = 0
+                  for suite in outer:
+                      total += canon_count(suite.get(key))
+                      if total > MAX_COUNT:
+                          return None
+                  totals[key] = total
+              totals['warnings'] = 0
+              for suite in outer:
+                  totals['warnings'] += suite_counts(suite)['warnings']
+                  if totals['warnings'] > MAX_COUNT:
+                      return None
+              doc = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              stack = [(root, False)]
+              while stack:
+                  element, inside = stack.pop()
+                  if element.tag == 'testsuite':
+                      inside = True
+                  if element.tag == 'testcase':
+                      if not inside:
+                          return None
+                      doc['tests'] += 1
+                  elif element.tag in TAG_KEYS:
+                      if not inside:
+                          return None
+                      doc[TAG_KEYS[element.tag]] += 1
+                  for child in element:
+                      stack.append((child, inside))
+              if doc['tests'] != totals['tests'] or doc['failures'] != totals['failures'] or doc['errors'] != totals['errors'] or doc['skipped'] != totals['skipped'] or doc['warnings'] != totals['warnings']:
+                  return None
+              return totals
+          def pass_verdict(totals):
+              if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
+                  return 'PASS'
+              return 'FAIL'
+          def verdict_for(path):
+              try:
+                  with open(path, 'rb') as handle:
+                      blob = handle.read(MAX_XML_BYTES + 1)
+              except Exception:
+                  return None
+              if len(blob) > MAX_XML_BYTES:
+                  return None
+              root = parse_junit(blob)
+              if root is None:
+                  return None
+              if root.tag == 'testsuite':
+                  outer = [root]
+              elif root.tag == 'testsuites':
+                  outer = root.findall('testsuite')
+              else:
+                  return None
+              return suites_consistent(root, outer)
+          def project(path, label):
+              if label not in ('BASELINE', 'CANDIDATE'):
+                  print('::error::TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
+                  return
+              totals = verdict_for(path)
+              if totals is None:
+                  print('::error::TESTS label=' + label + ' tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
+                  return
+              verdict = pass_verdict(totals)
+              print('::error::TESTS label=' + label + ' tests=%d failures=%d errors=%d skipped=%d verdict=%s' % (totals['tests'], totals['failures'], totals['errors'], totals['skipped'], verdict))
+          try:
+              project(sys.argv[1], sys.argv[2])
+          except Exception:
+              print('::error::TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE')
           PY
       - name: Evidence summary
         if: always()
         run: |
-          {
-            echo '### Classic V1 remediation — ${{ matrix.database }}'
-            echo "Baseline: $BASELINE_SHA; candidate: $(git rev-parse HEAD)"
-            echo "DB: $(cat /tmp/classic-v1/db-version.txt 2>/dev/null || echo unavailable)"
-            echo 'Baseline exit:' "$(cat /tmp/classic-v1/baseline-exit.txt 2>/dev/null || echo not-run)"
-            grep -E '^(OK|Tests:|FAILURES|ERRORS)' /tmp/classic-v1/*-${{ matrix.database }}.log 2>/dev/null || true
-            echo 'In-process REST measurements are not HTTP page timings. Artifacts retain every sample.'
-          } | tee -a "$GITHUB_STEP_SUMMARY"
-          python3 - "${{ matrix.database }}" <<'PY' || true
-          import json,sys
-          for label in ('baseline','candidate'):
+          python3 - /tmp/classic-v1 "${{ matrix.database }}" "/tmp/classic-v1/summary-${{ matrix.database }}.txt" <<'PY'
+          # cpms-fixed-schema-projection
+          import json, os, sys, xml.etree.ElementTree as ET
+          import xml.parsers.expat as expat
+          MAX_COUNT = 1000000
+          MAX_SUITES = 10000
+          MAX_BYTES = 8388608
+          def canon_count(raw):
+              if not isinstance(raw, str) or raw == '' or len(raw) > 7:
+                  return None
+              for ch in raw:
+                  if ch not in '0123456789':
+                      return None
+              if len(raw) > 1 and raw[0] == '0':
+                  return None
+              value = int(raw)
+              return value if value <= MAX_COUNT else None
+          def read_bounded(path):
               try:
-                  d=json.load(open('/tmp/classic-v1/'+label+'-'+sys.argv[1]+'.json'))
-                  import statistics
-                  summary=d.get('summary') or {k:{'n':len(v),'median_ms':round(statistics.median(x['ms'] for x in v),3),'median_queries':statistics.median(x['queries'] for x in v)} for k,v in d['samples'].items()}
-                  print('::notice::PERF '+label+' '+json.dumps(summary,sort_keys=True))
-              except Exception as e: print('::notice::PERF '+label+' unavailable '+str(e))
-          import os, xml.etree.ElementTree as ET
-          for label in ('baseline','candidate'):
-              p='/tmp/classic-v1/'+label+'-'+sys.argv[1]+'.xml'
-              if os.path.isfile(p):
-                  r=ET.parse(p).getroot()
-                  suites=r.findall('testsuite') or [r]
-                  totals={k:sum(int(s.get(k,0)) for s in suites) for k in ('tests','failures','errors','skipped')}
-                  print('::notice::TESTS '+label+' '+json.dumps(totals,sort_keys=True))
+                  with open(path, 'rb') as handle:
+                      blob = handle.read(MAX_BYTES + 1)
+                  return None if len(blob) > MAX_BYTES else blob
+              except Exception:
+                  return None
+          def parse_junit(blob):
+              if blob is None or len(blob) > MAX_BYTES:
+                  return None
+              if blob.startswith(b'\xef\xbb\xbf') or blob.startswith(b'\xff\xfe') or blob.startswith(b'\xfe\xff') or b'\x00' in blob:
+                  return None
+              try:
+                  text = blob.decode('utf-8')
+              except Exception:
+                  return None
+              holder = {'root': None, 'stack': []}
+              parser = expat.ParserCreate()
+              def fail(*args):
+                  raise ValueError('invalid')
+              def xml_decl(version, encoding, standalone):
+                  if encoding is not None and encoding.lower() != 'utf-8':
+                      fail()
+              def start_element(name, attrs):
+                  element = ET.Element(name, dict(attrs))
+                  if holder['stack']:
+                      holder['stack'][-1].append(element)
+                  elif holder['root'] is None:
+                      holder['root'] = element
+                  else:
+                      fail()
+                  holder['stack'].append(element)
+              def end_element(name):
+                  if not holder['stack']:
+                      fail()
+                  holder['stack'].pop()
+              parser.StartElementHandler = start_element
+              parser.EndElementHandler = end_element
+              parser.StartDoctypeDeclHandler = fail
+              parser.EntityDeclHandler = fail
+              parser.ExternalEntityRefHandler = fail
+              parser.XmlDeclHandler = xml_decl
+              try:
+                  parser.Parse(text, True)
+              except Exception:
+                  return None
+              if holder['stack'] or holder['root'] is None:
+                  return None
+              return holder['root']
+          TAG_KEYS = {'failure': 'failures', 'error': 'errors', 'skipped': 'skipped', 'warning': 'warnings'}
+          def suite_counts(suite):
+              counts = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              for element in suite.iter():
+                  if element.tag != 'testcase':
+                      continue
+                  counts['tests'] += 1
+                  seen = set()
+                  for child in element:
+                      if child.tag in TAG_KEYS and child.tag not in seen:
+                          seen.add(child.tag)
+                          counts[TAG_KEYS[child.tag]] += 1
+              return counts
+          def suites_consistent(root, outer):
+              suites = [el for el in root.iter() if el.tag == 'testsuite']
+              if not outer or not suites or len(suites) > MAX_SUITES:
+                  return None
+              for suite in suites:
+                  actual = suite_counts(suite)
+                  for key in ('tests', 'failures', 'errors', 'skipped'):
+                      value = canon_count(suite.get(key))
+                      if value is None or value != actual[key]:
+                          return None
+                  declared_warnings = suite.get('warnings')
+                  if declared_warnings is not None:
+                      value = canon_count(declared_warnings)
+                      if value is None or value != actual['warnings']:
+                          return None
+              totals = {}
+              for key in ('tests', 'failures', 'errors', 'skipped'):
+                  total = 0
+                  for suite in outer:
+                      total += canon_count(suite.get(key))
+                      if total > MAX_COUNT:
+                          return None
+                  totals[key] = total
+              totals['warnings'] = 0
+              for suite in outer:
+                  totals['warnings'] += suite_counts(suite)['warnings']
+                  if totals['warnings'] > MAX_COUNT:
+                      return None
+              doc = {'tests': 0, 'failures': 0, 'errors': 0, 'skipped': 0, 'warnings': 0}
+              stack = [(root, False)]
+              while stack:
+                  element, inside = stack.pop()
+                  if element.tag == 'testsuite':
+                      inside = True
+                  if element.tag == 'testcase':
+                      if not inside:
+                          return None
+                      doc['tests'] += 1
+                  elif element.tag in TAG_KEYS:
+                      if not inside:
+                          return None
+                      doc[TAG_KEYS[element.tag]] += 1
+                  for child in element:
+                      stack.append((child, inside))
+              if doc['tests'] != totals['tests'] or doc['failures'] != totals['failures'] or doc['errors'] != totals['errors'] or doc['skipped'] != totals['skipped'] or doc['warnings'] != totals['warnings']:
+                  return None
+              return totals
+          def pass_verdict(totals):
+              if totals['tests'] >= 1 and totals['failures'] == 0 and totals['errors'] == 0 and totals['skipped'] < totals['tests'] and totals['warnings'] == 0:
+                  return 'PASS'
+              return 'FAIL'
+          def tests_result(path, label):
+              unavailable = ('TESTS label=' + label + ' tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE', 'UNAVAILABLE')
+              blob = read_bounded(path)
+              if blob is None:
+                  return unavailable
+              root = parse_junit(blob)
+              if root is None:
+                  return unavailable
+              if root.tag == 'testsuite':
+                  outer = [root]
+              elif root.tag == 'testsuites':
+                  outer = root.findall('testsuite')
+              else:
+                  return unavailable
+              totals = suites_consistent(root, outer)
+              if totals is None:
+                  return unavailable
+              verdict = pass_verdict(totals)
+              return ('TESTS label=' + label + ' tests=%d failures=%d errors=%d skipped=%d verdict=%s' % (totals['tests'], totals['failures'], totals['errors'], totals['skipped'], verdict), verdict)
+          def finite_number(value):
+              return not isinstance(value, bool) and isinstance(value, (int, float)) and value == value and abs(value) <= 1000000000
+          def perf_result(path, label):
+              unavailable = ('PERF label=' + label + ' samples=0 verdict=UNAVAILABLE', 'UNAVAILABLE')
+              blob = read_bounded(path)
+              if blob is None:
+                  return unavailable
+              try:
+                  data = json.loads(blob.decode('utf-8'))
+              except Exception:
+                  return unavailable
+              if not isinstance(data, dict):
+                  return unavailable
+              samples = data.get('samples')
+              if not isinstance(samples, dict) or not samples:
+                  return unavailable
+              total = 0
+              for value in samples.values():
+                  if not isinstance(value, list):
+                      return unavailable
+                  for item in value:
+                      if not isinstance(item, dict) or not finite_number(item.get('ms')) or not finite_number(item.get('queries')):
+                          return unavailable
+                  total += len(value)
+                  if total > MAX_COUNT:
+                      return unavailable
+              return ('PERF label=' + label + ' samples=%d verdict=OK' % total, 'OK')
+          def exit_result(path):
+              unavailable = ('EXIT label=BASELINE verdict=UNAVAILABLE', 'UNAVAILABLE')
+              blob = read_bounded(path)
+              if blob is None or len(blob) > 64:
+                  return unavailable
+              try:
+                  raw = blob.decode('ascii')
+              except Exception:
+                  return unavailable
+              if raw.endswith('\n'):
+                  raw = raw[:-1]
+              code = canon_count(raw)
+              if code is None or code > 255:
+                  return unavailable
+              return ('EXIT label=BASELINE code=%d verdict=%s' % (code, 'PASS' if code == 0 else 'FAIL'), 'OK')
+          def main():
+              base, db, summary_out = sys.argv[1], sys.argv[2], sys.argv[3]
+              baseline_tests = tests_result(os.path.join(base, 'baseline-' + db + '.xml'), 'BASELINE')
+              candidate_tests = tests_result(os.path.join(base, 'candidate-' + db + '.xml'), 'CANDIDATE')
+              lines = [
+                  '### Classic V1 remediation evidence (fixed schema)',
+                  baseline_tests[0],
+                  candidate_tests[0],
+                  perf_result(os.path.join(base, 'baseline-' + db + '.json'), 'BASELINE')[0],
+                  perf_result(os.path.join(base, 'candidate-' + db + '.json'), 'CANDIDATE')[0],
+                  exit_result(os.path.join(base, 'baseline-exit.txt'))[0],
+              ]
+              for line in lines:
+                  print(line if line.startswith('###') else '::notice::' + line)
+              with open(summary_out, 'w') as handle:
+                  handle.write('\n'.join(lines) + '\n')
+              step_summary = os.environ.get('GITHUB_STEP_SUMMARY')
+              if step_summary:
+                  with open(step_summary, 'a') as handle:
+                      handle.write('\n'.join(lines) + '\n')
+              return 1 if candidate_tests[1] == 'UNAVAILABLE' else 0
+          try:
+              sys.exit(main())
+          except SystemExit:
+              raise
+          except Exception:
+              fallback = [
+                  '### Classic V1 remediation evidence (fixed schema)',
+                  'TESTS label=BASELINE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE',
+                  'TESTS label=CANDIDATE tests=0 failures=0 errors=0 skipped=0 verdict=UNAVAILABLE',
+                  'PERF label=BASELINE samples=0 verdict=UNAVAILABLE',
+                  'PERF label=CANDIDATE samples=0 verdict=UNAVAILABLE',
+                  'EXIT label=BASELINE verdict=UNAVAILABLE',
+              ]
+              for line in fallback:
+                  print(line if line.startswith('###') else '::notice::' + line)
+              try:
+                  with open(sys.argv[3], 'w') as handle:
+                      handle.write('\n'.join(fallback) + '\n')
+              except Exception:
+                  pass
+              sys.exit(1)
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: classic-v1-${{ matrix.database }}
           path: |
-            /tmp/classic-v1/*.json
-            /tmp/classic-v1/*.xml
-            /tmp/classic-v1/*.log
-            /tmp/classic-v1/*.txt
+            /tmp/classic-v1/summary-*.txt
           include-hidden-files: false
           retention-days: 14
 
   http-profile:
     name: Real HTTP profile (MySQL 8, same runner)
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin, see
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
       mysql:
@@ -233,7 +733,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p /tmp/classic-http
-          mysql --protocol=TCP -h127.0.0.1 -uroot -proot -NBe 'SELECT VERSION()' | tee /tmp/classic-http/db-version.txt
+          mysql --protocol=TCP -h127.0.0.1 -uroot -proot -NBe 'SELECT VERSION()' > /tmp/classic-http/db-version.txt
           grep -q '^8\.' /tmp/classic-http/db-version.txt
           curl -fsSL https://wordpress.org/wordpress-7.1.3.tar.gz | tar -xz -C /home/runner
           mv /home/runner/wordpress "$WP_DIR"
@@ -280,7 +780,7 @@ jobs:
         run: |
           set -euo pipefail
           if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/pilot-doctor-portal-fixture.php > /tmp/classic-http/fixture.log 2>&1; then
-            tail -25 /tmp/classic-http/fixture.log | while IFS= read -r line; do echo "::error::FIXTURE $line"; done
+            echo '::error::FIXTURE verdict=FAIL'
             exit 1
           fi
           echo "::notice::HTTP seed fixture-ok"
@@ -298,7 +798,7 @@ jobs:
           echo "::notice::HTTP seed source-ok"
           wp rewrite flush --hard --path="$WP_DIR" --allow-root
           if ! WP_HOME="$WP_DIR" php clinic-practice-management/tests/fixtures/classic-v1-http-profile-seed.php > /tmp/classic-http/seed.log 2>&1; then
-            tail -25 /tmp/classic-http/seed.log | while IFS= read -r line; do echo "::error::SEED $line"; done
+            echo '::error::SEED verdict=FAIL'
             exit 1
           fi
       - name: Profile baseline over real HTTP
@@ -307,10 +807,9 @@ jobs:
           source /tmp/classic-http/fixture-env.sh
           ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[:12]))')
           if ! PROFILE_LABEL=baseline PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/baseline.json python3 clinic-practice-management/bin/classic-v1-http-profile.py > /tmp/classic-http/profile-baseline.log 2>&1; then
-            tail -25 /tmp/classic-http/profile-baseline.log | while IFS= read -r line; do echo "::error::PROFILE baseline $line"; done
+            echo '::error::PROFILE label=BASELINE verdict=FAIL'
             exit 1
           fi
-          cat /tmp/classic-http/profile-baseline.log
       - name: Install candidate over the same database
         run: |
           set -euo pipefail
@@ -324,32 +823,81 @@ jobs:
           source /tmp/classic-http/fixture-env.sh
           ids=$(python3 -c 'import json; print(json.dumps(json.load(open("/tmp/classic-v1-http-visit-ids.json"))[12:24]))')
           if ! PROFILE_LABEL=candidate PROFILE_VISIT_IDS="$ids" PROFILE_OUTPUT=/tmp/classic-http/candidate.json python3 clinic-practice-management/bin/classic-v1-http-profile.py > /tmp/classic-http/profile-candidate.log 2>&1; then
-            tail -25 /tmp/classic-http/profile-candidate.log | while IFS= read -r line; do echo "::error::PROFILE candidate $line"; done
+            echo '::error::PROFILE label=CANDIDATE verdict=FAIL'
             exit 1
           fi
-          cat /tmp/classic-http/profile-candidate.log
       - name: HTTP comparison summary
         if: always()
         run: |
-          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
-          import json
+          python3 - /tmp/classic-http/baseline.json /tmp/classic-http/candidate.json /tmp/classic-http/summary.txt <<'PY'
+          # cpms-fixed-schema-projection
+          import json, os, sys
+          MAX_COUNT = 1000000
+          MAX_BYTES = 8388608
+          MAX_OPERATIONS = 64
+          def profile_result(path, label):
+              unavailable = 'HTTP_PROFILE label=' + label + ' operations=0 verdict=UNAVAILABLE'
+              try:
+                  with open(path, 'rb') as handle:
+                      blob = handle.read(MAX_BYTES + 1)
+                  if len(blob) > MAX_BYTES:
+                      return unavailable
+                  data = json.loads(blob.decode('utf-8'))
+              except Exception:
+                  return unavailable
+              if not isinstance(data, dict) or data.get('kind') != 'authenticated_real_http':
+                  return unavailable
+              schema = data.get('schema')
+              if isinstance(schema, bool) or schema != 1:
+                  return unavailable
+              summary = data.get('summary')
+              if not isinstance(summary, dict) or not summary or len(summary) > MAX_OPERATIONS:
+                  return unavailable
+              for entry in summary.values():
+                  if not isinstance(entry, dict):
+                      return unavailable
+                  n = entry.get('n')
+                  if isinstance(n, bool) or not isinstance(n, int) or n < 0 or n > MAX_COUNT:
+                      return unavailable
+                  for key in ('median_ms', 'median_queries'):
+                      value = entry.get(key)
+                      if isinstance(value, bool) or not isinstance(value, (int, float)) or value != value or abs(value) > 1000000000:
+                          return unavailable
+              return 'HTTP_PROFILE label=' + label + ' operations=%d verdict=OK' % len(summary)
+          def main():
+              lines = [
+                  '### Real authenticated HTTP profile (fixed schema)',
+                  profile_result(sys.argv[1], 'BASELINE'),
+                  profile_result(sys.argv[2], 'CANDIDATE'),
+              ]
+              for line in lines:
+                  print(line if line.startswith('###') else '::notice::' + line)
+              with open(sys.argv[3], 'w') as handle:
+                  handle.write('\n'.join(lines) + '\n')
+              step_summary = os.environ.get('GITHUB_STEP_SUMMARY')
+              if step_summary:
+                  with open(step_summary, 'a') as handle:
+                      handle.write('\n'.join(lines) + '\n')
           try:
-              a=json.load(open('/tmp/classic-http/baseline.json'))['summary']
-              b=json.load(open('/tmp/classic-http/candidate.json'))['summary']
-          except Exception as e:
-              print('::error::HTTP comparison unavailable '+str(e)); raise SystemExit(0)
-          print('### Real authenticated HTTP, MySQL 8, sequential on one runner/DB')
-          print('| Operation | Baseline ms / queries | Candidate ms / queries |')
-          print('|---|---|---|')
-          for k in a: print(f"| {k} | {a[k]['median_ms']} / {a[k]['median_queries']} | {b[k]['median_ms']} / {b[k]['median_queries']} |")
-          print('Synthetic data; medians of 12. POSTs use distinct equivalent pre-seeded visits. No real SMS provider.')
-          print('::notice::HTTP_SUMMARY '+json.dumps({'baseline':a,'candidate':b},sort_keys=True))
+              main()
+          except Exception:
+              fallback = [
+                  '### Real authenticated HTTP profile (fixed schema)',
+                  'HTTP_PROFILE label=BASELINE operations=0 verdict=UNAVAILABLE',
+                  'HTTP_PROFILE label=CANDIDATE operations=0 verdict=UNAVAILABLE',
+              ]
+              for line in fallback:
+                  print(line if line.startswith('###') else '::notice::' + line)
+              try:
+                  with open(sys.argv[3], 'w') as handle:
+                      handle.write('\n'.join(fallback) + '\n')
+              except Exception:
+                  pass
           PY
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: classic-v1-http
           path: |
-            /tmp/classic-http/*.json
-            /tmp/classic-http/*.log
+            /tmp/classic-http/summary.txt
           retention-days: 14

@@ -46,7 +46,9 @@ env:
 jobs:
   facility-matrix:
     name: Facility matrix (${{ matrix.database }})
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin, see
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     strategy:
       fail-fast: false

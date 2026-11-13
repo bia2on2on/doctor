@@ -1065,6 +1065,31 @@ final class ClinicianAdminPage
         }
 
         try {
+            // Read-only selector, revalidated against membership and CONFIG below.
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+            $requested_clinic_id = AdminClinicSelector::requested_clinic_id( $_GET );
+            if ( null !== $requested_clinic_id ) {
+                // Match render()'s explicit-selector contract: a multi-Clinic
+                // actor need not have one unique implicit membership when the
+                // requested Clinic is explicitly authorized. Do not mutate the
+                // existing scope, and fail closed unless it already matches.
+                $selected_scope = AdminClinicSelector::establish(
+                    $actor_user_id,
+                    $requested_clinic_id,
+                    RolesAndCapabilities::CONFIG
+                );
+                if ( null === $selected_scope ) {
+                    return false;
+                }
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope exposes the published domain property.
+                $selected_clinic_id = (int) $selected_scope->clinicId;
+                // phpcs:ignore WordPress.NamingConventions.ValidVariableName.UsedPropertyNotSnakeCase -- ClinicScope exposes the published domain property.
+                $bound_clinic_id = (int) App::scope()->clinicId;
+
+                return $bound_clinic_id === $selected_clinic_id
+                    && App::settings()->clinicId() === $selected_clinic_id;
+            }
+
             return self::tryEstablishAuthorizedScope( $actor_user_id, RolesAndCapabilities::CONFIG ) !== null;
         } catch ( \Throwable ) {
             return false;

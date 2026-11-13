@@ -653,7 +653,9 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             CpmsSetupWizard::render();
         });
         self::assertStringContainsString('name="action" value="cpms_first_practice_setup"', $clinicStepHtml);
+        self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $clinicStepHtml);
         self::assertStringNotContainsString('name="clinic_name"', $clinicStepHtml);
+        self::assertStringNotContainsString('data-cpms-wizard-access="denied"', $clinicStepHtml);
 
         // Submitting cpms_wizard_save as the eligible first-run administrator
         // routes to cpms-first-practice-setup without "دسترسی لازم را ندارید"
@@ -684,6 +686,51 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
         self::assertSame(0, (int) App::db()->fetchValue(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships')
         ));
+    }
+
+    public function testEligibleInterruptedSetupRecoveryRendersRecoveryFormInWizard(): void
+    {
+        $actor = $this->makeUser('fp_recovery_adm_', 'administrator');
+        wp_set_current_user($actor);
+        $clinic_id = (int) $this->seed_baseline['clinic_id'];
+
+        // Build the exact historical setup evidence accepted by recovery:
+        // one consumed marker and one allowlisted, audited wizard setting by
+        // the same current WordPress administrator, with no membership.
+        App::settings()->set('setup.current_step', 'clinic', $actor);
+        global $wpdb;
+        $now = App::db()->nowUtcSql();
+        $updated = $wpdb->query($wpdb->prepare(
+            'UPDATE ' . $wpdb->prefix . 'cpms_clinics SET first_setup_claimed_at = %s WHERE id = %d',
+            $now,
+            $clinic_id
+        ));
+        self::assertSame(1, (int) $updated);
+
+        $service = App::first_practice_setup_service();
+        self::assertNull($service->first_setup_candidate());
+        $candidate = $service->recovery_candidate($actor);
+        self::assertIsArray(
+            $candidate,
+            'The same historical administrator must be eligible to continue this interrupted setup.'
+        );
+        self::assertSame($clinic_id, (int) $candidate['clinic_id']);
+
+        $_GET['step'] = 'clinic';
+        $html = $this->renderOutput(static function (): void {
+            CpmsSetupWizard::render();
+        });
+
+        self::assertStringContainsString('name="action" value="cpms_first_practice_recovery"', $html);
+        self::assertStringContainsString('name="clinic_id" value="' . $clinic_id . '"', $html);
+        self::assertStringNotContainsString('name="action" value="cpms_first_practice_setup"', $html);
+        self::assertStringNotContainsString('name="action" value="cpms_wizard_save"', $html);
+        self::assertStringNotContainsString('name="clinic_name"', $html, 'Recovery must remain in the dedicated administrator-continuity form.');
+        self::assertStringNotContainsString('data-cpms-wizard-access="denied"', $html);
+        self::assertSame(0, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_clinic_memberships') . ' WHERE clinic_id = %d',
+            [$clinic_id]
+        ), 'Rendering recovery must not provision membership or mutate onboarding state.');
     }
 
     // ------------------------------------------------------------------
@@ -930,6 +977,10 @@ final class FirstPracticeSetupTest extends WP_UnitTestCase
             'clinic_name' => 'تغییر غیرمجاز',
         ], $secondAdmin);
         self::assertSame('دسترسی لازم را ندارید', $saveErr);
+        self::assertSame('مطب اولیه', (string) App::db()->fetchValue(
+            'SELECT name FROM ' . App::db()->table('cpms_clinics') . ' WHERE id = %d',
+            [$clinicId]
+        ), 'A denied wizard profile save must not change the initialized Clinic.');
 
         // 13. Suspended membership (even with marker NULL) prevents fresh bootstrap and discovery.
         $this->resetMarkerAndMemberships($clinicId);

@@ -43,11 +43,36 @@ jobs:
         working-directory: ${{ github.workspace }}
 
       - name: Workflow evidence and acceptance contract tests
-        run: python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
+        # The Integration raw-output guard parses this file with PyYAML
+        # (fail-closed if it is missing). Install it when the runner image
+        # does not ship it.
+        run: |
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet pyyaml
+          python3 -m unittest discover -s .github/workflows -p 'test_workflow_contracts.py' -v
         working-directory: ${{ github.workspace }}
+
+      - name: MariaDB step 7 pin gate shell test
+        # Runs bin/test_mariadb_pin_step.py on every PR: it extracts the
+        # Integration step-7 ("Prepare MariaDB 11.4.13 WordPress test suite")
+        # shell block from this file and executes it under bash with a shim
+        # mysql on PATH (and a shim install-wp-tests.sh). bash + python3 only;
+        # no mysql/PHP/WordPress needed. Deliberately NOT optional: no
+        # `|| true`, no continue-on-error — a failure fails this job. Never
+        # renamed or removed: this job's check context stays exactly
+        # "Tenant Tripwire (hardcode scan)".
+        working-directory: ${{ github.workspace }}
+        run: python3 bin/test_mariadb_pin_step.py
 
       - name: Pilot benchmark report safety self-tests
         run: python3 bin/pilot-bench-report.py --test
+        working-directory: ${{ github.workspace }}/clinic-practice-management
+
+      - name: Day-2 closed-vocabulary projection tests
+        # Offline and deterministic (no browser, WordPress, MySQL or network):
+        # hostile log text, CLI totality and the frozen vocabulary of the
+        # one-line Day-2 failure projection. Deliberately NOT optional; a
+        # failure fails this job like every other check above.
+        run: python3 -m unittest discover -s tests/bin -p 'test_pilot_day2_failure_report.py' -v
         working-directory: ${{ github.workspace }}/clinic-practice-management
 
       # Fail-closed diagnostics ordering: the contract/self-test steps above can
@@ -261,11 +286,12 @@ jobs:
       #    MySQL 8 + نصب/فعال‌سازی/migration/probe زمان‌اجرا، بدون تست‌لیبِ PHPUnit).
       - name: Install dependencies (PHPUnit 9.6 for WP test lib)
         run: |
-          composer install --prefer-dist --no-progress --no-interaction
-          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies
+          composer install --prefer-dist --no-progress --no-interaction > /tmp/cpms-composer-install.log 2>&1
+          composer require --dev phpunit/phpunit:^9.6 --no-interaction --no-progress --with-all-dependencies > /tmp/cpms-composer-require.log 2>&1
+          echo 'composer dependencies installed (raw output redirected to /tmp).'
 
       - name: Prepare WordPress test suite
-        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3
+        run: bash tests/bin/install-wp-tests.sh wordpress_test root root 127.0.0.1 7.1.3 > /tmp/install-wp-tests.log 2>&1
 
       # Add a separate real MariaDB runtime within this existing Integration
       # check: the historical MySQL 8 database and full suite remain unchanged.
@@ -276,13 +302,38 @@ jobs:
           WP_TESTS_DIR: /tmp/wordpress-test-lib-mariadb
         run: |
           set -euo pipefail
-          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3307 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()')"
-          echo "MariaDB server VERSION(): ${server_version}"
+          # Capture ONLY the version query's stdout into the compared variable;
+          # client stderr (warnings included) goes to a local file that is
+          # never printed, uploaded, summarized or published. The pin pattern
+          # itself is unchanged (11.4.13-MariaDB*). Failure diagnostics are a
+          # fixed vocabulary only: booleans, a bounded canonical line count
+          # and stderr_nonempty - never any byte of the client output.
+          version_query_stderr=/tmp/mariadb-version-query-stderr.log
+          set +e
+          server_version="$(mysql --protocol=TCP --host=127.0.0.1 --port=3307 --user=root --password=root --batch --skip-column-names --execute='SELECT VERSION()' 2>"$version_query_stderr")"
+          mysql_rc=$?
+          set -e
+          stdout_empty=false; [ -z "$server_version" ] && stdout_empty=true
           case "$server_version" in
-            11.4.13-MariaDB*) ;;
-            *) echo "Expected MariaDB 11.4.13, received: ${server_version}" >&2; exit 1 ;;
+            11.4.13-MariaDB*) stdout_starts_with_expected_prefix=true ;;
+            *) stdout_starts_with_expected_prefix=false ;;
           esac
-          bash tests/bin/install-wp-tests.sh wordpress_mariadb root root 127.0.0.1 7.1.3 3307
+          stderr_nonempty=false; [ -s "$version_query_stderr" ] && stderr_nonempty=true
+          stdout_line_count="$(printf '%s' "$server_version" | awk 'END{print NR+0}')"
+          # Fixed vocabulary only: print the number when it is a canonical
+          # integer below the fixed bound 1000 (at most 3 digits) — never any
+          # larger value (no long-digit parse is ever performed). Otherwise
+          # print the fixed tokens over_bound / unknown.
+          case "$stdout_line_count" in
+            ''|*[!0-9]*) stdout_line_count=unknown ;;
+            *) if [ "${#stdout_line_count}" -gt 3 ]; then stdout_line_count=over_bound; fi ;;
+          esac
+          if [ "$mysql_rc" -ne 0 ] || [ "$stdout_starts_with_expected_prefix" != "true" ]; then
+            echo "::error::MariaDB server does not match pinned 11.4.13 (raw VERSION() string not published). stdout_empty=${stdout_empty} stdout_starts_with_expected_prefix=${stdout_starts_with_expected_prefix} stdout_line_count=${stdout_line_count} stderr_nonempty=${stderr_nonempty}" >&2
+            exit 1
+          fi
+          echo 'MariaDB server matched pinned 11.4.13 (raw VERSION() string not published).'
+          bash tests/bin/install-wp-tests.sh wordpress_mariadb root root 127.0.0.1 7.1.3 3307 > /tmp/install-wp-tests-mariadb.log 2>&1
 
       - name: Run focused custom-role migrations on MariaDB 11.4.13
         env:
@@ -294,73 +345,28 @@ jobs:
           phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-mariadb-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php 2>&1 | tee /tmp/custom-role-mariadb.log || phpunit_status=$?
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php > /tmp/custom-role-mariadb.log 2>&1 || phpunit_status=$?
           # Sanitized stage + error-category evidence, mirrored onto the PR because
           # raw job logs and artifact blobs are unreachable for some reviewers.
           # Deliberately bounded: PHPUnit exit code, JUnit case count and exception
           # CLASS names only - never SQL, credentials, PHI, identifiers or raw
           # exception messages. Purely additive: the strict verdict below is
           # unchanged and the original PHPUnit exit code is propagated verbatim.
+          mkdir -p /tmp/evidence
           if [ "$phpunit_status" -ne 0 ]; then
             # Publish a source-checked fatal signature separately from the
             # existing PHPUnit log, without echoing arbitrary exception text.
             python3 tests/bin/safe-php-fatal-report.py /tmp/custom-role-mariadb.log --summary "$GITHUB_STEP_SUMMARY"
-            python3 - "$phpunit_status" <<'PY' || true
-          import os
-          import re
-          import subprocess
-          import sys
-          import xml.etree.ElementTree as ET
-          from pathlib import Path
-
-          status = sys.argv[1]
-          categories = {}
-          failed_names = set()
-          cases_total = 0
-          try:
-              source = Path('tests/Integration/CustomRoleArchivalMigrationTest.php').read_text(encoding='utf-8')
-              allowed_names = set(re.findall(r'function\s+(test[A-Za-z0-9_]+)\s*\(', source))
-              cases = ET.parse('/tmp/custom-role-mariadb-junit.xml').getroot().findall('.//testcase')
-              cases_total = len(cases)
-              for case in cases:
-                  for tag in ('error', 'failure'):
-                      node = case.find(tag)
-                      if node is not None:
-                          category = (node.get('type') or tag).rsplit(chr(92), 1)[-1]
-                          if not re.fullmatch(r'[A-Za-z0-9_]{1,80}', category):
-                              category = 'other'
-                          categories[category] = categories.get(category, 0) + 1
-                          name = case.get('name', '')
-                          if name in allowed_names:
-                              failed_names.add(name)
-          except Exception:
-              categories['junit_unavailable'] = 1
-
-          summary = ' '.join('{}={}'.format(k, v) for k, v in sorted(categories.items())) or 'none'
-          names = ','.join(sorted(failed_names)) or 'unavailable'
-          print('::notice title=MariaDB migration diagnostics::phpunit_exit={} junit_cases={} categories={} failed_tests={}'.format(status, cases_total, summary, names))
-          body = (
-              '### MariaDB archival migration - sanitized error categories '
-              '(run {}, attempt {})\n'
-              '```\n'
-              'stage=focused_custom_role_mariadb phpunit_exit={} junit_cases={}\n'
-              'error_categories={}\n'
-              'failed_tests={}\n'
-              '```\n'
-          ).format(
-              os.environ.get('GITHUB_RUN_ID', '?'),
-              os.environ.get('GITHUB_RUN_ATTEMPT', '?'),
-              status,
-              cases_total,
-              summary,
-              names,
-          )
-          pr = os.environ.get('PR_NUMBER', '')
-          if pr:
-              subprocess.run(['gh', 'pr', 'comment', pr, '--body', body], check=False)
-          else:
-              print(body)
-          PY
+            {
+              echo "### MariaDB archival migration - sanitized diagnostics (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+              echo '```'
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-mariadb-junit.xml --label focused_custom_role_mariadb --phpunit-exit "$phpunit_status" || true
+              echo '```'
+            } > /tmp/mariadb-migration-diagnostics-pr.md
+            if [ -n "$PR_NUMBER" ]; then
+              bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-mariadb-migration-diagnostics --body-file /tmp/mariadb-migration-diagnostics-pr.md \
+                || echo '::notice::MariaDB migration diagnostics comment could not be mirrored'
+            fi
             echo "::error::MariaDB archival migration suite did not pass (PHPUnit exit $phpunit_status)."
             exit "$phpunit_status"
           fi
@@ -391,37 +397,19 @@ jobs:
           phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/iran-v1-mariadb-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/StaffMessagingPricingMigrationTest.php 2>&1 | tee /tmp/iran-v1-mariadb.log || phpunit_status=$?
+            --bootstrap tests/integration-bootstrap.php tests/Integration/StaffMessagingPricingMigrationTest.php > /tmp/iran-v1-mariadb.log 2>&1 || phpunit_status=$?
           if [ "$phpunit_status" -ne 0 ]; then
-            # Publish only test names literally declared in this checked-in
-            # source and simple exception class names; never raw failure text.
-            python3 - "$phpunit_status" <<'PYIRANFAIL' || true
-          import re
-          import sys
-          import xml.etree.ElementTree as ET
-          from pathlib import Path
-
-          try:
-              source = Path('tests/Integration/StaffMessagingPricingMigrationTest.php').read_text(encoding='utf-8')
-              allowed = set(re.findall(r'function\s+(test[A-Za-z0-9_]+)\s*\(', source))
-              cases = ET.parse('/tmp/iran-v1-mariadb-junit.xml').getroot().findall('.//testcase')
-              failures = []
-              for case in cases:
-                  for tag in ('error', 'failure'):
-                      node = case.find(tag)
-                      if node is not None:
-                          name = case.get('name', '')
-                          category = (node.get('type') or tag).rsplit(chr(92), 1)[-1]
-                          if name not in allowed:
-                              name = 'unknown_test'
-                          if not re.fullmatch(r'[A-Za-z0-9_]{1,80}', category):
-                              category = 'other'
-                          failures.append(name + ':' + category)
-              print('::error title=Iran V1 migration diagnostics::phpunit_exit={} cases={} failures={}'.format(
-                  sys.argv[1], len(cases), ','.join(sorted(failures)) or 'unavailable'))
-          except Exception:
-              print('::error title=Iran V1 migration diagnostics::junit_unavailable')
-          PYIRANFAIL
+            # Bounded projection only: strict Class::method idents and exception
+            # short-class categories; never raw failure text. The strict verdict
+            # (exit code below) is unchanged.
+            mkdir -p /tmp/evidence
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/iran-v1-mariadb-junit.xml --label focused_iran_v1_mariadb --phpunit-exit "$phpunit_status" > /tmp/evidence/iran-v1-mariadb.txt || true
+            while IFS= read -r l; do
+              case "$l" in
+                '') ;;
+                *) echo "::error title=Iran V1 migration diagnostics::$l" ;;
+              esac
+            done < /tmp/evidence/iran-v1-mariadb.txt
             exit "$phpunit_status"
           fi
           if ! grep -qE '^(OK \(|OK, but)' /tmp/iran-v1-mariadb.log; then
@@ -448,8 +436,9 @@ jobs:
           set -o pipefail
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/first-practice-mariadb-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/FirstPracticeSetupTest.php 2>&1 | tee /tmp/first-practice-mariadb.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/FirstPracticeSetupTest.php > /tmp/first-practice-mariadb.log 2>&1
           if ! grep -qE '^(OK \(|OK, but)' /tmp/first-practice-mariadb.log; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/first-practice-mariadb-junit.xml --label first_practice_mariadb --phpunit-exit 1 || true
             echo '::error::MariaDB first-practice onboarding suite did not finish with a passing PHPUnit summary.'
             exit 1
           fi
@@ -482,30 +471,30 @@ jobs:
             if ! php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
               --log-junit "/tmp/heartbeat-recovery-${engine}-junit.xml" \
               --bootstrap tests/integration-bootstrap.php tests/Integration/InterruptedSetupRecoveryTest.php \
-              2>&1 | tee "/tmp/heartbeat-recovery-${engine}.log"; then
+              > "/tmp/heartbeat-recovery-${engine}.log" 2>&1; then
               result=1
             fi
           done
-          if ! python3 - <<'PYFOCUS' | tee /tmp/heartbeat-recovery-junit-summary.txt
+          if ! python3 - <<'PYFOCUS' > /tmp/heartbeat-recovery-junit-summary.txt 2>&1
           import sys
           import xml.etree.ElementTree as ET
           ok = True
           for engine in ('mysql', 'mariadb'):
-              cases = ET.parse(f'/tmp/heartbeat-recovery-{engine}-junit.xml').getroot().findall('.//testcase')
+              try:
+                  cases = ET.parse(f'/tmp/heartbeat-recovery-{engine}-junit.xml').getroot().findall('.//testcase')
+              except Exception:
+                  print(f'{engine} heartbeat recovery JUnit: junit_unavailable')
+                  ok = False
+                  continue
               counts = {tag: sum(case.find(tag) is not None for case in cases) for tag in ('skipped', 'failure', 'error')}
               print(f'{engine} heartbeat recovery JUnit: tests={len(cases)} ' + ' '.join(f'{key}={value}' for key, value in counts.items()))
-              for case in cases:
-                  print(engine + ' testcase ' + case.attrib.get('name', 'MISSING'))
-                  for tag in ('failure', 'error'):
-                      node = case.find(tag)
-                      if node is not None:
-                          print((node.text or '')[:6000])
               names = [case.attrib.get('name', '') for case in cases]
               required = ('testRealRecordTickInsertThenUpdatePersistsNullThenZero', 'testOwnerShapedSixEventHistoryWithNaturalZeroWriterHeartbeatRecovers')
               ok = ok and len(cases) >= 34 and not any(counts.values()) and all(any(name.startswith(needed) for name in names) for needed in required)
           sys.exit(0 if ok else 1)
           PYFOCUS
           then result=1; fi
+          cat /tmp/heartbeat-recovery-junit-summary.txt || true
           if [ -n "$PR_NUMBER" ]; then
             {
               echo "### Heartbeat recovery persistence — focused MySQL + MariaDB (run ${{ github.run_id }}, rc=$result)"
@@ -513,9 +502,10 @@ jobs:
               echo '```text'
               cat /tmp/heartbeat-recovery-junit-summary.txt
               for engine in mysql mariadb; do
-                echo "--- ${engine}: actual App::recordTick persistence + suite verdict ---"
-                grep 'HEARTBEAT_PERSISTENCE=' "/tmp/heartbeat-recovery-${engine}.log" || true
-                tail -n 100 "/tmp/heartbeat-recovery-${engine}.log"
+                echo "--- ${engine}: HEARTBEAT_PERSISTENCE (bounded projection) ---"
+                python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence HEARTBEAT_PERSISTENCE "/tmp/heartbeat-recovery-${engine}.log" || true
+                echo "--- ${engine}: terminal summary ---"
+                python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal "/tmp/heartbeat-recovery-${engine}.log" || true
               done
               echo '```'
             } > /tmp/heartbeat-recovery-pr.md
@@ -524,21 +514,34 @@ jobs:
           fi
           exit "$result"
 
-      - name: Preserve MariaDB migration evidence
+      - name: Build sanitized MariaDB migration evidence
+        if: always()
+        run: |
+          mkdir -p /tmp/evidence
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-mariadb-junit.xml --label focused_custom_role_mariadb > /tmp/evidence/custom-role-mariadb.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/custom-role-mariadb-junit.xml >> /tmp/evidence/custom-role-mariadb.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/iran-v1-mariadb-junit.xml --label focused_iran_v1_mariadb > /tmp/evidence/iran-v1-mariadb.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/iran-v1-mariadb-junit.xml >> /tmp/evidence/iran-v1-mariadb.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/first-practice-mariadb-junit.xml --label first_practice_mariadb > /tmp/evidence/first-practice-mariadb.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/first-practice-mariadb-junit.xml >> /tmp/evidence/first-practice-mariadb.txt || true
+          for engine in mysql mariadb; do
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit "/tmp/heartbeat-recovery-${engine}-junit.xml" --label "heartbeat_recovery_${engine}" > "/tmp/evidence/heartbeat-recovery-${engine}.txt" || true
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites "/tmp/heartbeat-recovery-${engine}-junit.xml" >> "/tmp/evidence/heartbeat-recovery-${engine}.txt" || true
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence HEARTBEAT_PERSISTENCE "/tmp/heartbeat-recovery-${engine}.log" >> "/tmp/evidence/heartbeat-recovery-${engine}.txt" || true
+          done
+          cp /tmp/heartbeat-recovery-junit-summary.txt /tmp/evidence/heartbeat-recovery-junit-summary.txt || true
+      - name: Upload sanitized MariaDB migration evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: custom-role-mariadb-migrations-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /tmp/custom-role-mariadb.log
-            /tmp/custom-role-mariadb-junit.xml
-            /tmp/first-practice-mariadb.log
-            /tmp/first-practice-mariadb-junit.xml
-            /tmp/heartbeat-recovery-*.log
-            /tmp/heartbeat-recovery-*-junit.xml
-            /tmp/iran-v1-mariadb.log
-            /tmp/iran-v1-mariadb-junit.xml
-            /tmp/heartbeat-recovery-junit-summary.txt
+            /tmp/evidence/custom-role-mariadb.txt
+            /tmp/evidence/iran-v1-mariadb.txt
+            /tmp/evidence/first-practice-mariadb.txt
+            /tmp/evidence/heartbeat-recovery-mysql.txt
+            /tmp/evidence/heartbeat-recovery-mariadb.txt
+            /tmp/evidence/heartbeat-recovery-junit-summary.txt
           if-no-files-found: warn
 
       # Run the repaired race alone first so a suite-level green cannot hide
@@ -553,7 +556,7 @@ jobs:
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --filter 'testAssignmentWaitsForLockedDefinitionAndRevalidatesAfterDeactivation' \
             --log-junit /tmp/custom-role-race-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleLifecycleTest.php 2>&1 | tee /tmp/custom-role-race.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleLifecycleTest.php > /tmp/custom-role-race.log 2>&1
           python3 - <<'PY'
           import sys
           import xml.etree.ElementTree as ET
@@ -568,18 +571,21 @@ jobs:
               sys.exit('Focused concurrency test must execute exactly once without skip/failure/error.')
           PY
           if ! grep -qE '^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!)' /tmp/custom-role-race.log; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-race-junit.xml --label focused_custom_role_race --phpunit-exit 1 --log /tmp/custom-role-race.log || true
             echo '::error::Focused PHPUnit run ended without a terminal summary.'
             exit 1
           fi
           if ! grep -q '^CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE ' /tmp/custom-role-race.log; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE /tmp/custom-role-race.log || true
             echo '::error::Focused race completed without its required exact-connection/lock-edge evidence.'
             exit 1
           fi
-          grep -m1 '^CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE ' /tmp/custom-role-race.log > /tmp/custom-role-race-evidence.txt
+          mkdir -p /tmp/evidence
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE /tmp/custom-role-race.log > /tmp/evidence/custom-role-race.evidence.txt || true
           {
             echo "### Slice 4A exact MySQL concurrency evidence (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
             echo '```'
-            cat /tmp/custom-role-race-evidence.txt
+            cat /tmp/evidence/custom-role-race.evidence.txt
             echo '```'
           } > /tmp/custom-role-race-pr.md
           cat /tmp/custom-role-race-pr.md >> "$GITHUB_STEP_SUMMARY"
@@ -596,20 +602,22 @@ jobs:
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-archive-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalTest.php 2>&1 | tee /tmp/custom-role-archive.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalTest.php > /tmp/custom-role-archive.log 2>&1
           TEST_RC=$?
           set -e
           {
             echo "### Slice 4B focused archival contract (run ${{ github.run_id }}, attempt ${{ github.run_attempt }}; head ${{ github.event.pull_request.head.sha || github.sha }})"
             echo '```'
-            tail -n 240 /tmp/custom-role-archive.log
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-archive-junit.xml --label focused_custom_role_archive --log /tmp/custom-role-archive.log || true
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/custom-role-archive-junit.xml || true
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/custom-role-archive.log || true
             echo '```'
           } > /tmp/custom-role-archive-pr.md
           cat /tmp/custom-role-archive-pr.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR_NUMBER" ]; then
             bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-archive --body-file /tmp/custom-role-archive-pr.md
           fi
-          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          if [ "$TEST_RC" -ne 0 ]; then cat /tmp/custom-role-archive-pr.md || true; exit "$TEST_RC"; fi
           python3 - <<'PYARCHIVE'
           import sys
           import xml.etree.ElementTree as ET
@@ -621,14 +629,20 @@ jobs:
           PYARCHIVE
           grep -qE '^OK \(' /tmp/custom-role-archive.log
 
-      - name: Preserve focused archival security evidence
+      - name: Build sanitized focused archival security evidence
+        if: always()
+        run: |
+          mkdir -p /tmp/evidence
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-archive-junit.xml --label focused_custom_role_archive > /tmp/evidence/custom-role-archive.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/custom-role-archive-junit.xml >> /tmp/evidence/custom-role-archive.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/custom-role-archive.log >> /tmp/evidence/custom-role-archive.txt || true
+      - name: Upload sanitized focused archival security evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: custom-role-archive-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /tmp/custom-role-archive.log
-            /tmp/custom-role-archive-junit.xml
+            /tmp/evidence/custom-role-archive.txt
           if-no-files-found: warn
 
       - name: Run focused archival schema and downgrade safety
@@ -640,18 +654,20 @@ jobs:
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-archive-migration-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php 2>&1 | tee /tmp/custom-role-archive-migration.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalMigrationTest.php > /tmp/custom-role-archive-migration.log 2>&1
           TEST_RC=$?
           set -e
           {
             echo "### Slice 4B schema/downgrade evidence (run ${{ github.run_id }}, head ${{ github.event.pull_request.head.sha || github.sha }})"
             echo '```'
-            tail -n 180 /tmp/custom-role-archive-migration.log
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-archive-migration-junit.xml --label focused_custom_role_archive_migration --log /tmp/custom-role-archive-migration.log || true
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/custom-role-archive-migration-junit.xml || true
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/custom-role-archive-migration.log || true
             echo '```'
           } > /tmp/custom-role-archive-migration-pr.md
           cat /tmp/custom-role-archive-migration-pr.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR_NUMBER" ]; then bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-migration --body-file /tmp/custom-role-archive-migration-pr.md; fi
-          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          if [ "$TEST_RC" -ne 0 ]; then cat /tmp/custom-role-archive-migration-pr.md || true; exit "$TEST_RC"; fi
           grep -qE '^OK \(' /tmp/custom-role-archive-migration.log
 
       - name: Run focused archival independent MySQL races
@@ -663,18 +679,20 @@ jobs:
           set +e
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/custom-role-archive-race-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalConcurrencyTest.php 2>&1 | tee /tmp/custom-role-archive-race.log
+            --bootstrap tests/integration-bootstrap.php tests/Integration/CustomRoleArchivalConcurrencyTest.php > /tmp/custom-role-archive-race.log 2>&1
           TEST_RC=$?
           set -e
           {
             echo "### Slice 4B independent MySQL races (run ${{ github.run_id }}, attempt ${{ github.run_attempt }}; head ${{ github.event.pull_request.head.sha || github.sha }})"
             echo '```'
-            tail -n 160 /tmp/custom-role-archive-race.log
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-archive-race-junit.xml --label focused_custom_role_archive_races --log /tmp/custom-role-archive-race.log || true
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/custom-role-archive-race.log || true
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence CUSTOM_ROLE_ARCHIVAL_CONCURRENCY_EVIDENCE /tmp/custom-role-archive-race.log || true
             echo '```'
           } > /tmp/custom-role-archive-race-pr.md
           cat /tmp/custom-role-archive-race-pr.md >> "$GITHUB_STEP_SUMMARY"
           if [ -n "$PR_NUMBER" ]; then bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-custom-role-races --body-file /tmp/custom-role-archive-race-pr.md; fi
-          if [ "$TEST_RC" -ne 0 ]; then exit "$TEST_RC"; fi
+          if [ "$TEST_RC" -ne 0 ]; then cat /tmp/custom-role-archive-race-pr.md || true; exit "$TEST_RC"; fi
           python3 - <<'PYRACE'
           import json
           import sys
@@ -699,16 +717,25 @@ jobs:
           PYRACE
           grep -qE '^OK \(' /tmp/custom-role-archive-race.log
 
-      - name: Preserve archival schema and concurrency evidence
+      - name: Build sanitized archival schema and concurrency evidence
+        if: always()
+        run: |
+          mkdir -p /tmp/evidence
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-archive-race-junit.xml --label focused_custom_role_archive_races > /tmp/evidence/custom-role-archive-race.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/custom-role-archive-race-junit.xml >> /tmp/evidence/custom-role-archive-race.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/custom-role-archive-race.log >> /tmp/evidence/custom-role-archive-race.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence CUSTOM_ROLE_ARCHIVAL_CONCURRENCY_EVIDENCE /tmp/custom-role-archive-race.log >> /tmp/evidence/custom-role-archive-race.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-archive-migration-junit.xml --label focused_custom_role_archive_migration > /tmp/evidence/custom-role-archive-migration.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/custom-role-archive-migration-junit.xml >> /tmp/evidence/custom-role-archive-migration.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/custom-role-archive-migration.log >> /tmp/evidence/custom-role-archive-migration.txt || true
+      - name: Upload sanitized archival schema and concurrency evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: custom-role-archive-races-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /tmp/custom-role-archive-race.log
-            /tmp/custom-role-archive-race-junit.xml
-            /tmp/custom-role-archive-migration.log
-            /tmp/custom-role-archive-migration-junit.xml
+            /tmp/evidence/custom-role-archive-race.txt
+            /tmp/evidence/custom-role-archive-migration.txt
           if-no-files-found: warn
 
       # Owner cross-Clinic first-enrollment regression: real signed document,
@@ -719,8 +746,12 @@ jobs:
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/phpunit-int-junit.xml \
             --bootstrap tests/integration-bootstrap.php \
-            tests/Integration/ReturningPatientFirstEnrollmentTest.php 2>&1 | tee /tmp/phpunit-int.log
-          grep -qE '^OK \(' /tmp/phpunit-int.log
+            tests/Integration/ReturningPatientFirstEnrollmentTest.php > /tmp/phpunit-int.log 2>&1
+          if ! grep -qE '^OK \(' /tmp/phpunit-int.log; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/phpunit-int-junit.xml --label focused_returning_patient --phpunit-exit 1 --log /tmp/phpunit-int.log || true
+            echo '::error::Returning-patient suite did not finish with a passing PHPUnit summary.'
+            exit 1
+          fi
 
       # Classic patient-facing enrollment UI: server-derived Clinic list,
       # unverified/unavailable states, strict policy boundaries and read-only
@@ -732,8 +763,12 @@ jobs:
             php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
               --log-junit "/tmp/${suite}-junit.xml" \
               --bootstrap tests/integration-bootstrap.php \
-              "tests/Integration/${suite}" 2>&1 | tee "/tmp/${suite}.log"
-            grep -qE '^OK \(' "/tmp/${suite}.log"
+              "tests/Integration/${suite}" > "/tmp/${suite}.log" 2>&1
+            if ! grep -qE '^OK \(' "/tmp/${suite}.log"; then
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit "/tmp/${suite}-junit.xml" --label patient_enrollment --phpunit-exit 1 --log "/tmp/${suite}.log" || true
+              echo "::error::${suite} did not finish with a passing PHPUnit summary."
+              exit 1
+            fi
           done
           python3 - <<'PYENROLL'
           import xml.etree.ElementTree as ET
@@ -753,86 +788,48 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -o pipefail
-          python3 -m unittest discover -s "$GITHUB_WORKSPACE/bin" -p test_integration_diagnostics.py
+          set +e
+          python3 -m unittest discover -s "$GITHUB_WORKSPACE/bin" -p 'test_integration_*.py' > /tmp/bin-projector-tests.log 2>&1
+          bin_tests_rc=$?
+          set -e
+          if [ "$bin_tests_rc" -ne 0 ]; then
+            python3 -c 'import re, sys
+            shown = 0
+            for line in open(sys.argv[1], errors="ignore"):
+                if re.match(r"^(FAIL|ERROR): |^(OK|FAILED)", line):
+                    print(line.rstrip())
+                    shown += 1
+                if shown >= 25:
+                    break' /tmp/bin-projector-tests.log
+            echo "::error::bin projector tests failed (rc=$bin_tests_rc); bounded summary above."
+            exit "$bin_tests_rc"
+          fi
+          echo 'bin projector tests: OK (output redirected to /tmp).'
           phpunit_status=0
           php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --log-junit /tmp/phpunit-int-junit.xml \
-            --bootstrap tests/integration-bootstrap.php tests/Integration 2>&1 | tee /tmp/phpunit-int.log || phpunit_status=$?
+            --bootstrap tests/integration-bootstrap.php tests/Integration > /tmp/phpunit-int.log 2>&1 || phpunit_status=$?
           # Narrow sanitized diagnostics for the FULL suite, mirrored onto the PR
-          # because raw job logs and artifact blobs are unreachable for some
-          # reviewers. Published facts are bounded and non-sensitive only:
-          # PHPUnit exit code, test/assertion totals, failure/error/skip counts,
-          # sanitized failing test identifiers (class::method, allowlisted charset,
-          # capped) and bounded exception CLASS names. Never published: raw PHPUnit
-          # output, assertion/exception messages, SQL, credentials, patient
-          # identifiers or any PHI. Purely additive - the strict verdicts below are
-          # unchanged and the original PHPUnit exit code is propagated verbatim.
-          python3 - "$phpunit_status" <<'PY' || true
-          import os
-          import re
-          import subprocess
-          import sys
-          import xml.etree.ElementTree as ET
-          sys.path.insert(0, os.path.join(os.environ['GITHUB_WORKSPACE'], 'bin'))
-          from integration_diagnostics import junit_stats, terminal_summary_printed
-
-          status = sys.argv[1]
-          identifier_re = re.compile(r'[^A-Za-z0-9_:\.\- ]')
-          stats = {'cases': 0, 'assertions': 0, 'failures': 0, 'errors': 0, 'skipped': 0}
-          identifiers = []
-          categories = {}
-          try:
-              root = ET.parse('/tmp/phpunit-int-junit.xml').getroot()
-              stats = junit_stats(root)
-              for case in root.findall('.//testcase'):
-                  for tag in ('error', 'failure'):
-                      node = case.find(tag)
-                      if node is None:
-                          continue
-                      raw_id = '{}::{}'.format(case.get('class') or case.get('file') or 'unknown', case.get('name') or 'unknown')
-                      safe_id = identifier_re.sub('', raw_id)[:160]
-                      if len(identifiers) < 20:
-                          identifiers.append(safe_id)
-                      category = identifier_re.sub('', (node.get('type') or tag))[-60:]
-                      categories[category] = categories.get(category, 0) + 1
-          except Exception:
-              categories['junit_unavailable'] = 1
-
-          completed = 'unknown'
-          try:
-              completed = 'yes' if terminal_summary_printed('/tmp/phpunit-int.log') else 'no'
-          except Exception:
-              completed = 'log_unavailable'
-
-          body = (
-              '### Full Integration suite - sanitized diagnostics '
-              '(run {}, attempt {})\n'
-              '```\n'
-              'stage=full_integration_suite phpunit_exit={} terminal_summary_printed={}\n'
-              'tests={} assertions={} failures={} errors={} skipped={}\n'
-              'failing_tests_capped_20={}\n'
-              'error_categories={}\n'
-              '```\n'
-          ).format(
-              os.environ.get('GITHUB_RUN_ID', '?'),
-              os.environ.get('GITHUB_RUN_ATTEMPT', '?'),
-              status,
-              completed,
-              stats['cases'],
-              stats['assertions'],
-              stats['failures'],
-              stats['errors'],
-              stats['skipped'],
-              ';'.join(identifiers) or 'none',
-              ' '.join('{}={}'.format(k, v) for k, v in sorted(categories.items())) or 'none',
-          )
-          pr = os.environ.get('PR_NUMBER', '')
-          if pr:
-              subprocess.run(['gh', 'pr', 'comment', pr, '--body', body], check=False)
-          else:
-              print(body)
-          PY
+          # because raw job logs are publicly reachable. Published facts are
+          # bounded and non-sensitive only: PHPUnit exit code, test/assertion
+          # totals, failure/error/skip counts, sanitized failing test identifiers
+          # (strict Class::method, capped) and bounded exception CLASS names.
+          # Never published: raw PHPUnit output, assertion/exception messages,
+          # SQL, credentials, patient identifiers or any PHI. Purely additive -
+          # the strict verdicts below are unchanged and the original PHPUnit exit
+          # code is propagated verbatim.
+          {
+            echo "### Full Integration suite - sanitized diagnostics (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
+            echo '```'
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/phpunit-int-junit.xml --label full_integration_suite --phpunit-exit "$phpunit_status" --log /tmp/phpunit-int.log || true
+            echo '```'
+          } > /tmp/integration-full-suite-pr.md
+          if [ -n "$PR_NUMBER" ]; then
+            bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-integration-full --body-file /tmp/integration-full-suite-pr.md \
+              || echo '::notice::Full-suite evidence comment could not be mirrored'
+          fi
           if [ "$phpunit_status" -ne 0 ]; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/phpunit-int-junit.xml --label full_integration_suite --phpunit-exit "$phpunit_status" --log /tmp/phpunit-int.log || true
             echo "::error::Integration PHPUnit exited $phpunit_status."
             exit "$phpunit_status"
           fi
@@ -848,16 +845,67 @@ jobs:
             exit 1
           fi
 
-      - name: Upload Integration PHPUnit log
+      # Focused, real-DB proof that the WpSqlFailureLedger publication boundary
+      # was exercised against the Integration MySQL service — not skipped and
+      # not wasm/mocked. Bounded counts only; exit code is the verdict.
+      - name: Run WpSqlFailureLedger DB-backed boundary test
+        run: |
+          set -o pipefail
+          ledger_status=0
+          php -d memory_limit=1G vendor/bin/phpunit --no-configuration \
+            --log-junit /tmp/wp-sql-failure-ledger-junit.xml \
+            --bootstrap tests/integration-bootstrap.php \
+            tests/Integration/WpSqlFailureLedgerIntegrationTest.php > /tmp/wp-sql-failure-ledger.log 2>&1 || ledger_status=$?
+          ledger_counts_rc=0
+          python3 - <<'PYLEDGER' || ledger_counts_rc=$?
+          import sys
+          import xml.etree.ElementTree as ET
+          try:
+              root = ET.parse('/tmp/wp-sql-failure-ledger-junit.xml').getroot()
+          except Exception:
+              print('WpSqlFailureLedger DB-backed boundary JUnit: parse_failed')
+              sys.exit(3)
+          cases = root.findall('.//testcase')
+          skipped = sum(1 for c in cases if c.find('skipped') is not None)
+          failures = sum(1 for c in cases if c.find('failure') is not None)
+          errors = sum(1 for c in cases if c.find('error') is not None)
+          print(f'WpSqlFailureLedger DB-backed boundary JUnit: tests={len(cases)} skipped={skipped} failures={failures} errors={errors}')
+          if len(cases) != 1 or skipped or failures or errors:
+              print('WpSqlFailureLedger DB-backed boundary JUnit: unexpected_shape')
+              sys.exit(3)
+          sys.exit(0)
+          PYLEDGER
+          if [ "$ledger_status" -ne 0 ] || [ "$ledger_counts_rc" -ne 0 ]; then
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/wp-sql-failure-ledger-junit.xml --label wp_sql_failure_ledger_db --phpunit-exit "$ledger_status" --log /tmp/wp-sql-failure-ledger.log || true
+            echo "::error::WpSqlFailureLedger DB-backed boundary gate failed (phpunit_rc=$ledger_status counts_rc=$ledger_counts_rc)."
+            if [ "$ledger_status" -ne 0 ]; then
+              exit "$ledger_status"
+            fi
+            exit 1
+          fi
+
+      - name: Build sanitized Integration evidence
+        if: always()
+        run: |
+          mkdir -p /tmp/evidence
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/wp-sql-failure-ledger-junit.xml --label wp_sql_failure_ledger_db > /tmp/evidence/wp-sql-failure-ledger.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/custom-role-race-junit.xml --label focused_custom_role_race > /tmp/evidence/custom-role-race.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/custom-role-race.log >> /tmp/evidence/custom-role-race.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" evidence CUSTOM_ROLE_LIFECYCLE_CONCURRENCY_EVIDENCE /tmp/custom-role-race.log >> /tmp/evidence/custom-role-race.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/phpunit-int-junit.xml --label full_integration_suite --log /tmp/phpunit-int.log > /tmp/evidence/phpunit-int.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/phpunit-int-junit.xml >> /tmp/evidence/phpunit-int.txt || true
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" conn-diag /tmp/phpunit-int.log > /tmp/evidence/phpunit-int.conn-diag.txt || true
+      - name: Upload sanitized Integration evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: integration-phpunit-log-${{ github.run_id }}-${{ github.run_attempt }}
+          name: integration-evidence-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /tmp/custom-role-race.log
-            /tmp/custom-role-race-junit.xml
-            /tmp/phpunit-int.log
-            /tmp/phpunit-int-junit.xml
+            /tmp/evidence/wp-sql-failure-ledger.txt
+            /tmp/evidence/custom-role-race.txt
+            /tmp/evidence/custom-role-race.evidence.txt
+            /tmp/evidence/phpunit-int.txt
+            /tmp/evidence/phpunit-int.conn-diag.txt
           if-no-files-found: warn
           retention-days: 7
 
@@ -889,9 +937,9 @@ jobs:
           set -o pipefail
           mkdir -p /tmp/authz-coverage
           php -d pcov.enabled=1 -r 'echo json_encode(["pcov_loaded"=>extension_loaded("pcov"),"pcov_enabled"=>extension_loaded("pcov") && (bool) ini_get("pcov.enabled"),"pcov_version"=>(phpversion("pcov") ?: null),"php_version"=>PHP_VERSION]), "\n";' > /tmp/authz-coverage/driver.json
-          cat /tmp/authz-coverage/driver.json
+          php -r '$d = json_decode((string) file_get_contents("/tmp/authz-coverage/driver.json"), true); printf("driver pcov_loaded=%d pcov_enabled=%d pcov_version=%s\n", !empty($d["pcov_loaded"]), !empty($d["pcov_enabled"]), isset($d["pcov_version"]) && is_string($d["pcov_version"]) ? "set" : "unset");'
           php -d memory_limit=1G vendor/bin/phpunit --version > /tmp/authz-coverage/phpunit-version.txt
-          cat /tmp/authz-coverage/phpunit-version.txt
+          sed -n 's/^\(PHPUnit [0-9]\+\.[0-9]\+\.[0-9]\+\).*/phpunit_version=\1/p' /tmp/authz-coverage/phpunit-version.txt || true
           set +e
           php -d pcov.enabled=1 -d memory_limit=1G vendor/bin/phpunit --no-configuration \
             --bootstrap tests/integration-bootstrap.php \
@@ -901,7 +949,8 @@ jobs:
             tests/Integration/AuthorizationServiceTest.php > /tmp/authz-coverage/phpunit.log 2>&1
           echo $? > /tmp/authz-coverage/phpunit.rc
           set -e
-          tail -n 60 /tmp/authz-coverage/phpunit.log
+          # Raw phpunit.log is NOT echoed: on red runs it carries assertion CDATA.
+          # The fail-closed guard below reads it and publishes a bounded summary only.
 
       - name: AuthorizationService coverage guard (fail-closed; includes negative-control self-test)
         if: always()
@@ -921,7 +970,7 @@ jobs:
               echo "::warning::AuthorizationService focused coverage measurement is NOT RUN (step outcome: ${AUTHZ_COVERAGE_RUN_OUTCOME:-unknown})."
               echo "Missing coverage artifacts below therefore mean 'measurement could not run', NOT 'AuthorizationService is uncovered'."
               echo "The guard stays fail-closed: NOT RUN is never converted into PASS."
-            } | tee -a "$GITHUB_STEP_SUMMARY"
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
           python3 bin/authorization-coverage-guard.py --test
           set +e
@@ -933,6 +982,7 @@ jobs:
             --phpunit-version-file /tmp/authz-coverage/phpunit-version.txt \
             --phpunit-rc-file /tmp/authz-coverage/phpunit.rc \
             --phpunit-log /tmp/authz-coverage/phpunit.log \
+            --phpunit-junit /tmp/authz-coverage/junit.xml \
             --out-dir /tmp/authz-coverage/summary \
             --commit "$HEAD_SHA" --event-sha "$EVENT_SHA" \
             --run-id "$RUN_ID" --run-attempt "$RUN_ATTEMPT"
@@ -943,17 +993,14 @@ jobs:
           fi
           exit "$GUARD_RC"
 
-      - name: Archive AuthorizationService coverage artifacts
+      - name: Archive AuthorizationService coverage artifacts (sanitized)
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          # Only the guard's bounded summary. clover.xml carries runner-absolute
+          # paths; junit.xml can carry assertion CDATA; neither is uploaded.
           name: authz-coverage-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /tmp/authz-coverage/clover.xml
-            /tmp/authz-coverage/junit.xml
-            /tmp/authz-coverage/driver.json
-            /tmp/authz-coverage/phpunit-version.txt
-            /tmp/authz-coverage/phpunit.rc
             /tmp/authz-coverage/summary/
           if-no-files-found: warn
           retention-days: 14
@@ -1009,16 +1056,17 @@ jobs:
           php -d memory_limit=1G tests/bin/multi-clinic-rest-bootstrap-probe.php > /tmp/red1-probe.log 2>&1
           PROBE_RC=$?
           set -e
-          cat /tmp/red1-probe.log
-          # The probe's own stdout/stderr IS the RED evidence, and the raw job
-          # log is not readable through the API — same reason the repository
-          # already mirrors the integration summary onto the PR. Mirroring here
-          # never changes the step's verdict: we re-exit with the probe's rc.
+          # Publication boundary: the probe's raw stdout/stderr is NEVER echoed
+          # and NEVER mirrored. Only the fixed-schema projection reaches the job
+          # log, the step summary and the PR. The exit code stays the verdict.
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" red1-probe /tmp/red1-probe.log || true
+          # The probe's own exit code is the RED verdict authority; this mirror
+          # never changes it: we re-exit with the probe's rc.
           if [ -n "$PR_NUMBER" ]; then
             {
               echo "### RED 1 — process-fresh multi-Clinic REST bootstrap probe (run ${{ github.run_id }}, attempt ${{ github.run_attempt }}, rc=${PROBE_RC})"
               echo '```'
-              cat /tmp/red1-probe.log
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" red1-probe /tmp/red1-probe.log || true
               echo '```'
             } > /tmp/red1-probe-comment.md
             bash "${GITHUB_WORKSPACE:-.}/.github/scripts/pr-evidence-comment.sh" --family ci-red1-probe --body-file /tmp/red1-probe-comment.md \
@@ -1039,97 +1087,21 @@ jobs:
             echo "### Integration completion evidence (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
             echo '```'
             echo '--- terminal summary (completion-guard authority) ---'
-            grep -E '^(OK \(|OK, but|FAILURES!|ERRORS!|WARNINGS!|Tests: |Time: )' /tmp/phpunit-int.log | tail -n 4 || echo '(no terminal summary found — premature exit)'
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/phpunit-int.log || true
             if [ -f /tmp/phpunit-int-junit.xml ]; then
-              SPLIT="$(mktemp)"
-              tr '<' '\n' < /tmp/phpunit-int-junit.xml > "$SPLIT"
-              echo '--- junit root suite ---'
-              grep -m1 '^testsuite ' "$SPLIT" || true
-              echo '--- Phase3 Slice 6 RED-class suites (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep -E 'Phase3Slice6AuthorizationRedTest|Phase3Slice6BStaffClinicAuthorizationTest' || echo '(no Phase3 Slice 6 RED class present in junit)'
-              echo '--- Phase3 Slice 6 RED-class testcases ---'
-              grep '^testcase ' "$SPLIT" | grep -E 'Phase3Slice6AuthorizationRedTest|Phase3Slice6BStaffClinicAuthorizationTest' || true
-              echo '--- Phase4 Slice 3 WalkIn suite (execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase4Slice3WalkInSharedProfessionalTest' || echo '(Phase4 Slice 3 suite missing from junit)'
-              echo '--- Phase4 Slice 3 WalkIn testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase4Slice3WalkInSharedProfessionalTest' || true
-              echo '--- Phase4 Slice 4 Queue suite (execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase4Slice4QueueSharedProfessionalTest' || echo '(Phase4 Slice 4 suite missing from junit)'
-              echo '--- Phase4 Slice 4 Queue testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase4Slice4QueueSharedProfessionalTest' || true
-              echo '--- Phase4 Location Master Data suite (execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase4LocationMasterDataTest' || echo '(Phase4 Location suite missing from junit)'
-              echo '--- Phase4 Location Master Data testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase4LocationMasterDataTest' || true
-              echo '--- Phase6 Slice 3 Explicit-Location suite (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleExplicitLocationTest' || echo '(Phase6 Slice 3 suite missing from junit)'
-              echo '--- Phase6 Slice 3 Explicit-Location testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleExplicitLocationTest' || true
-              echo '--- Phase6 Slice 3 regression suites (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest' || echo '(a Phase6 Slice 3 regression suite is missing from junit)'
-              echo '--- Phase6 Slice 3 regression testcases ---'
-              grep '^testcase ' "$SPLIT" | grep -E 'RestScheduleTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest' || true
-              echo '--- Phase6 Slice 4 Multi-Shift suite (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleMultiShiftTest' || echo '(Phase6 Slice 4 suite missing from junit)'
-              echo '--- Phase6 Slice 4 Multi-Shift testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleMultiShiftTest' || true
-              # Slice 5 keeps named-suite evidence explicit (additive; no gate change).
-              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleMultiShiftTest' || true
-            echo '--- Phase6 Slice 4 regression suites (selection + execution proof) ---'
-            grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest' || echo '(a Phase6 Slice 4 regression suite is missing from junit)'
-            echo '--- Phase11 Reception suites (contract + blocker regression) ---'
-            grep '^testsuite ' "$SPLIT" | grep -E 'Phase11StaffPortalReceptionArrivalRedTest|Phase11ReceptionPartialArrivalRecoveryRedTest' || echo '(Phase11 Reception suites missing from junit)'
-            echo '--- Phase11 Reception testcases ---'
-            grep '^testcase ' "$SPLIT" | grep -E 'Phase11StaffPortalReceptionArrivalRedTest|Phase11ReceptionPartialArrivalRecoveryRedTest' || true
-            echo '--- failing testcases + failure messages (all suites) ---'
-            grep -E '^(testcase |failure |!\[CDATA)' "$SPLIT" | grep -B1 -A2 '^failure ' | head -n 30 || true
-              echo '--- Phase6 Slice 4 regression testcases ---'
-              grep '^testcase ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest' || true
-              # Slice 6 keeps named-suite evidence explicit (additive; no gate change).
-              echo '--- Phase6 Slice 6 Exception-Location suite (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleExceptionLocationTest' || echo '(Phase6 Slice 6 suite missing from junit)'
-              echo '--- Phase6 Slice 6 Exception-Location testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleExceptionLocationTest' || true
-              echo '--- Phase6 Slice 6 regression suites (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep -E 'RestScheduleTest|Phase6ScheduleMultiShiftTest|Phase6ScheduleExplicitLocationTest|Phase4Slice1ProfessionalMultiClinicParticipationTest|ScheduleRegenerationClinicScopeRedTest|SchedulingLocationLocalBoundaryRedTest|SlotsGenerateLocationLocalTemporalRedTest|SlotsGenerateM2WiringRedTest|C7PreIntegrationBoundaryTest|C7ScheduleObjectIdIsolationTest' || echo '(a Phase6 Slice 6 regression suite is missing from junit)'
-              echo '--- Phase6 Slice 6 regression testcases ---'
-              grep '^testcase ' "$SPLIT" | grep -E 'C7PreIntegrationBoundaryTest|C7ScheduleObjectIdIsolationTest' || true
-              # Slice 7 keeps named-suite evidence explicit (additive; no gate change).
-              echo '--- Phase6 Slice 7 Multi-Shift Concurrency suite (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase6ScheduleShiftConcurrencyRedTest' || echo '(Phase6 Slice 7 concurrency suite missing from junit)'
-              echo '--- Phase6 Slice 7 Multi-Shift Concurrency testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase6ScheduleShiftConcurrencyRedTest' || true
-              # C7 hardening keeps named-suite evidence explicit (additive; no gate change).
-              echo '--- C7 hardening: Schedule no-scope read suite (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'C7ScheduleNoScopeReadRedTest' || echo '(C7 hardening no-scope read suite missing from junit)'
-              echo '--- C7 hardening: Schedule no-scope read testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'C7ScheduleNoScopeReadRedTest' || true
-              # Phase 8 Slice 1 هم مثل بقیهٔ سوئیت‌های RED-class شاهدِ صریحِ
-              # «انتخاب + اجرا» دارد (الحاقی؛ هیچ معیارِ گیتی تغییر نکرد).
-              echo '--- Phase8 Slice 1 Public Booking Browse suite (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'Phase8Slice1PublicBookingBrowseRedTest' || echo '(Phase8 Slice 1 public booking suite missing from junit)'
-              echo '--- Phase8 Slice 1 Public Booking Browse testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'Phase8Slice1PublicBookingBrowseRedTest' || true
-              # Phase 9 standalone-shell proof (technical proof — شاهدِ صریحِ انتخاب + اجرا؛ الحاقی، بدون تغییرِ معیار گیت).
-              echo '--- Standalone Shell proof suite (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep 'StandaloneShellProofTest' || echo '(StandaloneShellProofTest suite missing from junit)'
-              echo '--- Standalone Shell proof testcases ---'
-              grep '^testcase ' "$SPLIT" | grep 'StandaloneShellProofTest' || true
-              echo '--- First-Practice Onboarding suites on MySQL 8.0 (selection + execution proof) ---'
-              grep '^testsuite ' "$SPLIT" | grep -E 'FirstPracticeSetupTest|AdminMenuTest|SetupWizardTest' || true
-              echo '--- First-Practice Onboarding testcases on MySQL 8.0 ---'
-              grep '^testcase ' "$SPLIT" | grep 'FirstPracticeSetupTest' || true
-              rm -f "$SPLIT"
+              echo '--- junit projection (totals + capped failing idents/categories) ---'
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/phpunit-int-junit.xml --label full_integration_suite --log /tmp/phpunit-int.log || true
+              echo '--- testsuite selection + execution proof (name, tests, assertions) ---'
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" suites /tmp/phpunit-int-junit.xml || true
             else
               echo '(junit xml missing — run may have terminated prematurely)'
             fi
             if [ -f /tmp/first-practice-mariadb.log ]; then
-              echo '--- First-Practice Onboarding on MariaDB 11.4.13 ---'
-              grep -E '^(OK \(|Tests: |FAILURES!)' /tmp/first-practice-mariadb.log || true
-              tail -n 20 /tmp/first-practice-mariadb.log
+              echo '--- First-Practice Onboarding on MariaDB 11.4.13 (terminal summary) ---'
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/first-practice-mariadb.log || true
             fi
             echo '--- CPMS_CONN_DIAG (bounded connection diagnostics; sanitized, no SQL values) ---'
-            grep -m 60 'CPMS_CONN_DIAG ' /tmp/phpunit-int.log || echo '(no CPMS_CONN_DIAG lines: diagnostics did not run)'
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" conn-diag /tmp/phpunit-int.log || true
             echo '```'
           } > /tmp/pr-evidence.md
           if [ -n "$PR_NUMBER" ]; then
@@ -1137,8 +1109,10 @@ jobs:
               || echo '::notice::Integration evidence could not be mirrored (see the warning above)'
           fi
 
-      # انتقال لاگ شکست‌ها به PR — لاگ‌های job از API به blob ریدایرکت می‌شوند و
-      # از محیط sandbox قابل دانلود نیستند؛ کامنت PR از طریق API خواندنی است.
+      # انتقال لاگ شکست‌ها به PR — لاگ‌های job از blob ریدایرکت می‌شوند و به‌طور
+      # عمومی قابل خواندنی هستند؛ بنابراین فقط projection محدودشده منتشر می‌شود:
+      # Class::methodهای شکست‌خورده (سقف‌دار) و دسته‌بندی استثناء. هیچ متن خام
+      # درایور، SQL، پیام assert یا InnoDB dump هرگز منتشر نمی‌شود.
       - name: Post failures to PR
         if: failure()
         env:
@@ -1146,25 +1120,16 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           {
-            echo "### Integration test failures (run ${{ github.run_id }})"
+            echo "### Integration test failures (run ${{ github.run_id }}, attempt ${{ github.run_attempt }})"
             echo '```'
+            python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/phpunit-int.log || true
+            if [ -f /tmp/phpunit-int-junit.xml ]; then
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" junit /tmp/phpunit-int-junit.xml --label full_integration_suite --log /tmp/phpunit-int.log || true
+            fi
             if [ -f /tmp/first-practice-mariadb.log ]; then
-              echo "--- MARIADB 11.4.13 FIRST-PRACTICE ONBOARDING LOG ---"
-              tail -n 80 /tmp/first-practice-mariadb.log
+              echo '--- First-Practice Onboarding on MariaDB 11.4.13 (terminal summary) ---'
+              python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" terminal /tmp/first-practice-mariadb.log || true
             fi
-            if [ -f /tmp/phpunit-int.log ]; then
-              echo "--- SUMMARY ---"
-              grep -E "^(Tests:|OK \()" /tmp/phpunit-int.log | tail -n 2 || true
-              echo "--- FAILURE/ERROR DETAILS (test + message + location) ---"
-              awk '/^There (were|was)/{flag=1;next}/^--$/{}flag' /tmp/phpunit-int.log \
-                | grep -B 1 -A 8 -E '^[0-9]+\) ' | grep -vE '^--$' | head -n 300 || true
-              echo "--- TAIL (last 40 lines) ---"
-              tail -n 40 /tmp/phpunit-int.log || true
-              echo "--- FK EVIDENCE: verbose wpdb SQL errors ---"
-              grep -B 1 -A 3 -iE "foreign key constraint" /tmp/phpunit-int.log | grep -vE '^--$' | head -n 100 || true
-            fi
-            echo "--- FK EVIDENCE: InnoDB LATEST FOREIGN KEY ERROR ---"
-            php -r '$m=@mysqli_connect("127.0.0.1","root","root","wordpress_test"); if(!$m){echo "(no mysqli connection)\n"; exit(0);} $r=@mysqli_query($m,"SHOW ENGINE INNODB STATUS"); if(!$r){echo "(innodb status query failed)\n"); exit(0);} $row=mysqli_fetch_assoc($r); $t=(string)($row["Status"] ?? ""); if(preg_match("/LATEST FOREIGN KEY ERROR:.*?(?=\n-----)/s",$t,$mm)){echo $mm[0]."\n";}else{echo "(no FK section in InnoDB status)\n";}' || true
             echo '```'
           } > /tmp/pr-body.md
           if [ -n "$PR_NUMBER" ]; then
@@ -1172,22 +1137,17 @@ jobs:
               || echo '::notice::Integration failure evidence could not be mirrored (see the warning above)'
           fi
 
-      # خروجی PHPUnit به‌صورت annotation هم منتشر می‌شود (سقف GitHub: 10 به‌ازای Step)
+      # خروجی PHPUnit به‌صورت annotation هم منتشر می‌شود (سقف GitHub: 10 به‌ازای Step).
+      # فقط شناسه‌های Class::method که در سورس source-verified باشند (PSR-4 +
+      # متدِ اعلام‌شده) منتشر می‌شوند؛ هر چیز دیگری از لاگ خام خوانده نمی‌شود.
       - name: Surface test failures (part 1)
         if: failure()
         run: |
-          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/phpunit-int.log | sort -u | head -10 | while IFS= read -r l; do
-            echo "::error::${l:0:400}"
-          done
-          grep -E "^Tests: " /tmp/phpunit-int.log | head -1 | while IFS= read -r l; do
-            echo "::notice::${l:0:400}"
-          done
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" annotate /tmp/phpunit-int-junit.xml --offset 0 --limit 10 || true
       - name: Surface test failures (part 2)
         if: failure()
         run: |
-          grep -oE "^[0-9]+\) [A-Za-z\\\\]+Test::[A-Za-z_]+" /tmp/phpunit-int.log | sort -u | sed -n '11,20p' | while IFS= read -r l; do
-            echo "::error::${l:0:400}"
-          done
+          python3 "$GITHUB_WORKSPACE/bin/integration_evidence.py" annotate /tmp/phpunit-int-junit.xml --offset 10 --limit 10 || true
 
   # F1-3 (گروه 4) — PHPStan در CI. سطح و scope در phpstan.neon.dist ثبت است
   # (level=3 — بالاترین سطح سبز روی وضعیت واقعی کد، با اجرای واقعی/probe؛

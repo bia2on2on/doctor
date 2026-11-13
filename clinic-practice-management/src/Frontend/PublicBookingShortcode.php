@@ -68,6 +68,8 @@ namespace ClinicCore\Frontend;
 
 use ClinicCore\Application\Clinic\PublicClinicDirectory;
 use ClinicCore\Auth\RolesAndCapabilities;
+use ClinicCore\Domain\Clinical\DoctorDisplayName;
+use ClinicCore\Domain\Clinical\MedicalSpecialtyCatalog;
 use ClinicCore\Domain\Time\Jalali;
 use ClinicCore\Bootstrap\App;
 use Throwable;
@@ -809,10 +811,20 @@ final class PublicBookingShortcode
         int $clinic_id,
         array $location_ids = []
     ): string {
-        $id        = (int) ( $clinician['id'] ?? 0 );
-        $name      = trim( (string) ( $clinician['name'] ?? '' ) );
-        $specialty = trim( (string) ( $clinician['specialty'] ?? '' ) );
-        $weekdays  = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
+        $id              = (int) ( $clinician['id'] ?? 0 );
+        $name            = trim( (string) ( $clinician['name'] ?? '' ) );
+        $specialty       = trim( (string) ( $clinician['specialty'] ?? '' ) );
+        $specialty_label = self::specialty_display_label( $specialty );
+        $weekdays        = array_map( 'intval', (array) ( $clinician['weekdays'] ?? [] ) );
+
+        // data-search: titled name plus raw name when raw adds new terms.
+        $name_raw   = self::normalize_search_text( $name );
+        $name_title = self::normalize_search_text( DoctorDisplayName::with_title_or_fallback( $name ) );
+        if ( $name_raw === $name_title || str_contains( $name_title, $name_raw ) ) {
+            $name_search = $name_title;
+        } else {
+            $name_search = $name_title . ' ' . $name_raw;
+        }
 
         $lines = [];
         // `data-locations` = only the Locations the SERVER found eligible for
@@ -825,8 +837,8 @@ final class PublicBookingShortcode
             esc_attr( self::ROOT_CLASS . '__doctor' ),
             $clinic_id,
             $id,
-            esc_attr( $specialty ),
-            esc_attr( self::normalize_search_text( $name ) ),
+            esc_attr( $specialty_label ),
+            esc_attr( $name_search ),
             esc_attr( implode( ' ', array_map( 'intval', $location_ids ) ) )
         );
         $lines[] = sprintf(
@@ -837,11 +849,11 @@ final class PublicBookingShortcode
             $id,
             $clinic_id,
             esc_attr( self::ROOT_CLASS . '__clinician-name' ),
-            esc_html( $name ),
+            esc_html( DoctorDisplayName::with_title_or_fallback( $name ) ),
             $specialty === '' ? '' : sprintf(
                 '<span class="%1$s">%2$s</span>',
                 esc_attr( self::ROOT_CLASS . '__clinician-specialty' ),
-                esc_html( $specialty )
+                esc_html( $specialty_label )
             ),
             sprintf(
                 '<span class="%1$s" data-role="clinician-days">%2$s</span>',
@@ -852,6 +864,20 @@ final class PublicBookingShortcode
         $lines[] = '</li>';
 
         return implode( '', $lines );
+    }
+
+    /**
+     * Recognised catalogue aliases resolve to their canonical Persian label;
+     * any unrecognised custom or historical value is returned exactly as
+     * stored so nothing is silently dropped or forced into a wrong bucket.
+     * `data-specialty` and the filter option `value` carry the resolved label
+     * (raw value only when no catalogue match exists); the visible label is
+     * always the resolved value.
+     */
+    private static function specialty_display_label( string $specialty ): string {
+        $match = MedicalSpecialtyCatalog::find( $specialty );
+
+        return null === $match ? $specialty : $match['label'];
     }
 
     /**
@@ -1016,11 +1042,22 @@ final class PublicBookingShortcode
                 esc_attr( $specialty_id )
             );
             $lines[] = sprintf( '<option value="">%s</option>', esc_html( self::SPECIALTY_ALL ) );
+            // Derive option value AND visible label from the SAME resolver
+            // (catalog label when found, otherwise the raw value exactly as
+            // stored) so the JS exact-match on data-specialty always finds the
+            // chosen option; dedupe by resolved value and order by resolved
+            // label so catalogue aliases render a single option.
+            $resolved_specialties = [];
             foreach ( $specialties as $specialty ) {
+                $resolved_specialties[] = self::specialty_display_label( (string) $specialty );
+            }
+            $resolved_specialties = array_values( array_unique( $resolved_specialties ) );
+            sort( $resolved_specialties, SORT_STRING );
+            foreach ( $resolved_specialties as $label ) {
                 $lines[] = sprintf(
                     '<option value="%1$s">%2$s</option>',
-                    esc_attr( (string) $specialty ),
-                    esc_html( (string) $specialty )
+                    esc_attr( $label ),
+                    esc_html( $label )
                 );
             }
             $lines[] = '</select>';

@@ -82,6 +82,74 @@ final class FacilitySetupJourneyTest extends WP_UnitTestCase
     // Hospital outpatient network — full journey
     // ------------------------------------------------------------------
 
+    public function testBookingPolicyFailureRollsBackPolicyAndProgressAtomically(): void
+    {
+        $service = FacilitySetupPage::service();
+        $service->start($this->actor, $this->org, 'hospital', '', 'بیمارستان سیاست رزرو');
+        $service->add_site($this->actor, $this->org, 'ساختمان اصلی', 'تهران، خیابان یک');
+        $sites = $service->plan($this->actor, $this->org)['sites'];
+        $service->acknowledge_outpatient($this->actor, $this->org, true);
+        $clinic = $service->add_clinic($this->actor, $this->org, FacilitySetupService::new_request_key(), 'درمانگاه الف', $sites[0]['key'], self::TZ);
+        $service->designate_manager($this->actor, $this->org, $clinic['key'], $this->actor);
+        $clinic_id = (int) $clinic['clinic_id'];
+
+        $policy = ['duration' => '20', 'capacity' => '1', 'lead' => '2', 'future' => '60', 'cancel' => '24'];
+        $service->save_booking_policy($this->actor, $this->org, $clinic['key'], $policy);
+        // Rewind progress so the retry below must re-merge 'booking'.
+        (new Settings(App::db(), $clinic_id, App::audit()))->set('setup.completed_steps', 'facility', $this->actor);
+        Settings::flushCache();
+        $audit_before = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_id]
+        );
+
+        // Fail the third policy write (FacilitySetupService entry point):
+        // policy and progress are one transition and must roll back
+        // together — in the database and in the same-process snapshot
+        // cache (no flushCache before the reads below).
+        $fault = $this->failSettingsWritesForKey('booking.min_lead_hours');
+        add_filter('query', $fault, 5, 1);
+        $threw = false;
+        try {
+            $service->save_booking_policy($this->actor, $this->org, $clinic['key'], ['duration' => '35', 'capacity' => '3', 'lead' => '9', 'future' => '90', 'cancel' => '48']);
+        } catch (\RuntimeException) {
+            $threw = true;
+        } finally {
+            remove_filter('query', $fault, 5);
+        }
+
+        self::assertTrue($threw, 'a mid-policy failure must abort the FacilitySetupService booking transition');
+        $read = new Settings(App::db(), $clinic_id, App::audit());
+        self::assertSame(20, (int) $read->get('booking.duration_default_min'), 'the rolled-back duration must not survive in the snapshot cache');
+        self::assertSame('facility', (string) $read->get('setup.completed_steps', ''), 'the progress merge must roll back with the policy');
+        self::assertSame($audit_before, (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
+            [$clinic_id]
+        ), 'the audits of the rolled-back transition must roll back too');
+
+        $service->save_booking_policy($this->actor, $this->org, $clinic['key'], ['duration' => '35', 'capacity' => '3', 'lead' => '9', 'future' => '90', 'cancel' => '48']);
+        self::assertSame(35, (int) $read->get('booking.duration_default_min'), 'the retry must commit the policy');
+        self::assertSame('facility,booking', (string) $read->get('setup.completed_steps', ''), 'the retry must commit the merged progress');
+    }
+
+    private function failSettingsWritesForKey(string $key): \Closure
+    {
+        global $wpdb;
+        $settings_table = $wpdb->prefix . 'cpms_settings';
+
+        return static function ($query) use ($key, $settings_table) {
+            $query = (string) $query;
+            if (
+                (str_contains($query, 'INSERT INTO `' . $settings_table . '`') || str_starts_with($query, 'UPDATE ' . $settings_table . ' '))
+                && str_contains($query, "'" . $key . "'")
+            ) {
+                return str_replace($settings_table, $settings_table . '_write_failure', $query);
+            }
+
+            return $query;
+        };
+    }
+
     public function testHospitalOutpatientJourneyCreatesTwoClinicsRoomsSharedClinicianSchedulesAndActivates(): void
     {
         $service = FacilitySetupPage::service();
