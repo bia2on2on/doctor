@@ -340,6 +340,75 @@ final class ReminderLocationDayBoundaryTest extends WP_UnitTestCase
         }
     }
 
+    /**
+     * Diagnostic for the ambiguous-legacy failure above. Root cause: UNKNOWN.
+     *
+     * This test only reports, via fixed assertion messages, which stage of
+     * the same insert/read sequence is reached. It never emits database
+     * error text, SQL, lock data, identifiers or any arbitrary string: every
+     * assertion is a boolean checked with assertTrue() against a fixed
+     * AMBIG_LEGACY_DIAG token, so a failure can publish only that token.
+     * The test it diagnoses is unchanged and is not replaced by this one.
+     */
+    public function testAmbiguousLegacyAppointmentInsertReadDiagnostic(): void
+    {
+        global $wpdb;
+        $db = App::db();
+        $locationId = self::FX_T_LOC_A_ID;
+        $now = $db->nowUtcSql();
+        $timezone = 'America/New_York';
+        self::assertTrue(
+            in_array($timezone, timezone_identifiers_list(), true),
+            'AMBIG_LEGACY_DIAG timezone_available=false'
+        );
+        $reference = new DateTimeImmutable('2026-11-01 12:00:00', new DateTimeZone('UTC'));
+
+        $this->setLocationTimezone($locationId, $timezone, $now);
+        try {
+            $patientId = $this->fxTInsertPatient();
+            self::assertTrue($patientId > 0, 'AMBIG_LEGACY_DIAG patient_insert_ok=false');
+
+            $patientPresent = null !== $wpdb->get_var($wpdb->prepare(
+                'SELECT id FROM ' . $db->table('cpms_patients') . ' WHERE id = %d',
+                $patientId
+            ));
+            self::assertTrue($patientPresent, 'AMBIG_LEGACY_DIAG patient_present=false');
+
+            $appointmentId = $this->fxTInsertAppointment(
+                $locationId,
+                '2026-11-01',
+                '01:30:00',
+                'confirmed',
+                null,
+                $patientId
+            );
+            self::assertTrue($appointmentId > 0, 'AMBIG_LEGACY_DIAG appointment_insert_ok=false');
+
+            $presentBeforeHandler = null !== $wpdb->get_var($wpdb->prepare(
+                'SELECT id FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+                $appointmentId
+            ));
+            self::assertTrue(
+                $presentBeforeHandler,
+                'AMBIG_LEGACY_DIAG appointment_present_before_handler=false'
+            );
+
+            $handlerCompleted = 0 === $this->runReminderJob([], $reference);
+            self::assertTrue($handlerCompleted, 'AMBIG_LEGACY_DIAG handler_completed=false');
+
+            $presentAfterHandler = null !== $wpdb->get_var($wpdb->prepare(
+                'SELECT id FROM ' . $db->table('cpms_appointments') . ' WHERE id = %d',
+                $appointmentId
+            ));
+            self::assertTrue(
+                $presentAfterHandler,
+                'AMBIG_LEGACY_DIAG appointment_present_after_handler=false'
+            );
+        } finally {
+            $this->setLocationTimezone($locationId, self::TZ_A, $now);
+        }
+    }
+
     // =================================================================
     // T3-T4 — negative calendar-day control (outside the day set)
     // =================================================================
