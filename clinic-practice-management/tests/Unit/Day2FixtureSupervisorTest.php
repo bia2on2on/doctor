@@ -17,13 +17,20 @@ use PHPUnit\Framework\TestCase;
  *
  * Fake children are tiny `php -r` programs. The supervisor's nonce is
  * generated inside `d2w_supervise()` and reaches the child only via
- * the environment, exactly as in production. Wherever an assertion
- * examines captured process output or a value derived from it, the
- * comparison is done internally and asserted as a boolean with a
- * FIXED message — raw child output is never passed as an assertion
- * operand, so a PHPUnit failure export cannot republish it. (Plain
- * assertSame on the supervisor's own returned fixed line vs a fixed
- * literal is used only where that line is itself the contract.)
+ * the environment, exactly as in production. No assertion in this file receives a supervisor-returned value,
+ * captured process output, or anything containing them as an
+ * operand: every such comparison is computed internally and
+ * asserted as a boolean with a FIXED message, so a PHPUnit failure
+ * export cannot republish child output. (Round 8 used assertSame
+ * on the returned line; round 10 removed that too.)
+ *
+ * Fatal coverage note: the fatal test below uses CPU-limit
+ * exhaustion. It is NOT a memory-exhaustion proof: on PHP 8.1 the
+ * engine prints its own memory-fatal line despite suppression
+ * (observed in CI, rounds 8/10), which this PR does not close —
+ * that needs the future workflow-authorized whole-process boundary.
+ * (An earlier version of this file described the replaced trigger
+ * as memory-exhaustion coverage; that wording was wrong.)
  */
 final class Day2FixtureSupervisorTest extends TestCase
 {
@@ -67,9 +74,9 @@ final class Day2FixtureSupervisorTest extends TestCase
     public function test_normal_success_requires_all_evidence(): void
     {
         [$code, $line, $toStderr] = $this->supervise($this->phpChild($this->markerCode()));
-        self::assertSame(0, $code);
-        self::assertSame('DAY2_FIXTURE_OK status=ok', $line);
-        self::assertFalse($toStderr);
+        self::assertTrue($code === 0, 'supervised success must exit 0');
+        self::assertTrue($line === 'DAY2_FIXTURE_OK status=ok', 'supervised success must publish the fixed OK line');
+        self::assertTrue($toStderr === false, 'supervised success must publish to stdout');
         self::assertFileExists($this->envFile);
     }
 
@@ -78,22 +85,22 @@ final class Day2FixtureSupervisorTest extends TestCase
         [$code, $line] = $this->supervise($this->phpChild(
             'file_put_contents(getenv("DAY2_FIXTURE_ENV_PATH"), "DAY2_OK=1\n");'
         ));
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertTrue($code === 1, 'exit 0 without completion evidence must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'exit 0 without completion evidence must publish the supervisor token');
     }
 
     public function test_empty_output_and_nonzero_exit_fails_as_unknown(): void
     {
         [$code, $line] = $this->supervise($this->phpChild('exit(4);'));
-        self::assertSame(4, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=unknown', $line);
+        self::assertTrue($code === 4, 'child exit status must be preserved');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=unknown', 'empty failing output must publish the unknown token');
     }
 
     public function test_marker_with_nonzero_exit_fails_and_preserves_exit(): void
     {
         [$code, $line] = $this->supervise($this->phpChild($this->markerCode() . 'exit(3);'));
-        self::assertSame(3, $code);
-        self::assertNotSame('DAY2_FIXTURE_OK status=ok', $line);
+        self::assertTrue($code === 3, 'child exit status must be preserved');
+        self::assertTrue($line !== 'DAY2_FIXTURE_OK status=ok', 'marker with nonzero exit must not publish success');
     }
 
     public function test_forged_nonce_marker_fails(): void
@@ -102,15 +109,15 @@ final class Day2FixtureSupervisorTest extends TestCase
             'fwrite(STDOUT, "DAY2_FIXTURE_COMPLETE nonce=forgedforgedforgedforged00\n");'
             . 'file_put_contents(getenv("DAY2_FIXTURE_ENV_PATH"), "DAY2_OK=1\n");'
         ));
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertTrue($code === 1, 'forged completion must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'forged completion must publish the supervisor token');
     }
 
     public function test_duplicate_marker_fails(): void
     {
         [$code, $line] = $this->supervise($this->phpChild($this->markerCode() . $this->markerCode()));
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertTrue($code === 1, 'duplicate completion must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'duplicate completion must publish the supervisor token');
     }
 
     public function test_child_error_token_and_exit_are_preserved_without_leak(): void
@@ -119,8 +126,8 @@ final class Day2FixtureSupervisorTest extends TestCase
             'fwrite(STDERR, "RAW SYNTH_TOKEN_9f3 driver text\n");'
             . 'fwrite(STDERR, "DAY2_FIXTURE_ERROR step=seed_verify\n"); exit(7);'
         ));
-        self::assertSame(7, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=seed_verify', $line);
+        self::assertTrue($code === 7, 'child exit status must be preserved');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=seed_verify', 'allowlisted child token must be republished exactly');
         self::assertTrue(!str_contains($line, 'SYNTH_TOKEN_9f3'), 'fixed line must not carry child output');
     }
 
@@ -130,7 +137,7 @@ final class Day2FixtureSupervisorTest extends TestCase
             self::markTestSkipped('/bin/sh unavailable for the signal case');
         }
         [$code, $line] = $this->supervise(['/bin/sh', '-c', 'kill -9 $$']);
-        self::assertNotSame(0, $code);
+        self::assertTrue($code !== 0, 'signalled child must fail');
         self::assertTrue(
             in_array($line, ['DAY2_FIXTURE_ERROR step=supervisor', 'DAY2_FIXTURE_ERROR step=unknown'], true),
             'signalled child must yield a fixed error line'
@@ -146,7 +153,7 @@ final class Day2FixtureSupervisorTest extends TestCase
         // is version-independent AND stricter than a prefix check:
         // no other token, suffix or extra text passes.
         [$code, $line] = $this->supervise(['/nonexistent/d2w-no-such-binary']);
-        self::assertNotSame(0, $code);
+        self::assertTrue($code !== 0, 'unlaunchable child must fail');
         self::assertTrue(
             in_array($line, ['DAY2_FIXTURE_ERROR step=supervisor', 'DAY2_FIXTURE_ERROR step=unknown'], true),
             'unlaunchable child must yield an allowlisted fixed line'
@@ -158,8 +165,8 @@ final class Day2FixtureSupervisorTest extends TestCase
         [$code, $line] = $this->supervise($this->phpChild(
             $this->markerCode() . 'fwrite(STDOUT, "trailing junk\n");'
         ));
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertTrue($code === 1, 'output after the completion line must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'output after the completion line must publish the supervisor token');
     }
 
     public function test_cleanup_failure_after_success_fails_closed(): void
@@ -179,8 +186,8 @@ final class Day2FixtureSupervisorTest extends TestCase
             $this->phpChild($sabotage . $this->markerCode()),
             $base
         );
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertTrue($code === 1, 'cleanup failure must fail closed');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'cleanup failure must publish the supervisor token');
         // Restore permissions and remove what the supervisor could
         // not; its shutdown registration also retries at process end.
         foreach (glob($base . '/d2w-sup-*') ?: [] as $d) {
@@ -252,8 +259,8 @@ final class Day2FixtureSupervisorTest extends TestCase
             'fwrite(STDERR, "RAW ' . $secret . ' driver text\n");'
             . 'fwrite(STDERR, "DAY2_FIXTURE_ERROR step=seed_verify\n"); exit(5);'
         ));
-        self::assertSame(5, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=seed_verify', $line);
+        self::assertTrue($code === 5, 'child exit status must be preserved');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=seed_verify', 'allowlisted child token must be republished exactly');
         $message = null;
         try {
             self::assertTrue($line === 'DAY2_FIXTURE_OK status=ok', 'supervisor contract mismatch (content withheld)');
@@ -267,8 +274,8 @@ final class Day2FixtureSupervisorTest extends TestCase
     public function test_empty_command_fails_closed(): void
     {
         [$code, $line] = $this->supervise([]);
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertTrue($code === 1, 'empty command must fail closed');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'empty command must publish the supervisor token');
     }
 
     public function test_unusable_temp_dir_fails_closed(): void
@@ -277,17 +284,78 @@ final class Day2FixtureSupervisorTest extends TestCase
             $this->phpChild($this->markerCode()),
             $this->workDir . '/missing-parent/child'
         );
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertTrue($code === 1, 'unusable temp dir must fail closed');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'unusable temp dir must publish the supervisor token');
     }
 
     public function test_stale_env_file_is_removed_and_cannot_prove_success(): void
     {
         file_put_contents($this->envFile, "DAY2_STALE=1\n");
         [$code, $line] = $this->supervise($this->phpChild('exit(0);'));
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertTrue($code === 1, 'exit 0 without completion evidence must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'stale env file must not prove success');
         self::assertFileDoesNotExist($this->envFile);
+    }
+
+
+    public function test_cleanup_failure_surviving_to_shutdown_prints_only_token(): void
+    {
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            self::markTestSkipped('permission-based cleanup injection needs a non-root user');
+        }
+        // Subprocess: the fake child makes the supervisor's private
+        // dir non-writable, so cleanup fails on the return path AND
+        // again in the shutdown retry. The helper prints NOTHING
+        // itself; the only stderr allowed is the fixed token (from
+        // the shutdown path), the exit must be non-success, and no
+        // PHP warning text may appear (exact-match boolean compare).
+        $base = $this->workDir . '/shutdownbase';
+        mkdir($base, 0700, true);
+        $helper = $this->workDir . '/shutdown-helper.php';
+        $sabotage = '$ds = glob(' . var_export($base, true) . ' . "/d2w-sup-*") ?: [];'
+            . 'foreach ($ds as $d) { foreach (glob($d . "/*") ?: [] as $f) { chmod($f, 0400); } chmod($d, 0500); }';
+        file_put_contents($helper, '<?php require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
+            . '$r = d2w_supervise([PHP_BINARY, "-r", ' . var_export($sabotage . 'echo "done\n";', true) . '], '
+            . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
+            . 'exit($r[0]);');
+        $proc = proc_open(
+            [PHP_BINARY, $helper],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+        self::assertTrue(is_resource($proc), 'shutdown-path helper could not launch');
+        $out = stream_get_contents($pipes[1]);
+        $err = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($proc);
+        unlink($helper);
+        self::assertTrue($exit !== 0, 'shutdown cleanup failure must exit non-success');
+        self::assertTrue($out === '', 'shutdown cleanup failure must print nothing to stdout');
+        self::assertTrue($err === "DAY2_FIXTURE_ERROR step=supervisor\n", 'shutdown cleanup failure must print only the fixed token (no warning text)');
+        foreach (glob($base . '/d2w-sup-*') ?: [] as $d) {
+            chmod($d, 0700);
+            foreach (glob($d . '/*') ?: [] as $f) {
+                chmod($f, 0600);
+                unlink($f);
+            }
+            rmdir($d);
+        }
+        rmdir($base);
+    }
+
+    public function test_oversized_child_output_fails_closed_within_caps(): void
+    {
+        // One huge newline-less line (far beyond D2W_CAPTURE_LINE_MAX)
+        // and, separately, many short lines beyond
+        // D2W_CAPTURE_TOTAL_MAX: both must fail closed with the
+        // fixed token, without the scan ever holding the output.
+        [$code, $line] = $this->supervise($this->phpChild('echo str_repeat("A", 4194304);'));
+        self::assertTrue($code !== 0, 'huge single line must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'huge single line must publish the supervisor token');
+        [$code, $line] = $this->supervise($this->phpChild('for ($i = 0; $i < 60000; $i++) { echo "padding line\n"; }'));
+        self::assertTrue($code !== 0, 'output beyond the total cap must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'output beyond the total cap must publish the supervisor token');
     }
 
     public function test_child_guard_requires_both_markers(): void
@@ -314,7 +382,7 @@ final class Day2FixtureSupervisorTest extends TestCase
             fclose($pipes[1]);
             fclose($pipes[2]);
             $exit = proc_close($proc);
-            self::assertNotSame(0, $exit, 'guard case must fail closed: ' . $label);
+            self::assertTrue($exit !== 0, 'guard case must fail closed: ' . $label);
             // Boolean compare with a FIXED message: the captured
             // streams are never assertion operands, so a failure
             // export cannot republish child output.

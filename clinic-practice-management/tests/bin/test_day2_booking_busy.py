@@ -575,6 +575,7 @@ class FixtureFailureContractTest(unittest.TestCase):
                        # A/E: checked cleanup, dir registered at mkdir,
                        # completion is the LAST stdout line, nonce scope
                        "$state->tempDir = $dir;", "$lastOutLine",
+                       "D2W_CAPTURE_LINE_MAX", "D2W_CAPTURE_TOTAL_MAX",
                        "malicious or compromised child"):
             self.assertIn(marker, unit)
         handler_at = unit.index("set_error_handler")

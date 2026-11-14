@@ -290,7 +290,7 @@ class HostileInputTest(unittest.TestCase):
     def assert_closed(self, rendered):
         fields = dict(part.split("=", 1) for part in rendered.split(" "))
         self.assertEqual(tuple(fields), projector.FIELDS)
-        self.assertTrue(projector.is_closed(fields), rendered)
+        self.assertTrue(projector.is_closed(fields), "projection is not closed-vocabulary (content withheld)")
         # Canonical integers only: no padding, no sign, no separator.
         for name in ("http", "errno", "elapsed_s"):
             self.assertNotRegex(fields[name], r"^0[0-9]")
@@ -306,9 +306,9 @@ class HostileInputTest(unittest.TestCase):
                     "SELECT", "09128887701", "example.invalid", "wp-content",
                     "admin", "::", "##[", ANSI, "\x1b",
                 ):
-                    self.assertNotIn(canary, rendered)
-                self.assertNotIn("\n", rendered)
-                self.assertNotIn("\r", rendered)
+                    self.assertTrue(canary not in rendered, "projected output carried forbidden text (content withheld)")
+                self.assertTrue("\n" not in rendered, "projected output carried forbidden text (content withheld)")
+                self.assertTrue("\r" not in rendered, "projected output carried forbidden text (content withheld)")
 
     def test_hostile_field_values_collapse_to_fixed_tokens(self):
         cases = {
@@ -336,8 +336,8 @@ class HostileInputTest(unittest.TestCase):
                     (projector.UNRECOGNISED, "other", "unknown"),
                 )
                 rendered = projector.render(fields)
-                self.assertNotIn(CANARY_TOKEN, rendered)
-                self.assertNotIn(CANARY_EMAIL, rendered)
+                self.assertTrue(CANARY_TOKEN not in rendered, "projected output carried forbidden text (content withheld)")
+                self.assertTrue(CANARY_EMAIL not in rendered, "projected output carried forbidden text (content withheld)")
 
     def test_leading_zero_and_long_numbers_are_not_integers(self):
         for raw in ("007", "000000", "099999", "1" * 40, "-1", "+1", "1e3", " 1213", "1213 "):
@@ -370,8 +370,8 @@ class HostileInputTest(unittest.TestCase):
         dirty = projector.project(failure_line())
         dirty["stage"] = CANARY_TOKEN
         rendered = projector.render(dirty)
-        self.assertNotIn(CANARY_TOKEN, rendered)
-        self.assertIn("journey=unrecognised", rendered)
+        self.assertTrue(CANARY_TOKEN not in rendered, "projected output carried forbidden text (content withheld)")
+        self.assertTrue("journey=unrecognised" in rendered, "projected output missing expected fragment (content withheld)")
 
     def test_is_closed_rejects_extra_missing_and_wrong_types(self):
         good = projector.project(failure_line())
@@ -818,8 +818,8 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
         lines = buffer.getvalue().splitlines()
         self.assertEqual(len(lines), len(cli.FIELDS))
         for line in lines:
-            self.assertNotIn("Traceback", line)
-            self.assertNotIn("boom", line)
+            self.assertTrue("Traceback" not in line, "projected output carried forbidden text (content withheld)")
+            self.assertTrue("boom" not in line, "projected output carried forbidden text (content withheld)")
             self.assertTrue(line in cli.UNRECOGNISED or line == "none" or line == "absent"
                             or line in cli.ENUMS.get("errno_class", ()), line)
 
@@ -835,8 +835,7 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
                 self.assertEqual(result.stdout.count("\n"), 1)
                 self.assertTrue(
                     result.stdout.startswith("journey=unrecognised ")
-                    or result.stdout.startswith("journey=none "),
-                    result.stdout,
+                    or result.stdout.startswith("journey=none "), "captured output has unexpected shape (content withheld)"
                 )
 
 
@@ -2128,6 +2127,52 @@ class RoundEightStartupGuardTest(unittest.TestCase):
         finally:
             harness.main, sys.stderr = original_main, original_stderr
         self.assertEqual(code, 1)
+
+
+class RoundTenExitStatusTest(unittest.TestCase):
+    """D: the REAL process exit status of the _entry SystemExit mapping
+    (verified via subprocess, not just _entry's return value): a
+    nonzero multiple of 256 must not truncate to status 0."""
+
+    DRIVER = (
+        "import importlib.util, sys\n"
+        "sys.path.insert(0, {bin_dir!r})\n"
+        "spec = importlib.util.spec_from_file_location('h', {harness!r})\n"
+        "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+        "payload = sys.argv[1]\n"
+        "def main():\n"
+        "    if payload == 'NONE': raise SystemExit(None)\n"
+        "    if payload == 'TEXT': raise SystemExit('SYNTH_SECRET_R10')\n"
+        "    if payload == 'KI': raise KeyboardInterrupt\n"
+        "    raise SystemExit(int(payload))\n"
+        "m.main = main\n"
+        "raise SystemExit(m._entry())\n"
+    )
+
+    def _run(self, payload):
+        driver = self.DRIVER.format(bin_dir=str(BIN_DIR), harness=str(HARNESS))
+        result = subprocess.run(
+            [sys.executable, "-c", driver, payload],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+        return result.returncode, result.stderr
+
+    def test_real_exit_statuses(self):
+        token = "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n"
+        cases = {
+            "0": (0, ""), "NONE": (0, ""), "1": (1, token),
+            "255": (255, token), "256": (1, token), "-256": (1, token),
+            "512": (1, token), "TEXT": (1, token), "KI": (130, token),
+        }
+        for payload, (want_code, want_err) in cases.items():
+            with self.subTest(payload=payload):
+                code, err = self._run(payload)
+                self.assertTrue(code == want_code,
+                                "real exit status mismatch (value withheld)")
+                self.assertTrue(err == want_err,
+                                "stderr must be empty or only the fixed token")
+                self.assertTrue("SYNTH_SECRET_R10" not in err,
+                                "SystemExit text must never reach stderr")
 
 
 if __name__ == "__main__":

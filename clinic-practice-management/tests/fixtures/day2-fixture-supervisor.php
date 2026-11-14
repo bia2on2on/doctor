@@ -42,6 +42,30 @@
 declare(strict_types=1);
 
 /**
+ * Hard caps for scanning captured child output (item C): a single
+ * captured line may not exceed D2W_CAPTURE_LINE_MAX bytes and the
+ * scanned total may not exceed D2W_CAPTURE_TOTAL_MAX bytes. Exceeding
+ * either is a protocol failure (fixed token, non-success exit). The
+ * child writes to FILES, not pipes, so output volume can never block
+ * the child on a full pipe (no deadlock) and never grows supervisor
+ * memory during the run; the scan itself holds at most one capped
+ * line. Legitimate fixture output (fixed step tokens + the completion
+ * line) is orders of magnitude below both caps.
+ *
+ * Honest limit (observed in CI, round 8/10): a MEMORY-exhaustion
+ * fatal inside this supervisor on PHP 8.1 makes the PHP engine print
+ * its own fatal line to stderr despite display/log suppression, and
+ * the shutdown token does not land. That engine behaviour is NOT
+ * closed by this file; the CPU-exhaustion fatal test in the Unit
+ * suite is NOT a memory-fatal proof. Closing the whole-process
+ * boundary (including engine diagnostics) needs the future
+ * workflow-authorized environment PR (private-file redirection of
+ * the whole process, fixed tokens only, never cat the file).
+ */
+const D2W_CAPTURE_LINE_MAX = 8192;
+const D2W_CAPTURE_TOTAL_MAX = 262144;
+
+/**
  * Run $command supervised and return [exitCode, fixedLine, toStderr].
  *
  * The returned line is ALWAYS one of the two fixed schemas above; raw
@@ -97,22 +121,35 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         return $ok;
     };
     register_shutdown_function(static function () use ($state, $cleanup): void {
-        // Last resort (fatal before a return path ran): emit ONLY the
-        // fixed token FIRST — after a memory-exhaustion fatal, any
-        // allocation (glob included) can re-fatal before the token is
-        // written, and the token is the one thing this boundary must
-        // publish — then retry the checked cleanup. Cleanup results
-        // cannot change the exit status from here; the return paths
-        // below already fail closed whenever cleanup reports false.
-        if (!$state->finished && defined('STDERR')) {
-            // Unfinished at shutdown means abnormal termination
-            // (d2w_supervise sets finished on every return path and
-            // never exits). Allocation-lean on purpose — after a
-            // memory-exhaustion fatal, even error_get_last() may not
-            // complete — so the fixed token is written directly.
+        // Last resort. By shutdown time the caller's error handler
+        // has been restored (every return path restores it after its
+        // checked cleanup), so if that cleanup FAILED and the private
+        // dir is still registered, an unguarded retry here would let
+        // unlink/rmdir warning text escape to stderr. This function
+        // therefore installs its OWN silent handler for the retry,
+        // wraps it in Throwable handling, checks the result, and —
+        // if cleanup still fails, or this process never finished —
+        // emits ONLY the fixed token. (Non-success status: the fatal
+        // path is already dying non-zero, and a failed return-path
+        // cleanup already returned the fail-closed token + code 1;
+        // the shutdown retry guarantees the token, it does not need
+        // to invent an exit code.)
+        set_error_handler(static function (): bool {
+            return true;
+        });
+        $clean = true;
+        try {
+            $clean = $cleanup();
+        } catch (Throwable) {
+            $clean = false;
+        }
+        restore_error_handler();
+        if ((!$clean || !$state->finished) && defined('STDERR')) {
+            // Allocation-lean on purpose — after a memory-exhaustion
+            // fatal, complex shutdown work may not complete — so the
+            // fixed token is written directly.
             fwrite(STDERR, "DAY2_FIXTURE_ERROR step=supervisor\n");
         }
-        $cleanup();
     });
 
     // Every return path funnels through here EXCEPT success: cleanup
@@ -199,20 +236,31 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
             $signalled = false;
         }
 
-        // Scan captured output: count completion lines (valid and
-        // forged alike) and extract at most one allowlisted failure
-        // token. Raw lines are never copied anywhere else.
+        // Scan captured output within the D2W_CAPTURE_* caps: count
+        // completion lines (valid and forged alike) and extract at
+        // most one allowlisted failure token. Raw lines are never
+        // copied anywhere else. The child is already finished
+        // (proc_close above) and wrote to files, so an over-cap scan
+        // simply fails closed — nothing to terminate, no pipe to
+        // drain, no deadlock, memory bounded by the line cap.
         $completeValid = 0;
         $completeSeen = 0;
         $token = null;
         $lastOutLine = null;
+        $scannedTotal = 0;
         foreach ([$errPath, $outPath] as $path) {
             $handle = fopen($path, 'r');
             if ($handle === false) {
                 return $fail(1, 'supervisor');
             }
-            while (($line = fgets($handle)) !== false) {
-                $line = rtrim($line, "\r\n");
+            while (($chunk = fgets($handle, D2W_CAPTURE_LINE_MAX + 1)) !== false) {
+                $scannedTotal += strlen($chunk);
+                if ($scannedTotal > D2W_CAPTURE_TOTAL_MAX
+                    || (strlen($chunk) === D2W_CAPTURE_LINE_MAX && !str_ends_with($chunk, "\n"))) {
+                    fclose($handle);
+                    return $fail(1, 'supervisor');
+                }
+                $line = rtrim($chunk, "\r\n");
                 if ($path === $outPath) {
                     $lastOutLine = $line;
                 }

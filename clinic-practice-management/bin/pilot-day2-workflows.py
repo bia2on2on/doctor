@@ -1767,7 +1767,17 @@ def _entry():
         if code is None or code == 0:
             return 0
         _print_startup_token()
-        return code if isinstance(code, int) and code != 0 else 1
+        # Normalise to a REAL process status: the interpreter maps a
+        # SystemExit int through the OS exit status, so a nonzero
+        # multiple of 256 (256, 512, -256, ...) would otherwise exit
+        # as status 0 — a fake success. Booleans count as their int
+        # value (True == 1); text/other payloads become 1 (the text
+        # is never printed, per the token rule above).
+        if isinstance(code, bool):
+            return 1
+        if isinstance(code, int):
+            return code if 1 <= code <= 255 else 1
+        return 1
     except KeyboardInterrupt:
         _print_startup_token()
         return 130
