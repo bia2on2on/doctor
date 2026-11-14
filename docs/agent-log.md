@@ -5646,3 +5646,47 @@ level.
 
 Correction for the citation too: the storage contract is at **`docs/erd/data-dictionary.md:132`**
 (the file lives under `docs/erd/`, not `docs/`), not `:128`.
+### [2026-11-14 UTC] — Test-quality round on the weekday contract test: one vacuous assertion replaced, one comment corrected (`arena/5e012b00-doctor`, DRAFT)
+
+Round started `date -u` = **Sat Nov 14 20:02:37 UTC 2026**. Live check before any edit: head `19915caa`, base `main` `d1d49c50` **unmoved** (so no sync — the merge waits for PR #335), worktree clean, PR #350 draft/`mergeable=true`, `merged=false`. **Tests and comments only; no production code changed.**
+
+- **Item 1 — an assertion that could not fail (OBSERVED, then fixed).** The scaffold test ended with
+  `assertSame( $seen_dates, array_values( array_unique( $seen_dates ) ) )` labelled "must be
+  ascending". But `$seen_dates` was already proven distinct by the preceding `assertCount`, and
+  `array_unique()` preserves first-seen order — so the expression compares the list **with itself**
+  and can never differ. Proof, not inference: with the production `calendar_scaffold()` temporarily
+  mutated to `return array_reverse( $calendar );` in a scratch copy, the **old** assertion passed
+  (`OK (11 tests, 155 assertions)`) while it should have failed. Replaced with two checks that can
+  fail: (a) the list must equal its own `sort()`ed copy, and (b) each consecutive pair must be
+  **strictly later** (`assertGreaterThan` on timestamps) and **exactly one day** apart
+  (`assertSame( 1, diff()->days )`). Against the same reversed mutation the new assertion **fails**:
+  "scaffold dates must be in ascending order", `Tests: 11, Failures: 1`. Mutation reverted; the
+  source file is byte-identical to HEAD (blob `493b16a7`).
+- **Item 2 — an overstated comment (OBSERVED, then fixed).** The comment at the `assertNotSame` branch
+  said the stored-day table is off "for six of seven rows". False: the two tables differ at **all
+  seven** indices (computed: `[0,1,2,3,4,5,6]`), so **every** row catches the mistake. Corrected, and
+  the correction is itself pinned by the `assertSame( 7, $differences )` check in the decoder test.
+- **Item 3 — self-audit of the whole file (OBSERVED).** Checked every assertion for vacuity and every
+  comment against the code. Findings: (a) the `continue` guard in
+  `test_a_stored_day_is_never_labelled_with_the_gregorian_table` is **dead code** — no index is ever
+  skipped (verified: skipped `[]`, assertions executed 7), so the loop is not vacuous; left as is
+  (harmless, and removing it is not needed for correctness). (b) The empty-set and out-of-range
+  assertions are **real**, not vacuous: `weekday_summary()` returns
+  `«روزهای کاری: بدون برنامهٔ هفتگی فعال»` for an empty set (`src/Frontend/PublicBookingShortcode.php:903`),
+  so the "must not contain a weekday" checks have real text to reject. (c) The "NEXT day" wording is
+  **accurate** — for stored 0 the wrong table shows یک‌شنبه where شنبه is correct, i.e. the following
+  day. (d) `assertSame( 7, $differences )` compares the test's **own two constants** and does not read
+  production tables — already disclosed in the previous entry; it is a contract-sanity check, and it
+  is the one place the "all seven differ" fact is pinned.
+- **Verification limits (stated, not glossed).** Local runtime is **PHP-WASM 8.4.25** running the
+  vendored `phpunit.phar` (**PHPUnit 11.5.56**) through a minimal autoload + `esc_html`/`esc_attr`
+  bootstrap. That is **real PHPUnit but not the CI PHP binary, not CI's PHPUnit 10.5.65 and not
+  MySQL**; CI remains the authority. The mutation was executed under that same harness, so it proves
+  the assertion's ability to fail **there**, not its byte-for-byte behaviour in CI.
+- **Numbers after the change (OBSERVED locally):** the file is **11 tests / 167 assertions** (was
+  155); the six-file unit slice is **55 tests / 998 assertions / 0 failures** (1 pre-existing risky
+  `DoctorDisplayNameTest::testInvalidUtf8FailsClosedInsteadOfMutating`, unrelated).
+- **CI pickup, proven by construction (OBSERVED):** CI runs
+  `php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit` (`ci.yml:169-172`) and `phpunit.xml`
+  declares the `Unit` testsuite as `<directory>tests/Unit</directory>` (recursive); the file is a
+  concrete `final class … extends TestCase` under `tests/Unit/Frontend/`, so it is inside that suite.

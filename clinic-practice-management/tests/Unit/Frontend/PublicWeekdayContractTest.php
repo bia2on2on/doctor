@@ -303,8 +303,11 @@ namespace ClinicCore\Tests\Unit\Frontend {
                     'calendar_scaffold row ' . $row['date'] . ' must match the caption decoder'
                 );
 
-                // A stored-day table applied to a real date is off by exactly one
-                // day for six of seven rows; assert the row is not that mistake.
+                // The stored-day table applied to a real date is off by exactly one
+                // day, and the two tables disagree at ALL SEVEN indices (verified in
+                // test_the_two_decoders_are_separately_named_and_both_correct), so
+                // every row catches the mistake — there is no row where the two
+                // tables happen to agree. Assert the row is not that mistake.
                 self::assertNotSame(
                     $this->stored_decoder_for( (int) $date->format( 'w' ) ),
                     $row['weekday'],
@@ -315,7 +318,34 @@ namespace ClinicCore\Tests\Unit\Frontend {
             }
 
             self::assertCount( 7, array_unique( $seen_dates ), 'scaffold dates must be distinct' );
-            self::assertSame( $seen_dates, array_values( array_unique( $seen_dates ) ), 'scaffold dates must be ascending' );
+
+            // Really prove ASCENDING order. `array_unique()` preserves the order in
+            // which keys were first seen, so comparing a list of already-distinct
+            // dates with `array_values( array_unique( … ) )` compares the list with
+            // itself and cannot fail. Two independent checks that can:
+            //  (a) the list must equal its own sorted copy;
+            //  (b) every consecutive pair must be STRICTLY increasing as a date.
+            $sorted = $seen_dates;
+            sort( $sorted, SORT_STRING );
+            self::assertSame( $sorted, $seen_dates, 'scaffold dates must be in ascending order' );
+
+            $previous = null;
+            foreach ( $seen_dates as $ymd ) {
+                $current = new DateTimeImmutable( (string) $ymd . ' 12:00:00', new DateTimeZone( 'UTC' ) );
+                if ( $previous !== null ) {
+                    self::assertGreaterThan(
+                        $previous->getTimestamp(),
+                        $current->getTimestamp(),
+                        'scaffold date ' . $ymd . ' must be strictly later than the previous row'
+                    );
+                    self::assertSame(
+                        1,
+                        (int) $previous->diff( $current )->days,
+                        'scaffold date ' . $ymd . ' must be exactly one day after the previous row'
+                    );
+                }
+                $previous = $current;
+            }
         }
 
         /**
