@@ -77,7 +77,7 @@ class VocabularyDerivationTest(unittest.TestCase):
     def test_journeys_are_exactly_the_harness_main_loop_ids(self):
         source = HARNESS.read_text(encoding="utf-8")
         printed = re.findall(r'\("(journey-[A-Za-z0-9-]+)", lambda: run_journey_', source)
-        self.assertEqual(sorted(printed), sorted(projector.JOURNEYS))
+        self.assertTrue(sorted(printed) == sorted(projector.JOURNEYS), "derived value mismatch (content withheld)")
         self.assertEqual(len(printed), 5)
 
     def test_stages_are_exactly_the_harness_visible_or_diagnose_markers(self):
@@ -87,28 +87,28 @@ class VocabularyDerivationTest(unittest.TestCase):
         )
         markers |= set(re.findall(r'public booking stage=([a-z0-9-]+)', source))
         self.assertEqual(len(markers), 7)
-        self.assertIn("hold-request", markers)
-        self.assertEqual(sorted(markers), sorted(projector.STAGES))
+        self.assertTrue("hold-request" in markers, "derived output missing expected fragment (content withheld)")
+        self.assertTrue(sorted(markers) == sorted(projector.STAGES), "derived value mismatch (content withheld)")
 
     def test_reads_are_exactly_the_bookingservice_assertion_labels(self):
         source = BOOKING_SERVICE.read_text(encoding="utf-8")
         labels = set(
             re.findall(r"assert_read_succeeded\(\s*'([a-z0-9_]+)'", source)
         )
-        self.assertEqual(sorted(labels), sorted(projector.READS))
+        self.assertTrue(sorted(labels) == sorted(projector.READS), "derived value mismatch (content withheld)")
         self.assertEqual(len(labels), 16)
 
     def test_errno_classes_are_the_documented_closed_set(self):
         self.assertEqual(
             projector.ERRNO_CLASSES, ("deadlock", "lock_wait_timeout", "other", "unknown")
         )
-        self.assertEqual(projector.errno_class_for("1213"), "deadlock")
-        self.assertEqual(projector.errno_class_for("1205"), "lock_wait_timeout")
-        self.assertEqual(projector.errno_class_for("1062"), "other")
+        self.assertTrue(projector.errno_class_for("1213") == "deadlock", "derived value mismatch (content withheld)")
+        self.assertTrue(projector.errno_class_for("1205") == "lock_wait_timeout", "derived value mismatch (content withheld)")
+        self.assertTrue(projector.errno_class_for("1062") == "other", "derived value mismatch (content withheld)")
         # `(int) $dbh->errno` is 0 when no driver error is pending (and on a
         # non-mysqli handle), so a zero errno is "no cause class", not `other`.
-        self.assertEqual(projector.errno_class_for("0"), "unknown")
-        self.assertEqual(projector.errno_class_for(projector.UNRECOGNISED), "unknown")
+        self.assertTrue(projector.errno_class_for("0") == "unknown", "derived value mismatch (content withheld)")
+        self.assertTrue(projector.errno_class_for(projector.UNRECOGNISED) == "unknown", "derived value mismatch (content withheld)")
 
 
 class ProjectionTableTest(unittest.TestCase):
@@ -129,13 +129,13 @@ class ProjectionTableTest(unittest.TestCase):
     def test_lock_wait_timeout_is_its_own_class(self):
         line = failure_line().replace("sql_errno=1213", "sql_errno=1205")
         fields = projector.project(line)
-        self.assertEqual(fields["errno"], "1205")
-        self.assertEqual(fields["errno_class"], "lock_wait_timeout")
+        self.assertTrue(fields["errno"] == "1205", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["errno_class"] == "lock_wait_timeout", "derived value mismatch (content withheld)")
 
     def test_other_errno_is_other_and_still_digits_only(self):
         line = failure_line().replace("sql_errno=1213", "sql_errno=1062")
         fields = projector.project(line)
-        self.assertEqual((fields["errno"], fields["errno_class"]), ("1062", "other"))
+        self.assertTrue((fields["errno"], fields["errno_class"]) == ("1062", "other"), "derived value mismatch (content withheld)")
 
     def test_absent_errno_is_unknown_not_zero(self):
         line = (
@@ -143,10 +143,10 @@ class ProjectionTableTest(unittest.TestCase):
             "(journey-B-reception) — reception board load failed"
         )
         fields = projector.project(line)
-        self.assertEqual((fields["errno"], fields["errno_class"]), ("unrecognised", "unknown"))
-        self.assertEqual(fields["stage"], "none")
-        self.assertEqual(fields["code"], "none")
-        self.assertEqual(fields["http"], "unrecognised")
+        self.assertTrue((fields["errno"], fields["errno_class"]) == ("unrecognised", "unknown"), "derived value mismatch (content withheld)")
+        self.assertTrue(fields["stage"] == "none", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["code"] == "none", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["http"] == "unrecognised", "derived value mismatch (content withheld)")
 
     def test_busy_http_followed_by_hold_http_reports_the_first(self):
         line = (
@@ -156,15 +156,15 @@ class ProjectionTableTest(unittest.TestCase):
             "busy_diag=booking.lock_read_failed read=persisted_slot sql_errno=1213"
         )
         fields = projector.project(line)
-        self.assertEqual((fields["stage"], fields["http"]), ("hold-request", "503"))
-        self.assertEqual(fields["read"], "persisted_slot")
+        self.assertTrue((fields["stage"], fields["http"]) == ("hold-request", "503"), "derived value mismatch (content withheld)")
+        self.assertTrue(fields["read"] == "persisted_slot", "derived value mismatch (content withheld)")
 
     def test_http_word_form_is_accepted(self):
         line = (
             "FAIL journey-A2-reschedule — Day-2 browser journey failed "
             "(journey-A2-reschedule) — booking/confirm HTTP 409 then retry"
         )
-        self.assertEqual(projector.project(line)["http"], "409")
+        self.assertTrue(projector.project(line)["http"] == "409", "derived value mismatch (content withheld)")
 
     def test_pass_run_reports_no_journey_but_keeps_the_timing(self):
         """H3: a journey is named only by a FAIL line, never by a timing line.
@@ -193,9 +193,9 @@ class ProjectionTableTest(unittest.TestCase):
             "Traceback (most recent call last):\nSystemExit: 1\n"
         )
         fields = projector.project(text)
-        self.assertEqual(fields["journey"], "none")
+        self.assertTrue(fields["journey"] == "none", "derived value mismatch (content withheld)")
         # The last timing line is still the source of elapsed_s.
-        self.assertEqual(fields["elapsed_s"], "31")
+        self.assertTrue(fields["elapsed_s"] == "31", "derived value mismatch (content withheld)")
 
     def test_log_with_no_timing_and_no_failure_is_none_journey(self):
         self.assertEqual(
@@ -214,9 +214,9 @@ class ProjectionTableTest(unittest.TestCase):
             "busy_diag=booking.lock_read_failed read=slot sql_errno=1205"
         )
         fields = projector.project(line)
-        self.assertEqual(fields["http"], "503")
-        self.assertEqual(fields["code"], projector.BUSY_CODE)
-        self.assertEqual(fields["errno_class"], "lock_wait_timeout")
+        self.assertTrue(fields["http"] == "503", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["code"] == projector.BUSY_CODE, "derived value mismatch (content withheld)")
+        self.assertTrue(fields["errno_class"] == "lock_wait_timeout", "derived value mismatch (content withheld)")
 
     def test_non_busy_code_is_other_and_keeps_its_own_status(self):
         line = (
@@ -225,7 +225,7 @@ class ProjectionTableTest(unittest.TestCase):
             "code=rest_too_many_requests"
         )
         fields = projector.project(line)
-        self.assertEqual((fields["http"], fields["code"]), ("429", "other"))
+        self.assertTrue((fields["http"], fields["code"]) == ("429", "other"), "derived value mismatch (content withheld)")
 
     def test_busy_code_elsewhere_in_the_line_still_wins(self):
         line = (
@@ -234,8 +234,8 @@ class ProjectionTableTest(unittest.TestCase):
             "code=CLINIC_BOOKING_BUSY"
         )
         fields = projector.project(line)
-        self.assertEqual(fields["http"], "503")
-        self.assertEqual(fields["code"], projector.BUSY_CODE)
+        self.assertTrue(fields["http"] == "503", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["code"] == projector.BUSY_CODE, "derived value mismatch (content withheld)")
 
     def test_missing_log_is_unrecognised_not_none(self):
         self.assertEqual(
@@ -248,14 +248,14 @@ class ProjectionTableTest(unittest.TestCase):
     def test_foreign_fail_key_is_unrecognised(self):
         line = "FAIL day2-A1-otp-identity-confirm — something else entirely"
         fields = projector.project(line)
-        self.assertEqual(fields["journey"], projector.UNRECOGNISED)
+        self.assertTrue(fields["journey"] == projector.UNRECOGNISED, "derived value mismatch (content withheld)")
 
     def test_first_fail_line_wins(self):
         text = (
             "FAIL journey-C-doctors — Day-2 browser journey failed (journey-C-doctors) — b\n"
             "FAIL journey-D-accountant — Day-2 browser journey failed (journey-D-accountant) — c\n"
         )
-        self.assertEqual(projector.project(text)["journey"], "journey-C-doctors")
+        self.assertTrue(projector.project(text)["journey"] == "journey-C-doctors", "derived value mismatch (content withheld)")
 
 
 class HostileInputTest(unittest.TestCase):
@@ -289,11 +289,13 @@ class HostileInputTest(unittest.TestCase):
 
     def assert_closed(self, rendered):
         fields = dict(part.split("=", 1) for part in rendered.split(" "))
-        self.assertEqual(tuple(fields), projector.FIELDS)
+        self.assertTrue(tuple(fields) == projector.FIELDS,
+                        "projection field set mismatch (content withheld)")
         self.assertTrue(projector.is_closed(fields), "projection is not closed-vocabulary (content withheld)")
         # Canonical integers only: no padding, no sign, no separator.
         for name in ("http", "errno", "elapsed_s"):
-            self.assertNotRegex(fields[name], r"^0[0-9]")
+            self.assertTrue(re.search(r"^0[0-9]", fields[name]) is None,
+                            "projection integer is not canonical (content withheld)")
 
     def test_hostile_payload_in_extra_position_never_survives(self):
         for label, payload in self.HOSTILE.items():
@@ -341,18 +343,18 @@ class HostileInputTest(unittest.TestCase):
 
     def test_leading_zero_and_long_numbers_are_not_integers(self):
         for raw in ("007", "000000", "099999", "1" * 40, "-1", "+1", "1e3", " 1213", "1213 "):
-            with self.subTest(raw=raw[:12]):
+            with self.subTest(raw="redacted-case"):
                 self.assertEqual(
                     projector.int_token(raw, 0, 99999), projector.UNRECOGNISED
                 )
-        self.assertEqual(projector.int_token("1213", 0, 99999), "1213")
+        self.assertTrue(projector.int_token("1213", 0, 99999) == "1213", "derived value mismatch (content withheld)")
 
     def test_integer_bounds_are_enforced(self):
-        self.assertEqual(projector.int_token("99", 100, 599), projector.UNRECOGNISED)
-        self.assertEqual(projector.int_token("600", 100, 599), projector.UNRECOGNISED)
-        self.assertEqual(projector.int_token("100", 100, 599), "100")
-        self.assertEqual(projector.int_token("599", 100, 599), "599")
-        self.assertEqual(projector.int_token("999999", 0, 99999), projector.UNRECOGNISED)
+        self.assertTrue(projector.int_token("99", 100, 599) == projector.UNRECOGNISED, "derived value mismatch (content withheld)")
+        self.assertTrue(projector.int_token("600", 100, 599) == projector.UNRECOGNISED, "derived value mismatch (content withheld)")
+        self.assertTrue(projector.int_token("100", 100, 599) == "100", "derived value mismatch (content withheld)")
+        self.assertTrue(projector.int_token("599", 100, 599) == "599", "derived value mismatch (content withheld)")
+        self.assertTrue(projector.int_token("999999", 0, 99999) == projector.UNRECOGNISED, "derived value mismatch (content withheld)")
 
     def test_all_hostile_log_is_still_one_closed_line(self):
         text = "\n".join(
@@ -361,7 +363,7 @@ class HostileInputTest(unittest.TestCase):
         )
         rendered = self.render_text(text)
         self.assert_closed(rendered)
-        self.assertEqual(len(rendered.splitlines()), 1)
+        self.assertTrue(len(rendered.splitlines()) == 1, "derived value mismatch (content withheld)")
         self.assertEqual(
             rendered.split(" ")[0], "journey=" + projector.UNRECOGNISED
         )
@@ -385,7 +387,7 @@ class HostileInputTest(unittest.TestCase):
             dict(good, journey=CANARY_EMAIL),
             dict(good, code="SOME_OTHER_CODE"),
         ):
-            with self.subTest(mutation=str(mutation)[:80]):
+            with self.subTest(mutation="redacted-case"):
                 self.assertFalse(projector.is_closed(mutation))
 
 
@@ -458,8 +460,8 @@ class CommandLineTest(unittest.TestCase):
                     result = self.run_script("--log", str(path), "--field", field)
                     self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
                     token = result.stdout.rstrip("\n")
-                    self.assertNotIn(" ", token)
-                    self.assertNotIn("=", token)
+                    self.assertTrue(" " not in token, "derived output carried forbidden text (content withheld)")
+                    self.assertTrue("=" not in token, "derived output carried forbidden text (content withheld)")
                     self.assertLessEqual(len(token), 64)
 
     def test_selftest_passes_and_is_not_a_placeholder(self):
@@ -532,7 +534,7 @@ class RealHarnessFormatTest(unittest.TestCase):
             "observed=" + observed
         )
         fields = projector.project(line)
-        self.assertEqual((fields["http"], fields["code"]), ("409", "other"))
+        self.assertTrue((fields["http"], fields["code"]) == ("409", "other"), "derived value mismatch (content withheld)")
 
     def test_confirm_and_identity_gate_lines_carry_no_code(self):
         """(b) The confirm/gate raise sites print `http=` with no `code=`.
@@ -549,7 +551,7 @@ class RealHarnessFormatTest(unittest.TestCase):
              "(journey-A1-public) — expected 400 identity gate, got 503", ("503", "none")),
         ):
             fields = projector.project(text)
-            self.assertEqual((fields["http"], fields["code"]), expected)
+            self.assertTrue((fields["http"], fields["code"]) == expected, "derived value mismatch (content withheld)")
 
     def test_busy_code_followed_by_a_semicolon_is_still_the_busy_code(self):
         """(c) `describe()` terminates every observation with `;` but the last.
@@ -563,13 +565,13 @@ class RealHarnessFormatTest(unittest.TestCase):
              "code": "CLINIC_BOOKING_BUSY"},
             {"route": "/wp-json/clinic/v1/booking/hold", "status": 200, "code": ""},
         ])
-        self.assertIn("code=CLINIC_BOOKING_BUSY;", observed)
+        self.assertTrue("code=CLINIC_BOOKING_BUSY;" in observed, "derived output missing expected fragment (content withheld)")
         line = (
             "FAIL journey-A1-public — Day-2 browser journey failed (journey-A1-public) — "
             "public booking stage=hold-countdown observed=" + observed
         )
         fields = projector.project(line)
-        self.assertEqual((fields["code"], fields["http"]), ("CLINIC_BOOKING_BUSY", "503"))
+        self.assertTrue((fields["code"], fields["http"]) == ("CLINIC_BOOKING_BUSY", "503"), "derived value mismatch (content withheld)")
 
     def test_zero_errno_has_no_class(self):
         """(d) A stored `sql_errno=0` must not be classed `other`.
@@ -582,13 +584,13 @@ class RealHarnessFormatTest(unittest.TestCase):
         """
         line = failure_line().replace("sql_errno=1213", "sql_errno=0")
         fields = projector.project(line)
-        self.assertEqual((fields["errno"], fields["errno_class"]), ("0", "unknown"))
+        self.assertTrue((fields["errno"], fields["errno_class"]) == ("0", "unknown"), "derived value mismatch (content withheld)")
         # The unchanged line still maps 1213 -> deadlock: a mutation that broke
         # the deadlock mapping would change this and fail here.
         same = projector.project(failure_line())  # carries sql_errno=1213
         self.assertEqual((same["errno"], same["errno_class"]), ("1213", "deadlock"))
         # And the two are genuinely different classifications, not both-unknown.
-        self.assertNotEqual(fields["errno_class"], same["errno_class"])
+        self.assertTrue(fields["errno_class"] != same["errno_class"], "derived values unexpectedly equal (content withheld)")
 
     def test_busy_details_on_a_continuation_line_are_found(self):
         """(e) The harness can emit the busy suffix on a later physical line.
@@ -607,10 +609,10 @@ class RealHarnessFormatTest(unittest.TestCase):
             "sql_errno=1205 route=hold/hold http=503 viewport=390x844\n"
         )
         fields = projector.project(text)
-        self.assertEqual(fields["journey"], "journey-A1-public")
-        self.assertEqual((fields["errno"], fields["errno_class"]), ("1205", "lock_wait_timeout"))
-        self.assertEqual((fields["read"], fields["http"]), ("slot", "503"))
-        self.assertEqual(fields["busy"], "present")
+        self.assertTrue(fields["journey"] == "journey-A1-public", "derived value mismatch (content withheld)")
+        self.assertTrue((fields["errno"], fields["errno_class"]) == ("1205", "lock_wait_timeout"), "derived value mismatch (content withheld)")
+        self.assertTrue((fields["read"], fields["http"]) == ("slot", "503"), "derived value mismatch (content withheld)")
+        self.assertTrue(fields["busy"] == "present", "derived value mismatch (content withheld)")
 
     def test_busy_block_is_absent_when_the_harness_appended_nothing(self):
         """(f) `busy_suffix_for` returns "" when no busy call was observed."""
@@ -618,7 +620,7 @@ class RealHarnessFormatTest(unittest.TestCase):
             "FAIL journey-B-reception — Day-2 browser journey failed "
             "(journey-B-reception) — reception board load failed"
         )
-        self.assertEqual(projector.project(line)["busy"], "absent")
+        self.assertTrue(projector.project(line)["busy"] == "absent", "derived value mismatch (content withheld)")
 
     def test_every_busy_diag_state_maps_to_its_token(self):
         produced = {
@@ -641,9 +643,9 @@ class RealHarnessFormatTest(unittest.TestCase):
                     "FAIL journey-A1-public — Day-2 browser journey failed "
                     "(journey-A1-public) — x | journey=A1-public " + suffix
                 )
-                self.assertEqual(projector.project(line)["busy"], expected)
-        self.assertEqual(projector.project(failure_line())["busy"], "present")
-        self.assertEqual(projector.project(None)["busy"], "absent")
+                self.assertTrue(projector.project(line)["busy"] == expected, "derived value mismatch (content withheld)")
+        self.assertTrue(projector.project(failure_line())["busy"] == "present", "derived value mismatch (content withheld)")
+        self.assertTrue(projector.project(None)["busy"] == "absent", "derived value mismatch (content withheld)")
         self.assertTrue(set(projector.BUSY_TOKENS) == set(projector.ENUMS["busy"]))
 
 
@@ -673,9 +675,9 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
         # The FAIL line starts past the bound, so it was never read: a log that
         # was cut off mid-content has no failure in it, and the projector says
         # `journey=none` ("no failure in what I read") rather than inventing one.
-        self.assertEqual(fields["journey"], projector.NONE)
-        self.assertEqual(fields["stage"], projector.NONE)
-        self.assertEqual(fields["http"], projector.UNRECOGNISED)
+        self.assertTrue(fields["journey"] == projector.NONE, "derived value mismatch (content withheld)")
+        self.assertTrue(fields["stage"] == projector.NONE, "derived value mismatch (content withheld)")
+        self.assertTrue(fields["http"] == projector.UNRECOGNISED, "derived value mismatch (content withheld)")
 
     def test_log_size_bound_still_reads_up_to_the_bound(self):
         cli = self.load_cli()
@@ -684,7 +686,7 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
             path = Path(tmp) / "ok.log"
             path.write_text(failure_line() + "y" * 20000, encoding="utf-8")
             fields = cli.project(cli._load_log(str(path)))
-        self.assertEqual(fields["journey"], "journey-A1-public")
+        self.assertTrue(fields["journey"] == "journey-A1-public", "derived value mismatch (content withheld)")
 
     def test_line_length_bound_is_enforced(self):
         cli = self.load_cli()
@@ -692,9 +694,9 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
         fields = cli.project(failure_line())
         # The FAIL line keeps its first 40 characters: the key survives, every
         # marker past the bound is gone.
-        self.assertEqual(fields["journey"], "journey-A1-public")
-        self.assertEqual(fields["stage"], projector.NONE)
-        self.assertEqual(fields["code"], projector.NONE)
+        self.assertTrue(fields["journey"] == "journey-A1-public", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["stage"] == projector.NONE, "derived value mismatch (content withheld)")
+        self.assertTrue(fields["code"] == projector.NONE, "derived value mismatch (content withheld)")
 
     def test_line_length_bound_is_enforced_independently_of_the_block(self):
         """The per-line clip must hold even when the block bound is generous."""
@@ -702,14 +704,14 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
         cli.MAX_BLOCK_CHARS = 1 << 30
         cli.MAX_LINE_CHARS = 40
         fields = cli.project(failure_line("busy_diag=not-found"))
-        self.assertEqual(fields["journey"], "journey-A1-public")
-        self.assertEqual(fields["busy"], "absent")
+        self.assertTrue(fields["journey"] == "journey-A1-public", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["busy"] == "absent", "derived value mismatch (content withheld)")
 
     def test_line_count_bound_stops_scanning_before_the_fail_line(self):
         cli = self.load_cli()
         cli.MAX_LINES = 3
         text = "noise\n" * 10 + failure_line()
-        self.assertEqual(cli.project(text)["journey"], projector.NONE)
+        self.assertTrue(cli.project(text)["journey"] == projector.NONE, "derived value mismatch (content withheld)")
         # With one more line allowed the same log does report the failure, so the
         # test above fails for the bound and not for another reason.
         cli.MAX_LINES = 12
@@ -719,7 +721,7 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
         cli = self.load_cli()
         cli.MAX_LINES = 3
         text = "noise\n" * 10 + failure_line()
-        self.assertEqual(cli.project(text)["journey"], projector.NONE)
+        self.assertTrue(cli.project(text)["journey"] == projector.NONE, "derived value mismatch (content withheld)")
 
     def test_line_count_bound_is_not_off_by_one(self):
         cli = self.load_cli()
@@ -779,12 +781,15 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
                     token = result.stdout.rstrip("\n")
                     if field in projector.ENUMS:
-                        self.assertIn(token, projector.ENUMS[field])
+                        self.assertTrue(token in projector.ENUMS[field],
+                                        "field token outside its enum (content withheld)")
                     else:
-                        self.assertEqual(token, projector.UNRECOGNISED)
+                        self.assertTrue(token == projector.UNRECOGNISED,
+                                        "field token is not the unrecognised token (content withheld)")
                     self.assertEqual(token.count("\n"), 0)
                     for canary in ("canary", "::", "##[", "$(id)", "`id`", CANARY_EMAIL):
-                        self.assertNotIn(canary, token)
+                        self.assertTrue(canary not in token,
+                                        "projected token carried a canary (content withheld)")
 
     def test_cli_errors_are_nonzero_and_print_no_raw_text(self):
         for args in (
@@ -821,7 +826,8 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
             self.assertTrue("Traceback" not in line, "projected output carried forbidden text (content withheld)")
             self.assertTrue("boom" not in line, "projected output carried forbidden text (content withheld)")
             self.assertTrue(line in cli.UNRECOGNISED or line == "none" or line == "absent"
-                            or line in cli.ENUMS.get("errno_class", ()), line)
+                            or line in cli.ENUMS.get("errno_class", ()),
+                            "projected line outside the closed vocabulary (content withheld)")
 
     def test_directory_and_device_paths_are_total(self):
         for path in ("/dev/null", "/proc/self/cmdline", "/", "/nonexistent/x.log"):
@@ -926,9 +932,9 @@ class RoundTwoFidelityTest(unittest.TestCase):
         """H1 root cause: the structured suffix has no `code=` of its own."""
         probe = self.busy_probe()
         suffix = self.suffix(probe)
-        self.assertIn("busy_diag=booking.lock_read_failed", suffix)
-        self.assertIn("sql_errno=1213", suffix)
-        self.assertNotIn("code=", suffix)
+        self.assertTrue("busy_diag=booking.lock_read_failed" in suffix, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("sql_errno=1213" in suffix, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("code=" not in suffix, "derived output carried forbidden text (content withheld)")
 
     def test_code_comes_from_the_validated_busy_diagnosis_for_every_origin(self):
         """H1: the busy code now rides the validated diagnosis, not origin text.
@@ -961,8 +967,8 @@ class RoundTwoFidelityTest(unittest.TestCase):
         for text in (describe_text, hold_text):
             with self.subTest(kind=text[:40]):
                 fields = projector.project(self.fail_log(self.reraises(text, probe)))
-                self.assertEqual(fields["code"], projector.BUSY_CODE)
-                self.assertEqual(fields["busy"], "present")
+                self.assertTrue(fields["code"] == projector.BUSY_CODE, "derived value mismatch (content withheld)")
+                self.assertTrue(fields["busy"] == "present", "derived value mismatch (content withheld)")
 
         # A representative sample of the 15 bare-literal / status-word origins:
         # these print no `code=` of their own, but the busy diagnosis the
@@ -982,11 +988,11 @@ class RoundTwoFidelityTest(unittest.TestCase):
         for text in bare_literal_origins:
             with self.subTest(kind=text[:40]):
                 fields = projector.project(self.fail_log(self.reraises(text, probe)))
-                self.assertEqual(fields["busy"], "present")
-                self.assertEqual(fields["code"], projector.BUSY_CODE)
-                self.assertEqual(fields["read"], "slot")
-                self.assertEqual(fields["errno"], "1213")
-                self.assertEqual(fields["http"], "503")
+                self.assertTrue(fields["busy"] == "present", "derived value mismatch (content withheld)")
+                self.assertTrue(fields["code"] == projector.BUSY_CODE, "derived value mismatch (content withheld)")
+                self.assertTrue(fields["read"] == "slot", "derived value mismatch (content withheld)")
+                self.assertTrue(fields["errno"] == "1213", "derived value mismatch (content withheld)")
+                self.assertTrue(fields["http"] == "503", "derived value mismatch (content withheld)")
 
     def test_a1_failure_origin_counts_match_the_documented_inventory(self):
         """H1: the documented counts are measured from the real source, not guessed.
@@ -1103,9 +1109,9 @@ class RoundTwoFidelityTest(unittest.TestCase):
         for stage in ("otp-mobile", "otp-code", "confirm-btn", "names-form", "receipt"):
             msg = f"public booking stage={stage} root_state=bookable visible=0"
             fields = projector.project(self.fail_log(self.reraises(msg, probe)))
-            self.assertEqual(fields["code"], projector.BUSY_CODE, stage)
-            self.assertEqual(fields["busy"], "present", stage)
-            self.assertEqual(fields["stage"], stage, stage)
+            self.assertTrue(fields["code"] == projector.BUSY_CODE, "derived value mismatch (content withheld)")
+            self.assertTrue(fields["busy"] == "present", "derived value mismatch (content withheld)")
+            self.assertTrue(fields["stage"] == stage, "derived value mismatch (content withheld)")
 
     def test_h5_free_text_markers_are_a_disclosed_limitation(self):
         """H5 residual, pinned as a KNOWN limitation (class ii: crafted text).
@@ -1124,8 +1130,8 @@ class RoundTwoFidelityTest(unittest.TestCase):
         )
         fields = projector.project(self.projector_log(injected))
         # Documented current behaviour: the later free text wins for read/errno.
-        self.assertEqual(fields["read"], "clinic")
-        self.assertEqual(fields["errno"], "99999")
+        self.assertTrue(fields["read"] == "clinic", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["errno"] == "99999", "derived value mismatch (content withheld)")
         # ... while a purely natural message does not move:
         natural = (
             "public booking stage=hold-countdown visible=0"
@@ -1191,13 +1197,13 @@ class RoundTwoFidelityTest(unittest.TestCase):
             '  - locator resolved to <div data-read="clinic">',
         ]
         for shape in shapes:
-            with self.subTest(after=shape[:40]):
+            with self.subTest(after="redacted-case"):
                 fields = projector.project(head + body + real + "\n" + shape + "\n")
-                self.assertEqual((fields["read"], fields["errno"]), ("slot", "1213"))
-            with self.subTest(before=shape[:40]):
+                self.assertTrue((fields["read"], fields["errno"]) == ("slot", "1213"), "derived value mismatch (content withheld)")
+            with self.subTest(before="redacted-case"):
                 fields = projector.project(head + body.replace("| journey", "\n| journey")
                                            + shape + "\n | journey=A1-public " + real + "\n")
-                self.assertEqual((fields["read"], fields["errno"]), ("slot", "1213"))
+                self.assertTrue((fields["read"], fields["errno"]) == ("slot", "1213"), "derived value mismatch (content withheld)")
 
     def test_a_bare_read_token_after_the_block_does_not_move_attribution(self):
         """H5 boundary, narrowly: a COMPLETE block's own tokens win.
@@ -1244,16 +1250,16 @@ class RoundTwoFidelityTest(unittest.TestCase):
         log = self.projector_log(exc + " | journey=A1-public " + self.suffix(probe))
         self.assertIn("\n\n", log)  # the blank line really is in the log
         fields = projector.project(log)
-        self.assertEqual(fields["busy"], "present")
-        self.assertEqual(fields["errno"], "1213")
-        self.assertEqual(fields["read"], "slot")
-        self.assertEqual(fields["errno_class"], "deadlock")
+        self.assertTrue(fields["busy"] == "present", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["errno"] == "1213", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["read"] == "slot", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["errno_class"] == "deadlock", "derived value mismatch (content withheld)")
 
     def test_many_blank_lines_inside_the_block_are_harmless(self):
         exc = "Title.\n\n\n\nCall log:\n\n  - waiting\n\n"
         probe = self.busy_probe()
         fields = projector.project(self.fail_log(self.reraises(exc, probe)))
-        self.assertEqual(fields["busy"], "present")
+        self.assertTrue(fields["busy"] == "present", "derived value mismatch (content withheld)")
 
     def test_a_new_harness_record_still_ends_the_block(self):
         """The block DOES end at the next station line, blank lines or not."""
@@ -1267,10 +1273,10 @@ class RoundTwoFidelityTest(unittest.TestCase):
         fields = projector.project(log)
         # The suffix belongs to the FIRST FAIL text; the later record's
         # `read=clinic` must not leak into it.
-        self.assertEqual(fields["journey"], "journey-A1-public")
-        self.assertEqual(fields["busy"], "present")
-        self.assertEqual(fields["read"], "slot")
-        self.assertEqual(fields["elapsed_s"], "9")
+        self.assertTrue(fields["journey"] == "journey-A1-public", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["busy"] == "present", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["read"] == "slot", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["elapsed_s"] == "9", "derived value mismatch (content withheld)")
 
     # --- H4 ---------------------------------------------------------------
     def test_only_successful_statuses_project_none(self):
@@ -1281,22 +1287,22 @@ class RoundTwoFidelityTest(unittest.TestCase):
             "booking/hold http=200\n"
         )
         fields = projector.project(text)
-        self.assertEqual(fields["http"], projector.NONE)
+        self.assertTrue(fields["http"] == projector.NONE, "derived value mismatch (content withheld)")
         self.assertTrue(projector.is_closed(fields))
 
     def test_a_non_2xx_status_still_wins_over_none(self):
         probe = self.busy_probe(code="rest_slot_unavailable", status=409)
         text = ("public booking stage=hold-countdown observed=" + probe.describe(0))
         fields = projector.project(self.projector_log(text))
-        self.assertEqual(fields["http"], "409")
-        self.assertNotEqual(fields["http"], projector.NONE)
+        self.assertTrue(fields["http"] == "409", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["http"] != projector.NONE, "derived values unexpectedly equal (content withheld)")
 
     def test_none_http_is_only_for_observed_success_never_for_silence(self):
         fields = projector.project(
             "FAIL journey-A1-public — Day-2 browser journey failed (journey-A1-public) "
             "— public booking root missing\n"
         )
-        self.assertEqual(fields["http"], projector.UNRECOGNISED)
+        self.assertTrue(fields["http"] == projector.UNRECOGNISED, "derived value mismatch (content withheld)")
 
     # --- H5 ---------------------------------------------------------------
     def test_free_text_cannot_supply_read_or_errno(self):
@@ -1311,8 +1317,8 @@ class RoundTwoFidelityTest(unittest.TestCase):
             + " | journey=A1-public " + base
         )
         fields = projector.project(self.projector_log(text))
-        self.assertEqual(fields["read"], "slot")
-        self.assertEqual(fields["errno"], "1213")
+        self.assertTrue(fields["read"] == "slot", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["errno"] == "1213", "derived value mismatch (content withheld)")
 
     def test_last_busy_block_wins(self):
         """The structured block is the LAST `busy_diag=`; earlier ones are stale."""
@@ -1322,7 +1328,7 @@ class RoundTwoFidelityTest(unittest.TestCase):
             "read=clinic sql_errno=1062 | journey=A1-public " + base + "\n"
         )
         fields = projector.project(text)
-        self.assertEqual((fields["read"], fields["errno"]), ("slot", "1213"))
+        self.assertTrue((fields["read"], fields["errno"]) == ("slot", "1213"), "derived value mismatch (content withheld)")
 
     def test_an_unknown_busy_value_is_absent(self):
         text = (
@@ -1330,7 +1336,7 @@ class RoundTwoFidelityTest(unittest.TestCase):
             "sql_errno=1213\n"
         )
         fields = projector.project(text)
-        self.assertEqual(fields["busy"], "absent")
+        self.assertTrue(fields["busy"] == "absent", "derived value mismatch (content withheld)")
         self.assertTrue(projector.is_closed(fields))
 
 
@@ -1358,7 +1364,7 @@ class RoundTwoGapTest(unittest.TestCase):
             "FAIL journey-A1-public — x — observed=quote http=200; hold http=409; "
             "confirm http=422\n"
         )
-        self.assertEqual(projector.project(text)["http"], "422")
+        self.assertTrue(projector.project(text)["http"] == "422", "derived value mismatch (content withheld)")
 
     def test_separators_are_honoured_on_read_and_errno(self):
         """`;` and `|` bound every token, not just `code`."""
@@ -1367,13 +1373,13 @@ class RoundTwoGapTest(unittest.TestCase):
             "read=slot; sql_errno=1205;\n"
         )
         fields = projector.project(text)
-        self.assertEqual((fields["read"], fields["errno"]), ("slot", "1205"))
+        self.assertTrue((fields["read"], fields["errno"]) == ("slot", "1205"), "derived value mismatch (content withheld)")
 
     def test_unknown_busy_value_is_absent_not_unrecognised(self):
         fields = projector.project(
             "FAIL journey-A1-public — x — busy_diag=nonsense read=slot\n"
         )
-        self.assertEqual(fields["busy"], "absent")
+        self.assertTrue(fields["busy"] == "absent", "derived value mismatch (content withheld)")
 
     def test_first_busy_code_wins_over_a_later_one(self):
         """`code` reports the busy code whenever it appears, and the http that
@@ -1383,8 +1389,8 @@ class RoundTwoGapTest(unittest.TestCase):
             "confirm http=500 code=internal_error\n"
         )
         fields = projector.project(text)
-        self.assertEqual(fields["code"], projector.BUSY_CODE)
-        self.assertEqual(fields["http"], "503")
+        self.assertTrue(fields["code"] == projector.BUSY_CODE, "derived value mismatch (content withheld)")
+        self.assertTrue(fields["http"] == "503", "derived value mismatch (content withheld)")
 
     def test_a_journey_prints_exactly_one_timing_line(self):
         """Why first-vs-last is moot in practice, stated as a checked fact.
@@ -1400,7 +1406,7 @@ class RoundTwoGapTest(unittest.TestCase):
             "INFO day2-journey-timing journey=journey-A1-public elapsed_s=7\n"
             "INFO day2-journey-timing journey=journey-A1-public elapsed_s=9\n"
         )
-        self.assertEqual(projector.project(text)["elapsed_s"], "7")
+        self.assertTrue(projector.project(text)["elapsed_s"] == "7", "derived value mismatch (content withheld)")
         # The harness emits the timing line exactly once, in one `finally:`.
         source = HARNESS.read_text(encoding="utf-8")
         self.assertEqual(source.count("day2-journey-timing journey={key}"), 1)
@@ -1412,7 +1418,7 @@ class RoundTwoGapTest(unittest.TestCase):
             "FAIL journey-A1-public — x — y\n"
             "INFO day2-journey-timing journey=journey-A1-public elapsed_s=9\n"
         )
-        self.assertEqual(projector.project(text)["elapsed_s"], "7")
+        self.assertTrue(projector.project(text)["elapsed_s"] == "7", "derived value mismatch (content withheld)")
 
 
 class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
@@ -1464,9 +1470,9 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
                 os.environ["PATH"] = old_path
 
         raised_text = str(raised.exception)
-        self.assertIn("db_failed rc=1", raised_text)
+        self.assertTrue("db_failed rc=1" in raised_text, "derived output missing expected fragment (content withheld)")
         for token in self.TOKENS:
-            self.assertNotIn(token, raised_text)
+            self.assertTrue(token not in raised_text, "derived output carried forbidden text (content withheld)")
 
         harness.results.clear()
         harness.failures.clear()
@@ -1486,7 +1492,7 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
         results_detail = harness.results[-1]["detail"]
         for token in self.TOKENS:
             self.assertTrue(token not in stdout, "captured output carried forbidden text (content withheld)")
-            self.assertNotIn(token, results_detail)
+            self.assertTrue(token not in results_detail, "derived output carried forbidden text (content withheld)")
             self.assertTrue(token not in projector.render(projector.project(stdout)), "captured output carried forbidden text (content withheld)")
 
     def test_response_message_never_reaches_info_stdout(self):
@@ -1520,7 +1526,7 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
         probe._on_response(_Response())
         self.assertEqual(len(probe.entries), 1)
         entry = probe.entries[0]
-        self.assertNotIn("message", entry)
+        self.assertTrue("message" not in entry, "derived output carried forbidden text (content withheld)")
         self.assertEqual(entry["status"], 503)
         self.assertEqual(entry["code"], "CLINIC_BOOKING_BUSY")
         self.assertEqual(entry["slot_id"], 42)
@@ -1535,7 +1541,7 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
         self.assertTrue("CLINIC_BOOKING_BUSY" in stdout, "captured output missing expected fragment (content withheld)")
         for token in ("SYNTH_MSG_TOKEN", "Deadlock found", "SELECT mobile"):
             self.assertTrue(token not in stdout, "captured output carried forbidden text (content withheld)")
-            self.assertNotIn(token, repr(probe.entries))
+            self.assertTrue(token not in repr(probe.entries), "derived output carried forbidden text (content withheld)")
             self.assertTrue(token not in projector.render(projector.project(stdout)), "captured output carried forbidden text (content withheld)")
 
     def test_hostile_busy_suffix_text_never_reaches_any_surface(self):
@@ -1579,17 +1585,17 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
         stdout = buffer.getvalue()
         detail = harness.results[-1]["detail"]
         fields = projector.project(stdout)
-        self.assertEqual(fields["stage"], "hold-request")
-        self.assertEqual(fields["http"], "503")
-        self.assertEqual(fields["code"], projector.BUSY_CODE)
-        self.assertEqual(fields["read"], "slot")
-        self.assertEqual(fields["errno"], "1213")
-        self.assertEqual(fields["busy"], "present")
+        self.assertTrue(fields["stage"] == "hold-request", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["http"] == "503", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["code"] == projector.BUSY_CODE, "derived value mismatch (content withheld)")
+        self.assertTrue(fields["read"] == "slot", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["errno"] == "1213", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["busy"] == "present", "derived value mismatch (content withheld)")
         self.assertEqual(harness.failures, ["journey-A1-public"])
         for token in ("SYNTH_SUFFIX_TOKEN", "Deadlock found", "SELECT mobile"):
             self.assertTrue(token not in stdout, "captured output carried forbidden text (content withheld)")
-            self.assertNotIn(token, detail)
-            self.assertNotIn(token, projector.render(fields))
+            self.assertTrue(token not in detail, "derived output carried forbidden text (content withheld)")
+            self.assertTrue(token not in projector.render(fields), "derived output carried forbidden text (content withheld)")
 
 
 class Day2ProbeClosedFieldsTest(unittest.TestCase):
@@ -1641,7 +1647,7 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
         """C1: only exact finite-set literals survive; the rest is `other`."""
         harness = self.harness
         for hostile in self.HOSTILE_CODES:
-            with self.subTest(code=hostile[:24]):
+            with self.subTest(code="redacted-case"):
                 probe = self._probe_with(
                     {"code": hostile, "data": {"code": hostile}},
                     posted={"slot_id": 7},
@@ -1656,7 +1662,7 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
                 stdout = buffer.getvalue()
                 self.assertTrue("code=other" in stdout, "captured output missing expected fragment (content withheld)")
                 self.assertTrue(hostile not in stdout, "captured output carried forbidden text (content withheld)")
-                self.assertNotIn(hostile, repr(probe.entries))
+                self.assertTrue(hostile not in repr(probe.entries), "derived output carried forbidden text (content withheld)")
                 self.assertNotIn(
                     hostile, projector.render(projector.project(stdout))
                 )
@@ -1677,8 +1683,8 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
                     "clinician_id": 42},
         )
         entry = probe.entries[0]
-        self.assertNotIn("slot_id", entry)
-        self.assertNotIn("location_id", entry)
+        self.assertTrue("slot_id" not in entry, "derived output carried forbidden text (content withheld)")
+        self.assertTrue("location_id" not in entry, "derived output carried forbidden text (content withheld)")
         self.assertEqual(entry["clinician_id"], 42)
         buffer = io.StringIO()
         with redirect_stdout(buffer):
@@ -1694,7 +1700,7 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
         over_bound = self._probe_with(
             {"code": "CLINIC_BOOKING_BUSY"}, posted={"slot_id": 2147483648}
         )
-        self.assertNotIn("slot_id", over_bound.entries[0])
+        self.assertTrue("slot_id" not in over_bound.entries[0], "derived output carried forbidden text (content withheld)")
 
     def test_hostile_route_is_omitted_from_suffix_and_fail_line(self):
         """C2: only exact booking-route literals may carry a route= token."""
@@ -1702,15 +1708,15 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
         harness = self.harness
         for hostile in ("evil/route", "booking/hold\nINJECTED",
                         "booking/hold/extra", "SYNTH_ROUTE"):
-            with self.subTest(route=hostile):
+            with self.subTest(route="redacted-case"):
                 out = busy.validate_busy_suffix(
                     "busy_diag=booking.lock_read_failed read=slot "
                     f"sql_errno=1213 route={hostile} http=503"
                 )
                 # No hostile text survives; a route token may appear only
                 # as the exact literal the whitespace split isolates.
-                self.assertNotIn(hostile, out)
-                self.assertNotIn("INJECTED", out)
+                self.assertTrue(hostile not in out, "derived output carried forbidden text (content withheld)")
+                self.assertTrue("INJECTED" not in out, "derived output carried forbidden text (content withheld)")
                 for token in out.split():
                     if token.startswith("route="):
                         self.assertIn(token, {
@@ -1722,13 +1728,13 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
                     {"read": "slot", "sql_errno": 1213},
                     route=hostile, http_status=503,
                 )
-                self.assertNotIn("route=", direct)
+                self.assertTrue("route=" not in direct, "derived output carried forbidden text (content withheld)")
         good = busy.validate_busy_suffix(
             "busy_diag=booking.lock_read_failed read=slot sql_errno=1213 "
             "route=booking/hold http=503 unknown_field=SYNTH_ROUTE_X"
         )
-        self.assertIn("route=booking/hold", good)
-        self.assertNotIn("SYNTH_ROUTE_X", good)
+        self.assertTrue("route=booking/hold" in good, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("SYNTH_ROUTE_X" not in good, "derived output carried forbidden text (content withheld)")
         exc = harness.BusyJourneyFailure(good + " route=evil/route")
         harness.results.clear()
         harness.failures.clear()
@@ -1785,9 +1791,9 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
                 AssertionError("receipt reference_code format invalid"),
             )
         fields = projector.project(buffer.getvalue())
-        self.assertEqual(fields["busy"], "absent")
-        self.assertEqual(fields["code"], projector.NONE)
-        self.assertEqual(fields["errno"], projector.UNRECOGNISED)
+        self.assertTrue(fields["busy"] == "absent", "derived value mismatch (content withheld)")
+        self.assertTrue(fields["code"] == projector.NONE, "derived value mismatch (content withheld)")
+        self.assertTrue(fields["errno"] == projector.UNRECOGNISED, "derived value mismatch (content withheld)")
 
         genuine = [
             {"route": "/clinic/v1/booking/quote", "status": 200, "code": ""},
@@ -1798,7 +1804,7 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
             genuine, query, "cpmswp_cpms_operational_logs", "390x844",
             since="2026-11-13 10:00:00",
         )
-        self.assertIn("busy_diag=booking.lock_read_failed", good_suffix)
+        self.assertTrue("busy_diag=booking.lock_read_failed" in good_suffix, "derived output missing expected fragment (content withheld)")
         exc = harness.BusyJourneyFailure(
             good_suffix,
             origin_text="public booking stage=hold-request — hold rejected",
@@ -1891,9 +1897,9 @@ class RoundFourProbeFieldsTest(unittest.TestCase):
                     posted={"slot_id": value, "clinician_id": 42},
                 )
                 entry = probe.entries[0]
-                self.assertNotIn("slot_id", entry)
+                self.assertTrue("slot_id" not in entry, "derived output carried forbidden text (content withheld)")
                 self.assertEqual(entry["clinician_id"], 42)
-                self.assertNotIn(value, repr(entry))
+                self.assertTrue(value not in repr(entry), "derived output carried forbidden text (content withheld)")
         ascii_ok = self._probe_with(
             {"code": "CLINIC_BOOKING_BUSY"}, posted={"slot_id": "42"})
         self.assertEqual(ascii_ok.entries[0]["slot_id"], 42)
@@ -1904,11 +1910,11 @@ class RoundFourProbeFieldsTest(unittest.TestCase):
             {"code": ""},
             posted={"slot_date": "٢٠٢٦-١١-١٤", "slot_time": "09:15:00\n"},
         )
-        self.assertNotIn("slot_date", bad.entries[0])
-        self.assertNotIn("slot_time", bad.entries[0])
+        self.assertTrue("slot_date" not in bad.entries[0], "derived output carried forbidden text (content withheld)")
+        self.assertTrue("slot_time" not in bad.entries[0], "derived output carried forbidden text (content withheld)")
         nl_date = self._probe_with(
             {"code": ""}, posted={"slot_date": "2026-11-14\n"})
-        self.assertNotIn("slot_date", nl_date.entries[0])
+        self.assertTrue("slot_date" not in nl_date.entries[0], "derived output carried forbidden text (content withheld)")
         good = self._probe_with(
             {"code": ""},
             posted={"slot_date": "2026-11-14", "slot_time": "09:15:00"},
@@ -1958,10 +1964,10 @@ class ConsolidatedRoundFieldsTest(unittest.TestCase):
             {"slot_time": "۰۹:۱۵:۰۰"},
         ]
         for posted in hostile:
-            with self.subTest(posted=str(posted)[:32]):
+            with self.subTest(posted="redacted-case"):
                 entry = self._probe_with({"code": ""}, posted=posted).entries[0]
-                self.assertNotIn("slot_date", entry)
-                self.assertNotIn("slot_time", entry)
+                self.assertTrue("slot_date" not in entry, "derived output carried forbidden text (content withheld)")
+                self.assertTrue("slot_time" not in entry, "derived output carried forbidden text (content withheld)")
 
     def test_valid_date_time_are_stored_canonically(self):
         entry = self._probe_with(
@@ -1997,7 +2003,7 @@ class ConsolidatedRoundFieldsTest(unittest.TestCase):
             {"read": "slot", "sql_errno": 1213},
             route="booking/hold", http_status=503, viewport="0390x0844",
         )
-        self.assertIn("viewport=390x844", good)
+        self.assertTrue("viewport=390x844" in good, "derived output missing expected fragment (content withheld)")
 
 
 class RoundSevenBoardAndStartupTest(unittest.TestCase):
@@ -2087,15 +2093,16 @@ class RoundEightStartupGuardTest(unittest.TestCase):
             self.assertEqual(code, 0)
             self.assertTrue(err == "", "successful SystemExit must stay silent")
 
-    def test_systemexit_nonzero_int_is_preserved_with_token(self):
+    def test_systemexit_nonzero_int_is_preserved_silently(self):
+        # Item A classification: a genuine int status in 1..255 is
+        # preserved exactly and silently (no payload text exists to
+        # leak; only non-int / out-of-range payloads get the token).
         def main():
             raise SystemExit(3)
 
         code, err = self._run_with_main(main)
         self.assertEqual(code, 3)
-        self.assertTrue(
-            err == "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n",
-            "nonzero SystemExit must print only the fixed token")
+        self.assertTrue(err == "", "int status in 1..255 must be preserved silently")
 
     def test_keyboard_interrupt_prints_only_token(self):
         def main():
@@ -2140,10 +2147,24 @@ class RoundTenExitStatusTest(unittest.TestCase):
         "spec = importlib.util.spec_from_file_location('h', {harness!r})\n"
         "m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
         "payload = sys.argv[1]\n"
+        "class EqBoom:\n"
+        "    def __eq__(self, other): raise RuntimeError('SYNTH_SECRET_R11')\n"
+        "    def __ne__(self, other): raise RuntimeError('SYNTH_SECRET_R11')\n"
+        "class StrBoom:\n"
+        "    def __str__(self): return 'SYNTH_SECRET_R11'\n"
+        "    def __repr__(self): return 'SYNTH_SECRET_R11'\n"
         "def main():\n"
         "    if payload == 'NONE': raise SystemExit(None)\n"
-        "    if payload == 'TEXT': raise SystemExit('SYNTH_SECRET_R10')\n"
+        "    if payload == 'TEXT': raise SystemExit('SYNTH_SECRET_R11')\n"
         "    if payload == 'KI': raise KeyboardInterrupt\n"
+        "    if payload == 'FALSE': raise SystemExit(False)\n"
+        "    if payload == 'TRUE': raise SystemExit(True)\n"
+        "    if payload == 'FLOAT0': raise SystemExit(0.0)\n"
+        "    if payload == 'FLOAT1': raise SystemExit(1.0)\n"
+        "    if payload == 'BYTES': raise SystemExit(b'x')\n"
+        "    if payload == 'EQOBJ': raise SystemExit(EqBoom())\n"
+        "    if payload == 'STROBJ': raise SystemExit(StrBoom())\n"
+        "    if payload == 'BIG': raise SystemExit(2**70)\n"
         "    raise SystemExit(int(payload))\n"
         "m.main = main\n"
         "raise SystemExit(m._entry())\n"
@@ -2160,9 +2181,17 @@ class RoundTenExitStatusTest(unittest.TestCase):
     def test_real_exit_statuses(self):
         token = "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n"
         cases = {
-            "0": (0, ""), "NONE": (0, ""), "1": (1, token),
-            "255": (255, token), "256": (1, token), "-256": (1, token),
-            "512": (1, token), "TEXT": (1, token), "KI": (130, token),
+            # Exact-type classification (Item A): None and int 0 are
+            # silent success; int 1..255 are preserved silently;
+            # EVERYTHING else is the fixed token + 1 (bool, float,
+            # bytes, hostile objects, out-of-range ints); KI -> 130.
+            "0": (0, ""), "NONE": (0, ""), "1": (1, ""), "255": (255, ""),
+            "256": (1, token), "-256": (1, token), "512": (1, token),
+            "-1": (1, token), "257": (1, token), "511": (1, token),
+            "BIG": (1, token), "FALSE": (1, token), "TRUE": (1, token),
+            "FLOAT0": (1, token), "FLOAT1": (1, token),
+            "BYTES": (1, token), "EQOBJ": (1, token),
+            "STROBJ": (1, token), "TEXT": (1, token), "KI": (130, token),
         }
         for payload, (want_code, want_err) in cases.items():
             with self.subTest(payload=payload):
@@ -2171,8 +2200,8 @@ class RoundTenExitStatusTest(unittest.TestCase):
                                 "real exit status mismatch (value withheld)")
                 self.assertTrue(err == want_err,
                                 "stderr must be empty or only the fixed token")
-                self.assertTrue("SYNTH_SECRET_R10" not in err,
-                                "SystemExit text must never reach stderr")
+                self.assertTrue("SYNTH_SECRET_R11" not in err,
+                                "SystemExit payload must never reach stderr")
 
 
 if __name__ == "__main__":

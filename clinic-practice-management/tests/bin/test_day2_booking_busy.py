@@ -55,17 +55,18 @@ def assert_no_values(test, output):
 class DriverTextExclusionTest(unittest.TestCase):
     def test_every_legacy_driver_value_is_dropped_by_every_projection_path(self):
         for value in DRIVER_VALUES:
-            with self.subTest(value=repr(value)):
+            with self.subTest(value="redacted-case"):
                 context = legacy_context(value)
                 diag = busy.extract_busy_diagnostic(context)
-                self.assertEqual({"event": busy.EVENT, "read": "location",
+                self.assertTrue({"event": busy.EVENT, "read": "location",
                                   "sql_errno": 1213, "error_category": "deadlock",
-                                  "location_id": 3}, diag)
+                                  "location_id": 3} == diag,
+                                 "derived value mismatch (content withheld)")
                 self.assertLessEqual(set(diag), ALLOWED_KEYS)
                 assert_no_values(self, diag)
                 row = [(json.dumps(context, ensure_ascii=False),)]
                 parsed = busy.parse_busy_rows(row)
-                self.assertEqual(diag, parsed)
+                self.assertTrue(diag == parsed, "derived value mismatch (content withheld)")
                 direct = busy.format_busy_suffix(context)
                 via_reader = busy.busy_suffix_for(
                     BusySuffixForTest.BUSY_ENTRIES, lambda sql: row,
@@ -74,16 +75,19 @@ class DriverTextExclusionTest(unittest.TestCase):
                 )
                 for out in (direct, via_reader):
                     assert_no_values(self, out)
-                    self.assertIn("error_category=deadlock", out)
-                    self.assertNotIn("\n", out)
-                    self.assertNotIn("\r", out)
+                    self.assertTrue("error_category=deadlock" in out,
+                                    "busy suffix missing its category (content withheld)")
+                    self.assertTrue("\n" not in out,
+                                    "busy suffix must be a single line (content withheld)")
+                    self.assertTrue("\r" not in out,
+                                    "busy suffix must be a single line (content withheld)")
                     self.assertLessEqual(len(out), busy.MAX_SUFFIX)
 
     def test_short_names_cannot_masquerade_as_read_labels(self):
         for value in ("li", "ana", "patient_name", "آزمایشی", "location\nLi"):
-            with self.subTest(value=value):
+            with self.subTest(value="redacted-case"):
                 diag = busy.extract_busy_diagnostic({"read": value, "sql_errno": 1213})
-                self.assertNotIn("read", diag)
+                self.assertTrue("read" not in diag, "derived output carried forbidden text (content withheld)")
                 assert_no_values(self, busy.format_busy_suffix({"read": value}))
 
     def test_fixed_read_labels_match_the_production_call_sites(self):
@@ -91,7 +95,7 @@ class DriverTextExclusionTest(unittest.TestCase):
                   "BookingService.php").read_text(encoding="utf-8")
         labels = set(re.findall(r"assert_read_succeeded\(\s*'([a-z0-9_]+)'", source))
         self.assertTrue(labels)
-        self.assertEqual(labels, busy.READ_LABELS)
+        self.assertTrue(labels == busy.READ_LABELS, "derived value mismatch (content withheld)")
 
     def test_categories_come_only_from_errno_not_stored_text(self):
         for errno, category in ((1213, "deadlock"), (1205, "lock_wait_timeout"),
@@ -100,7 +104,7 @@ class DriverTextExclusionTest(unittest.TestCase):
                 "sql_errno": errno, "error_category": "Li", "sql_error": "Ana",
             })
             self.assertEqual(category, diag["error_category"])
-            self.assertIn(f"error_category={category}", busy.format_busy_suffix(diag))
+            self.assertTrue(f"error_category={category}" in busy.format_busy_suffix(diag), "derived output missing expected fragment (content withheld)")
 
 
 class ExtractBusyDiagnosticTest(unittest.TestCase):
@@ -141,7 +145,7 @@ class ExtractBusyDiagnosticTest(unittest.TestCase):
                 "location_id": -5,
             }
         )
-        self.assertEqual({"event": "booking.lock_read_failed"}, diag)
+        self.assertTrue({"event": "booking.lock_read_failed"} == diag, "derived value mismatch (content withheld)")
 
     def test_errno_digit_string_and_zero_are_kept(self):
         diag = busy.extract_busy_diagnostic({"sql_errno": "1205"})
@@ -155,9 +159,9 @@ class ExtractBusyDiagnosticTest(unittest.TestCase):
             "slot_id": "42\nLi", "clinic_id": -1, "location_id": busy.MAX_ID + 1,
             "organization_id": 1.5, "clinician_id": None, "unknown": "Ana",
         })
-        self.assertEqual({"event": busy.EVENT}, diag)
+        self.assertTrue({"event": busy.EVENT} == diag, "derived value mismatch (content withheld)")
         for value in (-1, 100000, "1213\n", "۱۲۱۳"):
-            self.assertNotIn("sql_errno", busy.extract_busy_diagnostic({"sql_errno": value}))
+            self.assertTrue("sql_errno" not in busy.extract_busy_diagnostic({"sql_errno": value}), "derived output carried forbidden text (content withheld)")
 
     def test_non_object_context_is_none(self):
         self.assertIsNone(busy.extract_busy_diagnostic(None))
@@ -174,7 +178,7 @@ class ParseBusyRowsTest(unittest.TestCase):
         self.assertIsNone(busy.parse_busy_rows([('["a"]',)]))
         for cell in (None, 42, b'{"sql_errno":1213}', "", "null", "true", "[]"):
             self.assertIsNone(busy.parse_busy_rows([(cell,)]))
-        self.assertEqual({"event": busy.EVENT}, busy.parse_busy_rows([("{}",)]))
+        self.assertTrue({"event": busy.EVENT} == busy.parse_busy_rows([("{}",)]), "derived value mismatch (content withheld)")
 
     def test_valid_row_parses_and_extra_columns_are_ignored(self):
         row = ('{"read": "slot", "sql_errno": 1146, "slot_id": 5}', "ignored")
@@ -228,14 +232,14 @@ class FormatBusySuffixTest(unittest.TestCase):
         out = busy.format_busy_suffix(
             diag, route="booking/hold", http_status=503, viewport="390x844"
         )
-        self.assertIn("busy_diag=booking.lock_read_failed", out)
-        self.assertIn("read=persisted_slot", out)
-        self.assertIn("sql_errno=1213", out)
-        self.assertIn("slot_id=42", out)
-        self.assertIn("route=booking/hold", out)
-        self.assertIn("http=503", out)
-        self.assertIn("viewport=390x844", out)
-        self.assertNotIn("\n", out)
+        self.assertTrue("busy_diag=booking.lock_read_failed" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("read=persisted_slot" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("sql_errno=1213" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("slot_id=42" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("route=booking/hold" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("http=503" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("viewport=390x844" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("\n" not in out, "derived output carried forbidden text (content withheld)")
         self.assertLessEqual(len(out), busy.MAX_SUFFIX)
 
     def test_direct_formatter_cannot_bypass_projection(self):
@@ -247,12 +251,12 @@ class FormatBusySuffixTest(unittest.TestCase):
             viewport="390x844\nLi", missing="Li",
         )
         assert_no_values(self, out)
-        self.assertIn("read=location", out)
-        self.assertIn("error_category=deadlock", out)
-        self.assertIn("slot_id=7", out)
-        self.assertNotIn("route=", out)
-        self.assertNotIn("viewport=", out)
-        self.assertNotIn("\n", out)
+        self.assertTrue("read=location" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("error_category=deadlock" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("slot_id=7" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("route=" not in out, "derived output carried forbidden text (content withheld)")
+        self.assertTrue("viewport=" not in out, "derived output carried forbidden text (content withheld)")
+        self.assertTrue("\n" not in out, "derived output carried forbidden text (content withheld)")
 
     def test_missing_states_and_invalid_parts(self):
         out = busy.format_busy_suffix(None, missing="fetch-failed", viewport="bogus")
@@ -295,22 +299,22 @@ class BusySuffixForTest(unittest.TestCase):
         out = busy.busy_suffix_for(
             self.BUSY_ENTRIES, fake_query, "cpmswp_cpms_operational_logs", "390x844"
         )
-        self.assertIn("busy_diag=booking.lock_read_failed", out)
-        self.assertIn("read=location", out)
-        self.assertIn("sql_errno=1205", out)
-        self.assertIn("location_id=3", out)
-        self.assertIn("route=booking/hold", out)
-        self.assertIn("viewport=390x844", out)
-        self.assertNotIn(PHONE, out)
-        self.assertNotIn(TOKEN, out)
-        self.assertNotIn("mobile", out)
+        self.assertTrue("busy_diag=booking.lock_read_failed" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("read=location" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("sql_errno=1205" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("location_id=3" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("route=booking/hold" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("viewport=390x844" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue(PHONE not in out, "derived output carried forbidden text (content withheld)")
+        self.assertTrue(TOKEN not in out, "derived output carried forbidden text (content withheld)")
+        self.assertTrue("mobile" not in out, "derived output carried forbidden text (content withheld)")
 
     def test_busy_attempt_without_row_is_not_found(self):
         out = busy.busy_suffix_for(
             self.BUSY_ENTRIES, lambda sql: [], "cpmswp_cpms_operational_logs"
         )
-        self.assertIn("busy_diag=not-found", out)
-        self.assertIn("route=booking/hold", out)
+        self.assertTrue("busy_diag=not-found" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("route=booking/hold" in out, "derived output missing expected fragment (content withheld)")
 
     def test_query_failure_degrades_without_raising(self):
         def exploding_query(sql):
@@ -319,11 +323,11 @@ class BusySuffixForTest(unittest.TestCase):
         out = busy.busy_suffix_for(
             self.BUSY_ENTRIES, exploding_query, "cpmswp_cpms_operational_logs"
         )
-        self.assertIn("busy_diag=fetch-failed", out)
+        self.assertTrue("busy_diag=fetch-failed" in out, "derived output missing expected fragment (content withheld)")
 
     def test_unsafe_table_degrades_without_raising(self):
         out = busy.busy_suffix_for(self.BUSY_ENTRIES, lambda sql: [], "bad table")
-        self.assertIn("busy_diag=fetch-failed", out)
+        self.assertTrue("busy_diag=fetch-failed" in out, "derived output missing expected fragment (content withheld)")
 
 
 class JourneyStartBoundTest(unittest.TestCase):
@@ -368,13 +372,13 @@ class JourneyStartBoundTest(unittest.TestCase):
         )
         self.assertEqual(1, len(seen))
         self.assertIn("created_at >= '2026-11-04 10:00:00'", seen[0])
-        self.assertIn("busy_diag=not-found", out)
+        self.assertTrue("busy_diag=not-found" in out, "derived output missing expected fragment (content withheld)")
 
     def test_invalid_since_degrades_to_fetch_failed_never_raises(self):
         out = busy.busy_suffix_for(
             self.ENTRIES, lambda sql: [], self.TABLE, since="not-a-timestamp"
         )
-        self.assertIn("busy_diag=fetch-failed", out)
+        self.assertTrue("busy_diag=fetch-failed" in out, "derived output missing expected fragment (content withheld)")
 
     def test_query_failure_with_since_still_fetch_failed(self):
         def boom(sql):
@@ -383,7 +387,7 @@ class JourneyStartBoundTest(unittest.TestCase):
         out = busy.busy_suffix_for(
             self.ENTRIES, boom, self.TABLE, since=self.SINCE
         )
-        self.assertIn("busy_diag=fetch-failed", out)
+        self.assertTrue("busy_diag=fetch-failed" in out, "derived output missing expected fragment (content withheld)")
 
 
 class StaleOrMismatchTest(unittest.TestCase):
@@ -408,27 +412,27 @@ class StaleOrMismatchTest(unittest.TestCase):
             [self.attempt()], lambda sql: [self.row(42)], self.TABLE,
             since=self.SINCE
         )
-        self.assertIn("busy_diag=booking.lock_read_failed", out)
-        self.assertIn("read=slot", out)
-        self.assertIn("slot_id=42", out)
-        self.assertNotIn("stale-or-mismatch", out)
+        self.assertTrue("busy_diag=booking.lock_read_failed" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("read=slot" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("slot_id=42" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("stale-or-mismatch" not in out, "derived output carried forbidden text (content withheld)")
 
     def test_conflicting_slot_id_is_stale_or_mismatch(self):
         out = busy.busy_suffix_for(
             [self.attempt()], lambda sql: [self.row(999)], self.TABLE,
             since=self.SINCE
         )
-        self.assertIn("busy_diag=stale-or-mismatch", out)
-        self.assertNotIn("read=slot", out)
-        self.assertNotIn("sql_errno=1213", out)
-        self.assertIn("route=booking/hold", out)
+        self.assertTrue("busy_diag=stale-or-mismatch" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("read=slot" not in out, "derived output carried forbidden text (content withheld)")
+        self.assertTrue("sql_errno=1213" not in out, "derived output carried forbidden text (content withheld)")
+        self.assertTrue("route=booking/hold" in out, "derived output missing expected fragment (content withheld)")
 
     def test_conflicting_clinic_id_is_stale_or_mismatch(self):
         row = ('{"read": "organization", "sql_errno": 1205, "clinic_id": 9}',)
         out = busy.busy_suffix_for(
             [self.attempt()], lambda sql: [row], self.TABLE, since=self.SINCE
         )
-        self.assertIn("busy_diag=stale-or-mismatch", out)
+        self.assertTrue("busy_diag=stale-or-mismatch" in out, "derived output missing expected fragment (content withheld)")
 
     def test_no_shared_id_keeps_the_row_rather_than_guessing(self):
         row = ('{"read": "location", "sql_errno": 1205, "location_id": 3}',)
@@ -437,8 +441,8 @@ class StaleOrMismatchTest(unittest.TestCase):
         out = busy.busy_suffix_for(
             [attempt], lambda sql: [row], self.TABLE, since=self.SINCE
         )
-        self.assertIn("busy_diag=booking.lock_read_failed", out)
-        self.assertNotIn("stale-or-mismatch", out)
+        self.assertTrue("busy_diag=booking.lock_read_failed" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("stale-or-mismatch" not in out, "derived output carried forbidden text (content withheld)")
 
     def test_formatter_accepts_stale_state(self):
         self.assertEqual(
@@ -679,9 +683,9 @@ class BusyAttributionRuleTest(unittest.TestCase):
             self.entry(self.QUOTE, 200, ""),
             self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
         ], stage="hold-request")
-        self.assertIn("busy_diag=booking.lock_read_failed", out)
-        self.assertIn("route=booking/hold", out)
-        self.assertIn("http=503", out)
+        self.assertTrue("busy_diag=booking.lock_read_failed" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("route=booking/hold" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("http=503" in out, "derived output missing expected fragment (content withheld)")
 
     def test_superseded_busy_is_not_attributed(self):
         """busy -> hold 200 -> confirm 200 -> unrelated failure."""
@@ -719,8 +723,8 @@ class BusyAttributionRuleTest(unittest.TestCase):
             self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
             self.entry(self.HOLD, 200, ""),
         ], stage="hold-request")
-        self.assertIn("busy_diag=booking.lock_read_failed", out)
-        self.assertIn("http=503", out)
+        self.assertTrue("busy_diag=booking.lock_read_failed" in out, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("http=503" in out, "derived output missing expected fragment (content withheld)")
 
     def test_case_d_later_same_route_failure_displaces_busy(self):
         """(d) busy, then a non-busy failure on the SAME route: busy is

@@ -24,8 +24,11 @@ use PHPUnit\Framework\TestCase;
  * export cannot republish child output. (Round 8 used assertSame
  * on the returned line; round 10 removed that too.)
  *
- * Fatal coverage note: the fatal test below raises an uncatchable
- * E_USER_ERROR while the supervisor waits on its child. It is NOT
+ * Fatal coverage note: two deterministic fatals are tested — one
+ * INSIDE d2w_supervise (stream-wrapper E_USER_ERROR during the
+ * env-file probe; unfinished-supervisor shutdown branch, with the
+ * private dir asserted removed) and one AFTER it returns with
+ * cleanup still pending. Neither is a memory-exhaustion proof
  * a memory-exhaustion proof: on PHP 8.1 the
  * engine prints its own memory-fatal line despite suppression
  * (observed in CI, rounds 8/10), which this PR does not close —
@@ -172,42 +175,37 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_cleanup_failure_after_success_fails_closed(): void
     {
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-            self::markTestSkipped('permission-based cleanup injection needs a non-root user');
-        }
         $base = $this->workDir . '/supbase';
         mkdir($base, 0700, true);
-        // The fake child finds the supervisor's private dir (the test
-        // embeds the base path) and makes it non-writable, so the
-        // supervisor's checked cleanup cannot unlink its capture
-        // files after an otherwise-successful run.
+        // Root-proof sabotage (works for any user, root included):
+        // the fake child plants a non-empty subdirectory inside the
+        // supervisor's private dir, so the supervisor's checked
+        // cleanup cannot unlink that entry nor rmdir the directory
+        // after an otherwise-successful run.
         $sabotage = '$ds = glob(' . var_export($base, true) . ' . "/d2w-sup-*") ?: [];'
-            . 'foreach ($ds as $d) { foreach (glob($d . "/*") ?: [] as $f) { chmod($f, 0400); } chmod($d, 0500); }';
+            . 'foreach ($ds as $d) { mkdir($d . "/stuck"); file_put_contents($d . "/stuck/inner.txt", "x"); }';
         [$code, $line] = $this->supervise(
             $this->phpChild($sabotage . $this->markerCode()),
             $base
         );
         self::assertTrue($code === 1, 'cleanup failure must fail closed');
         self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'cleanup failure must publish the supervisor token');
-        // Restore permissions and remove what the supervisor could
-        // not; its shutdown registration also retries at process end.
-        foreach (glob($base . '/d2w-sup-*') ?: [] as $d) {
-            chmod($d, 0700);
-            foreach (glob($d . '/*') ?: [] as $f) {
-                chmod($f, 0600);
-                unlink($f);
-            }
-            rmdir($d);
-        }
+        // Remove what the supervisor could not; its shutdown
+        // registration also retries at process end.
+        $this->removeSupervisorDirs($base);
         rmdir($base);
     }
 
     public function test_fatal_in_supervised_process_prints_only_fixed_token(): void
     {
         // Drive d2w_supervise() in a subprocess whose fake child
-        // makes the supervisor's private dir non-writable, so its
-        // cleanup has FAILED and is still pending in the shutdown
-        // state; the helper then raises an uncatchable E_USER_ERROR.
+        // plants a non-empty subdirectory in the supervisor's
+        // private dir, so its cleanup has FAILED and is still
+        // pending in the shutdown state; the helper then raises an
+        // uncatchable E_USER_ERROR. This fatal fires AFTER
+        // d2w_supervise has returned (finished=true): it covers the
+        // shutdown path with cleanup still failing. The companion
+        // test below covers a fatal INSIDE d2w_supervise.
         // The shutdown function must answer the fatal with only the
         // fixed token, no warning text, and a non-success exit.
         // (Trigger history, kept honest: CPU-limit exhaustion in the
@@ -218,14 +216,11 @@ final class Day2FixtureSupervisorTest extends TestCase
         // in-supervise branch. A memory-exhaustion fatal on PHP 8.1
         // makes the engine print its own line despite suppression —
         // also observed — and is NOT closed by this PR.)
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-            self::markTestSkipped('permission-based cleanup injection needs a non-root user');
-        }
         $base = $this->workDir . '/fatalbase';
         mkdir($base, 0700, true);
         $helper = $this->workDir . '/fatal-helper.php';
         $sabotage = '$ds = glob(' . var_export($base, true) . ' . "/d2w-sup-*") ?: [];'
-            . 'foreach ($ds as $d) { foreach (glob($d . "/*") ?: [] as $f) { chmod($f, 0400); } chmod($d, 0500); }';
+            . 'foreach ($ds as $d) { mkdir($d . "/stuck"); file_put_contents($d . "/stuck/inner.txt", "x"); }';
         file_put_contents($helper, '<?php require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
             . '$r = d2w_supervise([PHP_BINARY, "-r", ' . var_export($sabotage . 'echo "done\n";', true) . '], '
             . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
@@ -253,14 +248,7 @@ final class Day2FixtureSupervisorTest extends TestCase
             strlen((string) $err),
             substr_count((string) $err, 'DAY2_FIXTURE_ERROR step=supervisor')
         ));
-        foreach (glob($base . '/d2w-sup-*') ?: [] as $d) {
-            chmod($d, 0700);
-            foreach (glob($d . '/*') ?: [] as $f) {
-                chmod($f, 0600);
-                unlink($f);
-            }
-            rmdir($d);
-        }
+        $this->removeSupervisorDirs($base);
         rmdir($base);
     }
 
@@ -316,20 +304,18 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_cleanup_failure_surviving_to_shutdown_prints_only_token(): void
     {
-        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
-            self::markTestSkipped('permission-based cleanup injection needs a non-root user');
-        }
-        // Subprocess: the fake child makes the supervisor's private
-        // dir non-writable, so cleanup fails on the return path AND
-        // again in the shutdown retry. The helper prints NOTHING
-        // itself; the only stderr allowed is the fixed token (from
-        // the shutdown path), the exit must be non-success, and no
-        // PHP warning text may appear (exact-match boolean compare).
+        // Subprocess: the fake child plants a non-empty subdirectory
+        // in the supervisor's private dir (root-proof), so cleanup
+        // fails on the return path AND again in the shutdown retry.
+        // The helper prints NOTHING itself; the only stderr allowed
+        // is the fixed token (from the shutdown path), the exit must
+        // be non-success, and no PHP warning text may appear
+        // (exact-match boolean compare).
         $base = $this->workDir . '/shutdownbase';
         mkdir($base, 0700, true);
         $helper = $this->workDir . '/shutdown-helper.php';
         $sabotage = '$ds = glob(' . var_export($base, true) . ' . "/d2w-sup-*") ?: [];'
-            . 'foreach ($ds as $d) { foreach (glob($d . "/*") ?: [] as $f) { chmod($f, 0400); } chmod($d, 0500); }';
+            . 'foreach ($ds as $d) { mkdir($d . "/stuck"); file_put_contents($d . "/stuck/inner.txt", "x"); }';
         file_put_contents($helper, '<?php require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
             . '$r = d2w_supervise([PHP_BINARY, "-r", ' . var_export($sabotage . 'echo "done\n";', true) . '], '
             . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
@@ -349,14 +335,7 @@ final class Day2FixtureSupervisorTest extends TestCase
         self::assertTrue($exit !== 0, 'shutdown cleanup failure must exit non-success');
         self::assertTrue($out === '', 'shutdown cleanup failure must print nothing to stdout');
         self::assertTrue($err === "DAY2_FIXTURE_ERROR step=supervisor\n", 'shutdown cleanup failure must print only the fixed token (no warning text)');
-        foreach (glob($base . '/d2w-sup-*') ?: [] as $d) {
-            chmod($d, 0700);
-            foreach (glob($d . '/*') ?: [] as $f) {
-                chmod($f, 0600);
-                unlink($f);
-            }
-            rmdir($d);
-        }
+        $this->removeSupervisorDirs($base);
         rmdir($base);
     }
 
@@ -372,6 +351,95 @@ final class Day2FixtureSupervisorTest extends TestCase
         [$code, $line] = $this->supervise($this->phpChild('for ($i = 0; $i < 60000; $i++) { echo "padding line\n"; }'));
         self::assertTrue($code !== 0, 'output beyond the total cap must fail');
         self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'output beyond the total cap must publish the supervisor token');
+    }
+
+
+    /** Remove supervisor private dirs (incl. planted subdirs). */
+    private function removeSupervisorDirs(string $base): void
+    {
+        foreach (glob($base . '/d2w-sup-*') ?: [] as $d) {
+            foreach (glob($d . '/*') ?: [] as $f) {
+                if (is_dir($f)) {
+                    foreach (glob($f . '/*') ?: [] as $inner) {
+                        unlink($inner);
+                    }
+                    rmdir($f);
+                } else {
+                    unlink($f);
+                }
+            }
+            rmdir($d);
+        }
+    }
+
+    public function test_fatal_inside_supervise_prints_only_token_and_cleans_up(): void
+    {
+        // Deterministic fatal INSIDE d2w_supervise (the unfinished-
+        // supervisor shutdown branch): the helper registers a stream
+        // wrapper for the env-file path whose url_stat raises
+        // E_USER_ERROR the moment the supervisor probes that path —
+        // synchronously, in the same process, while d2w_supervise is
+        // on the stack. No timing, no permissions, no root skip.
+        $base = $this->workDir . '/wrapperbase';
+        mkdir($base, 0700, true);
+        $helper = $this->workDir . '/wrapper-helper.php';
+        file_put_contents($helper, '<?php '
+            . 'class D2wFatalWrapper { public $context; '
+            . 'public function url_stat($path, $flags) { trigger_error("fatal-injection", E_USER_ERROR); } '
+            . 'public function stream_open($p, $m, $o, &$o2) { return false; } } '
+            . 'stream_wrapper_register("d2wfatal", "D2wFatalWrapper"); '
+            . 'require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
+            . '$r = d2w_supervise([PHP_BINARY, "-r", "exit(0);"], "d2wfatal://env", ["supervisor"], '
+            . var_export($base, true) . ');'
+            . 'exit($r[0]);');
+        $proc = proc_open(
+            [PHP_BINARY, '-d', 'display_errors=0', '-d', 'log_errors=0', $helper],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+            $pipes
+        );
+        self::assertTrue(is_resource($proc), 'in-supervise fatal helper could not launch');
+        $out = stream_get_contents($pipes[1]);
+        $err = stream_get_contents($pipes[2]);
+        fclose($pipes[1]);
+        fclose($pipes[2]);
+        $exit = proc_close($proc);
+        unlink($helper);
+        self::assertTrue($exit !== 0, 'in-supervise fatal must exit nonzero');
+        self::assertTrue($out === '', 'in-supervise fatal must print nothing to stdout');
+        self::assertTrue($err === "DAY2_FIXTURE_ERROR step=supervisor\n", 'in-supervise fatal must print only the fixed token (no warning text)');
+        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'shutdown cleanup must remove the private dir after an in-supervise fatal');
+        rmdir($base);
+    }
+
+    public function test_flooding_child_is_terminated_during_execution(): void
+    {
+        // In-execution cap: a child that floods output (and one that
+        // writes past the cap then keeps running) must be terminated
+        // by the wait loop, fail closed with the fixed token, have
+        // its private dir removed, and finish fast.
+        $base = $this->workDir . '/floodbase';
+        mkdir($base, 0700, true);
+        $start = microtime(true);
+        [$code, $line] = $this->supervise(
+            $this->phpChild('while (true) { echo str_repeat("A", 8192); }'),
+            $base
+        );
+        $elapsed = microtime(true) - $start;
+        self::assertTrue($code !== 0, 'flooding child must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'flooding child must publish the supervisor token');
+        self::assertTrue($elapsed < 30, 'flooding child must be terminated promptly');
+        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'flooding child private dir must be removed');
+        $start = microtime(true);
+        [$code, $line] = $this->supervise(
+            $this->phpChild('echo str_repeat("B", 1048576); sleep(30);'),
+            $base
+        );
+        $elapsed = microtime(true) - $start;
+        self::assertTrue($code !== 0, 'over-cap then sleeping child must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'over-cap then sleeping child must publish the supervisor token');
+        self::assertTrue($elapsed < 30, 'over-cap child must be terminated promptly, not awaited');
+        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'over-cap child private dir must be removed');
+        rmdir($base);
     }
 
     public function test_child_guard_requires_both_markers(): void

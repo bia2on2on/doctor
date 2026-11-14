@@ -42,22 +42,28 @@
 declare(strict_types=1);
 
 /**
- * Hard caps for scanning captured child output (item C): a single
- * captured line may not exceed D2W_CAPTURE_LINE_MAX bytes and the
- * scanned total may not exceed D2W_CAPTURE_TOTAL_MAX bytes. Exceeding
- * either is a protocol failure (fixed token, non-success exit). The
- * child writes to FILES, not pipes, so output volume can never block
- * the child on a full pipe (no deadlock) and never grows supervisor
- * memory during the run; the scan itself holds at most one capped
- * line. Legitimate fixture output (fixed step tokens + the completion
- * line) is orders of magnitude below both caps.
+ * Hard caps for captured child output (item C): a single captured
+ * line may not exceed D2W_CAPTURE_LINE_MAX bytes and the captured
+ * total may not exceed D2W_CAPTURE_TOTAL_MAX bytes. The total cap
+ * is enforced WHILE the child runs (the wait loop polls capture
+ * file sizes and terminates the child on excess) as well as at
+ * scan time, so capture files cannot grow without bound. Exceeding
+ * either cap is a protocol failure (fixed token, non-success
+ * exit). The child writes to FILES, not pipes, so output volume
+ * can never block the child on a full pipe (no deadlock) and never
+ * grows supervisor memory during the run; the scan itself holds at
+ * most one capped line. Legitimate fixture output (fixed step
+ * tokens + the completion line) is orders of magnitude below both
+ * caps.
  *
  * Honest limit (observed in CI, round 8/10): a MEMORY-exhaustion
  * fatal inside this supervisor on PHP 8.1 makes the PHP engine print
  * its own fatal line to stderr despite display/log suppression, and
  * the shutdown token does not land. That engine behaviour is NOT
- * closed by this file; the CPU-exhaustion fatal test in the Unit
- * suite is NOT a memory-fatal proof. Closing the whole-process
+ * closed by this file; the two fatal tests in the Unit suite (a fatal
+ * raised after d2w_supervise returns with cleanup pending, and a fatal
+ * raised synchronously inside d2w_supervise by a stream-wrapper probe)
+ * are NOT memory-fatal proofs. Closing the whole-process
  * boundary (including engine diagnostics) needs the future
  * workflow-authorized environment PR (private-file redirection of
  * the whole process, fixed tokens only, never cat the file).
@@ -90,7 +96,11 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
     // Engine diagnostics (warnings, and the fatal message itself) must
     // not reach stderr either: display AND logging are off, and the
     // error handler below swallows routine diagnostics. A fatal is
-    // answered only by the shutdown function's fixed token.
+    // answered by the shutdown function's fixed token — with one
+    // documented exception this file does NOT close: a
+    // MEMORY-exhaustion fatal on PHP 8.1, where the engine prints
+    // its own fatal line despite this suppression (observed in CI;
+    // see the D2W_CAPTURE_* note above).
     ini_set('log_errors', '0');
     set_error_handler(static function (): bool {
         return true;
@@ -227,22 +237,71 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         if (!is_resource($proc)) {
             return $fail(1, 'supervisor');
         }
+
+        // Wait loop with IN-EXECUTION cap enforcement: capture files
+        // must not grow without bound while the child runs (a child
+        // flooding output could otherwise exhaust the disk before
+        // the post-exit scan ever saw it). File sizes are polled;
+        // exceeding the per-file bound (the total cap, applied per
+        // file as well as combined at scan time) terminates the
+        // child and fails closed. Poll-only: 20 ms, no output is read
+        // here, so nothing can deadlock.
+        $capExceeded = false;
+        $status = proc_get_status($proc);
+        while (is_array($status) && ($status['running'] ?? false)) {
+            $grown = 0;
+            foreach ([$outPath, $errPath] as $capturePath) {
+                clearstatcache(true, $capturePath);
+                $size = filesize($capturePath);
+                $size = is_int($size) ? $size : 0;
+                if ($size > D2W_CAPTURE_TOTAL_MAX) {
+                    $capExceeded = true;
+                }
+                $grown += $size;
+            }
+            if ($grown > D2W_CAPTURE_TOTAL_MAX) {
+                $capExceeded = true;
+            }
+            if ($capExceeded) {
+                proc_terminate($proc);
+                break;
+            }
+            usleep(20000);
+            $status = proc_get_status($proc);
+        }
         $code = proc_close($proc);
+        if ($capExceeded) {
+            return $fail(1, 'supervisor');
+        }
         if (!is_int($code) || $code < 0 || $code > 255) {
             // Includes termination by signal (proc_close reports -1).
-            $code = 1;
-            $signalled = true;
+            // (proc_get_status was polled above; when it has already
+            // reaped the exit code, proc_close may report -1 for a
+            // normally-exited child — the status array's exitcode is
+            // only trusted when it is a real 0..255 value.)
+            $statusCode = is_array($status) ? ($status['exitcode'] ?? -1) : -1;
+            if (is_int($statusCode) && $statusCode >= 0 && $statusCode <= 255
+                && is_array($status) && !($status['running'] ?? true)
+                && ($status['signaled'] ?? true) === false) {
+                $code = $statusCode;
+                $signalled = false;
+            } else {
+                $code = 1;
+                $signalled = true;
+            }
         } else {
             $signalled = false;
         }
 
-        // Scan captured output within the D2W_CAPTURE_* caps: count
-        // completion lines (valid and forged alike) and extract at
-        // most one allowlisted failure token. Raw lines are never
-        // copied anywhere else. The child is already finished
-        // (proc_close above) and wrote to files, so an over-cap scan
-        // simply fails closed — nothing to terminate, no pipe to
-        // drain, no deadlock, memory bounded by the line cap.
+        // Scan captured output within the D2W_CAPTURE_* caps (the
+        // wait loop above already enforced the total cap while the
+        // child ran; this is the per-line/total enforcement on what
+        // was captured): count completion lines (valid and forged
+        // alike) and extract at most one allowlisted failure token.
+        // Raw lines are never copied anywhere else. The child is
+        // already finished and wrote to files, so an over-cap scan
+        // simply fails closed — no pipe to drain, no deadlock,
+        // memory bounded by the line cap.
         $completeValid = 0;
         $completeSeen = 0;
         $token = null;

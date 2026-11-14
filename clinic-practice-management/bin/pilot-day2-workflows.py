@@ -1763,20 +1763,24 @@ def _entry():
     try:
         return main()
     except SystemExit as exc:
-        code = exc.code
-        if code is None or code == 0:
+        # Classify by EXACT type BEFORE any equality/truthiness on
+        # the payload: the payload is untrusted (False == 0 and
+        # 0.0 == 0 would silently pass as success; a hostile object's
+        # __eq__/__bool__ could raise or lie). str()/repr()/== on the
+        # payload are never called here.
+        payload = exc.code
+        if payload is None:
             return 0
+        if type(payload) is int:
+            if payload == 0:
+                return 0
+            if 1 <= payload <= 255:
+                # A genuine small int status (incl. env_req's 1):
+                # preserved silently and exactly — the interpreter
+                # would truncate anything outside 0..255 through the
+                # OS status (256 -> 0), so those become token + 1.
+                return payload
         _print_startup_token()
-        # Normalise to a REAL process status: the interpreter maps a
-        # SystemExit int through the OS exit status, so a nonzero
-        # multiple of 256 (256, 512, -256, ...) would otherwise exit
-        # as status 0 — a fake success. Booleans count as their int
-        # value (True == 1); text/other payloads become 1 (the text
-        # is never printed, per the token rule above).
-        if isinstance(code, bool):
-            return 1
-        if isinstance(code, int):
-            return code if 1 <= code <= 255 else 1
         return 1
     except KeyboardInterrupt:
         _print_startup_token()
