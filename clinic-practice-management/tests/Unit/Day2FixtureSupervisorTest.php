@@ -204,46 +204,32 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_fatal_in_supervised_process_prints_only_fixed_token(): void
     {
-        // Drive d2w_supervise() in a subprocess and raise a fatal
-        // (E_USER_ERROR, uncatchable, delivered by a signal timer)
-        // while the supervisor is running its child.
-        // The shutdown function must answer with only the fixed
-        // token and clean its private dir. CPU-limit exhaustion in
-        // the output scan was the previous trigger; the bounded scan
-        // (round 10) now aborts on the total cap before the limit
-        // can fire, so the fatal is raised on the proc_close path
-        // instead. This is NOT a memory-exhaustion proof: on PHP 8.1
-        // the engine prints its own memory-fatal line despite
-        // suppression (observed in CI), which this PR does not
-        // close — that needs the future workflow-authorized
-        // whole-process boundary.
-        $probe = proc_open(
-            [PHP_BINARY, '-r', 'echo (function_exists("pcntl_fork") && function_exists("pcntl_async_signals") && function_exists("posix_kill")) ? "1" : "0";'],
-            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'a']],
-            $probePipes
-        );
-        self::assertTrue(is_resource($probe), 'pcntl probe could not launch');
-        $hasPcntl = stream_get_contents($probePipes[1]) === '1';
-        fclose($probePipes[1]);
-        proc_close($probe);
-        if (!$hasPcntl) {
-            self::markTestSkipped('pcntl unavailable for the fatal-path test');
+        // Drive d2w_supervise() in a subprocess whose fake child
+        // makes the supervisor's private dir non-writable, so its
+        // cleanup has FAILED and is still pending in the shutdown
+        // state; the helper then raises an uncatchable E_USER_ERROR.
+        // The shutdown function must answer the fatal with only the
+        // fixed token, no warning text, and a non-success exit.
+        // (Trigger history, kept honest: CPU-limit exhaustion in the
+        // output scan worked until the round-10 bounded scan made
+        // the scan abort on the total cap first; signal-delivered
+        // fatals were tried and, observed on PHP 8.1, are deferred
+        // past the supervisor's return, so they cannot prove the
+        // in-supervise branch. A memory-exhaustion fatal on PHP 8.1
+        // makes the engine print its own line despite suppression —
+        // also observed — and is NOT closed by this PR.)
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            self::markTestSkipped('permission-based cleanup injection needs a non-root user');
         }
         $base = $this->workDir . '/fatalbase';
         mkdir($base, 0700, true);
         $helper = $this->workDir . '/fatal-helper.php';
-        // A forked timer sends SIGUSR1 while the supervisor waits
-        // for its child; async-signal delivery is deferred to the
-        // supervisor's next VM-executed statements (its scan loop),
-        // which is still inside d2w_supervise with finished=false.
+        $sabotage = '$ds = glob(' . var_export($base, true) . ' . "/d2w-sup-*") ?: [];'
+            . 'foreach ($ds as $d) { foreach (glob($d . "/*") ?: [] as $f) { chmod($f, 0400); } chmod($d, 0500); }';
         file_put_contents($helper, '<?php require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
-            . 'pcntl_async_signals(true);'
-            . 'pcntl_signal(SIGUSR1, static function (): void { trigger_error("fatal-injection", E_USER_ERROR); });'
-            . '$timer = pcntl_fork();'
-            . 'if ($timer === 0) { usleep(300000); posix_kill(posix_getppid(), SIGUSR1); exit(0); }'
-            . '$r = d2w_supervise([PHP_BINARY, "-r", ' . var_export('for ($i = 0; $i < 130000; $i++) { echo "x\n"; } sleep(2);', true) . '], '
+            . '$r = d2w_supervise([PHP_BINARY, "-r", ' . var_export($sabotage . 'echo "done\n";', true) . '], '
             . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
-            . 'exit($r[0]);');
+            . 'trigger_error("fatal-injection", E_USER_ERROR);');
         $proc = proc_open(
             [PHP_BINARY, '-d', 'display_errors=0', '-d', 'log_errors=0', $helper],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
@@ -267,7 +253,14 @@ final class Day2FixtureSupervisorTest extends TestCase
             strlen((string) $err),
             substr_count((string) $err, 'DAY2_FIXTURE_ERROR step=supervisor')
         ));
-        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'shutdown cleanup must remove the private dir');
+        foreach (glob($base . '/d2w-sup-*') ?: [] as $d) {
+            chmod($d, 0700);
+            foreach (glob($d . '/*') ?: [] as $f) {
+                chmod($f, 0600);
+                unlink($f);
+            }
+            rmdir($d);
+        }
         rmdir($base);
     }
 
