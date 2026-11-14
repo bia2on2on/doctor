@@ -1821,6 +1821,102 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
         )
 
 
+class RoundFourProbeFieldsTest(unittest.TestCase):
+    """D3/D5 adversarial tests for the probe's code and posted fields."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("day2_harness_r4", HARNESS)
+        sys.path.insert(0, str(BIN_DIR))
+        cls.harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.harness)
+
+    def _probe_with(self, payload, posted=None, status=503):
+        class _Request:
+            post_data_json = posted or {}
+
+        class _Response:
+            url = "http://fixture.test/wp-json/clinic/v1/booking/hold"
+            request = _Request()
+
+            def json(self):
+                return payload
+
+        _Response.status = status
+        probe = self.harness.BookingProbe()
+        probe._on_response(_Response())
+        return probe
+
+    def test_newly_derived_codes_are_retained_exactly(self):
+        """D3: RestBase nonce + RuntimeSchemaGate codes are in the set."""
+        for code, status in (
+            ("CLINIC_INVALID_NONCE", 403),
+            ("CLINIC_SERVICE_UNAVAILABLE", 503),
+            ("CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE", 503),
+        ):
+            with self.subTest(code=code):
+                probe = self._probe_with({"code": code}, status=status)
+                self.assertEqual(probe.entries[0]["code"], code)
+
+    def test_mixed_envelope_never_hides_a_busy_code(self):
+        """D3: empty/unknown top-level code + nested CLINIC_BOOKING_BUSY."""
+        empty_top = self._probe_with(
+            {"code": "", "data": {"code": "CLINIC_BOOKING_BUSY"}})
+        self.assertEqual(empty_top.entries[0]["code"], "CLINIC_BOOKING_BUSY")
+        unknown_top = self._probe_with(
+            {"code": "SOME_UNKNOWN_CODE", "data": {"code": "CLINIC_BOOKING_BUSY"}})
+        self.assertEqual(unknown_top.entries[0]["code"], "CLINIC_BOOKING_BUSY")
+        busy_top = self._probe_with(
+            {"code": "CLINIC_BOOKING_BUSY", "data": {"code": "CLINIC_NOT_FOUND"}})
+        self.assertEqual(busy_top.entries[0]["code"], "CLINIC_BOOKING_BUSY")
+        # No busy anywhere: the first present field still decides.
+        other = self._probe_with(
+            {"code": "SOME_UNKNOWN_CODE", "data": {"code": "CLINIC_NOT_FOUND"}})
+        self.assertEqual(other.entries[0]["code"], "other")
+
+    def test_hostile_posted_ids_never_raise_and_are_omitted(self):
+        """D5: non-ASCII digits / newline / very long ids are dropped
+        inside the response callback — no exception escapes with the
+        hostile value in a traceback."""
+        hostile = {
+            "superscript": "²",
+            "arabic_indic": "٤٢",
+            "persian": "۴۲",
+            "trailing_newline": "42\n",
+            "very_long": "9" * 30,
+        }
+        for label, value in hostile.items():
+            with self.subTest(shape=label):
+                probe = self._probe_with(
+                    {"code": "CLINIC_BOOKING_BUSY"},
+                    posted={"slot_id": value, "clinician_id": 42},
+                )
+                entry = probe.entries[0]
+                self.assertNotIn("slot_id", entry)
+                self.assertEqual(entry["clinician_id"], 42)
+                self.assertNotIn(value, repr(entry))
+        ascii_ok = self._probe_with(
+            {"code": "CLINIC_BOOKING_BUSY"}, posted={"slot_id": "42"})
+        self.assertEqual(ascii_ok.entries[0]["slot_id"], 42)
+
+    def test_slot_coordinates_require_ascii_fullmatch(self):
+        """D5: slot_date/slot_time accept ASCII full-matches only."""
+        bad = self._probe_with(
+            {"code": ""},
+            posted={"slot_date": "٢٠٢٦-١١-١٤", "slot_time": "09:15:00\n"},
+        )
+        self.assertNotIn("slot_date", bad.entries[0])
+        self.assertNotIn("slot_time", bad.entries[0])
+        nl_date = self._probe_with(
+            {"code": ""}, posted={"slot_date": "2026-11-14\n"})
+        self.assertNotIn("slot_date", nl_date.entries[0])
+        good = self._probe_with(
+            {"code": ""},
+            posted={"slot_date": "2026-11-14", "slot_time": "09:15:00"},
+        )
+        self.assertEqual(good.entries[0]["slot_date"], "2026-11-14")
+        self.assertEqual(good.entries[0]["slot_time"], "09:15:00")
+
 
 if __name__ == "__main__":
     unittest.main()

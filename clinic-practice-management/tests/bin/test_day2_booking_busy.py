@@ -499,10 +499,6 @@ class PublicationPathTest(unittest.TestCase):
         self.assertTrue(stdout.startswith("FAIL journey-A1-public"))
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class FixtureFailureContractTest(unittest.TestCase):
     """C5: the Day-2 PHP fixture must never print driver text to stderr.
 
@@ -526,6 +522,20 @@ class FixtureFailureContractTest(unittest.TestCase):
         cls.code = "\n".join(
             line.split("//", 1)[0] for line in stripped.splitlines()
         )
+
+    def test_wpdb_error_printing_is_suppressed_before_any_query(self):
+        """D1: wpdb::print_error() error_log()s driver text + full SQL on
+        a failed query unless suppress_errors is set (WordPress 7.1.3
+        class-wpdb.php:1811-1823, reached from query() :2304); the gate
+        tees this fixture's stderr to the public log. The fixture must
+        suppress it right after wp-load, before the first insert."""
+        self.assertIn("$wpdb->suppress_errors(true);", self.code)
+        self.assertNotIn("suppress_errors(false", self.code)
+        load_at = self.code.index("wp-load.php")
+        suppress_at = self.code.index("$wpdb->suppress_errors(true);")
+        first_insert_at = self.code.index("d2w_insert(")
+        self.assertLess(load_at, suppress_at)
+        self.assertLess(suppress_at, first_insert_at)
 
     def test_no_driver_text_or_masking_in_fixture_code(self):
         self.assertNotIn("last_error", self.code)
@@ -557,3 +567,121 @@ class FixtureFailureContractTest(unittest.TestCase):
             literal = re.fullmatch(r"'([a-z_]+)'", arg)
             self.assertIsNotNone(literal, arg)
             self.assertIn(literal.group(1), steps, arg)
+
+
+class BusyAttributionRuleTest(unittest.TestCase):
+    """D4: busy is claimed only for the operation that actually failed.
+
+    Rule (see `find_busy_attempt`): with a known failing stage, only
+    busy entries for that stage's route count, and a later non-busy
+    FAILURE on that route displaces them (a later success does not);
+    without a stage, busy counts only when it is the last observed
+    response overall.
+    """
+
+    ROW = ('{"read": "slot", "sql_errno": 1213}',)
+    TABLE = "cpmswp_cpms_operational_logs"
+    HOLD = "/clinic/v1/booking/hold"
+    CONFIRM = "/clinic/v1/booking/confirm"
+    QUOTE = "/clinic/v1/booking/quote"
+
+    def suffix(self, entries, stage=""):
+        return busy.busy_suffix_for(
+            entries, lambda sql: [self.ROW], self.TABLE, "390x844",
+            since="2026-11-13 10:00:00", stage=stage,
+        )
+
+    @staticmethod
+    def entry(route, status, code):
+        return {"route": route, "status": status, "code": code}
+
+    def test_genuine_busy_is_attributed(self):
+        out = self.suffix([
+            self.entry(self.QUOTE, 200, ""),
+            self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
+        ], stage="hold-request")
+        self.assertIn("busy_diag=booking.lock_read_failed", out)
+        self.assertIn("route=booking/hold", out)
+        self.assertIn("http=503", out)
+
+    def test_superseded_busy_is_not_attributed(self):
+        """busy -> hold 200 -> confirm 200 -> unrelated failure."""
+        out = self.suffix([
+            self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
+            self.entry(self.HOLD, 200, ""),
+            self.entry(self.CONFIRM, 200, ""),
+        ])
+        self.assertEqual("", out)
+
+    def test_case_a_busy_then_failure_on_another_route(self):
+        """(a) busy on hold, then a 409 on confirm: no busy claim."""
+        entries = [
+            self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
+            self.entry(self.CONFIRM, 409, "CLINIC_VALIDATION_FAILED"),
+        ]
+        self.assertEqual("", self.suffix(entries, stage="names-form"))
+        self.assertEqual("", self.suffix(entries))
+
+    def test_case_b_later_route_failure_displaces_earlier_busy(self):
+        """(b) busy on A, busy on B, non-busy failure on B: no claim."""
+        entries = [
+            self.entry(self.QUOTE, 503, "CLINIC_BOOKING_BUSY"),
+            self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
+            self.entry(self.HOLD, 409, "CLINIC_VALIDATION_FAILED"),
+        ]
+        self.assertEqual("", self.suffix(entries, stage="hold-request"))
+        self.assertEqual("", self.suffix(entries))
+
+    def test_case_c_stage_failure_keeps_busy_despite_later_success(self):
+        """(c) journey failed AT the busy hold; a later same-route 200
+        (retry that landed after the stage had already failed) must not
+        erase the busy diagnosis."""
+        out = self.suffix([
+            self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
+            self.entry(self.HOLD, 200, ""),
+        ], stage="hold-request")
+        self.assertIn("busy_diag=booking.lock_read_failed", out)
+        self.assertIn("http=503", out)
+
+    def test_case_d_later_same_route_failure_displaces_busy(self):
+        """(d) busy, then a non-busy failure on the SAME route: busy is
+        not claimed (the later response is the failing one)."""
+        entries = [
+            self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
+            self.entry(self.HOLD, 409, "CLINIC_VALIDATION_FAILED"),
+        ]
+        self.assertEqual("", self.suffix(entries, stage="hold-request"))
+
+    def test_multiple_busy_attempts_on_one_route_pick_the_last(self):
+        entries = [
+            self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
+            self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
+        ]
+        found = busy.find_busy_attempt(entries, stage="hold-request")
+        self.assertIs(found, entries[-1])
+        self.assertIn("busy_diag=booking.lock_read_failed", self.suffix(entries))
+
+
+class MainGuardPlacementTest(unittest.TestCase):
+    """D2: no module-level class may be defined after the __main__ guard
+    in the Day-2 python suites — `unittest.main()` exits at the guard,
+    so such classes would silently never run via `python3 <file>` (the
+    exact CI invocation)."""
+
+    FILES = ("test_day2_booking_busy.py", "test_pilot_day2_failure_report.py")
+
+    def test_no_class_after_main_guard(self):
+        here = Path(__file__).resolve().parent
+        for name in self.FILES:
+            with self.subTest(file=name):
+                lines = (here / name).read_text(encoding="utf-8").splitlines()
+                guards = [i for i, line in enumerate(lines)
+                          if line.startswith('if __name__ == "__main__":')]
+                self.assertEqual(len(guards), 1, name)
+                after = lines[guards[0] + 1:]
+                offenders = [line for line in after if line.startswith("class ")]
+                self.assertEqual(offenders, [], name)
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

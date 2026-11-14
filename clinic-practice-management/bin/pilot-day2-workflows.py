@@ -423,6 +423,14 @@ BOOKING_ROUTES = (
 #: emitted there; see the PR report for file:line per code):
 #:  - BookingService BookingException throws + BookingController/RestBase
 #:    error mapping (CLINIC_BOOKING_BUSY … CLINIC_UNAUTHORIZED),
+#:  - RestBase::requireNonce (CLINIC_INVALID_NONCE, RestBase.php:34 —
+#:    reached from every authenticated patient endpoint, e.g.
+#:    BookingController.php:479),
+#:  - RuntimeSchemaGate (CLINIC_SERVICE_UNAVAILABLE for non-admin
+#:    callers, RuntimeSchemaGate.php:34 via OtpController.php:119/151 and
+#:    the gate's own rest_pre_dispatch at :84; and
+#:    CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE, :32/:84, which the
+#:    same gate returns to manage_options callers on these routes),
 #:  - OtpService/OtpException + OtpController (CLINIC_MOBILE_INVALID …
 #:    CLINIC_OTP_DELIVERY_FAILED),
 #:  - `rest_cookie_invalid_nonce`: WordPress core's cookie-nonce failure for
@@ -433,12 +441,15 @@ BOOKING_ROUTES = (
 #: `other`. Membership is an exact string comparison, so no trailing
 #: newline or near-match can pass.
 _ERROR_CODES = frozenset({
-    "CLINIC_BOOKING_BUSY", "CLINIC_DUPLICATE_APPOINTMENT",
+    "CLINIC_BOOKING_BUSY", "CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE",
+    "CLINIC_DUPLICATE_APPOINTMENT",
     "CLINIC_DUPLICATE_IN_FLIGHT", "CLINIC_HOLD_EXPIRED",
-    "CLINIC_INTERNAL_ERROR", "CLINIC_INVALID_TRANSITION",
+    "CLINIC_INTERNAL_ERROR", "CLINIC_INVALID_NONCE",
+    "CLINIC_INVALID_TRANSITION",
     "CLINIC_LICENSE_BLOCKED", "CLINIC_NOT_FOUND",
     "CLINIC_PATIENT_SELECTION_REQUIRED", "CLINIC_PERMISSION_DENIED",
     "CLINIC_POLICY_VIOLATION", "CLINIC_SCOPE_REQUIRED",
+    "CLINIC_SERVICE_UNAVAILABLE",
     "CLINIC_SLOT_AMBIGUOUS", "CLINIC_SLOT_TAKEN", "CLINIC_SUSPENDED",
     "CLINIC_UNAUTHORIZED", "CLINIC_VALIDATION_FAILED",
     "CLINIC_MOBILE_INVALID", "CLINIC_OTP_COOLDOWN",
@@ -466,8 +477,14 @@ def _closed_code(candidate):
 _MAX_POSTED_ID = 2147483647
 _REQUEST_ID_KEYS = ("slot_id", "clinician_id", "location_id")
 _REQUEST_KEYS = ("slot_id", "slot_date", "slot_time", "clinician_id", "location_id", "patient_id")
-_SLOT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_SLOT_TIME_RE = re.compile(r"^\d{2}:\d{2}(:\d{2})?$")
+#: ASCII digits only, always used with `fullmatch`: `\d` and
+#: `str.isdigit()` accept non-ASCII digits (Arabic-Indic, Persian,
+#: superscripts — the last even crashes `int()`), and `$`-anchored
+#: `match` tolerates a trailing newline. Neither may reach `int()` or
+#: a printed entry inside the Playwright response callback.
+_POSTED_ID_RE = re.compile(r"[0-9]{1,10}")
+_SLOT_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_SLOT_TIME_RE = re.compile(r"[0-9]{2}:[0-9]{2}(:[0-9]{2})?")
 
 
 class BookingProbe:
@@ -504,13 +521,20 @@ class BookingProbe:
             # status, allowlisted code, posted numeric ids / key names /
             # validated slot coordinates), because entries are printed via
             # `info()` to the public job log.
-            for candidate in (payload.get("code"), (payload.get("data") or {}).get("code")
-                              if isinstance(payload.get("data"), dict) else None):
-                if isinstance(candidate, str):
-                    # First code field present decides: an exact allowed
-                    # literal, or the single fixed token `other`.
-                    entry["code"] = _closed_code(candidate)
-                    break
+            candidates = [
+                payload.get("code"),
+                (payload.get("data") or {}).get("code")
+                if isinstance(payload.get("data"), dict) else None,
+            ]
+            strings = [c for c in candidates if isinstance(c, str) and c != ""]
+            if "CLINIC_BOOKING_BUSY" in strings:
+                # A busy diagnosis in ANY code field of the envelope is
+                # never hidden behind an empty/unknown sibling field.
+                entry["code"] = "CLINIC_BOOKING_BUSY"
+            elif strings:
+                # Otherwise the first present field decides: an exact
+                # allowed literal, or the single fixed token `other`.
+                entry["code"] = _closed_code(strings[0])
         try:
             posted = response.request.post_data_json
         except Exception:  # noqa: BLE001
@@ -523,7 +547,10 @@ class BookingProbe:
                         continue
                     if isinstance(raw, int):
                         value = raw
-                    elif isinstance(raw, str) and raw.isdigit():
+                    elif isinstance(raw, str) and _POSTED_ID_RE.fullmatch(raw):
+                        # Exact ASCII [0-9]{1,10}: int() cannot raise here,
+                        # so no value-bearing traceback can escape this
+                        # callback; hostile digit shapes are dropped.
                         value = int(raw)
                     else:
                         continue
@@ -533,10 +560,10 @@ class BookingProbe:
             # they are well formed: enough to tell "stale tuple" from "server guard".
             entry["keys"] = ",".join(key for key in _REQUEST_KEYS if key in posted)
             posted_date = posted.get("slot_date")
-            if isinstance(posted_date, str) and _SLOT_DATE_RE.match(posted_date):
+            if isinstance(posted_date, str) and _SLOT_DATE_RE.fullmatch(posted_date):
                 entry["slot_date"] = posted_date
             posted_time = posted.get("slot_time")
-            if isinstance(posted_time, str) and _SLOT_TIME_RE.match(posted_time):
+            if isinstance(posted_time, str) and _SLOT_TIME_RE.fullmatch(posted_time):
                 entry["slot_time"] = posted_time
         self.entries.append(entry)
 
@@ -861,10 +888,14 @@ def run_journey_a_public_booking(browser, cfg):
             viewport = f"{int(size['width'])}x{int(size['height'])}" if size else ""
         except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
             viewport = ""
+        fail_stage = ""
+        _stage_match = _STAGE_VALUE_RE.search(str(exc))
+        if _stage_match and _stage_match.group(1) in _STAGE_TOKENS:
+            fail_stage = _stage_match.group(1)
         try:
             suffix = busy_suffix_for(
                 probe.entries, dbrows, T("cpms_operational_logs"), viewport,
-                since=journey_start
+                since=journey_start, stage=fail_stage
             )
         except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
             suffix = ""

@@ -121,28 +121,68 @@ def latest_busy_sql(table, since=None):
     )
 
 
-def find_busy_attempt(entries):
-    """The busy attempt that is still the failing operation, if any.
+#: Failing-stage token -> the watched route suffix that stage operates
+#: on (short suffix of the probe's full route). Only these stages can
+#: pin a busy attribution to an operation; any other stage (or none)
+#: falls back to the trailing-response rule in `find_busy_attempt`.
+STAGE_ROUTE_SUFFIXES = {
+    "hold-request": "/booking/hold",
+    "hold-countdown": "/booking/hold",
+    "confirm-btn": "/booking/confirm",
+    "names-form": "/booking/confirm",
+    "receipt": "/booking/confirm",
+    "otp-mobile": "/otp/request",
+    "otp-code": "/otp/verify",
+}
 
-    The LAST `CLINIC_BOOKING_BUSY` entry is the candidate, but only when
-    no later response for the SAME route (the same operation) is
-    non-busy: a busy hold answered 503 and later retried to 200 on that
-    route was superseded by the retry, so attributing a subsequent,
-    unrelated failure to the earlier busy response would be false. A
-    later busy response on the same route keeps the latest one live.
+
+def find_busy_attempt(entries, stage=""):
+    """The busy attempt that belongs to the failing operation, if any.
+
+    Attribution rule (busy is claimed ONLY for the operation that
+    actually failed, never merely because a busy response exists
+    somewhere in the history):
+
+    1. When the failing `stage` is known and maps to a route
+       (`STAGE_ROUTE_SUFFIXES`), only busy entries for THAT route are
+       candidates, and the last of them is the attempt — UNLESS a later
+       entry for the same route is a non-busy FAILURE (HTTP >= 400):
+       that later response, not the busy one, is what the operation
+       failed with, so busy is not claimed. A later same-route SUCCESS
+       does not supersede here: the stage had already failed on the
+       busy response (e.g. the countdown never appeared) before a
+       retry succeeded.
+    2. When the stage is unknown or unmapped, busy is claimed only
+       when the busy entry is the LAST observed response overall:
+       the most recent response is the best available proxy for the
+       failing operation, and any later response (success on the same
+       route, a failure on any route) means the journey moved past
+       the busy one.
     """
-    items = list(entries or [])
-    for index in range(len(items) - 1, -1, -1):
-        entry = items[index]
-        if not (isinstance(entry, dict) and entry.get("code") == BUSY_CODE):
-            continue
-        route = entry.get("route")
-        for later in items[index + 1:]:
-            if (isinstance(later, dict) and later.get("route") == route
-                    and later.get("code") != BUSY_CODE):
+    items = [e for e in (entries or []) if isinstance(e, dict)]
+    busy_indexes = [i for i, e in enumerate(items) if e.get("code") == BUSY_CODE]
+    if not busy_indexes:
+        return None
+    suffix = STAGE_ROUTE_SUFFIXES.get(stage) if isinstance(stage, str) else None
+    if suffix:
+        route_indexes = [
+            i for i in busy_indexes
+            if isinstance(items[i].get("route"), str)
+            and items[i]["route"].endswith(suffix)
+        ]
+        if not route_indexes:
+            return None
+        chosen = route_indexes[-1]
+        for later in items[chosen + 1:]:
+            if not (isinstance(later.get("route"), str)
+                    and later["route"].endswith(suffix)):
+                continue
+            status = _coerce_int(later.get("status"))
+            if later.get("code") != BUSY_CODE and status is not None and status >= 400:
                 return None
-        return entry
-    return None
+        return items[chosen]
+    last = items[-1]
+    return last if last.get("code") == BUSY_CODE else None
 
 
 def _stale_for_attempt(attempt, diag):
@@ -250,7 +290,7 @@ def validate_busy_suffix(suffix):
     )
 
 
-def busy_suffix_for(entries, query, table, viewport="", since=None):
+def busy_suffix_for(entries, query, table, viewport="", since=None, stage=""):
     """Full failure suffix for a probe history, or "" when nothing was busy.
 
     `query` is the harness DB reader (sql -> row tuples). It is invoked only
@@ -259,8 +299,11 @@ def busy_suffix_for(entries, query, table, viewport="", since=None):
     must never mask or replace the real journey failure. `since` bounds the row
     to this journey's start; a row whose ids conflict with the attempt yields
     `busy_diag=stale-or-mismatch` instead of a misleading cause.
+    `stage` is the failing journey stage token, when the caller knows
+    it; it pins the busy attribution to that stage's operation (see
+    `find_busy_attempt` for the exact rule).
     """
-    attempt = find_busy_attempt(entries)
+    attempt = find_busy_attempt(entries, stage=stage)
     if attempt is None:
         return ""
     try:

@@ -47,6 +47,23 @@ require_once __DIR__ . '/../Support/Day2ReceptionFixtureClockPolicy.php';
 
 global $wpdb;
 
+// WordPress 7.1.3 `wpdb::print_error()` (wp-includes/class-wpdb.php:1799)
+// calls `error_log()` with the driver error AND the full SQL on every
+// failed query UNLESS `$wpdb->suppress_errors` is set (:1811 returns
+// before the `error_log` at :1823); `query()` reaches it on the driver-
+// error branch (:2304). PHP CLI sends `error_log()` to stderr, and the
+// Pilot gate step tees this script's stdout+stderr to the public job
+// log — so an unsuppressed failed INSERT would publish driver text and
+// statement text even though this fixture itself prints only fixed
+// tokens. Suppress wpdb error printing for the whole fixture run,
+// immediately after WordPress loads and before any query: failures are
+// still detected exactly as before through return values (`query() ===
+// false`, `$wpdb->insert() === false`, `is_wp_error(...)`,
+// `insert_id <= 0`) and reported via `d2w_fail()`'s fixed step token.
+// This does NOT cover PHP warnings/notices/fatals from other code,
+// which can still print engine text to stderr (known residual debt).
+$wpdb->suppress_errors(true);
+
 $db   = App::db();
 $now  = $db->nowUtcSql();
 $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
