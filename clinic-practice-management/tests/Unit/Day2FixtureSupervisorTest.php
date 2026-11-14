@@ -24,8 +24,9 @@ use PHPUnit\Framework\TestCase;
  * export cannot republish child output. (Round 8 used assertSame
  * on the returned line; round 10 removed that too.)
  *
- * Fatal coverage note: the fatal test below uses CPU-limit
- * exhaustion. It is NOT a memory-exhaustion proof: on PHP 8.1 the
+ * Fatal coverage note: the fatal test below raises an uncatchable
+ * E_USER_ERROR while the supervisor waits on its child. It is NOT
+ * a memory-exhaustion proof: on PHP 8.1 the
  * engine prints its own memory-fatal line despite suppression
  * (observed in CI, rounds 8/10), which this PR does not close —
  * that needs the future workflow-authorized whole-process boundary.
@@ -203,24 +204,41 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_fatal_in_supervised_process_prints_only_fixed_token(): void
     {
-        // Drive d2w_supervise() in a subprocess with a 1-second CPU
-        // limit; the fake child emits tens of millions of tiny lines,
-        // so scanning them exhausts the CPU limit (E_ERROR) AFTER the
-        // supervisor installed display/log suppression. The shutdown
-        // function must answer with only the fixed token and clean
-        // its private dir. (A memory-exhaustion trigger was tried
-        // first and abandoned: on PHP 8.1 the engine prints its own
-        // memory-fatal line to stderr despite display/log suppression
-        // and the shutdown token does not land — an engine diagnostic
-        // outside this boundary, observed in CI; CPU exhaustion does
-        // not have that behaviour.)
+        // Drive d2w_supervise() in a subprocess and raise a fatal
+        // (E_USER_ERROR, uncatchable, delivered by a pcntl alarm)
+        // while the supervisor is blocked waiting for its child.
+        // The shutdown function must answer with only the fixed
+        // token and clean its private dir. CPU-limit exhaustion in
+        // the output scan was the previous trigger; the bounded scan
+        // (round 10) now aborts on the total cap before the limit
+        // can fire, so the fatal is raised on the proc_close path
+        // instead. This is NOT a memory-exhaustion proof: on PHP 8.1
+        // the engine prints its own memory-fatal line despite
+        // suppression (observed in CI), which this PR does not
+        // close — that needs the future workflow-authorized
+        // whole-process boundary.
+        $probe = proc_open(
+            [PHP_BINARY, '-r', 'echo (function_exists("pcntl_alarm") && function_exists("pcntl_async_signals")) ? "1" : "0";'],
+            [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'a']],
+            $probePipes
+        );
+        self::assertTrue(is_resource($probe), 'pcntl probe could not launch');
+        $hasPcntl = stream_get_contents($probePipes[1]) === '1';
+        fclose($probePipes[1]);
+        proc_close($probe);
+        if (!$hasPcntl) {
+            self::markTestSkipped('pcntl unavailable for the fatal-path test');
+        }
         $base = $this->workDir . '/fatalbase';
         mkdir($base, 0700, true);
         $helper = $this->workDir . '/fatal-helper.php';
-        file_put_contents($helper, '<?php set_time_limit(1); require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
-            . '$r = d2w_supervise([PHP_BINARY, "-r", ' . var_export('for ($i = 0; $i < 30000000; $i++) { echo "x\n"; }', true) . '], '
+        file_put_contents($helper, '<?php require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
+            . 'pcntl_async_signals(true);'
+            . 'pcntl_signal(SIGALRM, static function (): void { trigger_error("fatal-injection", E_USER_ERROR); });'
+            . 'pcntl_alarm(1);'
+            . '$r = d2w_supervise([PHP_BINARY, "-r", "sleep(5);"], '
             . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
-            . 'fwrite(STDOUT, "UNREACHED\n");');
+            . 'exit($r[0]);');
         $proc = proc_open(
             [PHP_BINARY, '-d', 'display_errors=0', '-d', 'log_errors=0', $helper],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
