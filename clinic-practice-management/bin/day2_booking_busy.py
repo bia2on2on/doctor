@@ -175,6 +175,57 @@ def _short_route(route):
     return route.rsplit("/", 2)[-2] + "/" + route.rsplit("/", 1)[-1]
 
 
+def validate_busy_suffix(suffix):
+    """Re-project a busy suffix string to its canonical closed form, or "".
+
+    The suffix is a publication boundary: only its known `key=value` tokens
+    are read, each value is re-validated against the same closed schema
+    `format_busy_suffix` emits from (`busy_diag` state, fixed read label,
+    bounded integer errno/ids, bounded HTTP status, validated route and
+    viewport), and the result is rebuilt by `format_busy_suffix`. Free text,
+    unknown keys and out-of-vocabulary values are dropped — never carried,
+    escaped or pattern-redacted. Anything without a valid `busy_diag=` state
+    yields "", so a caller can publish the result verbatim and nothing else
+    from the original string can ride along.
+    """
+    if not isinstance(suffix, str) or not suffix.strip():
+        return ""
+    fields = {}
+    for token in suffix.split():
+        key, sep, value = token.partition("=")
+        if sep and key not in fields:
+            fields[key] = value
+    state = fields.get("busy_diag", "")
+    if state == EVENT:
+        context = {}
+        if fields.get("read") in READ_LABELS:
+            context["read"] = fields["read"]
+        errno = _coerce_int(fields.get("sql_errno"))
+        if errno is not None and 0 <= errno <= 99999:
+            context["sql_errno"] = errno
+        for key in ID_KEYS:
+            value = _coerce_int(fields.get(key))
+            if value is not None and 0 < value <= MAX_ID:
+                context[key] = value
+        diag, missing = extract_busy_diagnostic(context), "not-found"
+    elif state in MISSING_STATES:
+        diag, missing = None, state
+    else:
+        return ""
+    route = fields.get("route", "")
+    if not _ROUTE_RE.fullmatch(route):
+        route = ""
+    status = _coerce_int(fields.get("http"))
+    if status is None or not 100 <= status <= 599:
+        status = 0
+    viewport = fields.get("viewport", "")
+    if not _VIEWPORT_RE.fullmatch(viewport):
+        viewport = ""
+    return format_busy_suffix(
+        diag, route=route, http_status=status, viewport=viewport, missing=missing
+    )
+
+
 def busy_suffix_for(entries, query, table, viewport="", since=None):
     """Full failure suffix for a probe history, or "" when nothing was busy.
 

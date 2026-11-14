@@ -468,8 +468,15 @@ class PublicationPathTest(unittest.TestCase):
         module.failures.clear()
         stream = io.StringIO()
         with redirect_stdout(stream):
-            module.fail("journey-A1-public", "Day-2 browser journey failed",
-                        AssertionError(f"busy | journey=A1-public {suffix}"))
+            # The real producer path: the A1 handler's structured re-raise,
+            # then `fail()` exactly as the journey dispatcher calls it.
+            module.fail(
+                "journey-A1-public", "Day-2 browser journey failed",
+                module.BusyJourneyFailure(
+                    suffix,
+                    origin_text="public booking stage=hold-request — hold rejected",
+                ),
+            )
         # These are the two shapes consumed by the CI log/annotation grep,
         # PR evidence comment, debug tail and results JSON writer.
         stdout = stream.getvalue()
@@ -477,10 +484,17 @@ class PublicationPathTest(unittest.TestCase):
                                    "failures": module.failures}, ensure_ascii=False)
         for output in (stdout, results_json):
             assert_no_values(self, output)
-            # `fail()` now emits a fixed schema only (closed error-kind
-            # token); exception text — including the busy suffix — is never
-            # printed or stored, so no value can ride it to any surface.
+            # Fixed schema: closed error kind, the closed stage token, and
+            # the VALIDATED busy diagnosis (busy category, read label,
+            # errno and its derived category, busy code) from the legacy
+            # row — driver text and stored values can never ride it.
             self.assertIn("error_kind=assertion", output)
+            self.assertIn("stage=hold-request", output)
+            self.assertIn("busy_diag=booking.lock_read_failed", output)
+            self.assertIn("read=location", output)
+            self.assertIn("sql_errno=1213", output)
+            self.assertIn("error_category=deadlock", output)
+            self.assertIn("code=CLINIC_BOOKING_BUSY", output)
         self.assertEqual(["journey-A1-public"], module.failures)
         self.assertTrue(stdout.startswith("FAIL journey-A1-public"))
 

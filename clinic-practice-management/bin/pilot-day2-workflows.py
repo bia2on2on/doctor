@@ -55,7 +55,7 @@ import sys
 import time
 from urllib.parse import parse_qs, urlparse
 
-from day2_booking_busy import busy_suffix_for
+from day2_booking_busy import busy_suffix_for, validate_busy_suffix
 
 SELFTEST = "--test" in sys.argv[1:]
 
@@ -98,16 +98,68 @@ def _error_kind(err):
     return "other"
 
 
+#: Stage tokens `visible_or_diagnose` / the hold-request raise can print.
+#: Kept in step with `pilot-day2-failure-report.STAGES` (the workflow
+#: contract cross-check derives that set from this file's stage literals).
+_STAGE_TOKENS = (
+    "otp-mobile",
+    "otp-code",
+    "hold-countdown",
+    "hold-request",
+    "confirm-btn",
+    "names-form",
+    "receipt",
+)
+_STAGE_VALUE_RE = re.compile(r"(?:^|\s)stage=([a-z0-9-]+)")
+
+
+class BusyJourneyFailure(AssertionError):
+    """A journey failure carrying ONLY a validated busy diagnosis.
+
+    `busy_suffix` is re-projected through `validate_busy_suffix`, so the
+    attribute can hold nothing outside the closed busy schema (state, read
+    label, bounded errno/ids, bounded status, route, viewport), whatever
+    string the caller built. The original exception's text is NOT carried:
+    only its `stage=` token survives, and only when it is one of the closed
+    stage literals this harness itself prints. This restores the busy
+    diagnosis on the FAIL line without restoring arbitrary exception text.
+    """
+
+    def __init__(self, busy_suffix, origin_text=""):
+        self.busy_suffix = validate_busy_suffix(busy_suffix)
+        self.stage = ""
+        if isinstance(origin_text, str):
+            match = _STAGE_VALUE_RE.search(origin_text)
+            if match and match.group(1) in _STAGE_TOKENS:
+                self.stage = match.group(1)
+        super().__init__("journey_failed | journey=A1-public busy_diagnosis=1")
+
+
 def fail(key, title, err):
     # Fixed schema only: the journey key, the caller's fixed title and a
     # closed error-kind token. Exception text is never printed or stored:
     # it can carry database stderr, SQL, lock data or page content, and this
-    # line is piped to the public job log. The failure itself is unchanged —
-    # `failures` still records the key and main() still exits nonzero.
+    # line is piped to the public job log. The one exception is a
+    # `BusyJourneyFailure`, whose validated busy suffix (plus its closed
+    # stage token and the busy code the suffix exists only for) is appended
+    # so the busy diagnosis still reaches the failure-report projection.
+    # The failure itself is unchanged — `failures` still records the key
+    # and main() still exits nonzero.
     kind = _error_kind(err)
+    detail = f"error_kind={kind}"
+    busy_suffix = validate_busy_suffix(getattr(err, "busy_suffix", ""))
+    if busy_suffix:
+        bits = [detail]
+        stage = getattr(err, "stage", "")
+        if stage in _STAGE_TOKENS:
+            bits.append(f"stage={stage}")
+        bits.append(busy_suffix)
+        # The suffix exists only when a booking call returned this code.
+        bits.append("code=CLINIC_BOOKING_BUSY")
+        detail = " ".join(bits)
     failures.append(key)
-    results.append({"key": key, "status": "FAIL", "detail": f"error_kind={kind}"})
-    print(f"FAIL {key} — {title} — error_kind={kind}")
+    results.append({"key": key, "status": "FAIL", "detail": detail})
+    print(f"FAIL {key} — {title} — {detail}")
 
 
 def info(line):
@@ -366,7 +418,7 @@ class BookingProbe:
 
     Every entry keeps only: the REST route, the HTTP status, an allowlisted error
     code, and the three numeric ids the client itself posted. Tokens, nonces,
-    cookies, mobile numbers and names are never read, so a failure message can be
+    cookies, mobile numbers, names and the server `message` text are never read, so a failure message can be
     published without leaking anything. The probe exists because the previous
     failure line (`stage=hold-countdown root_state=bookable visible=0`) could not
     distinguish "the server rejected the hold" from "the browser never asked".
@@ -390,13 +442,11 @@ class BookingProbe:
         except Exception:  # noqa: BLE001 - non-JSON error pages are still recorded by status
             payload = None
         if isinstance(payload, dict):
-            raw_message = payload.get("message")
-            if not isinstance(raw_message, str):
-                data_payload = payload.get("data")
-                raw_message = data_payload.get("message") if isinstance(data_payload, dict) else None
-            if isinstance(raw_message, str):
-                # Server-generated error text only (the envelope message), bounded.
-                entry["message"] = " ".join(raw_message.split())[:300]
+            # The envelope `message` is server free text: it is never read or
+            # retained. Entries carry only the closed fields below (route,
+            # status, allowlisted code, posted numeric ids / key names /
+            # validated slot coordinates), because entries are printed via
+            # `info()` to the public job log.
             for candidate in (payload.get("code"), (payload.get("data") or {}).get("code")
                               if isinstance(payload.get("data"), dict) else None):
                 if isinstance(candidate, str) and _ERROR_CODE.match(candidate):
@@ -508,7 +558,6 @@ def visible_or_diagnose(page, selector, stage, probe=None, since=0, hold_attempt
                     f" hold_attempt=slot={hold_attempt.get('slot_id')}"
                     f" http={hold_attempt['status']}"
                     f"{' code=' + hold_attempt['code'] if hold_attempt['code'] else ''}"
-                    f"{' msg=' + hold_attempt['message'] if hold_attempt.get('message') else ''}"
                     f"{' keys=' + hold_attempt['keys'] if hold_attempt.get('keys') else ''}"
                     f"{' slot_date=' + hold_attempt['slot_date'] if hold_attempt.get('slot_date') else ''}"
                     f"{' slot_time=' + hold_attempt['slot_time'] if hold_attempt.get('slot_time') else ''}"
@@ -754,9 +803,10 @@ def run_journey_a_public_booking(browser, cfg):
         except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
             suffix = ""
         if suffix:
-            # Keep the allow-listed busy suffix, drop the original exception
-            # text (it can carry database or page free text).
-            raise AssertionError(f"journey_failed | journey=A1-public {suffix}") from None
+            # Keep the validated busy diagnosis, drop the original exception
+            # text (it can carry database or page free text); only its closed
+            # stage token is read, inside BusyJourneyFailure.
+            raise BusyJourneyFailure(suffix, origin_text=str(exc)) from None
         raise
     finally:
         ctx_pub.close()
