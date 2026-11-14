@@ -222,7 +222,15 @@ final class Day2FixtureSupervisorTest extends TestCase
         unlink($helper);
         self::assertTrue($exit !== 0, 'fatal-path helper must exit nonzero');
         self::assertTrue($out === '', 'fatal path must print nothing to stdout');
-        self::assertTrue($err === "DAY2_FIXTURE_ERROR step=supervisor\n", 'fatal path must print only the fixed token');
+        // Bounded diagnostic only (two integers, never content): a
+        // mismatch reports the observed byte length and fixed-token
+        // line count so a CI failure stays debuggable without
+        // publishing any of the captured stderr.
+        self::assertTrue($err === "DAY2_FIXTURE_ERROR step=supervisor\n", sprintf(
+            'fatal path must print only the fixed token (observed length=%d, token lines=%d)',
+            strlen((string) $err),
+            substr_count((string) $err, 'DAY2_FIXTURE_ERROR step=supervisor')
+        ));
         self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'shutdown cleanup must remove the private dir');
         rmdir($base);
     }
