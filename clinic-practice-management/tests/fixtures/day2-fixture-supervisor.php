@@ -104,12 +104,13 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         // publish — then retry the checked cleanup. Cleanup results
         // cannot change the exit status from here; the return paths
         // below already fail closed whenever cleanup reports false.
-        if (!$state->finished) {
-            $last = error_get_last();
-            if (is_array($last) && in_array($last['type'] ?? 0, [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)
-                && defined('STDERR')) {
-                fwrite(STDERR, "DAY2_FIXTURE_ERROR step=supervisor\n");
-            }
+        if (!$state->finished && defined('STDERR')) {
+            // Unfinished at shutdown means abnormal termination
+            // (d2w_supervise sets finished on every return path and
+            // never exits). Allocation-lean on purpose — after a
+            // memory-exhaustion fatal, even error_get_last() may not
+            // complete — so the fixed token is written directly.
+            fwrite(STDERR, "DAY2_FIXTURE_ERROR step=supervisor\n");
         }
         $cleanup();
     });

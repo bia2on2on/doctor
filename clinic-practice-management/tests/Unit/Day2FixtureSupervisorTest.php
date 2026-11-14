@@ -205,11 +205,11 @@ final class Day2FixtureSupervisorTest extends TestCase
         mkdir($base, 0700, true);
         $helper = $this->workDir . '/fatal-helper.php';
         file_put_contents($helper, '<?php require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
-            . '$r = d2w_supervise([PHP_BINARY, "-r", "echo str_repeat(\"A\", 67108864);"], '
+            . '$r = d2w_supervise([PHP_BINARY, "-r", "echo str_repeat(\"A\", 33554432);"], '
             . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
             . 'fwrite(STDOUT, "UNREACHED\n");');
         $proc = proc_open(
-            [PHP_BINARY, '-d', 'memory_limit=20M', $helper],
+            [PHP_BINARY, '-d', 'memory_limit=16M', $helper],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes
         );
