@@ -62,7 +62,8 @@ declare(strict_types=1);
  * the shutdown token does not land. That engine behaviour is NOT
  * closed by this file; the two fatal tests in the Unit suite (a fatal
  * raised after d2w_supervise returns with cleanup pending, and a fatal
- * raised synchronously inside d2w_supervise by a stream-wrapper probe)
+ * raised inside d2w_supervise when the engine execution-time limit
+ * expires in its wait loop)
  * are NOT memory-fatal proofs. Closing the whole-process
  * boundary (including engine diagnostics) needs the future
  * workflow-authorized environment PR (private-file redirection of
