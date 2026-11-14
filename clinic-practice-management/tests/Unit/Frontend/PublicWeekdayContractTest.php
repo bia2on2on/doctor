@@ -105,13 +105,18 @@ namespace ClinicCore\Tests\Unit\Frontend {
         /** @var ReflectionMethod */
         private ReflectionMethod $render_item;
 
+        /** @var ReflectionMethod */
+        private ReflectionMethod $calendar;
+
         protected function setUp(): void {
             parent::setUp();
 
             $this->summary     = new ReflectionMethod( PublicBookingShortcode::class, 'weekday_summary' );
             $this->render_item = new ReflectionMethod( PublicBookingShortcode::class, 'render_clinician_item' );
+            $this->calendar    = new ReflectionMethod( PublicBookingShortcode::class, 'calendar_scaffold' );
             $this->summary->setAccessible( true );
             $this->render_item->setAccessible( true );
+            $this->calendar->setAccessible( true );
         }
 
         /**
@@ -250,6 +255,88 @@ namespace ClinicCore\Tests\Unit\Frontend {
                     $date->format( 'Y-m-d' ) . ' caption must equal the real weekday'
                 );
             }
+        }
+
+        /**
+         * The REAL `calendar_scaffold()` output, not just the decoder.
+         *
+         * Why this test exists: every assertion above reaches the caption path
+         * through `caption_label()`. If the caption call site were switched to
+         * `weekday_label_from_stored_day()`, all of those would still pass,
+         * because the decoder itself is still correct. Only the assembled
+         * scaffold row proves the caption CALL SITE uses the Gregorian table.
+         *
+         * Determinism: with `$clinic_id = 0` and `$discovery = null` there are no
+         * clinic ids, so the loop never runs, no settings/`App` call happens, and
+         * `$start` falls back to `gmdate('Y-m-d')` with `$horizon = 7`. The rows
+         * therefore start at today. That is deliberately NOT pinned to a fixed
+         * date: instead each row is checked against the real weekday of ITS OWN
+         * `date` field, which is true on any run day. The scaffold is
+         * self-describing, so no clock injection or production seam is needed.
+         */
+        public function test_the_real_calendar_scaffold_labels_each_row_with_its_true_weekday(): void {
+            $rows = (array) $this->calendar->invoke( null, 0, null );
+
+            self::assertCount( 7, $rows, 'the default scaffold horizon is 7 days' );
+
+            $seen_dates = array();
+
+            foreach ( $rows as $row ) {
+                self::assertIsArray( $row );
+                self::assertArrayHasKey( 'date', $row );
+                self::assertArrayHasKey( 'weekday', $row );
+
+                $date = new DateTimeImmutable( (string) $row['date'] . ' 12:00:00', new DateTimeZone( 'UTC' ) );
+
+                // The row must be labelled with the real weekday of its own date.
+                self::assertSame(
+                    self::GREGORIAN_W_LABELS[ (int) $date->format( 'w' ) ],
+                    $row['weekday'],
+                    'calendar_scaffold row ' . $row['date'] . ' must carry the real weekday label'
+                );
+
+                // And that row must ALSO agree with the caption decoder, so the
+                // call site and the decoder cannot drift apart.
+                self::assertSame(
+                    $this->caption_label( (int) $date->format( 'w' ) ),
+                    $row['weekday'],
+                    'calendar_scaffold row ' . $row['date'] . ' must match the caption decoder'
+                );
+
+                // A stored-day table applied to a real date is off by exactly one
+                // day for six of seven rows; assert the row is not that mistake.
+                self::assertNotSame(
+                    $this->stored_decoder_for( (int) $date->format( 'w' ) ),
+                    $row['weekday'],
+                    'calendar_scaffold row ' . $row['date'] . ' must not use the stored-day table'
+                );
+
+                $seen_dates[] = (string) $row['date'];
+            }
+
+            self::assertCount( 7, array_unique( $seen_dates ), 'scaffold dates must be distinct' );
+            self::assertSame( $seen_dates, array_values( array_unique( $seen_dates ) ), 'scaffold dates must be ascending' );
+        }
+
+        /**
+         * The stored-day decoder, resolved by whichever name is present.
+         *
+         * Used only to prove the caption is NOT that table. Accepting both names
+         * keeps this test meaningful on the pre-fix source, where a single
+         * function served both meanings.
+         */
+        private function stored_decoder_for( int $gregorian_w ): string {
+            $class = new ReflectionClass( PublicBookingShortcode::class );
+            foreach ( array( 'weekday_label_from_stored_day', 'weekday_label_from_db' ) as $name ) {
+                if ( $class->hasMethod( $name ) ) {
+                    $m = $class->getMethod( $name );
+                    $m->setAccessible( true );
+
+                    return (string) $m->invoke( null, $gregorian_w );
+                }
+            }
+
+            self::fail( 'no stored-day decoder found on PublicBookingShortcode' );
         }
 
         // ============ 4. guard: the two paths cannot be re-merged ==============
