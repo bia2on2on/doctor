@@ -25,8 +25,8 @@ use PHPUnit\Framework\TestCase;
  * on the returned line; round 10 removed that too.)
  *
  * Fatal coverage note: two deterministic fatals are tested — one
- * INSIDE d2w_supervise (engine execution-time E_ERROR during the
- * env-file probe; unfinished-supervisor shutdown branch, with the
+ * INSIDE d2w_supervise (engine execution-time E_ERROR expiring in its
+ * wait loop; unfinished-supervisor shutdown branch, with the
  * private dir asserted removed) and one AFTER it returns with
  * cleanup still pending. Neither is a memory-exhaustion proof:
  * on PHP 8.1 the
