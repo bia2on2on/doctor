@@ -196,20 +196,26 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_fatal_in_supervised_process_prints_only_fixed_token(): void
     {
-        // Drive d2w_supervise() in a subprocess with a tiny memory
-        // limit; the fake child emits one huge line, so scanning it
-        // exhausts memory (E_ERROR) AFTER the supervisor installed
-        // display/log suppression. The shutdown function must answer
-        // with only the fixed token and clean its private dir.
+        // Drive d2w_supervise() in a subprocess with a 1-second CPU
+        // limit; the fake child emits tens of millions of tiny lines,
+        // so scanning them exhausts the CPU limit (E_ERROR) AFTER the
+        // supervisor installed display/log suppression. The shutdown
+        // function must answer with only the fixed token and clean
+        // its private dir. (A memory-exhaustion trigger was tried
+        // first and abandoned: on PHP 8.1 the engine prints its own
+        // memory-fatal line to stderr despite display/log suppression
+        // and the shutdown token does not land — an engine diagnostic
+        // outside this boundary, observed in CI; CPU exhaustion does
+        // not have that behaviour.)
         $base = $this->workDir . '/fatalbase';
         mkdir($base, 0700, true);
         $helper = $this->workDir . '/fatal-helper.php';
-        file_put_contents($helper, '<?php require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
-            . '$r = d2w_supervise([PHP_BINARY, "-r", "echo str_repeat(\"A\", 33554432);"], '
+        file_put_contents($helper, '<?php set_time_limit(1); require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
+            . '$r = d2w_supervise([PHP_BINARY, "-r", ' . var_export('for ($i = 0; $i < 30000000; $i++) { echo "x\n"; }', true) . '], '
             . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
             . 'fwrite(STDOUT, "UNREACHED\n");');
         $proc = proc_open(
-            [PHP_BINARY, '-d', 'memory_limit=16M', '-d', 'display_errors=0', '-d', 'log_errors=0', $helper],
+            [PHP_BINARY, '-d', 'display_errors=0', '-d', 'log_errors=0', $helper],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes
         );
