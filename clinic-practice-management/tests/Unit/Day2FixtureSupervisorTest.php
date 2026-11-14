@@ -131,11 +131,17 @@ final class Day2FixtureSupervisorTest extends TestCase
         self::assertStringStartsWith('DAY2_FIXTURE_ERROR step=', $line);
     }
 
-    public function test_proc_open_failure_fails_closed(): void
+    public function test_unlaunchable_child_fails_closed(): void
     {
+        // A binary that does not exist: PHP >= 8.3 makes proc_open
+        // fail (supervisor token, exit 1); PHP 8.1/8.2 launch a child
+        // that exits 127 with no output (unknown token, exit kept).
+        // Both are fail-closed with a fixed line — assert exactly
+        // that version-independent contract.
         [$code, $line] = $this->supervise(['/nonexistent/d2w-no-such-binary']);
-        self::assertSame(1, $code);
-        self::assertSame('DAY2_FIXTURE_ERROR step=supervisor', $line);
+        self::assertNotSame(0, $code);
+        self::assertStringStartsWith('DAY2_FIXTURE_ERROR step=', $line);
+        self::assertNotSame('DAY2_FIXTURE_OK status=ok', $line);
     }
 
     public function test_empty_command_fails_closed(): void
