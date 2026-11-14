@@ -51,10 +51,21 @@ $db   = App::db();
 $now  = $db->nowUtcSql();
 $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
 
-function d2w_fail(string $msg): void
+/**
+ * Fixed fixture-failure steps. `d2w_fail()` prints ONLY one of these
+ * literals (or `unknown`); no caller-supplied text, driver text
+ * ($wpdb->last_error), SQL, label interpolation or value can reach
+ * stderr, which the workflow tees to the public job log.
+ */
+const D2W_FAIL_STEPS = [
+    'insert', 'insert_id', 'user_create', 'clinic_ids', 'public_page',
+    'public_permalink', 'reception_grace', 'reception_row', 'env_write',
+];
+
+function d2w_fail(string $step): void
 {
-    $safe = preg_replace('/\d{10,}/', '[redacted]', $msg) ?? $msg;
-    fwrite(STDERR, 'DAY2_FIXTURE_ERROR: ' . $safe . "\n");
+    $token = in_array($step, D2W_FAIL_STEPS, true) ? $step : 'unknown';
+    fwrite(STDERR, 'DAY2_FIXTURE_ERROR step=' . $token . "\n");
     exit(1);
 }
 
@@ -63,13 +74,15 @@ function d2w_fail(string $msg): void
  */
 function d2w_insert(\wpdb $wpdb, string $sql, array $args, string $label): int
 {
+    // $label is caller context only; it is never printed (labels may carry
+    // interpolated ids/dates). Failures publish the fixed step token.
     $prepared = $wpdb->prepare($sql, ...$args);
     if (!is_string($prepared) || $wpdb->query($prepared) === false) {
-        d2w_fail($label . ': ' . ($wpdb->last_error !== '' ? $wpdb->last_error : 'prepare/query failed'));
+        d2w_fail('insert');
     }
     $id = (int) $wpdb->insert_id;
     if ($id <= 0) {
-        d2w_fail($label . ': insert id missing');
+        d2w_fail('insert_id');
     }
 
     return $id;
@@ -80,7 +93,7 @@ function d2w_user(string $prefix, string $pass, string $wpRole): int
     $login  = $prefix . '_' . substr(bin2hex(random_bytes(3)), 0, 6);
     $userId = wp_create_user($login, $pass, $login . '@pilot-day2.local');
     if (is_wp_error($userId) || (int) $userId <= 0) {
-        d2w_fail('user create failed for ' . $prefix);
+        d2w_fail('user_create');
     }
     $u = new \WP_User((int) $userId);
     $u->set_role($wpRole);
@@ -125,7 +138,7 @@ $clinicB = d2w_insert(
 );
 
 if ($clinicA <= 1 || $clinicB <= 1 || $clinicA === $clinicB) {
-    d2w_fail('clinic ids must be nontrivial and distinct');
+    d2w_fail('clinic_ids');
 }
 
 // Configure Clinic A booking window: max_future_days = 30, min_lead_hours = 1.
@@ -254,11 +267,11 @@ $pubPageId = wp_insert_post([
     'post_content' => '[cpms_public_booking clinic_id="' . $clinicA . '"]',
 ]);
 if (!is_int($pubPageId) || $pubPageId <= 0) {
-    d2w_fail('failed to create public booking page');
+    d2w_fail('public_page');
 }
 $pubBookingUrl = (string) get_permalink($pubPageId);
 if ($pubBookingUrl === '') {
-    d2w_fail('public booking permalink empty');
+    d2w_fail('public_permalink');
 }
 
 // Use day2 (+2 days) so min_lead_hours=1 is always comfortably satisfied regardless of wall-clock hour.
@@ -354,12 +367,7 @@ $receptionTimes = Day2ReceptionFixtureClockPolicy::slotTimes($nowLocal, $today, 
 if ($receptionTimes === null) {
     // Total policy: this is a configuration defect (grace below the documented
     // floor), not a wall-clock window.
-    d2w_fail(sprintf(
-        'reception grace window unusable: grace=%d min (minimum %d s) at local %s',
-        $receptionGrace,
-        Day2ReceptionFixtureClockPolicy::MINIMUM_GRACE_SECONDS,
-        $nowLocal->format('Y-m-d H:i:s')
-    ));
+    d2w_fail('reception_grace');
 }
 $secTime1    = $receptionTimes['doc1']->format('H:i:s');
 $secTime2    = $receptionTimes['doc2']->format('H:i:s');
@@ -376,16 +384,16 @@ foreach ([
 ] as [$receptionLabel, $receptionTime, $receptionRowGrace]) {
     $receptionInstant = BookingWindow::slotUtcInstant($today, $receptionTime, $tz);
     if ($receptionInstant === null) {
-        d2w_fail('reception row ' . $receptionLabel . ' has no unambiguous Location-local instant');
+        d2w_fail('reception_row');
     }
     $graceRemaining = $receptionInstant
         ->add(new \DateInterval('PT' . $receptionRowGrace . 'M'))
         ->getTimestamp() - $nowUtc->getTimestamp();
     if ($receptionInstant > $nowUtc) {
-        d2w_fail('reception row ' . $receptionLabel . ' must already be due');
+        d2w_fail('reception_row');
     }
     if ($graceRemaining < Day2ReceptionFixtureClockPolicy::graceRemainderSeconds($receptionRowGrace * 60)) {
-        d2w_fail('reception row ' . $receptionLabel . ' has less than the documented grace remainder');
+        d2w_fail('reception_row');
     }
 }
 
@@ -727,7 +735,7 @@ foreach ($envPayload as $k => $v) {
     $lines[] = $k . '=' . $v;
 }
 if (file_put_contents('/tmp/day2-workflows.env', implode("\n", $lines) . "\n") === false) {
-    d2w_fail('failed writing /tmp/day2-workflows.env');
+    d2w_fail('env_write');
 }
 
 echo sprintf(

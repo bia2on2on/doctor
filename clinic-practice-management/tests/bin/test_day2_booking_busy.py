@@ -2,11 +2,17 @@
 
 The helper under test (bin/day2_booking_busy.py) turns the latest
 `booking.lock_read_failed` operational-log context into a bounded failure-line
-suffix. These tests pin the publication policy: only the event name, the read
-label, an integer errno, a sanitized/truncated sql_error, and integer *_id
-fields may survive — never PII, tokens, phone-like digit runs, or SQL text.
+suffix. These tests pin the publication policy: only the event name, a fixed
+read label, an integer errno, an errno-derived category and bounded integer
+*_id fields may survive. Driver text and unknown fields are always dropped,
+including in legacy rows and when a caller bypasses the extractor.
 """
+from contextlib import redirect_stdout
+import importlib.util
+import io
+import json
 from pathlib import Path
+import re
 import sys
 import unittest
 
@@ -17,46 +23,84 @@ import day2_booking_busy as busy  # noqa: E402
 
 PHONE = "09128887701"
 TOKEN = "tok_SECRETVALUE_9f8e7d6c"
+# Synthetic values only. Short names/numbers deliberately defeat pattern redaction.
+DRIVER_VALUES = (
+    "Li", "Ana", "42", "123456", PHONE,
+    "synthetic.person@example.test", "آزمایشی", "李",
+    "Duplicate entry 'Li-42' for key 'name'",
+    'Duplicate entry "Li-42" for key "name"',
+    "Duplicate entry `Li-42` for key `name`",
+    "Duplicate entry Li-42 for key name",
+    "failed for Li\n42\r\nآزمایشی\t" + TOKEN,
+    "WHERE first_name='Li' AND national_id=123456",
+)
+ALLOWED_KEYS = {"event", "read", "sql_errno", "error_category", *busy.ID_KEYS}
+
+def legacy_context(value):
+    return {
+        "read": "location", "sql_errno": 1213, "sql_error": value,
+        "location_id": 3, "patient_name": "Li", "national_id": "123456",
+        "error_category": value, "sql": value, "nested": {"value": value},
+    }
+
+def assert_no_values(test, output):
+    text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
+    for value in DRIVER_VALUES:
+        test.assertNotIn(value, text)
+    test.assertNotIn("sql_error", text)
+    test.assertNotIn("patient_name", text)
+    test.assertNotIn("national_id", text)
 
 
-class SanitizeSqlErrorTest(unittest.TestCase):
-    def test_collapses_whitespace_to_one_line(self):
-        out = busy.sanitize_sql_error("Lock wait\ttimeout\n  exceeded\r\nretry")
-        self.assertEqual("Lock wait timeout exceeded retry", out)
-        self.assertNotIn("\n", out)
+class DriverTextExclusionTest(unittest.TestCase):
+    def test_every_legacy_driver_value_is_dropped_by_every_projection_path(self):
+        for value in DRIVER_VALUES:
+            with self.subTest(value=repr(value)):
+                context = legacy_context(value)
+                diag = busy.extract_busy_diagnostic(context)
+                self.assertEqual({"event": busy.EVENT, "read": "location",
+                                  "sql_errno": 1213, "error_category": "deadlock",
+                                  "location_id": 3}, diag)
+                self.assertLessEqual(set(diag), ALLOWED_KEYS)
+                assert_no_values(self, diag)
+                row = [(json.dumps(context, ensure_ascii=False),)]
+                parsed = busy.parse_busy_rows(row)
+                self.assertEqual(diag, parsed)
+                direct = busy.format_busy_suffix(context)
+                via_reader = busy.busy_suffix_for(
+                    BusySuffixForTest.BUSY_ENTRIES, lambda sql: row,
+                    "cpmswp_cpms_operational_logs", "390x844",
+                    since="2026-11-04 10:00:00",
+                )
+                for out in (direct, via_reader):
+                    assert_no_values(self, out)
+                    self.assertIn("error_category=deadlock", out)
+                    self.assertNotIn("\n", out)
+                    self.assertNotIn("\r", out)
+                    self.assertLessEqual(len(out), busy.MAX_SUFFIX)
 
-    def test_truncates_to_200_chars(self):
-        out = busy.sanitize_sql_error("x" * 500)
-        self.assertEqual(200, len(out))
+    def test_short_names_cannot_masquerade_as_read_labels(self):
+        for value in ("li", "ana", "patient_name", "آزمایشی", "location\nLi"):
+            with self.subTest(value=value):
+                diag = busy.extract_busy_diagnostic({"read": value, "sql_errno": 1213})
+                self.assertNotIn("read", diag)
+                assert_no_values(self, busy.format_busy_suffix({"read": value}))
 
-    def test_redacts_phone_like_digit_runs_but_keeps_short_numbers(self):
-        out = busy.sanitize_sql_error(f"error 1205 for mobile {PHONE} retry")
-        self.assertNotIn(PHONE, out)
-        self.assertIn("[digits]", out)
-        self.assertIn("1205", out)
+    def test_fixed_read_labels_match_the_production_call_sites(self):
+        source = (BIN_DIR.parent / "src" / "Application" / "Booking" /
+                  "BookingService.php").read_text(encoding="utf-8")
+        labels = set(re.findall(r"assert_read_succeeded\(\s*'([a-z0-9_]+)'", source))
+        self.assertTrue(labels)
+        self.assertEqual(labels, busy.READ_LABELS)
 
-    def test_keeps_identifier_quote_but_redacts_fragment_quote(self):
-        kept = busy.sanitize_sql_error(
-            "Table 'cpms_main.cpmswp_cpms_slots' doesn't exist"
-        )
-        self.assertIn("'cpms_main.cpmswp_cpms_slots'", kept)
-
-        fragment = busy.sanitize_sql_error(
-            f"syntax error near 'WHERE mobile = {PHONE} AND x' at line 1"
-        )
-        self.assertNotIn("WHERE", fragment)
-        self.assertNotIn(PHONE, fragment)
-        self.assertIn("'…'", fragment)
-
-    def test_replaces_double_quotes_and_backticks(self):
-        out = busy.sanitize_sql_error('bad "value" in `col`')
-        self.assertNotIn('"', out)
-        self.assertNotIn("`", out)
-
-    def test_non_string_input_is_empty(self):
-        self.assertEqual("", busy.sanitize_sql_error(None))
-        self.assertEqual("", busy.sanitize_sql_error(1213))
-        self.assertEqual("", busy.sanitize_sql_error(["Deadlock"]))
+    def test_categories_come_only_from_errno_not_stored_text(self):
+        for errno, category in ((1213, "deadlock"), (1205, "lock_wait_timeout"),
+                                (0, "unknown"), (1062, "driver_error")):
+            diag = busy.extract_busy_diagnostic({
+                "sql_errno": errno, "error_category": "Li", "sql_error": "Ana",
+            })
+            self.assertEqual(category, diag["error_category"])
+            self.assertIn(f"error_category={category}", busy.format_busy_suffix(diag))
 
 
 class ExtractBusyDiagnosticTest(unittest.TestCase):
@@ -78,7 +122,7 @@ class ExtractBusyDiagnosticTest(unittest.TestCase):
                 "event": "booking.lock_read_failed",
                 "read": "persisted_slot",
                 "sql_errno": 1213,
-                "sql_error": "Deadlock found when trying to get lock",
+                "error_category": "deadlock",
                 "slot_id": 42,
                 "clinician_id": 7,
             },
@@ -91,6 +135,7 @@ class ExtractBusyDiagnosticTest(unittest.TestCase):
                 "read": "Has Spaces",
                 "sql_errno": "12x3",
                 "sql_error": 999,
+                "error_category": "Li",
                 "slot_id": True,
                 "clinic_id": 0,
                 "location_id": -5,
@@ -103,6 +148,16 @@ class ExtractBusyDiagnosticTest(unittest.TestCase):
         self.assertEqual(1205, diag["sql_errno"])
         diag_zero = busy.extract_busy_diagnostic({"sql_errno": 0})
         self.assertEqual(0, diag_zero["sql_errno"])
+
+    def test_malformed_unknown_and_out_of_range_fields_are_dropped(self):
+        diag = busy.extract_busy_diagnostic({
+            "read": [], "sql_errno": True, "error_category": {"x": "Li"},
+            "slot_id": "42\nLi", "clinic_id": -1, "location_id": busy.MAX_ID + 1,
+            "organization_id": 1.5, "clinician_id": None, "unknown": "Ana",
+        })
+        self.assertEqual({"event": busy.EVENT}, diag)
+        for value in (-1, 100000, "1213\n", "۱۲۱۳"):
+            self.assertNotIn("sql_errno", busy.extract_busy_diagnostic({"sql_errno": value}))
 
     def test_non_object_context_is_none(self):
         self.assertIsNone(busy.extract_busy_diagnostic(None))
@@ -117,6 +172,9 @@ class ParseBusyRowsTest(unittest.TestCase):
         self.assertIsNone(busy.parse_busy_rows([("NULL",)]))
         self.assertIsNone(busy.parse_busy_rows([("not json",)]))
         self.assertIsNone(busy.parse_busy_rows([('["a"]',)]))
+        for cell in (None, 42, b'{"sql_errno":1213}', "", "null", "true", "[]"):
+            self.assertIsNone(busy.parse_busy_rows([(cell,)]))
+        self.assertEqual({"event": busy.EVENT}, busy.parse_busy_rows([("{}",)]))
 
     def test_valid_row_parses_and_extra_columns_are_ignored(self):
         row = ('{"read": "slot", "sql_errno": 1146, "slot_id": 5}', "ignored")
@@ -179,6 +237,22 @@ class FormatBusySuffixTest(unittest.TestCase):
         self.assertIn("viewport=390x844", out)
         self.assertNotIn("\n", out)
         self.assertLessEqual(len(out), busy.MAX_SUFFIX)
+
+    def test_direct_formatter_cannot_bypass_projection(self):
+        context = legacy_context("Li 42 synthetic.person@example.test آزمایشی")
+        context.update(sql_errno="1213", slot_id="7",
+                       route="booking/hold\nLi", viewport="390x844\nLi")
+        out = busy.format_busy_suffix(
+            context, route="booking/hold\nLi", http_status="503",
+            viewport="390x844\nLi", missing="Li",
+        )
+        assert_no_values(self, out)
+        self.assertIn("read=location", out)
+        self.assertIn("error_category=deadlock", out)
+        self.assertIn("slot_id=7", out)
+        self.assertNotIn("route=", out)
+        self.assertNotIn("viewport=", out)
+        self.assertNotIn("\n", out)
 
     def test_missing_states_and_invalid_parts(self):
         out = busy.format_busy_suffix(None, missing="fetch-failed", viewport="bogus")
@@ -373,44 +447,113 @@ class StaleOrMismatchTest(unittest.TestCase):
         )
 
 
-class EmailRedactionTest(unittest.TestCase):
-    """NEW: e-mail-like tokens in untrusted driver text are redacted."""
-
-    def test_plain_email_is_redacted(self):
-        out = busy.sanitize_sql_error("lock failed for ali.reza@clinic.example.com retry")
-        self.assertNotIn("ali.reza@clinic.example.com", out)
-        self.assertIn("[email]", out)
-
-    def test_phone_like_local_part_is_fully_redacted(self):
-        out = busy.sanitize_sql_error("contact 09128887701@clinic.example.com now")
-        self.assertNotIn("09128887701", out)
-        self.assertNotIn("clinic.example.com", out)
-        self.assertIn("[email]", out)
-
-    def test_quoted_email_redacted_identifier_quote_kept(self):
-        out = busy.sanitize_sql_error("Table 'cpms_main.wp_slots' failed for 'a@b.co'")
-        self.assertIn("'cpms_main.wp_slots'", out)
-        self.assertNotIn("a@b.co", out)
-        self.assertIn("[email]", out)
-
-    def test_no_email_leaves_digit_and_truncation_rules_intact(self):
-        out = busy.sanitize_sql_error("error 1205 for mobile 09128887701 retry")
-        self.assertIn("1205", out)
-        self.assertIn("[digits]", out)
-
-    def test_email_in_sql_error_never_reaches_failure_line(self):
-        stored = ('{"read": "slot", "sql_errno": 1205, '
-                  '"sql_error": "deadlock for a@b.example.com", "slot_id": 7}',)
-        out = busy.busy_suffix_for(
-            [{"route": "/clinic/v1/booking/hold", "status": 503,
-              "code": "CLINIC_BOOKING_BUSY", "slot_id": 7}],
-            lambda sql: [stored], "cpmswp_cpms_operational_logs",
-            since="2026-11-04 10:00:00"
+class PublicationPathTest(unittest.TestCase):
+    def test_day2_fail_stdout_and_results_json_carry_only_the_projection(self):
+        path = BIN_DIR / "pilot-day2-workflows.py"
+        old_argv = sys.argv
+        try:
+            sys.argv = [str(path), "--test"]
+            spec = importlib.util.spec_from_file_location("day2_publication_test", path)
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        finally:
+            sys.argv = old_argv
+        row = [(json.dumps(legacy_context("Li 42 آزمایشی"), ensure_ascii=False),)]
+        suffix = busy.busy_suffix_for(
+            BusySuffixForTest.BUSY_ENTRIES, lambda sql: row,
+            "cpmswp_cpms_operational_logs", "390x844",
+            since="2026-11-04 10:00:00",
         )
-        self.assertNotIn("a@b.example.com", out)
-        self.assertIn("[email]", out)
-        self.assertIn("busy_diag=booking.lock_read_failed", out)
+        module.results.clear()
+        module.failures.clear()
+        stream = io.StringIO()
+        with redirect_stdout(stream):
+            # The real producer path: the A1 handler's structured re-raise,
+            # then `fail()` exactly as the journey dispatcher calls it.
+            module.fail(
+                "journey-A1-public", "Day-2 browser journey failed",
+                module.BusyJourneyFailure(
+                    suffix,
+                    origin_text="public booking stage=hold-request — hold rejected",
+                ),
+            )
+        # These are the two shapes consumed by the CI log/annotation grep,
+        # PR evidence comment, debug tail and results JSON writer.
+        stdout = stream.getvalue()
+        results_json = json.dumps({"results": module.results,
+                                   "failures": module.failures}, ensure_ascii=False)
+        for output in (stdout, results_json):
+            assert_no_values(self, output)
+            # Fixed schema: closed error kind, the closed stage token, and
+            # the VALIDATED busy diagnosis (busy category, read label,
+            # errno and its derived category, busy code) from the legacy
+            # row — driver text and stored values can never ride it.
+            self.assertIn("error_kind=assertion", output)
+            self.assertIn("stage=hold-request", output)
+            self.assertIn("busy_diag=booking.lock_read_failed", output)
+            self.assertIn("read=location", output)
+            self.assertIn("sql_errno=1213", output)
+            self.assertIn("error_category=deadlock", output)
+            self.assertIn("code=CLINIC_BOOKING_BUSY", output)
+        self.assertEqual(["journey-A1-public"], module.failures)
+        self.assertTrue(stdout.startswith("FAIL journey-A1-public"))
 
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class FixtureFailureContractTest(unittest.TestCase):
+    """C5: the Day-2 PHP fixture must never print driver text to stderr.
+
+    Static contract over `tests/fixtures/pilot-day2-workflows-fixture.php`
+    (the fixture needs WordPress, so it cannot execute here; the same
+    functions were executed under PHP-WASM against a stub $wpdb during
+    development). Pins: no `last_error` read anywhere outside comments,
+    no digit-run masking, `d2w_fail` prints only a fixed step token, and
+    every `d2w_fail(...)` call site passes an allowlisted literal.
+    """
+
+    FIXTURE = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures" / "pilot-day2-workflows-fixture.php"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = cls.FIXTURE.read_text(encoding="utf-8")
+        stripped = re.sub(r"/\*.*?\*/", "", cls.source, flags=re.S)
+        cls.code = "\n".join(
+            line.split("//", 1)[0] for line in stripped.splitlines()
+        )
+
+    def test_no_driver_text_or_masking_in_fixture_code(self):
+        self.assertNotIn("last_error", self.code)
+        self.assertNotIn("preg_replace", self.code)
+        self.assertNotIn("[redacted]", self.code)
+
+    def test_d2w_fail_prints_only_a_fixed_step_token(self):
+        self.assertIn("DAY2_FIXTURE_ERROR step=", self.code)
+        self.assertIn("in_array($step, D2W_FAIL_STEPS, true)", self.code)
+        body = self.code.split("function d2w_fail", 1)[1].split("}", 1)[0]
+        self.assertNotIn("$msg", body)
+
+    def test_every_d2w_fail_call_site_passes_a_fixed_literal(self):
+        steps = set(re.findall(
+            r"'([a-z_]+)'",
+            self.code.split("D2W_FAIL_STEPS = [", 1)[1].split("]", 1)[0],
+        ))
+        self.assertEqual(
+            steps,
+            {"insert", "insert_id", "user_create", "clinic_ids", "public_page",
+             "public_permalink", "reception_grace", "reception_row", "env_write"},
+        )
+        calls = re.findall(r"d2w_fail\(([^)]*)\)", self.code)
+        self.assertGreaterEqual(len(calls), 10)
+        for arg in calls:
+            arg = arg.strip()
+            if arg == "string $step":
+                continue
+            literal = re.fullmatch(r"'([a-z_]+)'", arg)
+            self.assertIsNotNone(literal, arg)
+            self.assertIn(literal.group(1), steps, arg)

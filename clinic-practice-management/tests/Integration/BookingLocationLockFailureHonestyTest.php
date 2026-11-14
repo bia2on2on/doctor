@@ -22,6 +22,7 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
     private const NS = '/clinic/v1';
     private const LOG_MESSAGE = 'booking.lock_read_failed';
     private const BUSY_CODE = 'CLINIC_BOOKING_BUSY';
+    private const BUSY_TEXT = 'سامانه موقتاً مشغول است؛ لطفاً دوباره تلاش کنید.';
     private const LEGACY_TEXT = 'Location یافت نشد';
     private const IDEM_ENDPOINT = 'booking/confirm';
 
@@ -140,8 +141,58 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
         self::assertSame($this->locationId, (int) ($context['location_id'] ?? 0));
         self::assertSame(1, (int) ($context['clinic_id'] ?? 0));
         self::assertArrayHasKey('sql_errno', $context);
-        self::assertNotSame('', (string) ($context['sql_error'] ?? ''));
+        $this->assertBoundedContext($context);
         self::assertStringNotContainsString('09121110001', (string) $last['context_json']);
+    }
+
+    public function testSyntheticDriverValuesNeverReachResponseOrStoredDiagnostic(): void
+    {
+        wp_set_current_user($this->patientUserId);
+        $slot = $this->makeSlot('21:00');
+        $this->installFault('synthetic_values');
+
+        $response = $this->dispatch($this->holdBody($slot));
+        self::assertSame(503, $response->get_status());
+        self::assertSame([
+            'code' => self::BUSY_CODE,
+            'message' => self::BUSY_TEXT,
+            'data' => ['status' => 503],
+        ], $response->get_data());
+        self::assertSame(0, $this->activeHolds($slot['id']), 'transaction must roll back');
+        self::assertSame(0, $this->heldCount($slot['id']), 'capacity must be untouched');
+
+        $rows = $this->diagnosticLogs();
+        self::assertCount($this->logBaseline + 1, $rows, 'deferred diagnostic after rollback');
+        $context = json_decode((string) $rows[count($rows) - 1]['context_json'], true);
+        self::assertIsArray($context);
+        $this->assertBoundedContext($context);
+        self::assertSame('location', $context['read'] ?? null);
+        $this->assertSyntheticValuesAbsentFromStoredContext($context);
+        foreach (self::syntheticValues() as $value) {
+            // Unescaped Unicode avoids false positives from \u0642 containing "42".
+            self::assertStringNotContainsString($value, (string) wp_json_encode($response->get_data(), JSON_UNESCAPED_UNICODE));
+        }
+    }
+
+    public function testSyntheticDriverValuesNeverReachNonLockingDiagnostic(): void
+    {
+        $slot = $this->makeSlot('22:00');
+        $this->installFault('synthetic_values', 'location_active');
+
+        $response = $this->dispatchQuote($this->holdBody($slot));
+        self::assertSame(503, $response->get_status());
+        self::assertSame([
+            'code' => self::BUSY_CODE,
+            'message' => self::BUSY_TEXT,
+            'data' => ['status' => 503],
+        ], $response->get_data());
+        $context = $this->lastDiagnostic();
+        $this->assertBoundedContext($context);
+        self::assertSame('location_active', $context['read'] ?? null);
+        $this->assertSyntheticValuesAbsentFromStoredContext($context);
+        foreach (self::syntheticValues() as $value) {
+            self::assertStringNotContainsString($value, (string) wp_json_encode($response->get_data(), JSON_UNESCAPED_UNICODE));
+        }
     }
 
     public function testMissingLocationUnderLockKeepsLegacy404(): void
@@ -210,7 +261,7 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
         self::assertSame('location', (string) ($context['read'] ?? ''));
         self::assertIsInt($context['sql_errno'] ?? null);
         self::assertGreaterThan(0, (int) ($context['sql_errno'] ?? 0));
-        self::assertNotSame('', (string) ($context['sql_error'] ?? ''));
+        $this->assertBoundedContext($context);
 
         $this->removeFault();
         $retry = $this->dispatchConfirm($token, $key);
@@ -230,7 +281,7 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
         $context = $this->lastDiagnostic();
         self::assertIsInt($context['sql_errno'] ?? null);
         self::assertGreaterThan(0, (int) ($context['sql_errno'] ?? 0));
-        self::assertNotSame('', (string) ($context['sql_error'] ?? ''));
+        $this->assertBoundedContext($context);
     }
 
     public function testSlotLockFailureIsRetryable(): void
@@ -368,6 +419,12 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
 
                 return 'SELECT id, clinic_id, timezone, 0 AS is_active FROM ' . $table
                     . ' WHERE id = ' . $id . ' LIMIT 1 FOR UPDATE';
+            }
+            if ($mode === 'synthetic_values') {
+                // Syntax error text includes these synthetic literals. No real
+                // patient data is used; the driver message must never be stored.
+                return 'SELECT 1 FROM ' . $table . " WHERE = 'Li' 42 "
+                    . "'synthetic.person@example.test' 'آزمایشی' '李'";
             }
             if ($mode === 'missing' || $mode === 'absent') {
                 return 'SELECT 1 FROM ' . $table . ' WHERE 1 = 0 LIMIT 1';
@@ -541,6 +598,63 @@ final class BookingLocationLockFailureHonestyTest extends WP_UnitTestCase
             . ' WHERE `key` = %s AND endpoint = %s',
             [$key, self::IDEM_ENDPOINT]
         );
+    }
+
+    /** @return list<string> */
+    private static function syntheticValues(): array
+    {
+        return ['Li', '42', 'synthetic.person@example.test', 'آزمایشی', '李'];
+    }
+
+    /** @param array<string, mixed> $context */
+    private function assertBoundedContext(array $context): void
+    {
+        self::assertArrayNotHasKey('sql_error', $context);
+        self::assertIsInt($context['sql_errno'] ?? null);
+        self::assertIsString($context['read'] ?? null);
+        foreach ($context as $key => $value) {
+            self::assertContains($key, [
+                'read', 'sql_errno', 'clinic_id', 'organization_id', 'location_id',
+                'clinician_id', 'slot_id', 'hold_id', 'appointment_id',
+            ]);
+            if ($key !== 'read') {
+                self::assertIsInt($value);
+            }
+        }
+    }
+
+    /**
+     * Structural absence check for the stored diagnostic context.
+     *
+     * The context is already decoded from JSON by the caller. Allowed keys,
+     * value types and the closed `read` vocabulary are asserted by
+     * assertBoundedContext(); here every synthetic marker is asserted absent
+     * from the context's STRING values only. Integer identifiers (location,
+     * clinic, slot, ...) are legitimate stored values and are never scanned
+     * as text — a substring scan over the serialized JSON would falsely fail
+     * whenever an identifier's decimal digits happen to contain a marker
+     * such as "42".
+     *
+     * @param array<string, mixed> $context
+     */
+    private function assertSyntheticValuesAbsentFromStoredContext(array $context): void
+    {
+        $this->assertBoundedContext($context);
+        self::assertContains($context['read'] ?? null, [
+            'slot', 'confirm_hold', 'confirm_slot', 'reschedule_appointment',
+            'reschedule_first_slot', 'reschedule_second_slot', 'staff_create_slot',
+            'no_show_appointment', 'cancel_appointment', 'location_active',
+            'location_timezone', 'location', 'organization_active', 'organization',
+            'clinic', 'persisted_slot',
+        ], 'stored read label must be a member of the closed producer vocabulary');
+        foreach ($context as $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+            foreach (self::syntheticValues() as $marker) {
+                self::assertStringNotContainsString($marker, $value);
+            }
+        }
     }
 
     /** @return array<string, mixed> */
