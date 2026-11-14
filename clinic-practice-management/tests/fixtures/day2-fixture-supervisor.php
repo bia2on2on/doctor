@@ -97,18 +97,21 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         return $ok;
     };
     register_shutdown_function(static function () use ($state, $cleanup): void {
-        // Last resort (fatal before a return path ran): retry the
-        // checked cleanup, then emit ONLY the fixed token. Results
-        // cannot change the exit status from here; the failure path
-        // below already fails closed whenever cleanup reports false.
-        $cleanup();
+        // Last resort (fatal before a return path ran): emit ONLY the
+        // fixed token FIRST — after a memory-exhaustion fatal, any
+        // allocation (glob included) can re-fatal before the token is
+        // written, and the token is the one thing this boundary must
+        // publish — then retry the checked cleanup. Cleanup results
+        // cannot change the exit status from here; the return paths
+        // below already fail closed whenever cleanup reports false.
         if (!$state->finished) {
             $last = error_get_last();
-            if (is_array($last) && in_array($last['type'] ?? 0, [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)
+            if (is_array($last) && in_array($last['type'] ?? 0, [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR], true)
                 && defined('STDERR')) {
                 fwrite(STDERR, "DAY2_FIXTURE_ERROR step=supervisor\n");
             }
         }
+        $cleanup();
     });
 
     // Every return path funnels through here EXCEPT success: cleanup
