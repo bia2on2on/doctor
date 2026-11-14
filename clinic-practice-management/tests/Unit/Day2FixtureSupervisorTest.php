@@ -205,8 +205,8 @@ final class Day2FixtureSupervisorTest extends TestCase
     public function test_fatal_in_supervised_process_prints_only_fixed_token(): void
     {
         // Drive d2w_supervise() in a subprocess and raise a fatal
-        // (E_USER_ERROR, uncatchable, delivered by a pcntl alarm)
-        // while the supervisor is blocked waiting for its child.
+        // (E_USER_ERROR, uncatchable, delivered by a signal timer)
+        // while the supervisor is running its child.
         // The shutdown function must answer with only the fixed
         // token and clean its private dir. CPU-limit exhaustion in
         // the output scan was the previous trigger; the bounded scan
@@ -218,7 +218,7 @@ final class Day2FixtureSupervisorTest extends TestCase
         // close — that needs the future workflow-authorized
         // whole-process boundary.
         $probe = proc_open(
-            [PHP_BINARY, '-r', 'echo (function_exists("pcntl_alarm") && function_exists("pcntl_async_signals")) ? "1" : "0";'],
+            [PHP_BINARY, '-r', 'echo (function_exists("pcntl_fork") && function_exists("pcntl_async_signals") && function_exists("posix_kill")) ? "1" : "0";'],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['file', '/dev/null', 'a']],
             $probePipes
         );
@@ -232,11 +232,16 @@ final class Day2FixtureSupervisorTest extends TestCase
         $base = $this->workDir . '/fatalbase';
         mkdir($base, 0700, true);
         $helper = $this->workDir . '/fatal-helper.php';
+        // A forked timer sends SIGUSR1 while the supervisor waits
+        // for its child; async-signal delivery is deferred to the
+        // supervisor's next VM-executed statements (its scan loop),
+        // which is still inside d2w_supervise with finished=false.
         file_put_contents($helper, '<?php require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
             . 'pcntl_async_signals(true);'
-            . 'pcntl_signal(SIGALRM, static function (): void { trigger_error("fatal-injection", E_USER_ERROR); });'
-            . 'pcntl_alarm(1);'
-            . '$r = d2w_supervise([PHP_BINARY, "-r", "sleep(5);"], '
+            . 'pcntl_signal(SIGUSR1, static function (): void { trigger_error("fatal-injection", E_USER_ERROR); });'
+            . '$timer = pcntl_fork();'
+            . 'if ($timer === 0) { usleep(300000); posix_kill(posix_getppid(), SIGUSR1); exit(0); }'
+            . '$r = d2w_supervise([PHP_BINARY, "-r", ' . var_export('for ($i = 0; $i < 130000; $i++) { echo "x\n"; } sleep(2);', true) . '], '
             . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
             . 'exit($r[0]);');
         $proc = proc_open(
