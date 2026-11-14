@@ -19,7 +19,7 @@
 | | |
 |---|---|
 | **Base** | `origin/main` = `d1d49c5010260cb94a185a00e3a92e3e5d85ad92` (merge of PR #342), fetched 2026-11-14 UTC; every `file:line` below was read at this commit |
-| **Revision** | **Round 2** (after two independent finance reads of head `37e8a2df…`, both reporting a blocker). Changes are listed in §12.2. Still design only. |
+| **Revision** | **Round 3** (rounds 2 and 3 followed independent finance reads of heads `37e8a2df…` and `802a97d1…`). Changes are listed in §12.2-12.3. Still design only. |
 | **Location rationale** | `docs/architecture/` already holds the project's design documents that are explicitly "design only / not yet implemented" (e.g. `phase2-tenant-context-remediation-design.md`). `docs/decisions/` holds *owner decisions*, which this is not; `docs/adr/` holds *accepted* ADRs, which this is not. |
 | **Language** | English (the governance docs `engineering-tooling.md` and several recent decision records are English; `ledger.md` §3.2 is the Persian/English source of the requirements). |
 | **Evidence labels** | **OBSERVED** = read in the cited file at the base commit, not executed. **INFERENCE** = reasoning from observations, not proven by execution. **LIMITATION** = what this work could not establish. **UNKNOWN** = not proven. **OWNER-DECIDED** = recorded as such in `docs/status/ledger.md`. **OPEN QUESTION (OQ-n)** = not owner-decided; options are in §9. |
@@ -96,7 +96,7 @@ at the comment `:142`, ends `:163`), `refundPayment ~681-777` (closing brace is
 | A4 | **Retracted claim (round 2).** Round 1 said the shared table's `clinic_id` has `DEFAULT 1`. That is true only of the *creating* migration (`0001:133`); migration 0016 removes the default (`0016:12-13`, `:33-40`: `ALTER … MODIFY clinic_id BIGINT UNSIGNED NOT NULL` when the default is `'1'`) and 0017 adds a foreign key to `cpms_clinics` (`0017:28`). On an installation that has run the migrations the column has **no** default, so this is **not** a reason against option A. What remains true: the unique index is five columns, so "unique per clinic" is not what the index expresses. | `0001:133`; `0016:33-40`; `0017:28`; `0020:81` |
 | A5 | `refund` first-success returns **HTTP 200** (no status function is passed). The only UI caller treats any status other than 200 as an error. | `FinanceController.php:148-156` (no `$status`/`$statusFn` passed), `staff()` default `200` at `:315`; `SecretaryFinancePage.php:768-769` |
 | A6 | Refund `amount` is optional; omitted ⇒ refund the whole remaining amount. The UI sends `amount` only if the operator typed one ("empty = whole remaining"). | `FinanceService.php:700-702`; `SecretaryFinancePage.php:758-767` |
-| A7 | Amounts are **whole rials**, not cents: nothing is multiplied or divided by 100; `toMinor()` is only a name. An int is returned as is; a float if integral; a string if `is_numeric` — the string goes **through `(float)`**, is accepted if integral, then cast to int; anything else ⇒ `null` ⇒ 422. No rounding is performed on this path. The UI prompt says rials. Storage is `DECIMAL(12,2)` (10 integer digits, so at most 9,999,999,999 by column definition). PHP's exact behaviour for odd numeric strings and for floats beyond the int range was **not run** (no PHP in the sandbox) — see §4.2. | `FinanceService.php:1210-1225`; `0001:595-600`; `SecretaryFinancePage.php:760` |
+| A7 | Amounts are **whole rials**, not cents: nothing is multiplied or divided by 100; `toMinor()` is only a name. It returns an int as is; a float if integral; a numeric string via **`(float)`**, accepted if the double is integral, then cast to int; anything else ⇒ `null` ⇒ 422. **The REST layer converts the value to a float before the service sees it** (the route declares `amount` as `type: number`, `FinanceController.php:160`; WordPress runs `is_numeric` then `(float)` — §4.2), so an over-precise decimal such as `300000.00000000001` reaches the service as `300000` (JS double check: same value). So "fractional input is rejected, no rounding" is **not true in general**: only inputs whose double is non-integral are rejected. Storage is `DECIMAL(12,2)` (10 integer digits). PHP and WordPress were **not executed** (§4.2, §11). | `FinanceService.php:1210-1225`; `FinanceController.php:160`; `0001:595-600`; `SecretaryFinancePage.php:760` |
 | A8 | `reason` is only `trim()`-ed (PHP `trim`, ASCII whitespace set), must be non-empty, and is **truncated to 255** characters **only inside the audit record**; the payment row stores no refund reason. | `FinanceService.php:686-689`, `:770` |
 | A9 | The audit record is written **inside** the refund transaction through a nested savepoint. The audit writer **explicitly checks** its own steps and throws: missing guard row (`:85`), tail-read error (`:93`), insert not persisted (`:130`), guard update failed (`:139`) — so an *audit-write* failure rolls back the enclosing transaction. It locks a **global** singleton row (`cpms_audit_seq`, id 1) `FOR UPDATE`. The audit row carries actor, role, `created_at` (server time), before/after/meta JSON and a hash chain. This explicit checking is **not** the general behaviour of the DB wrapper (A13) and is **not** applied to the refund's own `UPDATE`s (A14). | `AuditLogger.php:43-141`; `CpmsDb.php:272-317`; `0001:676-698` |
 | A10 | Only the payment row records *how much* has been refunded in total. There is **no per-refund record, refund date or refunding actor on a business table**; per-refund facts exist only in the audit log (`PAYMENT_REFUND`, `meta.refund_amount`, `meta.reason`). | `0001:595-613`; `FinanceService.php:754-771` |
@@ -185,33 +185,40 @@ needing owner input are cross-referenced to §9).
 
 ### 4.2 Amount: canonical form and "remaining"
 
-* **What is accepted today (OBSERVED by reading `toMinor`, `:1210-1225`; not
-  executed).** An int; an integral float; or a string for which PHP `is_numeric`
-  is true, converted via `(float)` and accepted if integral, then cast to int. By
-  PHP's documented numeric-string rules (**not run — no PHP in the sandbox**) that
-  set includes forms such as `"1e3"`, `"1000.0"`, leading/trailing whitespace and
-  a leading `+`. The WordPress `type: number` argument
-  (`FinanceController.php:160`) runs before the service; how it pre-processes such
-  strings was **not examined (UNKNOWN)**. Precision above 2^53 is lost in the
-  float step, and the `(int)` cast of a float outside the integer range is
-  **UNKNOWN** here. The amount is in **whole rials** (A7), at most 10 digits by the
-  column definition; `toMinor` is a name only, nothing is scaled by 100.
-* **Canonical form for the specification** (design position): the *integer value*
-  after the existing interpretation, written as base-10 ASCII digits with no sign,
-  no leading zeros, no separator, no exponent and no decimal point, in the range
-  **1 … 9,999,999,999** (zero and negatives are already rejected,
-  `$refund <= 0`, `:703`; the upper bound is the column's integer capacity — in
-  practice the remaining cap is lower). Whatever today's `toMinor` accepts and that
-  maps into this range yields the same canonical text, so `1000`, `"1000"`,
-  `1000.0`, `"1e3"` are one specification; anything else is rejected **before**
-  fingerprinting. This design does **not** change what `toMinor()` accepts;
-  whether to tighten the wire grammar (e.g. ASCII digits only) is **OQ-16**.
-* **No rounding.** A fractional value is rejected (`toMinor` → `null` → 422),
-  not rounded (for integral-valued floats/strings the float step is exact below
-  2^53). Hence there is no rounding ambiguity and no unit conversion in the
-  specification. The refund currency is the payment's/invoice's currency and is
-  not a request field (the payments table has no currency column; the invoice row
-  does, `0001:557`, default `IRR`).
+* **What happens today (OBSERVED by reading; PHP and WordPress NOT executed).**
+  The route declares `'amount' => ['type' => 'number']` with no custom callback
+  (`FinanceController.php:160`). In WordPress source read from
+  `WordPress/wordpress-develop`, branch `6.9` (the plugin requires WP ≥ 6.9; the
+  installed version is **UNKNOWN**), such an argument is checked with `is_numeric`
+  (`rest-api.php:2557-2565`) and then sanitized with **`(float) $value`**
+  (`rest-api.php:2885-2887`) by the default `rest_parse_request_arg`
+  (`class-wp-rest-request.php:840-842`, `rest-api.php:1483-1493`) in
+  `sanitize_params()`, which `dispatch` runs before the permission callback and the
+  handler (`class-wp-rest-server.php:1120-1124`, `:1264`); the controller reads the
+  params afterwards (`FinanceController.php:362-371`). **INFERENCE:** the service
+  receives a float, then `toMinor` accepts an integral float or an `is_numeric`
+  string via `(float)` and casts to int (`:1210-1225`). Client text that rounds to
+  an integral double is therefore **silently accepted as that integer**. JS doubles
+  (same IEEE-754 format; Node check, not PHP): `300000.00000000001` → `300000`;
+  `9007199254740993` → `9007199254740992`; `1e400` → `Infinity`. PHP's `(int)` of
+  `INF`/out-of-range floats and of `"1e400"` is **UNKNOWN**. The round-2 claim "a
+  fractional value is rejected, no rounding" was **wrong**: a rounding step exists
+  before the service.
+* **Requirement (binding on any implementation):** the amount is read through an
+  **exact wire grammar, versioned by `spec_version`**, and parsed by an
+  integer/decimal parser that **rejects non-integral, over-precise, exponent and
+  out-of-range input before any float coercion**. Because WordPress coerces typed
+  arguments before the handler, this must be enforced **at the actual REST
+  boundary** (the route must not rely on a `type: number` argument for the amount;
+  how is an implementation choice) and proven by a **REST-level** test (T7a), not
+  only a service-level one. The grammar is **OQ-16**; the range is
+  **1 … 9,999,999,999** (the column's integer capacity; zero/negative already fail,
+  `$refund <= 0`, `:703`).
+* **Canonical form:** the integer value as base-10 ASCII digits (no sign, leading
+  zero, separator, exponent or decimal point), built from the exact parse; which wire
+  forms map to it is decided by the grammar, not by today's `toMinor`. Amounts are
+  **whole rials** (A7); nothing is scaled by 100. The currency is the payment's/
+  invoice's, not a request field (`0001:557`, default `IRR`).
 * **Omitted amount = intent "REMAINING", not a number.** The specification stores
   the *intent* (`REMAINING` or the explicit integer). Comparing resolved numbers
   would be wrong: after a successful whole-remainder refund the resolved remaining
@@ -227,7 +234,7 @@ order:
 
 1. Must be valid UTF-8; otherwise reject (422), never compare raw bytes of an invalid string.
 2. Trim leading/trailing whitespace. PHP `trim()` with its default list strips only ASCII space, tab, LF, CR, NUL and vertical tab; it does **not** strip e.g. U+00A0 NO-BREAK SPACE. **U+200F RIGHT-TO-LEFT MARK is not whitespace:** it is a *bidirectional format control* (general category Cf), invisible, and not stripped by `trim()`. Whether such invisible format controls (U+200E/U+200F, U+202A-U+202E, U+2066-U+2069, zero-width characters) are kept, stripped or rejected is not an implementation detail — it decides which strings count as "the same" — and is part of **OQ-5**. Until decided they are kept as typed (so they make specifications *different*, the fail-safe direction).
-3. Unicode **NFC** normalization **only if** the `intl` `Normalizer` is available in the supported runtime — **availability is UNKNOWN (not verified in the repo or on any installation) and must be established before adoption.** If it is not available, NFC is skipped and two visually identical but byte-different reasons are *different* specifications. **Requirement:** the exact canonicalization (trim set, normalization form, treatment of invisible controls and — because normalization data can change between Unicode/ICU versions — the Unicode version assumed) is **pinned by `spec_version`**; any change to it is a **new `spec_version`**, and an existing refund keeps comparing under the version it was created with. A fingerprint alone cannot be re-derived under a different canonicalization, which is a further reason OQ-1 may prefer to store the canonical fields as well.
+3. Unicode **NFC** normalization **only if** the `intl` `Normalizer` is available in the supported runtime — **availability is UNKNOWN (not verified in the repo or on any installation) and must be established before adoption.** If it is not available, NFC is skipped and two visually identical but byte-different reasons are *different* specifications. **Requirement:** the exact canonicalization (trim set, normalization form, treatment of invisible controls and — because normalization data can change between Unicode/ICU versions — the Unicode version assumed) is **pinned by `spec_version`**; any change to it is a **new `spec_version`**, and an existing refund keeps comparing under the version it was created with (selection procedure: §4.4). A fingerprint alone cannot be re-derived under a different canonicalization, which is a further reason OQ-1 may prefer to store the canonical fields as well.
 4. **No** internal whitespace collapsing, **no** case folding, **no** folding of Arabic/Persian letter variants (ي/ی, ك/ک) or digit systems (۱۲۳/123/١٢٣). The stored/displayed reason stays exactly what the operator typed (after steps 1-3).
 5. Length: compare the **full** normalized string. Because the audit record truncates at 255 (A8), two reasons differing only after character 255 would be different specifications that persist identically. Recommendation: **reject** over-length reasons rather than truncate silently — a behaviour change, hence **OQ-5**.
 
@@ -262,6 +269,29 @@ to reuse it for refund reasons is part of **OQ-5**.
   fingerprint alone is stored or *also* the canonical fields (which makes a
   fingerprint redundant in a refunds-table design, because the row carries the
   fields) is **OQ-1**.
+* **Spec version on replay (one rule; §6.1 steps 1a and 5.3).** `spec_version`
+  belongs to the **stored** refund, so a duplicate lookup must not canonicalize the
+  request under the code's *current* version first. `DECIDE(raw request, stored
+  row)`: (1) `V_s` = the stored `spec_version`; (2) canonicalize **and validate** the
+  *original raw request* with `V_s`'s own canonicalizer and validation rules (amount
+  grammar, reason normalization, length limits); (3) fingerprint / compare with
+  `V_s`'s algorithm; (4) equal ⇒ **replay**, different spec or payment ⇒ **422**
+  key-reuse; (5) **no canonicalizer for `V_s`** ⇒ **fail closed**: nothing applied,
+  nothing replayed, and **not** the key-reuse 422 (it would falsely say the
+  parameters differ) — a distinct, logged error (candidate
+  `CLINIC_IDEMPOTENCY_SPEC_UNAVAILABLE`, 5xx class, "cannot evaluate this key's
+  specification; do not use a new key"; naming with OQ-8). A **new** claim uses the
+  *current* version and records it. So an **identical valid retry after an upgrade is
+  replayed**, even if the new rules would now reject that request, as the owner
+  decision requires. **Requirement:** every released canonicalizer and validation
+  rule set is retained unchanged, with fixed fixtures, while a refund row of that
+  version can exist (with the OQ-6 recommendation: indefinitely); retiring one needs
+  owner approval. *Options:* **V-1** per-version canonicalizers (recommended);
+  **V-2** one canonicalization frozen for ever (any change needs a new endpoint or
+  field); **V-3** re-canonicalize stored raw fields and request under the current
+  version (no old code, but "same" changes retroactively — against the fail-safe
+  principle — and impossible with fingerprint-only storage, OQ-1(i)). Chosen with
+  OQ-1.
 * The key itself is validated like the payment key: UUID, lowercased, from the
   `Idempotency-Key` header (`RestBase.php:304-311`); `idempotency_key` columns
   elsewhere are `VARCHAR(128)` (`0001:598`). Missing/invalid ⇒ 400
@@ -350,7 +380,13 @@ and fingerprint, and the result snapshot (see §6) or enough facts to re-create 
 
 * **Schema/migration required: YES** (new table, a uniqueness constraint, foreign
   keys per `ADR-0012`). **Needs separate owner approval (R8).** Not proposed for
-  implementation here.
+  implementation here. **Locking side effect of those foreign keys
+  (INFERENCE/UNKNOWN, no database available):** migration 0017 already puts
+  `clinic_id` foreign keys on `cpms_audit_logs`, `cpms_invoices` and `cpms_payments`
+  (`0017:23, 29, 35`); InnoDB takes **shared** locks on parent rows when a child row
+  is inserted. A refund-row insert with foreign keys to payment, invoice and clinic
+  may therefore take shared locks on those rows **before** the exclusive locks of
+  steps 6-7 (§6.5).
 * **Per-clinic uniqueness by DB:** a unique constraint on `(clinic, key)` with
   **both columns NOT NULL and no default for clinic** (MySQL unique indexes treat
   NULLs as distinct, which would silently remove uniqueness; the existing shared
@@ -404,7 +440,7 @@ column is the **capture** key, `0001:598`/`:609`, and must not be reused).
 | Honest fit to R1-R7 | partial | **full, if Requirement W (§6.0) is met** | fails R1 |
 
 **Engineering recommendation (not a decision):** option **B**, subject to owner
-approval of a feature-scoped migration (R8). Chosen by owner in **OQ-1**.
+approval of a feature-scoped migration (R8). **To be chosen** by the owner in **OQ-1**; the owner has **not** chosen option B.
 
 ---
 
@@ -424,16 +460,25 @@ rolls everything back. That is **not true of the code as it stands** and the
 statements about rollback below hold **only if the following requirement is met**:
 
 > **REQUIREMENT W (for any future implementation).** Every statement inside the
-> refund transaction — key claim, payment lock read, invoice lock read, refund-row
-> completion, payment update, invoice update, audit write, commit — must be
-> **explicitly checked or made to throw**, and a failure of any of them must end in
-> a **rollback of the whole transaction** followed by a "rolled back, retry with
-> the same key" outcome. In particular: (1) a failed lock read must not be
-> treated as "row not found"; (2) a failed key insert must **not** be treated as
-> "duplicate" unless the failure is positively identified as a duplicate-key error;
-> (3) an `UPDATE` whose result is "0 rows" must be examined (it can mean failure, no
-> matching row, or — in MySQL — unchanged values, which behaviour depends on the
-> client flags and is **UNKNOWN** here) rather than ignored.
+> refund transaction **up to, but not including, the commit statement** — key claim,
+> payment lock read, invoice lock read, refund-row completion, payment update,
+> invoice update, audit write — must be **explicitly checked or made to throw**, and
+> a failure of any of them must end in a **rollback of the whole transaction**
+> followed by a "rolled back, retry with the same key" outcome. In particular:
+> (1) a failed lock read must not be treated as "row not found"; (2) a failed key
+> insert must **not** be treated as "duplicate" unless positively identified as a
+> duplicate-key error; (3) an `UPDATE` whose result is "0 rows" must be examined (it
+> can mean failure, no matching row, or — in MySQL — unchanged values, which depends
+> on client flags and is **UNKNOWN** here) rather than ignored.
+>
+> **Commit is excluded from the rollback rule.** A commit that returns success is
+> *committed*. A commit that errors, times out or is not acknowledged is **UNKNOWN**
+> (it may have been applied, §6.4): it must **not** be answered with "rolled back"
+> or "failed", it is **never** retried with a new key, and the client is told
+> "outcome unknown — retry with the same key". Reconciliation is the same-key retry
+> (step 1a/5 finds the row ⇒ replay, or finds none ⇒ applies once). No
+> implementation text, message or log may say that a possibly committed refund
+> "rolled back".
 
 Mechanisms (the choice is an engineering decision for the implementation design
 review, listed as **OQ-21**; this document does not choose):
@@ -445,7 +490,8 @@ review, listed as **OQ-21**; this document does not choose):
 | **W-3 Both** | Strict for the scope plus explicit checks on the statements whose failure has special meaning (the key claim, the locked reads). | Defence in depth; the duplicate-key case is handled explicitly. | Most work; two mechanisms to keep consistent. |
 
 Whichever is chosen, a test must prove that an injected failure of **each**
-statement (T16) ends in a full rollback.
+statement before the commit (T16) ends in a full rollback; the commit itself is
+covered by T17a (unknown outcome, never "rolled back").
 
 ### 6.1 The single atomic protocol
 
@@ -454,9 +500,17 @@ statement (T16) ends in a full rollback.
    (`authorizeScoped`), reason non-empty, payment exists and belongs to the
    trusted clinic (404 otherwise), per-payment ownership
    (`authorize_payment_ownership`) — i.e. what is now at
-   `FinanceService.php:682-695`. Then: key present/valid, specification
-   canonicalized (§4), fingerprint computed. The payment read here is a plain,
-   possibly stale, read used only for early rejection.
+   `FinanceService.php:682-695`. Then: key present and well-formed (an unversioned
+   check). The specification is **not** canonicalized here: that depends on a
+   `spec_version` known only after the key lookup (§4.4). The payment read is a
+   plain, possibly stale, read used only for early rejection.
+1a. **Plain read of `(trusted clinic, key)`, no transaction.** *Found* ⇒ `DECIDE`
+   (§4.4) with the **stored** `spec_version` ⇒ replay / 422 / spec-unavailable
+   error; finished. *Not found* ⇒ canonicalize and validate under the **current**
+   `spec_version` (a rejection stores nothing — proposed default, OQ-18) and
+   compute the fingerprint. A committed row is immutable, so acting on a hit is
+   safe; a **miss is never trusted** (steps 4-5 decide races); a read *error* is an
+   error, not a miss (Requirement W).
 2. **The pre-transaction cap check (`:697-710`) must not run before the replay
    decision.** If it did, a replay of a refund that exhausted the balance would
    get 422 (today's observable behaviour, §3.1) instead of the stored result. The
@@ -494,9 +548,11 @@ statement (T16) ends in a full rollback.
       locking reads and gap/next-key lock behaviour in that case are **UNKNOWN**
       per isolation level and are deliberately **not** relied on. Test T15
       establishes the facts on a real database.)
-   3. **Row found, same `spec_version` and same specification and same payment**
-      ⇒ **replay** the stored result (§7.1); no write. **Found, different
-      specification or different payment** ⇒ **422** key-reuse error, no write.
+   3. **Row found** ⇒ `DECIDE` (§4.4) using the **stored** row's `spec_version`
+       (never the current one) on the original raw request: equal ⇒ **replay** the
+      stored result (§7.1); different specification or payment ⇒ **422**
+      key-reuse; no canonicalizer for that version ⇒ the distinct fail-closed
+      error. No write in any of the three cases.
    4. **Row not found** (the other transaction rolled back or timed out) ⇒ go back
       to step 3 — a **bounded** number of times. The bound and what is returned
       when it is exhausted ("rolled back, retry with the same key", never a
@@ -512,16 +568,28 @@ statement (T16) ends in a full rollback.
    `captured` (`:717-724`, else 409), invoice exists, belongs to the clinic and is
    not `voided` (409), recompute the remaining amount from the **locked** payment
    row, resolve the `REMAINING` intent (§4.2), reject over-cap (`:733-746`, 422).
-   Any rejection here **rolls back**, which discards the key claim of step 4: a
-   request rejected on its merits leaves no key row (what an operator may then do
-   with that key is policy, **OQ-18**).
+   Any rejection here **rolls back**, which discards the key claim of step 4.
+   **Proposed default, pending OQ-14/OQ-18 (not a fact):** a request rejected
+   before commit leaves no key row. This never loosens the recorded decision for a
+   **committed** refund: that key stays bound to its specification for good (same
+   spec ⇒ replay, different spec ⇒ rejected).
 9. **Write, every statement checked:** complete the key row (applied amount,
    server timestamp, actor, **and the replay snapshot — the exact response facts
    that will be returned, §7.1 — in this same transaction**), update
    `payments.refunded_amount`/`status`, reverse the invoice effect
    (`reverseInvoicePayment`), write the `PAYMENT_REFUND` audit row (which takes
    the global audit serialization row last, A9). Any failed or ambiguous statement
-   ⇒ throw ⇒ rollback.
+   ⇒ throw ⇒ rollback. **How the snapshot is built:** after the two updates and the
+   audit write, still inside the transaction, re-read the payment and invoice rows
+   (the transaction holds their exclusive locks and sees its own writes) and
+   **verify** them against the intended post-update facts (`refunded_amount` = locked
+   value + applied amount; payment `status`; invoice `paid_amount`/`balance`/`status`
+   equal to the `reverseInvoicePayment` result; audit id > 0). Any mismatch ⇒ throw ⇒
+   rollback. The snapshot is serialized from **those verified facts** plus applied
+   amount, reason as stored, server timestamp, actor and audit id, and written to the
+   key row (checked) before step 10 — never from a re-read after commit. (Today's
+   code already builds its response inside the transaction,
+   `FinanceService.php:772-774`.)
 10. **Commit.**
 11. **Classify the outcome** (§6.4): *committed* only if the commit statement
     returned success; *rolled back* only if a rollback statement positively
@@ -539,7 +607,7 @@ statement (T16) ends in a full rollback.
 | Two **identical** requests (same key, payment, spec) concurrently | They collide at the key claim (step 4). The winner continues; the loser waits, then gets a duplicate-key error, rolls back, re-reads fresh (step 5), finds the committed row, spec equal ⇒ **replay**. If the winner rolled back instead, the loser's insert succeeds or it retries (bounded). Exactly one refund. |
 | Same key, **different spec, same payment** concurrently | Same collision; the loser, after re-read, finds a different specification ⇒ **422** `…KEY_REUSED`, no state change. Which request wins is not deterministic; the outcome (one applied, one rejected) is. |
 | Same key, **different payments** | Same collision at the key claim, before any payment lock; the loser ⇒ 422 (different payment). Never two refunds for one key. |
-| **Different keys**, same payment, both fit | Each claims its own key, then both queue on the payment lock; each re-checks the cap under the lock (intended: distinct intents). |
+| **Different keys**, same payment, both fit | Each claims its own key, then both queue on the payment lock; each re-checks the cap under the lock (intended: distinct intents). With foreign keys on the refund row, the shared-lock → exclusive-lock sequence may **deadlock** (INFERENCE/UNKNOWN, §6.5): the victim rolls back and retries with the **same** key; the total still never exceeds the amount paid. |
 | **Different keys**, together exceeding the cap | The first applies; the second fails 422 (`max_refundable` is the locked value) and rolls back its key claim. The total never exceeds the amount paid (R1). |
 | **Same key in two clinics** | Independent `(clinic, key)` pairs; both succeed. Every claim and read includes the trusted clinic, so one clinic can never observe, replay or collide with the other's key. |
 | Refund vs **void** of the same payment | Both reach the payment lock; whichever is second sees the other's committed state under the lock. Deadlock freedom with capture is **UNKNOWN** (§6.5). |
@@ -601,19 +669,22 @@ A *does* have the stuck-pending states of §5.)
   refund intent** (an operator has confirmed that the earlier one did not and will
   not apply, or really wants an additional refund). A key mismatch (422) is **not**
   a reason to create a new key — see §4.3 and **OQ-19**.
-* A request that is rejected before commit stores nothing (nothing committed).
-  Whether the operator may then **correct the request and reuse the same key**, or
-  whether a rejected key should be burned, is **policy**, not a design fact: it is
-  **OQ-18**. Failures are not stored for replay (policy: **OQ-14**).
+* **Proposed default (policy, pending OQ-14 and OQ-18):** a request rejected before
+  commit stores nothing, so a corrected request may use the same key; failures are
+  not stored for replay. Neither is a design fact. They never apply to a key whose
+  refund committed (that key stays bound, see §6.1 step 8).
 * How the existing layer maps lock/deadlock errors to HTTP status was not traced
   (**UNKNOWN**).
 
 ### 6.5 Lock order and deadlock analysis
 
-**Proposed single order for the refund path:** (1) key claim (unique-index record of
-the key) → (2) payment row → (3) invoice row → (4) audit serialization row
-(`cpms_audit_seq`, last, as today). Steps 4, 6, 7, 9 of §6.1 follow it, and nothing
-in the protocol acquires a lock out of this order.
+**Proposed order of the *explicit* locks of the refund path:** (1) key claim
+(unique-index record of the key) → (2) payment row → (3) invoice row → (4) audit
+serialization row (`cpms_audit_seq`, last, as today). Steps 4, 6, 7, 9 of §6.1
+follow it. **That is all the order guarantees:** locks that InnoDB takes
+*implicitly* (shared locks on foreign-key parent rows, gap/next-key locks, locks on
+secondary-index records) are **not** ordered by it, are **UNKNOWN** without a
+database, and can run against it (items 1-2 below).
 
 | Path | Order | Evidence |
 |---|---|---|
@@ -622,13 +693,14 @@ in the protocol acquires a lock out of this order.
 | Capture (today) | invoice → clinic row → insert payment → audit-seq | `:1083`, `lockClinic` `:533`/`:1171`, insert `:536-545` |
 | **Refund (proposed)** | key claim → payment → invoice → audit-seq | §6.1 steps 4-9 |
 
-**What can and cannot be said (all INFERENCE; no database was available, nothing
-was executed):**
+**What can and cannot be said (all INFERENCE; no database was available and no
+PHP was executed):**
 
 * Void and refund both take payment → invoice. Refund additionally takes the key
   first; void takes no key. Since the key is acquired before everything else and
   void never waits for a key, a cycle *between these two* is not evident from the
-  order alone. This is a reading of the order, **not** a proof.
+  order of the explicit locks alone. This is a reading, **not** a proof, and it
+  ignores the implicit locks of items (1)-(2).
 * **Capture takes the invoice first, then inserts a payment row** (which
   references the invoice and, in InnoDB, can involve locks on the parent row and on
   secondary-index records). Refund holds the payment row and then wants the
@@ -636,6 +708,26 @@ was executed):**
   deadlock **was not analysed and is UNKNOWN**. The round-1 statement that "no wait
   cycle is evident" is **withdrawn** as a general claim. Test T14 must probe it on
   a real database.
+* **(1) Foreign-key shared locks (INFERENCE/UNKNOWN).** The refund-row insert, with
+  foreign keys to payment, invoice and clinic (Option B; 0017 already has such keys
+  on audit/invoice/payment, `0017:23, 29, 35`), may take **shared** locks on those
+  parent rows at step 4, *before* the exclusive `FOR UPDATE` of steps 6-7. Two
+  refunds with **different keys on the same payment** could then each hold a shared
+  lock on the payment and wait for the other's to clear → **deadlock** (InnoDB picks
+  a victim). Whether this happens, and under which isolation level, is **UNKNOWN**.
+  **Money safety rests on** (given Requirement W) deadlock ⇒ full rollback ⇒
+  retry with the **same** key (§6.4), with the cap re-checked under the locks — not
+  on the deadlock being absent.
+* **(2) Audit vs clinic lock-order cycle (UNKNOWN; may already exist in today's
+  code).** The refund's audit row takes the clinic from the scope fallback
+  (`AuditLogger.php:58-60`; the refund call passes no clinic,
+  `FinanceService.php:754-771`), is inserted at `AuditLogger.php:127` **after** the
+  global audit lock (`:81`), and `cpms_audit_logs` has a clinic foreign key (0017:23),
+  so that insert may need a **shared lock on the clinic row**. Capture takes the
+  **exclusive** clinic row lock first (`lockClinic`, `FinanceService.php:533`,
+  `:1171-1177`) and only later the audit lock. Refund: audit lock → clinic row;
+  capture: clinic row → audit lock — a possible **cycle in today's code**,
+  independent of this feature. Not analysed further; **UNKNOWN**; test T14a.
 * **Same key, different payments:** the second transaction waits inside step 4
   for the first one's outcome (that is the whole point), holding **no** other lock
   of its own. If the first commits, the waiter gets a duplicate-key error ⇒ step 5.
@@ -645,8 +737,9 @@ was executed):**
   possible, not proven absent**.
 * The audit serialization row is a **global** lock held until commit by every
   audit-writing transaction; refund, void and capture all queue on it at the end.
-  It is last in every order here, so it adds waiting, not an evident cycle; its
-  throughput effect is **not measured**.
+  It is last among the *explicit* locks of every path, but see item (2): it is
+  **not** last once the clinic foreign key is counted. Its throughput effect is
+  **not measured**.
 * Isolation level, lock-wait timeout and deadlock-detection settings are
   **UNKNOWN** (A12). Gap/next-key locking by the key claim and by locking reads of
   a *missing* key is **UNKNOWN per isolation level** (REPEATABLE READ vs READ
@@ -668,7 +761,7 @@ current invoice view + `idempotent_replay` + `code`, HTTP 200 vs 201 on first
 success. `SRS.md:281` says "same response"; `error-codes.md:38` says "stored
 response". The code does not do either exactly.
 
-**Options for refunds** (decided in **OQ-2**):
+**Options for refunds** (**to be decided** in **OQ-2**):
 
 | | Description | Pros | Cons |
 |---|---|---|---|
@@ -709,7 +802,7 @@ lock from the locked `refunded_amount` (`:733-746`) and stays the single authori
 Rejected 422 `CLINIC_VALIDATION_FAILED` with `data.max_refundable` (today's
 behaviour, `:739-746`; note `data.max_refundable` is undocumented in
 `error-codes.md`, as already recorded in `agent-log.md`). The failure is **not**
-stored; the key is not consumed. A replay of a refund that *previously succeeded*
+stored — **proposed default, pending OQ-14/OQ-18, not a fact**: the key is then not consumed. A replay of a refund that *previously succeeded*
 and exhausted the cap returns the stored result, never this 422 (§6.1 step 2).
 
 ### 7.4 Payments already voided
@@ -776,7 +869,7 @@ and that §10 tests cover them.
 
 ## 8. Adjacent existing defects and findings (reported — NOT fixed, NOT in scope of this PR)
 
-**OBSERVED in code at `d1d49c5`; not executed; effects are INFERENCE.**
+**OBSERVED in code at `d1d49c5`; read, not executed (except the named Node checks); effects are INFERENCE.**
 
 * **F1 — Receipt after a partial refund.** `receipt()` (`FinanceService.php:885-944`)
   lists only payments with `status = captured` and prints each payment's **full
@@ -798,6 +891,19 @@ and that §10 tests cover them.
   replay. Out of scope (payments are not the owner's refund decision).
 * **F4 — `payment.md:44/51` vs code:** the doc says `refunded` covers partial and
   mentions a "Refund record" (neither exists: A11, V5).
+* **F7 — `error-codes.md` does not document `data.max_refundable`.** The refund 422
+  carries `['max_refundable' => $maxRefundable]` (`FinanceService.php:697-710`,
+  `:739-746`) but `docs/api/error-codes.md` has no entry for it (`CLINIC_VALIDATION_FAILED`
+  is documented at `:32` without that field; a `grep` for `max_refundable` in the file
+  finds nothing).
+* **F8 — No null check after the locked payment read.** `refundPayment` calls
+  `$this->payments->findForUpdate($paymentId)` (`:713`; returns `?array`,
+  `PaymentRepository.php:56`) and passes the result to `rowBelongsToTrustedClinic(array $row)`
+  (`:714`) without a null check. The wrapper returns `null` both for "no row" and for a
+  failed query (A13), and a `null` passed to an `array` parameter raises a PHP
+  `TypeError` (PHP semantics, **not run**) instead of a controlled 404/5xx; how the
+  REST layer maps it was not traced (**UNKNOWN**). The invoice read in the same
+  transaction does have a null check (`:725-731`).
 * **F5 — Admin refund dialog: amount parsing and no confirmation.**
   (OBSERVED by reading; the `parseInt` behaviour reproduced in Node, not in a
   browser.) The amount is requested through `CpmsDialog.prompt`, whose input is a
@@ -814,9 +920,10 @@ and that §10 tests cover them.
 * **F6 — `SRS.md:281` payment-replay wording** says "same response" while the code
   rebuilds the current view (V6); depends on **OQ-2(b)**; left unchanged on purpose.
 
-Items F1 (receipts), F2 (void after partial refund), F5 (UI) and F6 (SRS wording)
-are the adjacent existing defects reported by the round-1/round-2 readers; **none is
-fixed or designed here** (OQ-11).
+Items F1 (receipts), F2 (void after partial refund), F5 (UI), F6 (SRS wording),
+F7 (`max_refundable` undocumented) and F8 (no null check) are adjacent existing
+defects reported by readers or found while checking; **none is fixed or designed
+here** (OQ-11).
 
 ---
 
@@ -830,6 +937,7 @@ not a decision.**
 * **Recommendation:** **B**, with (iii) both (fields give history/R3; fingerprint matches Record A).
 * **Pros (B):** exact DB uniqueness, crash-atomic, closes the per-refund-history gap. **Cons (B):** migration, two finance reviews, owner approval, dual bookkeeping with `refunded_amount`.
 * **Pros (A):** no DDL. **Cons (A):** not atomic, convention-only uniqueness, 90-day purge, fail-open, edits shared booking/handwriting code to fix.
+* **Version handling (§4.4):** V-1 per-version canonicalizers (recommended), V-2 frozen canonicalization, V-3 re-canonicalize under the current version; V-3 is impossible with fingerprint-only storage (i).
 * **Risk:** B — schema change on a finance table (needs the R8 approval path); A — silent double-apply or stuck keys; a wrong choice here is hard to reverse once data exists.
 
 ### OQ-2 — Replay semantics: (a) refund replay body/status; (b) payment replay wording
@@ -855,21 +963,17 @@ not a decision.**
 * **Pros:** stored reason equals compared reason; no silent truncation. **Cons:** behaviour change (long reasons now fail); NFC needs `intl`.
 * **Risk:** (ii) two reasons differing after char 255 are different specs yet persist identically.
 
-### OQ-6 — Key retention — **conflicts with an owner-decided requirement**
-* **Owner-decided (ledger §3.2, R4):** the key is required, DB-unique per clinic, and the same key with the same specification returns the previous result. Nothing in that record limits how long that holds.
-* **Options:** (a) keep as long as the refund record — no expiry; (b) a bounded window after which the key may be **reused** for a different refund.
-* **Recommendation:** (a) — consistent with the owner decision.
-* **Explicit statement:** option (b) is a **deviation** from the owner-decided requirement ("same key ⇒ previous result", "different spec ⇒ rejected"): after the window the same key would silently mean a *new* refund. It must **not** be implemented unless the **owner approves that deviation in writing**.
-* **Pros (a):** a very late retry can never double-apply. **Cons (a):** table grows with refunds (not measured).
-* **Risk (b):** a retry after the window is applied as a new refund — silent double refund.
+### OQ-6 — Key retention
+* **Recorded owner decisions that bind this question:** the key is DB-unique per clinic; same key + same specification returns the previous result; same key + different specification is rejected. Nothing in them limits how long that holds.
+* **Conforming option (recommended):** keep the key and its record for as long as the refund record exists — no expiry, no reuse.
+* **Excluded option (listed only so that it is not adopted by accident):** a bounded window after which the key may be reused for a different refund. It contradicts the recorded decisions (after the window the same key would silently mean a *new* refund) and may be considered **only if the owner explicitly reopens the decision in writing**.
+* **Pros:** a very late retry can never double-apply. **Cons:** the table grows with refunds (not measured). **Risk (excluded option):** silent double refund.
 
-### OQ-7 — Rollout of the required key for existing clients — **conflicts with an owner-decided requirement**
-* **Owner-decided (R4):** the key is **REQUIRED**, unconditionally.
-* **Options:** (a) required immediately, with the UI sending a UUID in the same release; (b) transitional: key optional for a stated period; (c) required, API clients informed in advance.
-* **Recommendation:** (a): the only observed caller is the admin finance UI (`SecretaryFinancePage.php:768`), which today requires status 200 and sends no key.
-* **Explicit statement:** option (b) — a temporarily **optional** key — is a **deviation** from the owner-decided unconditional requirement: during the period a request without a key is applied with **no** protection. It must **not** be implemented unless the **owner approves that deviation in writing**.
+### OQ-7 — Rollout of the required key for existing clients
+* **Recorded owner decision that binds this question:** the key is **REQUIRED**, unconditionally.
+* **Conforming options:** (a) required immediately, the UI sending a UUID in the same release (**recommended**: the only observed caller is the admin finance UI, `SecretaryFinancePage.php:768`, which today sends no key and requires status 200); (c) required immediately, with API clients informed in advance.
+* **Excluded option:** (b) a transitional period with an optional key. It contradicts the recorded decision (requests without a key would be applied unprotected) and may be considered **only if the owner explicitly reopens the decision in writing**.
 * **Pros (a):** no unprotected window. **Cons (a):** breaking for any unobserved external client (none observed in the repository; external ones **UNKNOWN**).
-* **Risk (b):** the gap stays open during the transition.
 
 ### OQ-8 — Mismatch response contract
 * **Options:** 422 `CLINIC_IDEMPOTENCY_KEY_REUSED` (candidate); 409 with a new code; 400.
@@ -894,9 +998,10 @@ not a decision.**
 
 ### OQ-12 — Refund when an invoice later becomes overpaid (discount / credit after payment)
 * **Context:** the cap is the *payment's* remaining amount (§7.5). A later discount or credit adjustment (`:1102-1109`, D15) can make an invoice's effective total lower than what was paid; the excess is not represented in the payment row.
-* **Options:** (a) refunds stay limited to the payment's remaining amount, excess handled outside this feature; (b) allow refunding the invoice-level excess through this endpoint (new cap rule, new spec field); (c) forbid such adjustments after payment.
-* **Recommendation:** (a) for this feature; decide (b)/(c) in a separate finance decision.
-* **Pros (a):** no change to cap authority. **Cons (a):** the overpayment has no refund path in the system. **Risk (b):** a second cap authority (invoice vs payment) and a larger specification.
+* **Recorded decisions that bind this question:** the refund is based on the actual amount paid after discount, and the total refunded never exceeds what was paid.
+* **Conforming option (recommended):** (a) refunds stay limited to the payment's remaining amount; any overpayment created by a later adjustment is handled outside this feature.
+* **Excluded options:** (b) refunding an invoice-level excess through this endpoint (it would add a second cap authority and can exceed the payment's own amount); (c) forbidding such adjustments after payment (a discount policy decision). Either may be considered **only if the owner explicitly reopens the decisions above**.
+* **Pros (a):** no change to cap authority. **Cons (a):** the overpayment has no refund path in the system.
 
 ### OQ-13 — Does a replay leave an audit trace?
 * **Options:** (a) none (replays are not financial events); (b) a non-chained operational log line; (c) a separate audit action (e.g. replay) in the hash-chained audit log; (d) a counter on the refund row.
@@ -905,7 +1010,7 @@ not a decision.**
 
 ### OQ-14 — Failed-result replay, tombstones, audit retention
 * **Questions:** should a *rejected* request (422 cap, 409 status) be stored and replayed for the same key? Should a "tombstone" prevent reuse of a key whose refund was rolled back? How long must refund rows and the `PAYMENT_REFUND` audit rows be kept (no purge job exists for the refunds table by design; audit retention not examined)?
-* **Options:** (a) store nothing for failures (this design's assumption); (b) store failures as tombstones with the fingerprint; (c) store only certain failures.
+* **Options:** (a) store nothing for failures (the proposed default, not a decision); (b) store failures as tombstones with the fingerprint; (c) store only certain failures.
 * **Recommendation:** (a) with indefinite retention of successful refund rows.
 * **Pros (a):** simple, no unbounded junk. **Cons (a):** a retry of a rejected request is re-evaluated against current state (may now succeed). **Pros (b):** deterministic replay of failures. **Cons (b):** more storage and states; a transient failure becomes permanent unless handled. **Risk:** inconsistent retention between refund rows and the audit log.
 
@@ -916,10 +1021,11 @@ not a decision.**
 * **Pros (a):** no change. **Cons (a):** cash already refunded before a void is not reconciled by the system. **Risk (b):** double reversal against the invoice.
 
 ### OQ-16 — Currency precision and the amount wire grammar
-* **Observed:** whole rials only; no currency column on payments; the invoice has a currency, default `IRR` (`0001:557`); storage `DECIMAL(12,2)`; `toMinor` accepts numeric strings through float (A7, §4.2).
-* **Options:** (a) keep whole-unit integers, canonical form as in §4.2, wire grammar unchanged; (b) restrict the wire grammar to ASCII digits (and/or JSON integers) only; (c) support fractional currencies later via a new `spec_version`.
-* **Recommendation:** (b) at the API boundary, in the implementation PR, with the specification fixed by `spec_version`.
-* **Pros (b):** removes float-derived ambiguity (`"1e3"`, `"1000.0"`). **Cons (b):** behaviour change for any client sending such forms (none observed). **Risk (a):** precision/format ambiguity enters the fingerprint.
+* **Observed:** whole rials only; no currency column on payments; the invoice has a currency, default `IRR` (`0001:557`); storage `DECIMAL(12,2)`; the REST layer converts the amount to a float before the service (`FinanceController.php:160`; WordPress `rest-api.php:2885-2887`, §4.2 — WordPress not executed); `toMinor` then accepts numeric strings through float (A7).
+* **Fixed by the design (§4.2):** whatever is chosen must be exact, versioned by `spec_version`, parsed before any float coercion, and enforced at the REST boundary.
+* **Options (the grammar):** (a) JSON integer token only; (b) ASCII-digit string only; (c) both, mapped to the same canonical integer; (d) keep today's float-based acceptance — **not conforming** (silent rounding of over-precise decimals).
+* **Recommendation:** (c), or (a) if no string-sending client exists; an **engineering decision** for the implementation design review, with the specification fixed by `spec_version`. Fractional currencies later = a new `spec_version`.
+* **Pros (a)-(c):** no float-derived ambiguity. **Cons:** behaviour change for any client sending `"1e3"`/`"1000.0"` (none observed). **Risk (d):** a different amount than the operator typed can be refunded and fingerprinted.
 
 ### OQ-17 — Permissions for refunds
 * **Observed:** capability `payment.refund`, scoped authorization and a doctor-ownership rule (`FinanceService.php:682-695`).
@@ -928,9 +1034,9 @@ not a decision.**
 * **Pros (a):** no new policy. **Cons (a):** any holder of the capability may refund up to the cap. **Risk:** (b)/(c) change who can do daily work; not designed here.
 
 ### OQ-18 — May a rejected key be corrected and reused? (previously stated in round 1 as design text)
-* **Observed fact:** a request rejected before commit stores nothing (§6.1 step 8).
+* **Proposed default (not a fact, pending this question):** a request rejected before commit stores nothing (§6.1 step 8). A key whose refund committed stays bound whatever is decided here (recorded decision).
 * **Options:** (a) the operator may correct the request and reuse the same key; (b) a rejected key is consumed/burned (needs tombstones, OQ-14); (c) reuse allowed only for validation-class rejections (400/422 before any key claim), not after a claim was made.
-* **Recommendation:** (a) is consistent with "nothing stored"; (c) if the owner prefers stricter intent tracking.
+* **Recommendation:** (a), consistent with the proposed default of storing nothing; (c) if the owner prefers stricter intent tracking.
 * **Pros (a):** simple; no stranded keys. **Cons (a):** the same key can mean different specifications at different times (only one can ever commit). **Risk:** if the first request actually committed and its response was lost, a *corrected* retry hits 422 mismatch — safe, but confusing without OQ-19.
 
 ### OQ-19 — Recovery workflow after a key mismatch
@@ -971,20 +1077,24 @@ Integration suite); none exists today for refunds.
 * T6 Body differing only in an ignored field ⇒ treated as the same specification.
 
 **Canonicalization (table-driven)**
-* T7 Amounts `1000`, `"1000"`, `1000.0`, `"1e3"` equal; `"1000.5"` and negatives/zero rejected, never rounded.
+* T7 Amount grammar (table-driven, per OQ-16 outcome): the accepted forms map to the same canonical integer; **rejected before any float step**: `1000.5`, over-precise decimals (`300000.00000000001`), exponent forms (`1e3`, `1e400`), values above 2^53 (`9007199254740993`) and above 9,999,999,999, zero, negatives, signs, spaces, thousands separators, non-ASCII digits. First **characterize today's behaviour** (so the defect is evidenced, not assumed).
+* T7a **Amount at the REST boundary:** the same inputs sent as JSON numbers **and** as JSON strings through the real WordPress REST dispatch to the refund route (not by calling the service): assert the handler sees the exact input (no `(float)` coercion) and that every non-conforming input is rejected with no state change.
 * T8 Reasons: leading/trailing ASCII and Unicode spaces; NFC vs NFD forms of the same text (if NFC is adopted); bidi controls; zero-width characters; Persian/Arabic letter variants and digit systems (must compare **different**); 255/256-character boundary; invalid UTF-8.
+* T27 **Replay across a spec-version upgrade:** commit a refund under version V1; deploy V2 whose rules differ (e.g. NFC adopted, stricter amount grammar, a tighter reason limit that the original reason now violates); an **identical** retry ⇒ replay (200 + marker), counts unchanged; a different specification ⇒ 422 key-reuse; with the V1 canonicalizer made unavailable ⇒ the distinct fail-closed error, no state change, not the key-reuse 422; a new key under V2 stores V2; the same race of two requests across versions yields one refund.
 * T9 Key format: missing ⇒ 400; non-UUID ⇒ 400; uppercase UUID equals its lowercase form.
 
 **Concurrency [real DB]**
-* T10 N parallel identical requests ⇒ exactly one refund; all others replay.
+* T10 N parallel identical requests ⇒ exactly one refund. Each request ends as the first success, a replay, or — if a lock-wait timeout, a deadlock victim or the bounded duplicate-retry (§6.1 step 5.4) is hit — "rolled back, retry with the same key"; the test then retries with the **same** key until every request has converged (a timeout may need a later retry) and asserts one refund row, one `refunded_amount` increment and one audit row. Never two refunds.
 * T11 Parallel same key, different spec ⇒ exactly one applied, the rest 422, no partial state.
 * T12 Parallel same key on two different payments (same invoice and different invoices) ⇒ one applied, the other 422; **records** whether a deadlock or lock-wait timeout occurs (UNKNOWN today; none is assumed absent); every deadlock/timeout that does occur must end in a full rollback and a retry with the **same key** must converge to exactly one refund.
 * T13 Parallel different keys whose sum exceeds the cap ⇒ total refunded never exceeds the amount paid; the surplus request gets 422 with the locked `max_refundable`.
 * T14 Refund vs void and refund vs capture on the same invoice (lock-order probe; records whether a deadlock is ever observed — currently UNKNOWN).
+* T14a **Audit/clinic cycle (§6.5 item 2):** capture and refund (and capture and void) on the same clinic concurrently, first against **today's code** (baseline: does the cycle exist without this feature?) and then with the feature; records deadlocks; every victim rolls back fully and a same-key retry converges.
+* T12a **Foreign-key shared locks (§6.5 item 1):** two refunds with **different keys on the same payment** in parallel, with the real foreign keys and the real isolation level; records whether a deadlock occurs; the victim rolls back fully, retries with its own same key, and the final `refunded_amount` ≤ amount paid with exactly the committed refunds recorded.
 * T15 Establish on a real database, under REPEATABLE READ and READ COMMITTED, what a duplicate-key insert and a read inside the *failed* transaction can see, what locks a key claim and a locking read of a *missing* key take (gap/next-key), and that the fresh-transaction re-read of §6.1 step 5 sees the winner's committed row. These facts are UNKNOWN today.
 
 **Crash / rollback**
-* T16 **Failure injection per statement** under the real wrapper in its default soft mode: make each statement fail in turn (key claim insert, payment lock read, invoice lock read, key-row completion, payment update, invoice update, audit insert, audit-seq update, commit) ⇒ the outcome is a full rollback (or "unknown" for the commit), **never** a committed half-applied refund; a failed key insert is not treated as duplicate; a failed lock read is not treated as "row not found"; a retry with the same key then applies exactly once.
+* T16 **Failure injection per statement** under the real wrapper in its default soft mode: make each statement fail in turn (key claim insert, payment lock read, invoice lock read, key-row completion, payment update, invoice update, audit insert, audit-seq update) ⇒ the outcome is a full rollback, **never** a committed half-applied refund; a failed key insert is not treated as duplicate; a failed lock read is not treated as "row not found"; a retry with the same key then applies exactly once. (The commit statement is tested separately in T17a.)
 * T17 Lost response **after a confirmed commit** ⇒ the retry replays the stored original; counts of refund rows, `refunded_amount`, invoice fields and audit rows unchanged by the replay.
 * T17a **Commit outcome unknown** (the commit statement errors or its acknowledgement is dropped, with the commit both having and not having reached the server) ⇒ the system reports "outcome unknown — retry with the same key", **not** "rolled back"; the retry converges to exactly one refund in both variants.
 * T18 Audit failure (guard row missing) ⇒ whole refund rolled back, no key row left behind.
@@ -1007,13 +1117,13 @@ Integration suite); none exists today for refunds.
 
 ## 11. Limitations and what was not done
 
-* **Nothing was executed.** Local PHP is **PHP-WASM only**; there is no MySQL/MariaDB in the authoring sandbox, so every lock, isolation and crash statement above is **INFERENCE** from reading code and general InnoDB semantics; none was measured.
+* **No PHP, WordPress or database code was executed.** The only executed checks are the named Node/JavaScript ones: `parseInt` on the dialog strings (F5, round 2) and `Number()` double-parsing of `300000.00000000001`, `300000.5`, `1e400`, `1e3`, `9007199254740993` (§4.2, round 3); JavaScript is not PHP and not a browser session. Local PHP is **PHP-WASM only** (no `php` binary in the round 2-3 sandboxes); there is no MySQL/MariaDB in the authoring sandbox, so every lock, isolation and crash statement above is **INFERENCE** from reading code and general InnoDB semantics; none was measured.
 * The earlier "version two" refund design/migration was **not read and not used**; none is present in `main`.
 * The round-11 "NOT TESTED" report was **not located** in the repository.
 * External standards/vendor documentation could not be consulted (network limited to GitHub and package registries); no external behaviour is asserted.
 * `intl` (`Normalizer`) availability, the DB isolation level, lock-wait settings and how `CpmsDb` maps lock errors to HTTP are **UNKNOWN**.
 * Capture-vs-refund lock ordering was **not analysed**; deadlock freedom is **not claimed**. InnoDB duplicate-key/gap-lock behaviour per isolation level is **UNKNOWN**; no external documentation could be consulted.
-* `toMinor()`/PHP numeric-string behaviour and the Node reproduction of `parseInt` (F5): PHP was not run; the Node run reproduces JavaScript only, not a browser session.
+* PHP numeric-string behaviour, the `(int)` cast of `INF`/out-of-range floats and the effective WordPress REST coercion were **read, not run**: WordPress source was read from `wordpress-develop` branch `6.9` on GitHub; the installed WordPress version is UNKNOWN.
 * Round 2 was verified by **reading** code at `d1d49c5`; nothing was executed against the wrapper, so Requirement W describes what the code *does* (A13/A14 by reading), not a measured failure.
 * This document cannot establish that the defect has occurred on any installation (`ledger.md:135`).
 
@@ -1035,19 +1145,26 @@ replay) — depends on **OQ-2(b)**; `error-codes.md:38`; `payment.md:44/51` (F4)
 table's gap in wording similar to the old `SRS.md:296` — reported, not edited, to
 stay inside the requested scope.
 
-### 12.2 What changed in round 2 of this design document
+### 12.2 Round 2 (after two independent finance reads of head `37e8a2df…`)
 
-Triggered by two independent finance readers (both: "finance blocker found") on head `37e8a2df…`. Every claim was re-checked in the code before editing.
+Confirmed in code and fixed: soft-mode DB wrapper (A13/A14, Requirement W, OQ-21); one
+atomic protocol, one lock order, unknown commit ≠ rollback (§6); "use a new key" after a
+mismatch removed (OQ-19, T25); rejected-key reuse moved to OQ-18; migration 0016 removes
+`clinic_id DEFAULT 1` (A4, Option A); 422 not 409 for a fully used retry (§3.1); whole
+rials and canonicalization wording (§4); OQ-6/OQ-7 flagged; OQ-12 … OQ-21 added; adjacent
+defects F5/F6 listed.
 
-| Item | Verdict | Change |
-|---|---|---|
-| B1 soft-mode DB wrapper | **Confirmed** (A13, A14) | New §6.0 Requirement W + options W-1/W-2/W-3 (OQ-21); crash table, T16 and the "no wait cycle is evident" claim corrected (§6.5). |
-| B2 inconsistent protocol | **Confirmed** | §6 rewritten as one protocol (§6.1), one lock order (§6.5), rollback + fresh scoped re-read + bounded retry, snapshot stored atomically, unknown-commit ≠ rollback (§6.4); gap/next-key behaviour marked UNKNOWN. |
-| B3 "use a new key" after mismatch | **Confirmed** | Removed; §4.3/§6.4 say keep the original key; OQ-19; new test T25. |
-| R4 "reuse after rejection" | **Confirmed as policy** | Moved to OQ-18. |
-| D1 shared-table `DEFAULT 1` | **Confirmed wrong** (`0016:33-40`) | A4 and Option A corrected; option A still not recommended, for the reasons that remain true. |
-| D2 409 vs 422 | **Confirmed wrong** (`:697-710`) | §3.1 corrected. |
-| D3 `toMinor` | **Confirmed** | "minor-unit" wording removed (whole rials); numeric strings go through float; exact canonical range specified; U+200F described as a bidi format control; `intl` UNKNOWN; canonicalization pinned by `spec_version`. |
-| OQ-6, OQ-7 | **Confirmed in tension** | Marked as deviations needing owner approval. |
-| New OQs | — | OQ-12 … OQ-21. |
-| Adjacent defects | **Verified by reading** | §8 retitled; F5 (UI amount parsing/no confirmation) and F6 (SRS:281) added; none fixed. |
+### 12.3 Round 3 (after two further finance reads of head `802a97d1…`)
+
+Every item was checked at the cited file:line before editing.
+
+| Item | Change |
+|---|---|
+| R3-F1 spec-version replay | `DECIDE` selects the **stored** version's canonicalizer (§4.4); step 1a added, step 1 no longer canonicalizes, step 5.3 fixed (§6.1); old canonicalizers retained; distinct fail-closed error; options V-1/V-2/V-3; T27. |
+| R3-F2 amount parsing | Round-2 "no rounding" claim retracted; REST `(float)` coercion read in WordPress 6.9 source (§4.2, A7); exact versioned grammar required at the REST boundary; T7/T7a; OQ-16 rewritten. |
+| R3-F3 commit wording | Requirement W excludes the commit; unknown commit ⇒ same-key reconciliation, never "rolled back" (§6.0). |
+| R3-F4 locks/snapshot | FK shared-lock deadlock and audit/clinic cycle recorded as INFERENCE/UNKNOWN (§5 option B, §6.5, §6.2); "nothing out of this order" and "not an evident cycle" qualified; step 9 snapshot built from verified post-update facts; T10 rewritten; T12a, T14a. |
+| R3-F5 key consumption | "Key not consumed" is a proposed default pending OQ-14/OQ-18 everywhere (§6.1 step 8, §6.4, §7.3, OQ-18); committed keys stay bound. |
+| R3-F6 binding decisions | OQ-1 "to be chosen"; OQ-6/OQ-7/OQ-12 list conforming options and mark non-conforming ones as excluded unless the owner reopens. |
+| R3-F7 accuracy | §11 and PR body say what was executed (Node checks only). |
+| R3-F8 findings | F7 (`max_refundable` undocumented) and F8 (no null check, `:714`) added to §8; not fixed. |
