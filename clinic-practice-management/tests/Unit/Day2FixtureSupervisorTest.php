@@ -209,7 +209,7 @@ final class Day2FixtureSupervisorTest extends TestCase
             . var_export($this->envFile, true) . ', ["supervisor"], ' . var_export($base, true) . ');'
             . 'fwrite(STDOUT, "UNREACHED\n");');
         $proc = proc_open(
-            [PHP_BINARY, '-d', 'memory_limit=16M', $helper],
+            [PHP_BINARY, '-d', 'memory_limit=16M', '-d', 'display_errors=0', '-d', 'log_errors=0', $helper],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes
         );
