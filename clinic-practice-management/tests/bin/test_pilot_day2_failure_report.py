@@ -931,7 +931,7 @@ class RoundTwoFidelityTest(unittest.TestCase):
         self.assertIn("sql_errno=1213", suffix)
         self.assertNotIn("code=", suffix)
 
-    def test_code_is_busy_only_where_the_harness_also_prints_the_code(self):
+    def test_code_comes_from_the_validated_busy_diagnosis_for_every_origin(self):
         """H1: the busy code now rides the validated diagnosis, not origin text.
 
         Historically only 2 of the 22 origins could carry a `code=` (the
@@ -971,7 +971,7 @@ class RoundTwoFidelityTest(unittest.TestCase):
         # the busy code for every one of them — with the busy fields intact.
         # The full inventory is 15 asserts + the 5 non-probe visible_or_diagnose
         # stages; they all share this property, which the sample pins.
-        without_code = (
+        bare_literal_origins = (
             "public booking root missing",
             "booking/quote failed",
             "expected 400 identity gate, got 503",
@@ -980,7 +980,7 @@ class RoundTwoFidelityTest(unittest.TestCase):
             "otp/verify HTTP 503",
             "receipt reference_code format invalid",
         )
-        for text in without_code:
+        for text in bare_literal_origins:
             with self.subTest(kind=text[:40]):
                 fields = projector.project(self.fail_log(self.reraises(text, probe)))
                 self.assertEqual(fields["busy"], "present")
@@ -1591,6 +1591,235 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
             self.assertNotIn(token, stdout)
             self.assertNotIn(token, detail)
             self.assertNotIn(token, projector.render(fields))
+
+
+class Day2ProbeClosedFieldsTest(unittest.TestCase):
+    """C1/C2/C3/C4/C6 adversarial tests for the probe and busy attribution.
+
+    Each test drives the REAL production code (BookingProbe._on_response,
+    hold_attempts/describe/info, busy_suffix_for, BusyJourneyFailure,
+    fail(), _validated_printable) with synthetic hostile input and asserts
+    the hostile value reaches neither stdout, nor the stored results, nor
+    the failure-report projection.
+    """
+
+    HOSTILE_CODES = (
+        "CLINIC_VALIDATION_FAILED\n",
+        "CLINIC_BOOKING_BUSY\nINJECTED",
+        "09128887701",
+        "SELECT_FROM_PATIENTS",
+        "کد آزمایشی",
+        "A" * 200,
+        "clinic_validation_failed",
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("day2_harness_c", HARNESS)
+        sys.path.insert(0, str(BIN_DIR))
+        cls.harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.harness)
+        import day2_booking_busy
+        cls.busy = day2_booking_busy
+
+    def _probe_with(self, payload, posted=None, status=503):
+        class _Request:
+            post_data_json = posted or {}
+
+        class _Response:
+            url = "http://fixture.test/wp-json/clinic/v1/booking/hold"
+            request = _Request()
+
+            def json(self):
+                return payload
+
+        _Response.status = status
+        probe = self.harness.BookingProbe()
+        probe._on_response(_Response())
+        return probe
+
+    def test_hostile_codes_become_other_and_never_print(self):
+        """C1: only exact finite-set literals survive; the rest is `other`."""
+        harness = self.harness
+        for hostile in self.HOSTILE_CODES:
+            with self.subTest(code=hostile[:24]):
+                probe = self._probe_with(
+                    {"code": hostile, "data": {"code": hostile}},
+                    posted={"slot_id": 7},
+                )
+                self.assertEqual(probe.entries[0]["code"], "other")
+                buffer = io.StringIO()
+                with redirect_stdout(buffer):
+                    harness.info(
+                        f"day2-A1-resume hold_attempts={probe.hold_attempts(0)}"
+                    )
+                    harness.info(f"day2-A1-rest {probe.describe(0)}")
+                stdout = buffer.getvalue()
+                self.assertIn("code=other", stdout)
+                self.assertNotIn(hostile, stdout)
+                self.assertNotIn(hostile, repr(probe.entries))
+                self.assertNotIn(
+                    hostile, projector.render(projector.project(stdout))
+                )
+        nested = self._probe_with({"data": {"code": "SELECT_FROM_PATIENTS"}})
+        self.assertEqual(nested.entries[0]["code"], "other")
+        valid = self._probe_with({"code": "CLINIC_VALIDATION_FAILED"})
+        self.assertEqual(valid.entries[0]["code"], "CLINIC_VALIDATION_FAILED")
+        wp = self._probe_with({"code": "rest_cookie_invalid_nonce"}, status=403)
+        self.assertEqual(wp.entries[0]["code"], "rest_cookie_invalid_nonce")
+        absent = self._probe_with({"data": {"status": 503}})
+        self.assertEqual(absent.entries[0]["code"], "")
+
+    def test_phone_shaped_and_unbounded_posted_ids_are_omitted(self):
+        """C3: posted ids above 2**31 - 1 (phone-shaped) never print."""
+        probe = self._probe_with(
+            {"code": "CLINIC_BOOKING_BUSY"},
+            posted={"slot_id": 9128887701, "location_id": "09128887701",
+                    "clinician_id": 42},
+        )
+        entry = probe.entries[0]
+        self.assertNotIn("slot_id", entry)
+        self.assertNotIn("location_id", entry)
+        self.assertEqual(entry["clinician_id"], 42)
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            self.harness.info(
+                f"day2-A1-resume hold_attempts={probe.hold_attempts(0)}"
+            )
+        self.assertNotIn("9128887701", buffer.getvalue())
+        self.assertNotIn("09128887701", buffer.getvalue())
+        at_bound = self._probe_with(
+            {"code": "CLINIC_BOOKING_BUSY"}, posted={"slot_id": 2147483647}
+        )
+        self.assertEqual(at_bound.entries[0]["slot_id"], 2147483647)
+        over_bound = self._probe_with(
+            {"code": "CLINIC_BOOKING_BUSY"}, posted={"slot_id": 2147483648}
+        )
+        self.assertNotIn("slot_id", over_bound.entries[0])
+
+    def test_hostile_route_is_omitted_from_suffix_and_fail_line(self):
+        """C2: only exact booking-route literals may carry a route= token."""
+        busy = self.busy
+        harness = self.harness
+        for hostile in ("evil/route", "booking/hold\nINJECTED",
+                        "booking/hold/extra", "SYNTH_ROUTE"):
+            with self.subTest(route=hostile):
+                out = busy.validate_busy_suffix(
+                    "busy_diag=booking.lock_read_failed read=slot "
+                    f"sql_errno=1213 route={hostile} http=503"
+                )
+                # No hostile text survives; a route token may appear only
+                # as the exact literal the whitespace split isolates.
+                self.assertNotIn(hostile, out)
+                self.assertNotIn("INJECTED", out)
+                for token in out.split():
+                    if token.startswith("route="):
+                        self.assertIn(token, {
+                            "route=v1/availability", "route=booking/quote",
+                            "route=booking/hold", "route=booking/confirm",
+                            "route=otp/request", "route=otp/verify",
+                        })
+                direct = busy.format_busy_suffix(
+                    {"read": "slot", "sql_errno": 1213},
+                    route=hostile, http_status=503,
+                )
+                self.assertNotIn("route=", direct)
+        good = busy.validate_busy_suffix(
+            "busy_diag=booking.lock_read_failed read=slot sql_errno=1213 "
+            "route=booking/hold http=503 unknown_field=SYNTH_ROUTE_X"
+        )
+        self.assertIn("route=booking/hold", good)
+        self.assertNotIn("SYNTH_ROUTE_X", good)
+        exc = harness.BusyJourneyFailure(good + " route=evil/route")
+        harness.results.clear()
+        harness.failures.clear()
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            harness.fail("journey-A1-public", "t", exc)
+        self.assertIn("route=booking/hold", buffer.getvalue())
+        self.assertNotIn("evil/route", buffer.getvalue())
+
+    def test_startup_info_values_reject_trailing_newlines(self):
+        """C4: strict full-match or the fixed `invalid` token."""
+        printable = self.harness._validated_printable
+        time_pat = r"[0-9]{2}:[0-9]{2}:[0-9]{2}"
+        self.assertEqual(printable("09:15:00", time_pat), "09:15:00")
+        self.assertEqual(printable("09:15:00\n", time_pat), "invalid")
+        self.assertEqual(printable("09:15:00\nINJECTED", time_pat), "invalid")
+        self.assertEqual(printable("60", r"[0-9]{1,4}"), "60")
+        self.assertEqual(printable("60\n", r"[0-9]{1,4}"), "invalid")
+        version_pat = r"[0-9]{1,3}(\.[0-9]{1,6}){1,3}"
+        self.assertEqual(printable("141.0.7390.65", version_pat), "141.0.7390.65")
+        self.assertEqual(printable("141.0.7390.65\n", version_pat), "invalid")
+        self.assertEqual(printable("not-a-version", version_pat), "invalid")
+        self.assertEqual(printable(None, version_pat), "invalid")
+
+    def test_busy_superseded_by_successful_retry_is_not_attributed(self):
+        """C6: busy 503 -> same-route retry 200 -> confirm 200 -> later failure.
+
+        The busy suffix must NOT be attached, so the projection must not
+        claim busy; a genuine busy failure keeps the full expected line.
+        """
+        busy = self.busy
+        harness = self.harness
+        row = ('{"read": "slot", "sql_errno": 1213}',)
+        query = lambda sql: [row]  # noqa: E731 - fixture row supplier
+        superseded = [
+            {"route": "/clinic/v1/booking/hold", "status": 503,
+             "code": "CLINIC_BOOKING_BUSY", "slot_id": 42},
+            {"route": "/clinic/v1/booking/hold", "status": 200,
+             "code": "", "slot_id": 42},
+            {"route": "/clinic/v1/booking/confirm", "status": 200, "code": ""},
+        ]
+        suffix = busy.busy_suffix_for(
+            superseded, query, "cpmswp_cpms_operational_logs", "390x844",
+            since="2026-11-13 10:00:00",
+        )
+        self.assertEqual(suffix, "")
+        harness.results.clear()
+        harness.failures.clear()
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            harness.fail(
+                "journey-A1-public",
+                "Day-2 browser journey failed (journey-A1-public)",
+                AssertionError("receipt reference_code format invalid"),
+            )
+        fields = projector.project(buffer.getvalue())
+        self.assertEqual(fields["busy"], "absent")
+        self.assertEqual(fields["code"], projector.NONE)
+        self.assertEqual(fields["errno"], projector.UNRECOGNISED)
+
+        genuine = [
+            {"route": "/clinic/v1/booking/quote", "status": 200, "code": ""},
+            {"route": "/clinic/v1/booking/hold", "status": 503,
+             "code": "CLINIC_BOOKING_BUSY", "slot_id": 42},
+        ]
+        good_suffix = busy.busy_suffix_for(
+            genuine, query, "cpmswp_cpms_operational_logs", "390x844",
+            since="2026-11-13 10:00:00",
+        )
+        self.assertIn("busy_diag=booking.lock_read_failed", good_suffix)
+        exc = harness.BusyJourneyFailure(
+            good_suffix,
+            origin_text="public booking stage=hold-request — hold rejected",
+        )
+        harness.results.clear()
+        harness.failures.clear()
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            harness.fail(
+                "journey-A1-public",
+                "Day-2 browser journey failed (journey-A1-public)",
+                exc,
+            )
+        self.assertEqual(
+            projector.render(projector.project(buffer.getvalue())),
+            "journey=journey-A1-public stage=hold-request http=503 "
+            "code=CLINIC_BOOKING_BUSY read=slot errno=1213 "
+            "errno_class=deadlock busy=present elapsed_s=unrecognised",
+        )
+
 
 
 if __name__ == "__main__":

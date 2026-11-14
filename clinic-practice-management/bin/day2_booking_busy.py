@@ -35,7 +35,15 @@ READ_LABELS = frozenset((
 ))
 ERROR_CATEGORIES = {0: "unknown", 1205: "lock_wait_timeout", 1213: "deadlock"}
 _TABLE_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
-_ROUTE_RE = re.compile(r"^[a-z0-9/_.-]{1,64}$")
+#: The exact route literals a busy suffix may carry — the short forms
+#: (`_short_route`) of the six booking routes the probe watches
+#: (`BOOKING_ROUTES` in pilot-day2-workflows.py). A route is published only
+#: when it is exactly one of these; grammar-shaped lookalikes, unknown
+#: fields and any other string are omitted, never carried.
+ROUTE_LITERALS = frozenset((
+    "v1/availability", "booking/quote", "booking/hold", "booking/confirm",
+    "otp/request", "otp/verify",
+))
 _VIEWPORT_RE = re.compile(r"^\d{2,5}x\d{2,5}$")
 _DIGITS_RE = re.compile(r"[0-9]{1,10}")
 _SQL_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
@@ -114,10 +122,26 @@ def latest_busy_sql(table, since=None):
 
 
 def find_busy_attempt(entries):
-    """Last probe entry whose REST error code is CLINIC_BOOKING_BUSY, if any."""
-    for entry in reversed(list(entries or [])):
-        if isinstance(entry, dict) and entry.get("code") == BUSY_CODE:
-            return entry
+    """The busy attempt that is still the failing operation, if any.
+
+    The LAST `CLINIC_BOOKING_BUSY` entry is the candidate, but only when
+    no later response for the SAME route (the same operation) is
+    non-busy: a busy hold answered 503 and later retried to 200 on that
+    route was superseded by the retry, so attributing a subsequent,
+    unrelated failure to the earlier busy response would be false. A
+    later busy response on the same route keeps the latest one live.
+    """
+    items = list(entries or [])
+    for index in range(len(items) - 1, -1, -1):
+        entry = items[index]
+        if not (isinstance(entry, dict) and entry.get("code") == BUSY_CODE):
+            continue
+        route = entry.get("route")
+        for later in items[index + 1:]:
+            if (isinstance(later, dict) and later.get("route") == route
+                    and later.get("code") != BUSY_CODE):
+                return None
+        return entry
     return None
 
 
@@ -159,7 +183,7 @@ def format_busy_suffix(diag, *, route="", http_status=0, viewport="", missing="n
     else:
         state = missing if missing in MISSING_STATES else "not-found"
         bits.append(f"busy_diag={state}")
-    if isinstance(route, str) and _ROUTE_RE.fullmatch(route):
+    if isinstance(route, str) and route in ROUTE_LITERALS:
         bits.append(f"route={route}")
     status = _coerce_int(http_status)
     if status:
@@ -213,7 +237,7 @@ def validate_busy_suffix(suffix):
     else:
         return ""
     route = fields.get("route", "")
-    if not _ROUTE_RE.fullmatch(route):
+    if route not in ROUTE_LITERALS:
         route = ""
     status = _coerce_int(fields.get("http"))
     if status is None or not 100 <= status <= 599:

@@ -166,6 +166,18 @@ def info(line):
     print(f"INFO {line}")
 
 
+def _validated_printable(value, pattern):
+    """`value` only when it FULLY matches `pattern`, else the fixed token.
+
+    `re.fullmatch` anchors both ends, so a trailing newline (which a
+    `$`-anchored `match` would tolerate) or any extra character makes the
+    value `invalid` instead of printable.
+    """
+    if isinstance(value, str) and re.fullmatch(pattern, value):
+        return value
+    return "invalid"
+
+
 def env_req(name):
     val = os.environ.get(name, "").strip()
     if not val and not SELFTEST:
@@ -406,7 +418,52 @@ BOOKING_ROUTES = (
     "/clinic/v1/otp/request",
     "/clinic/v1/otp/verify",
 )
-_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{1,40}$")
+#: The exact, finite set of error codes the booking/OTP REST endpoints of
+#: this plugin can return, derived from `src/` (each literal is thrown or
+#: emitted there; see the PR report for file:line per code):
+#:  - BookingService BookingException throws + BookingController/RestBase
+#:    error mapping (CLINIC_BOOKING_BUSY … CLINIC_UNAUTHORIZED),
+#:  - OtpService/OtpException + OtpController (CLINIC_MOBILE_INVALID …
+#:    CLINIC_OTP_DELIVERY_FAILED),
+#:  - `rest_cookie_invalid_nonce`: WordPress core's cookie-nonce failure for
+#:    these same authenticated routes (already exercised by the self-test
+#:    below); WP is platform, not plugin `src/`, and is listed explicitly.
+#: Any other code value — newline-terminated, digit-shaped, SQL-looking,
+#: non-ASCII or arbitrarily long — is retained ONLY as the fixed token
+#: `other`. Membership is an exact string comparison, so no trailing
+#: newline or near-match can pass.
+_ERROR_CODES = frozenset({
+    "CLINIC_BOOKING_BUSY", "CLINIC_DUPLICATE_APPOINTMENT",
+    "CLINIC_DUPLICATE_IN_FLIGHT", "CLINIC_HOLD_EXPIRED",
+    "CLINIC_INTERNAL_ERROR", "CLINIC_INVALID_TRANSITION",
+    "CLINIC_LICENSE_BLOCKED", "CLINIC_NOT_FOUND",
+    "CLINIC_PATIENT_SELECTION_REQUIRED", "CLINIC_PERMISSION_DENIED",
+    "CLINIC_POLICY_VIOLATION", "CLINIC_SCOPE_REQUIRED",
+    "CLINIC_SLOT_AMBIGUOUS", "CLINIC_SLOT_TAKEN", "CLINIC_SUSPENDED",
+    "CLINIC_UNAUTHORIZED", "CLINIC_VALIDATION_FAILED",
+    "CLINIC_MOBILE_INVALID", "CLINIC_OTP_COOLDOWN",
+    "CLINIC_OTP_DAILY_LIMIT", "CLINIC_OTP_DELIVERY_FAILED",
+    "CLINIC_OTP_EXPIRED", "CLINIC_OTP_INVALID", "CLINIC_OTP_LOCKED",
+    "CLINIC_OTP_PURPOSE_INVALID", "CLINIC_RATE_LIMITED",
+    "rest_cookie_invalid_nonce",
+})
+
+
+def _closed_code(candidate):
+    """Exact allowed code literal, `other` for anything else present, "" if absent."""
+    if not isinstance(candidate, str) or candidate == "":
+        return ""
+    return candidate if candidate in _ERROR_CODES else "other"
+
+
+#: Posted ids are retained only as small diagnostic integers. Maximum is
+#: 2**31 - 1 (signed INT max): every id the fixture seeds in this
+#: acceptance run is a fresh-install auto-increment far below it, while
+#: phone-shaped digit strings (an 11-digit mobile is ~9.1e9) exceed it and
+#: are OMITTED, never printed. The ids are evidence/comparison values
+#: only; omitting an out-of-bound id cannot change a journey verdict,
+#: because `observe_hold_attempt` compares against the small fixture id.
+_MAX_POSTED_ID = 2147483647
 _REQUEST_ID_KEYS = ("slot_id", "clinician_id", "location_id")
 _REQUEST_KEYS = ("slot_id", "slot_date", "slot_time", "clinician_id", "location_id", "patient_id")
 _SLOT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -449,8 +506,10 @@ class BookingProbe:
             # `info()` to the public job log.
             for candidate in (payload.get("code"), (payload.get("data") or {}).get("code")
                               if isinstance(payload.get("data"), dict) else None):
-                if isinstance(candidate, str) and _ERROR_CODE.match(candidate):
-                    entry["code"] = candidate
+                if isinstance(candidate, str):
+                    # First code field present decides: an exact allowed
+                    # literal, or the single fixed token `other`.
+                    entry["code"] = _closed_code(candidate)
                     break
         try:
             posted = response.request.post_data_json
@@ -459,10 +518,17 @@ class BookingProbe:
         if isinstance(posted, dict):
             for key in _REQUEST_ID_KEYS:
                 if key in posted:
-                    try:
-                        entry[key] = int(posted[key])
-                    except (TypeError, ValueError):
+                    raw = posted[key]
+                    if isinstance(raw, bool):
                         continue
+                    if isinstance(raw, int):
+                        value = raw
+                    elif isinstance(raw, str) and raw.isdigit():
+                        value = int(raw)
+                    else:
+                        continue
+                    if 0 < value <= _MAX_POSTED_ID:
+                        entry[key] = value
             # Key NAMES only (allowlist), plus the two slot time coordinates when
             # they are well formed: enough to tell "stale tuple" from "server guard".
             entry["keys"] = ",".join(key for key in _REQUEST_KEYS if key in posted)
@@ -1544,16 +1610,19 @@ def main():
     # when the Location-local clock cannot host that window.
     info(
         "reception_rows=already_due_inside_grace "
-        f"grace_min={os.environ.get('DAY2_RECEPTION_GRACE_MINUTES', 'n/a')} "
-        f"doc1_slot={os.environ.get('DAY2_SEC_SLOT_DOC1', 'n/a')} "
-        f"doc2_slot={os.environ.get('DAY2_SEC_SLOT_DOC2', 'n/a')} "
-        f"foreign_slot={os.environ.get('DAY2_SEC_SLOT_FOREIGN', 'n/a')}"
+        f"grace_min={_validated_printable(os.environ.get('DAY2_RECEPTION_GRACE_MINUTES', ''), r'[0-9]{1,4}')} "
+        f"doc1_slot={_validated_printable(os.environ.get('DAY2_SEC_SLOT_DOC1', ''), r'[0-9]{2}:[0-9]{2}:[0-9]{2}')} "
+        f"doc2_slot={_validated_printable(os.environ.get('DAY2_SEC_SLOT_DOC2', ''), r'[0-9]{2}:[0-9]{2}:[0-9]{2}')} "
+        f"foreign_slot={_validated_printable(os.environ.get('DAY2_SEC_SLOT_FOREIGN', ''), r'[0-9]{2}:[0-9]{2}:[0-9]{2}')}"
     )
 
     os.makedirs(OUT, exist_ok=True)
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        info(f"browser_engine=chromium version={browser.version}")
+        browser_version = _validated_printable(
+            browser.version, r"[0-9]{1,3}(\.[0-9]{1,6}){1,3}"
+        )
+        info(f"browser_engine=chromium version={browser_version}")
         for key, fn in (
             ("journey-A1-public", lambda: run_journey_a_public_booking(browser, cfg)),
             ("journey-A2-reschedule", lambda: run_journey_a_patient_reschedule(browser, cfg)),

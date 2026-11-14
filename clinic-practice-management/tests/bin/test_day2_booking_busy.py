@@ -501,3 +501,59 @@ class PublicationPathTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class FixtureFailureContractTest(unittest.TestCase):
+    """C5: the Day-2 PHP fixture must never print driver text to stderr.
+
+    Static contract over `tests/fixtures/pilot-day2-workflows-fixture.php`
+    (the fixture needs WordPress, so it cannot execute here; the same
+    functions were executed under PHP-WASM against a stub $wpdb during
+    development). Pins: no `last_error` read anywhere outside comments,
+    no digit-run masking, `d2w_fail` prints only a fixed step token, and
+    every `d2w_fail(...)` call site passes an allowlisted literal.
+    """
+
+    FIXTURE = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures" / "pilot-day2-workflows-fixture.php"
+    )
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = cls.FIXTURE.read_text(encoding="utf-8")
+        stripped = re.sub(r"/\*.*?\*/", "", cls.source, flags=re.S)
+        cls.code = "\n".join(
+            line.split("//", 1)[0] for line in stripped.splitlines()
+        )
+
+    def test_no_driver_text_or_masking_in_fixture_code(self):
+        self.assertNotIn("last_error", self.code)
+        self.assertNotIn("preg_replace", self.code)
+        self.assertNotIn("[redacted]", self.code)
+
+    def test_d2w_fail_prints_only_a_fixed_step_token(self):
+        self.assertIn("DAY2_FIXTURE_ERROR step=", self.code)
+        self.assertIn("in_array($step, D2W_FAIL_STEPS, true)", self.code)
+        body = self.code.split("function d2w_fail", 1)[1].split("}", 1)[0]
+        self.assertNotIn("$msg", body)
+
+    def test_every_d2w_fail_call_site_passes_a_fixed_literal(self):
+        steps = set(re.findall(
+            r"'([a-z_]+)'",
+            self.code.split("D2W_FAIL_STEPS = [", 1)[1].split("]", 1)[0],
+        ))
+        self.assertEqual(
+            steps,
+            {"insert", "insert_id", "user_create", "clinic_ids", "public_page",
+             "public_permalink", "reception_grace", "reception_row", "env_write"},
+        )
+        calls = re.findall(r"d2w_fail\(([^)]*)\)", self.code)
+        self.assertGreaterEqual(len(calls), 10)
+        for arg in calls:
+            arg = arg.strip()
+            if arg == "string $step":
+                continue
+            literal = re.fullmatch(r"'([a-z_]+)'", arg)
+            self.assertIsNotNone(literal, arg)
+            self.assertIn(literal.group(1), steps, arg)
