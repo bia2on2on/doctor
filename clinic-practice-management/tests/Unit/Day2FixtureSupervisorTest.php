@@ -24,11 +24,13 @@ use PHPUnit\Framework\TestCase;
  * export cannot republish child output. (Round 8 used assertSame
  * on the returned line; round 10 removed that too.)
  *
- * Fatal coverage note: two deterministic fatals are tested — one
- * INSIDE d2w_supervise (engine execution-time E_ERROR expiring in its
- * wait loop; unfinished-supervisor shutdown branch, with the
- * private dir asserted removed) and one AFTER it returns with
- * cleanup still pending. Neither is a memory-exhaustion proof:
+ * Fatal coverage note: a genuine fatal AFTER d2w_supervise returns
+ * (cleanup still pending) and a deterministic process termination
+ * INSIDE d2w_supervise (exit raised from the env-path stat probe;
+ * unfinished-supervisor shutdown branch, with the private dir
+ * asserted removed) are tested. A genuine ENGINE fatal raised
+ * deterministically inside d2w_supervise and answered only by the
+ * shutdown token is a stated LIMITATION (see the termination test). Neither is a memory-exhaustion proof:
  * on PHP 8.1 the
  * engine prints its own memory-fatal line despite suppression
  * (observed in CI, rounds 8/10), which this PR does not close —
@@ -372,49 +374,62 @@ final class Day2FixtureSupervisorTest extends TestCase
         }
     }
 
-    public function test_fatal_inside_supervise_prints_only_token_and_cleans_up(): void
+    public function test_termination_inside_supervise_prints_only_token_and_cleans_up(): void
     {
-        // Deterministic fatal INSIDE d2w_supervise (the unfinished-
-        // supervisor shutdown branch): the helper runs with a 2-second
-        // engine execution-time limit while the supervised child sleeps
-        // 30 seconds, so the zend timeout raises a genuine E_ERROR
-        // fatal while d2w_supervise's wait loop is on the stack —
-        // synchronously, in the same process. (An E_USER_ERROR injected
-        // via a stream-wrapper stat was tried first and is NOT usable
-        // here: file_exists stats quietly, which masks the trigger, and
-        // the supervisor's own swallowing error handler would absorb a
-        // user error anyway — observed as a Unit failure on every PHP
-        // version in CI run 43653379886.) No timing race in the outcome:
-        // the child outlives the limit by 15x, so the fatal always lands
-        // inside supervise, never before it starts or after it returns.
+        // Deterministic process termination INSIDE d2w_supervise (the
+        // unfinished-supervisor shutdown branch): a stream wrapper for
+        // the env-file path whose url_stat exits the process the moment
+        // the supervisor probes that path — synchronously, in the same
+        // process, while d2w_supervise is on the stack, after the
+        // private dir and capture files exist. register_shutdown_function
+        // runs identically for exit() and for a fatal, so this proves the
+        // shutdown branch (checked cleanup + only the fixed token +
+        // nonzero status); it does not by itself prove an engine fatal.
+        //
+        // Why not a genuine in-supervise fatal — two real attempts:
+        // (1) E_USER_ERROR from url_stat (CI run 43653379886, Unit failed
+        // on every PHP version): file_exists stats quietly, masking the
+        // trigger, and the supervisor's own swallowing error handler
+        // absorbs user errors in any case. (2) Engine execution-time
+        // limit expiring in the wait loop (CI run 43653862478, same
+        // failure): on non-Windows the limit measures CPU time
+        // (php.net/manual/en/info.configuration.php#ini.max-execution-time)
+        // and the polling wait loop is idle, so the limit never fired
+        // before the child woke. A memory-exhaustion fatal is the
+        // documented residual the engine self-prints on PHP 8.1. So: a
+        // genuine ENGINE fatal raised deterministically inside
+        // d2w_supervise, answered only by the shutdown token, is a
+        // LIMITATION of this PR; the unfinished-supervisor shutdown
+        // branch itself is proven here via deterministic termination,
+        // and a genuine fatal is proven by the post-return test below.
         $base = $this->workDir . '/wrapperbase';
         mkdir($base, 0700, true);
         $helper = $this->workDir . '/wrapper-helper.php';
         file_put_contents($helper, '<?php '
+            . 'class D2wExitWrapper { public $context; '
+            . 'public function url_stat($path, $flags) { exit(1); } '
+            . 'public function stream_open($p, $m, $o, &$o2) { return false; } } '
+            . 'stream_wrapper_register("d2wexit", "D2wExitWrapper"); '
             . 'require ' . var_export(dirname(__DIR__) . '/fixtures/day2-fixture-supervisor.php', true) . ';'
-            . '$r = d2w_supervise([PHP_BINARY, "-r", "sleep(30);"], '
-            . var_export($base . '/env.php', true) . ', ["supervisor"], '
+            . '$r = d2w_supervise([PHP_BINARY, "-r", "exit(0);"], "d2wexit://env", ["supervisor"], '
             . var_export($base, true) . ');'
             . 'exit($r[0]);');
-        $start = microtime(true);
         $proc = proc_open(
-            [PHP_BINARY, '-d', 'max_execution_time=2', '-d', 'display_errors=0', '-d', 'log_errors=0', $helper],
+            [PHP_BINARY, '-d', 'display_errors=0', '-d', 'log_errors=0', $helper],
             [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
             $pipes
         );
-        self::assertTrue(is_resource($proc), 'in-supervise fatal helper could not launch');
+        self::assertTrue(is_resource($proc), 'in-supervise termination helper could not launch');
         $out = stream_get_contents($pipes[1]);
         $err = stream_get_contents($pipes[2]);
         fclose($pipes[1]);
         fclose($pipes[2]);
         $exit = proc_close($proc);
-        $elapsed = microtime(true) - $start;
         unlink($helper);
-        self::assertTrue($exit !== 0, 'in-supervise fatal must exit nonzero');
-        self::assertTrue($out === '', 'in-supervise fatal must print nothing to stdout');
-        self::assertTrue($err === "DAY2_FIXTURE_ERROR step=supervisor\n", 'in-supervise fatal must print only the fixed token (no warning text)');
-        self::assertTrue($elapsed < 30, 'in-supervise fatal must land long before the child wakes');
-        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'shutdown cleanup must remove the private dir after an in-supervise fatal');
+        self::assertTrue($exit !== 0, 'in-supervise termination must exit nonzero');
+        self::assertTrue($out === '', 'in-supervise termination must print nothing to stdout');
+        self::assertTrue($err === "DAY2_FIXTURE_ERROR step=supervisor\n", 'in-supervise termination must print only the fixed token (no warning text)');
+        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'shutdown cleanup must remove the private dir after an in-supervise termination');
         rmdir($base);
     }
 
