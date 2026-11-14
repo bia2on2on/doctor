@@ -182,14 +182,14 @@ function d2w_verify_note($db, int $noteId, array $expected): void
 {
     $row = $db->fetchRow(
         'SELECT clinic_id, patient_id, visit_id, clinician_id, category,'
-        . ' visibility, content_text, created_by_wp_user_id FROM '
+        . ' visibility, content_text, created_by_wp_user_id, is_archived FROM '
         . $db->table('cpms_clinical_notes') . ' WHERE id = %d',
         [$noteId]
     );
     if (!is_array($row)) {
         d2w_fail('seed_verify');
     }
-    foreach (['clinic_id', 'patient_id', 'visit_id', 'clinician_id', 'created_by_wp_user_id'] as $field) {
+    foreach (['clinic_id', 'patient_id', 'visit_id', 'clinician_id', 'created_by_wp_user_id', 'is_archived'] as $field) {
         if ((int) ($row[$field] ?? 0) !== (int) $expected[$field]) {
             d2w_fail('seed_verify');
         }
@@ -203,6 +203,42 @@ function d2w_verify_note($db, int $noteId, array $expected): void
         hash('sha256', (string) $expected['content_text']),
         hash('sha256', (string) ($row['content_text'] ?? ''))
     )) {
+        d2w_fail('seed_verify');
+    }
+}
+
+/**
+ * Verify one seeded prescription's identity (clinic, patient, visit,
+ * clinician, finalized status, patient visibility) AND its item
+ * association with the expected drug text: the DENY journey asserts a
+ * finalized prescription is hidden, which is vacuous if the row or
+ * its item was never seeded as expected.
+ *
+ * @param array<string, mixed> $expected
+ */
+function d2w_verify_prescription($db, int $rxId, array $expected): void
+{
+    $row = $db->fetchRow(
+        'SELECT clinic_id, patient_id, visit_id, clinician_id, status, is_patient_visible FROM '
+        . $db->table('cpms_prescriptions') . ' WHERE id = %d',
+        [$rxId]
+    );
+    if (!is_array($row)) {
+        d2w_fail('seed_verify');
+    }
+    foreach (['clinic_id', 'patient_id', 'visit_id', 'clinician_id', 'is_patient_visible'] as $field) {
+        if ((int) ($row[$field] ?? 0) !== (int) $expected[$field]) {
+            d2w_fail('seed_verify');
+        }
+    }
+    if ((string) ($row['status'] ?? '') !== (string) $expected['status']) {
+        d2w_fail('seed_verify');
+    }
+    if ((int) $db->fetchValue(
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_prescription_items')
+        . ' WHERE prescription_id = %d AND generic_name = %s',
+        [$rxId, $expected['drug']]
+    ) !== 1) {
         d2w_fail('seed_verify');
     }
 }
@@ -235,6 +271,13 @@ function d2w_user(string $prefix, string $pass, string $wpRole): int
     }
     $u = new \WP_User((int) $userId);
     $u->set_role($wpRole);
+    // WP_User::set_role() returns void, so the role is verified by
+    // read-back on a fresh user object; a silent role failure must
+    // fail the fixture here, not surface as a misleading journey.
+    $check = new \WP_User((int) $userId);
+    if (!in_array($wpRole, (array) $check->roles, true)) {
+        d2w_fail('user_create');
+    }
 
     return (int) $userId;
 }
@@ -689,6 +732,7 @@ $followUpId = d2w_require_id((new FollowUpRepository($db))->insert($clinicA, [
     'reason'         => 'پایش فشار خون ماهانه',
 ]), 'followup_insert');
 
+$rxRows = [];
 foreach ([
     [$priorVisitDoc2, $medPt, 'ValsartanD2'],
     [$priorVisitDenyCol, $medPtDeny, 'AmlodipineDenyD2'],
@@ -709,6 +753,7 @@ foreach ([
         [$rxId, $drugName, '80mg', 'tablet', '1 عدد', 'روزانه', 'oral', 'manual', $now],
         'prescription item ' . $drugName
     );
+    $rxRows[] = [$rxId, $rxPatientId, $rxVisitId, $drugName];
 }
 
 // --- Journey D: Subscriber Accountant Reconciliation (Loc A1 vs Loc A2 vs Foreign Clinic B) ---
@@ -860,6 +905,19 @@ foreach ([
         'clinician_id' => $vClinician, 'created_by_wp_user_id' => $vAuthor,
         'category' => $vCategory, 'visibility' => $vVisibility,
         'content_text' => $vContent,
+        // is_archived=0 is the value ordinary note queries require
+        // (ClinicalNoteRepository filters `is_archived = 0`); a note
+        // seeded archived would be invisible to the journeys.
+        'is_archived' => 0,
+    ]);
+}
+// Both prescriptions (incl. the DENY journey's AmlodipineDenyD2)
+// verified by full identity plus item association/drug text.
+foreach ($rxRows as [$vRxId, $vRxPatient, $vRxVisit, $vDrug]) {
+    d2w_verify_prescription($db, $vRxId, [
+        'clinic_id' => $clinicA, 'patient_id' => $vRxPatient, 'visit_id' => $vRxVisit,
+        'clinician_id' => $clinician2, 'status' => 'finalized',
+        'is_patient_visible' => 1, 'drug' => $vDrug,
     ]);
 }
 // Both explicit DENY overrides must exist with effect=deny (the
@@ -900,6 +958,22 @@ d2w_verify_one(
     . ' WHERE clinic_id = %d AND patient_id = %d AND wp_user_id = %d',
     [$clinicA, $patientId, $ptUserId]
 );
+// Each membership row verified by id + clinic + wp user + role (the
+// set count below alone would not catch a wrong-role row).
+foreach ([
+    [$memDoc1, $doc1UserId, 'cpms_doctor'],
+    [$memDoc2, $doc2UserId, 'cpms_doctor'],
+    [$memDocDeny, $docDenyUserId, 'cpms_doctor'],
+    [$memSec, $secUserId, 'cpms_secretary'],
+    [$memAcc, $accUserId, 'cpms_accountant'],
+] as [$vMemId, $vMemUser, $vMemRole]) {
+    d2w_verify_one(
+        $db,
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_clinic_memberships')
+        . ' WHERE id = %d AND clinic_id = %d AND wp_user_id = %d AND role_key = %s',
+        [$vMemId, $clinicA, $vMemUser, $vMemRole]
+    );
+}
 // The membership check counts the SET: require all five rows.
 if ((int) $db->fetchValue(
     'SELECT COUNT(*) FROM ' . $db->table('cpms_clinic_memberships')

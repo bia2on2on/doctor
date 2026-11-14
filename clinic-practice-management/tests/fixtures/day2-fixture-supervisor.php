@@ -21,6 +21,17 @@
  * it). A worker that exits 0 without that evidence has NOT finished
  * the fixture, whatever it printed.
  *
+ * Threat model for the nonce (stated precisely): it proves the
+ * completion line was produced by a child that received THIS run's
+ * environment — it protects against accidental, stale or unrelated
+ * output being mistaken for completion. It does NOT protect against
+ * a malicious or compromised child: the child can read its own
+ * environment, so it could print a valid completion line without
+ * doing the work. The fixture child is this repository's own code
+ * re-executed, so the accidental-output threat is the one in scope.
+ * The completion line is contractual ONLY as the LAST line of the
+ * child's stdout: anything printed after it fails the run.
+ *
  * This file only defines functions; including it executes nothing.
  * Residual (honest): loading THIS file, or a parse/startup error in
  * the including script, happens before any of this code can run; the
@@ -52,6 +63,11 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
     // function is the last-resort fixed-token path for fatals.
     ini_set('display_errors', '0');
     ini_set('display_startup_errors', '0');
+    // Engine diagnostics (warnings, and the fatal message itself) must
+    // not reach stderr either: display AND logging are off, and the
+    // error handler below swallows routine diagnostics. A fatal is
+    // answered only by the shutdown function's fixed token.
+    ini_set('log_errors', '0');
     set_error_handler(static function (): bool {
         return true;
     });
@@ -59,35 +75,56 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         public bool $finished = false;
         public ?string $tempDir = null;
     };
-    register_shutdown_function(static function () use ($state): void {
-        if ($state->tempDir !== null) {
-            foreach (glob($state->tempDir . '/*') ?: [] as $file) {
-                unlink($file);
+    // Checked private cleanup: every removal result is verified.
+    // Returns false if anything could not be removed (the directory
+    // then stays registered so the shutdown function retries).
+    $cleanup = static function () use ($state): bool {
+        if ($state->tempDir === null) {
+            return true;
+        }
+        $ok = true;
+        foreach (glob($state->tempDir . '/*') ?: [] as $file) {
+            if (!unlink($file)) {
+                $ok = false;
             }
-            rmdir($state->tempDir);
+        }
+        if (!rmdir($state->tempDir)) {
+            $ok = false;
+        }
+        if ($ok) {
             $state->tempDir = null;
         }
+        return $ok;
+    };
+    register_shutdown_function(static function () use ($state, $cleanup): void {
+        // Last resort (fatal before a return path ran): retry the
+        // checked cleanup, then emit ONLY the fixed token. Results
+        // cannot change the exit status from here; the failure path
+        // below already fails closed whenever cleanup reports false.
+        $cleanup();
         if (!$state->finished) {
             $last = error_get_last();
-            if (is_array($last) && in_array($last['type'] ?? 0, [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)) {
+            if (is_array($last) && in_array($last['type'] ?? 0, [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR], true)
+                && defined('STDERR')) {
                 fwrite(STDERR, "DAY2_FIXTURE_ERROR step=supervisor\n");
             }
         }
     });
 
-    $cleanup = static function () use ($state): void {
-        if ($state->tempDir !== null) {
-            foreach (glob($state->tempDir . '/*') ?: [] as $file) {
-                unlink($file);
-            }
-            rmdir($state->tempDir);
-            $state->tempDir = null;
-        }
-    };
+    // Every return path funnels through here EXCEPT success: cleanup
+    // runs FIRST, while the swallowing error handler is still active
+    // (a cleanup warning must not reach stderr), and any cleanup
+    // failure converts the result to the fail-closed supervisor token
+    // with a non-success exit — captured private output is never left
+    // behind silently. The temporary handler is restored only after
+    // cleanup, immediately before returning.
     $fail = static function (int $code, string $token) use ($cleanup, $state): array {
+        $clean = $cleanup();
         restore_error_handler();
-        $cleanup();
         $state->finished = true;
+        if (!$clean) {
+            return [1, 'DAY2_FIXTURE_ERROR step=supervisor', true];
+        }
         return [$code !== 0 ? $code : 1, 'DAY2_FIXTURE_ERROR step=' . $token, true];
     };
 
@@ -99,10 +136,15 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         // closed without launching the child.
         $base = $tempBase ?? sys_get_temp_dir();
         $dir = $base . '/d2w-sup-' . bin2hex(random_bytes(6));
-        if (!mkdir($dir, 0700) || !chmod($dir, 0700)) {
+        if (!mkdir($dir, 0700)) {
             return $fail(1, 'supervisor');
         }
+        // Registered for cleanup IMMEDIATELY after mkdir succeeds —
+        // before chmod/mode checks — so no later failure can orphan it.
         $state->tempDir = $dir;
+        if (!chmod($dir, 0700)) {
+            return $fail(1, 'supervisor');
+        }
         if (((int) fileperms($dir) & 0777) !== 0700) {
             return $fail(1, 'supervisor');
         }
@@ -159,6 +201,7 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         $completeValid = 0;
         $completeSeen = 0;
         $token = null;
+        $lastOutLine = null;
         foreach ([$errPath, $outPath] as $path) {
             $handle = fopen($path, 'r');
             if ($handle === false) {
@@ -166,6 +209,9 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
             }
             while (($line = fgets($handle)) !== false) {
                 $line = rtrim($line, "\r\n");
+                if ($path === $outPath) {
+                    $lastOutLine = $line;
+                }
                 if (str_starts_with($line, 'DAY2_FIXTURE_COMPLETE')) {
                     $completeSeen++;
                     if ($line === 'DAY2_FIXTURE_COMPLETE nonce=' . $nonce) {
@@ -182,9 +228,16 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         }
 
         if ($code === 0 && !$signalled && $completeValid === 1 && $completeSeen === 1
+            && $lastOutLine === 'DAY2_FIXTURE_COMPLETE nonce=' . $nonce
             && is_file($envFile)) {
+            // Success path: cleanup is checked too, while the handler
+            // is still active; a cleanup failure fails closed.
+            if (!$cleanup()) {
+                restore_error_handler();
+                $state->finished = true;
+                return [1, 'DAY2_FIXTURE_ERROR step=supervisor', true];
+            }
             restore_error_handler();
-            $cleanup();
             $state->finished = true;
             return [0, 'DAY2_FIXTURE_OK status=ok', false];
         }

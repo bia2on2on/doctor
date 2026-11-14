@@ -46,10 +46,10 @@ def legacy_context(value):
 def assert_no_values(test, output):
     text = output if isinstance(output, str) else json.dumps(output, ensure_ascii=False)
     for value in DRIVER_VALUES:
-        test.assertNotIn(value, text)
-    test.assertNotIn("sql_error", text)
-    test.assertNotIn("patient_name", text)
-    test.assertNotIn("national_id", text)
+        test.assertTrue(value not in text, "captured output carried a driver value (content withheld)")
+    test.assertTrue("sql_error" not in text, "captured output carried a forbidden key (content withheld)")
+    test.assertTrue("patient_name" not in text, "captured output carried a forbidden key (content withheld)")
+    test.assertTrue("national_id" not in text, "captured output carried a forbidden key (content withheld)")
 
 
 class DriverTextExclusionTest(unittest.TestCase):
@@ -488,13 +488,13 @@ class PublicationPathTest(unittest.TestCase):
             # the VALIDATED busy diagnosis (busy category, read label,
             # errno and its derived category, busy code) from the legacy
             # row — driver text and stored values can never ride it.
-            self.assertIn("error_kind=assertion", output)
-            self.assertIn("stage=hold-request", output)
-            self.assertIn("busy_diag=booking.lock_read_failed", output)
-            self.assertIn("read=location", output)
-            self.assertIn("sql_errno=1213", output)
-            self.assertIn("error_category=deadlock", output)
-            self.assertIn("code=CLINIC_BOOKING_BUSY", output)
+            self.assertTrue("error_kind=assertion" in output, "captured output missing expected fragment (content withheld)")
+            self.assertTrue("stage=hold-request" in output, "captured output missing expected fragment (content withheld)")
+            self.assertTrue("busy_diag=booking.lock_read_failed" in output, "captured output missing expected fragment (content withheld)")
+            self.assertTrue("read=location" in output, "captured output missing expected fragment (content withheld)")
+            self.assertTrue("sql_errno=1213" in output, "captured output missing expected fragment (content withheld)")
+            self.assertTrue("error_category=deadlock" in output, "captured output missing expected fragment (content withheld)")
+            self.assertTrue("code=CLINIC_BOOKING_BUSY" in output, "captured output missing expected fragment (content withheld)")
         self.assertEqual(["journey-A1-public"], module.failures)
         self.assertTrue(stdout.startswith("FAIL journey-A1-public"))
 
@@ -567,10 +567,15 @@ class FixtureFailureContractTest(unittest.TestCase):
         # unit: handlers first, private modes verified, nonce via env,
         # stale env removed, completion counted exactly once
         for marker in ("set_error_handler", "register_shutdown_function",
-                       "ini_set('display_errors', '0')", "proc_open(",
+                       "ini_set('display_errors', '0')", "ini_set('log_errors', '0')",
+                       "proc_open(",
                        "random_bytes(16)", "DAY2_FIXTURE_NONCE",
                        "0700", "0600", "fileperms", "unlink($envFile)",
-                       "DAY2_FIXTURE_OK status=ok", "catch (Throwable)"):
+                       "DAY2_FIXTURE_OK status=ok", "catch (Throwable)",
+                       # A/E: checked cleanup, dir registered at mkdir,
+                       # completion is the LAST stdout line, nonce scope
+                       "$state->tempDir = $dir;", "$lastOutLine",
+                       "malicious or compromised child"):
             self.assertIn(marker, unit)
         handler_at = unit.index("set_error_handler")
         proc_at = unit.index("proc_open(")
@@ -595,9 +600,11 @@ class FixtureFailureContractTest(unittest.TestCase):
                        "cpms_patient_user_links", "cpms_clinic_memberships",
                        # F3: full note identity, DENY rows, payment and
                        # assignment locations, settings read-back
-                       "d2w_verify_note(", "hash_equals",
+                       "d2w_verify_note(", "hash_equals", "is_archived",
+                       "d2w_verify_prescription(", "cpms_prescription_items",
                        "cpms_membership_capabilities", "'deny'",
                        "cpms_clinician_locations", "location_id = %d",
+                       "role_key = %s",
                        "booking.max_future_days"):
             self.assertIn(marker, code)
         verify_at = code.index("d2w_verify_one(")

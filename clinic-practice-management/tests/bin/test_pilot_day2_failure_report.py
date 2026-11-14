@@ -404,15 +404,15 @@ class CommandLineTest(unittest.TestCase):
 
     def test_missing_log_exits_zero_with_one_closed_line(self):
         result = self.run_script("--log", "/nonexistent/definitely-absent.log")
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
         self.assertEqual(result.stdout.count("\n"), 1)
         self.assertTrue(result.stdout.startswith("journey=unrecognised "))
-        self.assertEqual(result.stderr, "")
+        self.assertTrue(result.stderr == "", "subprocess stderr must be empty (content withheld)")
 
     def test_directory_as_log_is_unreadable_but_total(self):
         with tempfile.TemporaryDirectory() as tmp:
             result = self.run_script("--log", tmp)
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
         self.assertTrue(result.stdout.startswith("journey=unrecognised "))
 
     def test_hostile_log_file_prints_only_closed_tokens(self):
@@ -436,17 +436,17 @@ class CommandLineTest(unittest.TestCase):
                 ).encode("utf-8")
             )
             result = self.run_script("--log", str(path))
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
         for canary in (CANARY_TOKEN, CANARY_EMAIL, CANARY_URL, CANARY_PATH, "SELECT", "::"):
-            self.assertNotIn(canary, result.stdout)
-        self.assertIn("journey=journey-A1-public stage=hold-countdown http=503", result.stdout)
+            self.assertTrue(canary not in result.stdout, "captured output carried forbidden text (content withheld)")
+        self.assertTrue("journey=journey-A1-public stage=hold-countdown http=503" in result.stdout, "captured output missing expected fragment (content withheld)")
 
     def test_invalid_utf8_and_nul_bytes_are_tolerated(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "day2.log"
             path.write_bytes(b"\xff\xfe\x00FAIL journey-A1-public \x00\xff" + failure_line().encode())
             result = self.run_script("--log", str(path))
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
         self.assertEqual(result.stdout.count("\n"), 1)
 
     def test_field_mode_prints_exactly_one_token(self):
@@ -456,7 +456,7 @@ class CommandLineTest(unittest.TestCase):
             for field in projector.FIELDS:
                 with self.subTest(field=field):
                     result = self.run_script("--log", str(path), "--field", field)
-                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
                     token = result.stdout.rstrip("\n")
                     self.assertNotIn(" ", token)
                     self.assertNotIn("=", token)
@@ -464,8 +464,8 @@ class CommandLineTest(unittest.TestCase):
 
     def test_selftest_passes_and_is_not_a_placeholder(self):
         result = self.run_script("--test")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("PASS day2-failure-report-selftest", result.stdout)
+        self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
+        self.assertTrue("PASS day2-failure-report-selftest" in result.stdout, "captured output missing expected fragment (content withheld)")
 
     def test_selftest_detects_a_neutralised_errno_mapping(self):
         original = projector.errno_class_for
@@ -477,12 +477,12 @@ class CommandLineTest(unittest.TestCase):
         finally:
             projector.errno_class_for = original
         self.assertEqual(code, 1)
-        self.assertIn("FAIL day2-failure-report-selftest", buffer.getvalue())
+        self.assertTrue("FAIL day2-failure-report-selftest" in buffer.getvalue(), "captured output missing expected fragment (content withheld)")
 
     def test_usage_error_is_a_nonzero_exit_but_prints_nothing_raw(self):
         result = self.run_script("--field", "not-a-field")
         self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn(CANARY_TOKEN, result.stdout + result.stderr)
+        self.assertTrue(CANARY_TOKEN not in result.stdout + result.stderr, "captured output carried forbidden text (content withheld)")
 
 
 class RealHarnessFormatTest(unittest.TestCase):
@@ -753,7 +753,7 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
                 capture_output=True, text=True, check=False, timeout=30,
             )
             elapsed = time.monotonic() - started
-        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
         self.assertTrue(result.stdout.startswith("journey=unrecognised "))
         self.assertLess(elapsed, 10)
 
@@ -776,7 +776,7 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
                          "--log", str(path), "--field", field],
                         capture_output=True, text=True, check=False,
                     )
-                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
                     token = result.stdout.rstrip("\n")
                     if field in projector.ENUMS:
                         self.assertIn(token, projector.ENUMS[field])
@@ -800,7 +800,7 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
                 )
                 self.assertNotEqual(result.returncode, 0)
                 for canary in (CANARY_TOKEN, CANARY_EMAIL, CANARY_SQL, "Traceback"):
-                    self.assertNotIn(canary, result.stdout + result.stderr)
+                    self.assertTrue(canary not in result.stdout + result.stderr, "captured output carried forbidden text (content withheld)")
 
     def test_cli_fallback_is_total_when_projection_raises(self):
         """The `except Exception` fallback must print a closed token, not a traceback."""
@@ -831,7 +831,7 @@ class BoundsAndCliHardeningTest(unittest.TestCase):
                      "--log", path],
                     capture_output=True, text=True, check=False,
                 )
-                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.returncode, 0, "subprocess failed (output withheld)")
                 self.assertEqual(result.stdout.count("\n"), 1)
                 self.assertTrue(
                     result.stdout.startswith("journey=unrecognised ")
@@ -1480,15 +1480,15 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
             )
         stdout = buffer.getvalue()
         self.assertTrue(stdout.startswith("FAIL journey-A1-public"))
-        self.assertIn("error_kind=runtime", stdout)
+        self.assertTrue("error_kind=runtime" in stdout, "captured output missing expected fragment (content withheld)")
         # A failing test must still fail: the journey is recorded as failed.
         self.assertEqual(harness.failures, ["journey-A1-public"])
         self.assertEqual(harness.results[-1]["status"], "FAIL")
         results_detail = harness.results[-1]["detail"]
         for token in self.TOKENS:
-            self.assertNotIn(token, stdout)
+            self.assertTrue(token not in stdout, "captured output carried forbidden text (content withheld)")
             self.assertNotIn(token, results_detail)
-            self.assertNotIn(token, projector.render(projector.project(stdout)))
+            self.assertTrue(token not in projector.render(projector.project(stdout)), "captured output carried forbidden text (content withheld)")
 
     def test_response_message_never_reaches_info_stdout(self):
         """Claim A: a hostile REST `message` must not survive the probe.
@@ -1532,12 +1532,12 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
                 f"day2-A1-resume hold_attempts={probe.hold_attempts(0)}"
             )
         stdout = buffer.getvalue()
-        self.assertIn("day2-A1-resume hold_attempts=", stdout)
-        self.assertIn("CLINIC_BOOKING_BUSY", stdout)
+        self.assertTrue("day2-A1-resume hold_attempts=" in stdout, "captured output missing expected fragment (content withheld)")
+        self.assertTrue("CLINIC_BOOKING_BUSY" in stdout, "captured output missing expected fragment (content withheld)")
         for token in ("SYNTH_MSG_TOKEN", "Deadlock found", "SELECT mobile"):
-            self.assertNotIn(token, stdout)
+            self.assertTrue(token not in stdout, "captured output carried forbidden text (content withheld)")
             self.assertNotIn(token, repr(probe.entries))
-            self.assertNotIn(token, projector.render(projector.project(stdout)))
+            self.assertTrue(token not in projector.render(projector.project(stdout)), "captured output carried forbidden text (content withheld)")
 
     def test_hostile_busy_suffix_text_never_reaches_any_surface(self):
         """Claim B adversarial: hostile text inside the busy suffix.
@@ -1588,7 +1588,7 @@ class Day2HarnessDbStderrAdversarialTest(unittest.TestCase):
         self.assertEqual(fields["busy"], "present")
         self.assertEqual(harness.failures, ["journey-A1-public"])
         for token in ("SYNTH_SUFFIX_TOKEN", "Deadlock found", "SELECT mobile"):
-            self.assertNotIn(token, stdout)
+            self.assertTrue(token not in stdout, "captured output carried forbidden text (content withheld)")
             self.assertNotIn(token, detail)
             self.assertNotIn(token, projector.render(fields))
 
@@ -1655,8 +1655,8 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
                     )
                     harness.info(f"day2-A1-rest {probe.describe(0)}")
                 stdout = buffer.getvalue()
-                self.assertIn("code=other", stdout)
-                self.assertNotIn(hostile, stdout)
+                self.assertTrue("code=other" in stdout, "captured output missing expected fragment (content withheld)")
+                self.assertTrue(hostile not in stdout, "captured output carried forbidden text (content withheld)")
                 self.assertNotIn(hostile, repr(probe.entries))
                 self.assertNotIn(
                     hostile, projector.render(projector.project(stdout))
@@ -1686,8 +1686,8 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
             self.harness.info(
                 f"day2-A1-resume hold_attempts={probe.hold_attempts(0)}"
             )
-        self.assertNotIn("9128887701", buffer.getvalue())
-        self.assertNotIn("09128887701", buffer.getvalue())
+        self.assertTrue("9128887701" not in buffer.getvalue(), "captured output carried forbidden text (content withheld)")
+        self.assertTrue("09128887701" not in buffer.getvalue(), "captured output carried forbidden text (content withheld)")
         at_bound = self._probe_with(
             {"code": "CLINIC_BOOKING_BUSY"}, posted={"slot_id": 2147483647}
         )
@@ -1736,8 +1736,8 @@ class Day2ProbeClosedFieldsTest(unittest.TestCase):
         buffer = io.StringIO()
         with redirect_stdout(buffer):
             harness.fail("journey-A1-public", "t", exc)
-        self.assertIn("route=booking/hold", buffer.getvalue())
-        self.assertNotIn("evil/route", buffer.getvalue())
+        self.assertTrue("route=booking/hold" in buffer.getvalue(), "captured output missing expected fragment (content withheld)")
+        self.assertTrue("evil/route" not in buffer.getvalue(), "captured output carried forbidden text (content withheld)")
 
     def test_startup_info_values_reject_trailing_newlines(self):
         """C4: strict full-match or the fixed `invalid` token."""
@@ -2035,9 +2035,99 @@ class RoundSevenBoardAndStartupTest(unittest.TestCase):
         finally:
             harness.main = original
         self.assertEqual(code, 1)
-        self.assertEqual(
-            stderr.getvalue(), "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n")
-        self.assertNotIn("SYNTH_STARTUP_TOKEN", stderr.getvalue())
+        # Boolean compares with fixed messages: the captured stream is
+        # never an assertion operand, so a failure diff cannot
+        # republish captured text.
+        self.assertTrue(
+            stderr.getvalue() == "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n",
+            "startup failure must print only the fixed token")
+        self.assertTrue("SYNTH_STARTUP_TOKEN" not in stderr.getvalue(),
+                        "startup token must not carry exception text")
+
+
+class RoundEightStartupGuardTest(unittest.TestCase):
+    """D: _entry handles BaseException with fixed-token output only."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("day2_harness_r8", HARNESS)
+        sys.path.insert(0, str(BIN_DIR))
+        cls.harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.harness)
+
+    def _run_with_main(self, main):
+        harness = self.harness
+        original = harness.main
+        harness.main = main
+        try:
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                code = harness._entry()
+        finally:
+            harness.main = original
+        return code, stderr.getvalue()
+
+    def test_systemexit_with_hostile_text_prints_only_token(self):
+        def main():
+            raise SystemExit("Missing required environment variable: SYNTH_SECRET_R8")
+
+        code, err = self._run_with_main(main)
+        self.assertEqual(code, 1)
+        self.assertTrue(
+            err == "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n",
+            "SystemExit text must be replaced by the fixed token")
+        self.assertTrue("SYNTH_SECRET_R8" not in err,
+                        "SystemExit text must never reach stderr")
+
+    def test_systemexit_zero_and_none_stay_silent_success(self):
+        for exc in (SystemExit(0), SystemExit(None), SystemExit()):
+            def main(exc=exc):
+                raise exc
+
+            code, err = self._run_with_main(main)
+            self.assertEqual(code, 0)
+            self.assertTrue(err == "", "successful SystemExit must stay silent")
+
+    def test_systemexit_nonzero_int_is_preserved_with_token(self):
+        def main():
+            raise SystemExit(3)
+
+        code, err = self._run_with_main(main)
+        self.assertEqual(code, 3)
+        self.assertTrue(
+            err == "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n",
+            "nonzero SystemExit must print only the fixed token")
+
+    def test_keyboard_interrupt_prints_only_token(self):
+        def main():
+            raise KeyboardInterrupt("SYNTH_SECRET_R8")
+
+        code, err = self._run_with_main(main)
+        self.assertNotEqual(code, 0)
+        self.assertTrue(
+            err == "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n",
+            "KeyboardInterrupt must print only the fixed token")
+        self.assertTrue("SYNTH_SECRET_R8" not in err,
+                        "KeyboardInterrupt text must never reach stderr")
+
+    def test_token_print_failure_does_not_raise(self):
+        class BrokenStderr:
+            def write(self, _text):
+                raise BrokenPipeError("closed")
+
+            def flush(self):
+                raise BrokenPipeError("closed")
+
+        harness = self.harness
+        original_main, original_stderr = harness.main, sys.stderr
+        harness.main = lambda: (_ for _ in ()).throw(  # noqa: E731
+            ValueError("SYNTH_SECRET_R8"))
+        try:
+            sys.stderr = BrokenStderr()
+            code = harness._entry()
+        finally:
+            harness.main, sys.stderr = original_main, original_stderr
+        self.assertEqual(code, 1)
 
 
 if __name__ == "__main__":

@@ -216,7 +216,10 @@ def _canonical_time(value):
 def env_req(name):
     val = os.environ.get(name, "").strip()
     if not val and not SELFTEST:
-        raise SystemExit(f"Missing required environment variable: {name}")
+        # Fixed-token path: the missing variable's NAME is not printed
+        # (it is configuration surface); _entry answers this SystemExit
+        # with the same fixed startup token as every other failure.
+        raise SystemExit(1)
     return val
 
 
@@ -1735,18 +1738,41 @@ def main():
     return 1 if failures else 0
 
 
+def _print_startup_token():
+    """Print the fixed startup token; even THAT is guarded — a broken
+    stderr (closed pipe) must not turn the guard into a traceback."""
+    try:
+        print("DAY2_HARNESS_ERROR stage=startup detail_withheld=1", file=sys.stderr)
+    except Exception:  # noqa: BLE001 - nowhere safe left to report
+        pass
+
+
 def _entry():
     """Fixed-output guard for everything before (and outside) the
     per-journey fail() handling: playwright import, env/config parsing
     (int() on a hostile env value would otherwise traceback WITH the
-    value), browser launch. Only the fixed token is printed; the
-    exception text never reaches stderr. SystemExit (e.g. a missing
-    env var name from env_req) is not an Exception and passes through.
+    value), browser launch. Handles BaseException too: SystemExit
+    keeps its exit semantics (None/0 = success, stays silent; nonzero
+    or text-carrying = fixed token + nonzero, the text NEVER printed),
+    KeyboardInterrupt becomes the fixed token + 130. Code that runs
+    before this function exists — the module imports and constant
+    reads at the top of this file — cannot be guarded by it; an
+    interpreter traceback from a failing stdlib import there is a
+    disclosed residual, not covered by this guard's claim.
     """
     try:
         return main()
+    except SystemExit as exc:
+        code = exc.code
+        if code is None or code == 0:
+            return 0
+        _print_startup_token()
+        return code if isinstance(code, int) and code != 0 else 1
+    except KeyboardInterrupt:
+        _print_startup_token()
+        return 130
     except Exception:  # noqa: BLE001 - fixed startup token only
-        print("DAY2_HARNESS_ERROR stage=startup detail_withheld=1", file=sys.stderr)
+        _print_startup_token()
         return 1
 
 
