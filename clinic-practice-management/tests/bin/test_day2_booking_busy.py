@@ -537,25 +537,44 @@ class FixtureFailureContractTest(unittest.TestCase):
         self.assertLess(load_at, suppress_at)
         self.assertLess(suppress_at, first_insert_at)
 
+    SUPERVISOR = (
+        Path(__file__).resolve().parents[1]
+        / "fixtures" / "day2-fixture-supervisor.php"
+    )
+
     def test_supervisor_captures_child_output_from_process_start(self):
-        """Item 1: the fixture re-executes itself supervised so raw
-        child stdout/stderr (wp-load output, warnings, fatals, uncaught
-        exceptions) are captured privately; only fixed lines publish,
-        the child exit status is preserved, and an inability to
-        supervise fails closed BEFORE any seeding."""
+        """F1/F2: the fixture re-executes itself under d2w_supervise()
+        (tests/fixtures/day2-fixture-supervisor.php) so raw child
+        stdout/stderr (wp-load output, warnings, fatals, uncaught
+        exceptions) are captured privately from process start. Success
+        requires exit 0 + exactly one nonce completion line + an env
+        file created by this run; child mode requires BOTH the argv
+        flag AND the supervised marker AND the nonce env, failing
+        closed with the fixed token BEFORE wp-load otherwise; the
+        supervisor installs its handler before its first fallible call,
+        uses a mode-verified private dir/files, and cleans up on all
+        return paths (real-PHP behaviour is pinned by the PHPUnit
+        Day2FixtureSupervisorTest in the Unit suite, run by CI)."""
         code = self.code
-        self.assertIn("proc_open(", code)
-        self.assertIn("--d2w-supervised-child", code)
-        self.assertIn("DAY2_FIXTURE_SUPERVISED", code)
-        self.assertIn("tempnam(sys_get_temp_dir()", code)
-        self.assertIn('fwrite(STDOUT, "DAY2_FIXTURE_OK status=ok', code)
-        self.assertIn("DAY2_FIXTURE_ERROR step=supervisor", code)
-        supervisor_at = code.index("--d2w-supervised-child")
+        unit = self.SUPERVISOR.read_text(encoding="utf-8")
+        self.assertIn("day2-fixture-supervisor.php", code)
+        self.assertIn("d2w_supervise(", code)
+        self.assertIn("d2w_is_supervised_child($argv ?? [])", code)
+        self.assertIn("DAY2_FIXTURE_COMPLETE nonce=", code)
+        supervisor_at = code.index("d2w_supervise(")
         load_at = code.index("wp-load.php")
         self.assertLess(supervisor_at, load_at)
-        # fail-closed exit comes before the wp-load require in file order
-        fail_closed_at = code.index("exit(1);", supervisor_at)
-        self.assertLess(fail_closed_at, load_at)
+        # unit: handlers first, private modes verified, nonce via env,
+        # stale env removed, completion counted exactly once
+        for marker in ("set_error_handler", "register_shutdown_function",
+                       "ini_set('display_errors', '0')", "proc_open(",
+                       "random_bytes(16)", "DAY2_FIXTURE_NONCE",
+                       "0700", "0600", "fileperms", "unlink($envFile)",
+                       "DAY2_FIXTURE_OK status=ok", "catch (Throwable)"):
+            self.assertIn(marker, unit)
+        handler_at = unit.index("set_error_handler")
+        proc_at = unit.index("proc_open(")
+        self.assertLess(handler_at, proc_at)
 
     def test_seed_writes_are_checked_and_positively_verified(self):
         """Item 2: repository/service seed writes must yield positive
@@ -573,7 +592,13 @@ class FixtureFailureContractTest(unittest.TestCase):
         self.assertGreaterEqual(code.count("'note_insert'"), 5)
         for marker in ("$payNoA1Void", "$payNoB1Pos", "'voided'",
                        "cpms_payments", "cpms_clinical_notes",
-                       "cpms_patient_user_links", "cpms_clinic_memberships"):
+                       "cpms_patient_user_links", "cpms_clinic_memberships",
+                       # F3: full note identity, DENY rows, payment and
+                       # assignment locations, settings read-back
+                       "d2w_verify_note(", "hash_equals",
+                       "cpms_membership_capabilities", "'deny'",
+                       "cpms_clinician_locations", "location_id = %d",
+                       "booking.max_future_days"):
             self.assertIn(marker, code)
         verify_at = code.index("d2w_verify_one(")
         env_at = code.index("$envPayload = [")

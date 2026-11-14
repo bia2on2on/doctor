@@ -911,7 +911,7 @@ def run_journey_a_public_booking(browser, cfg):
         assert conf_resp.value.status == 200, f"booking/confirm HTTP {conf_resp.value.status}"
         visible_or_diagnose(page_pub, '[data-role="receipt"]', "receipt")
         ref_code = (page_pub.locator('[data-role="reference-code"]').first.text_content() or "").strip()
-        assert re.fullmatch(r"AP-\d{8}-\d{2}", ref_code), "receipt reference_code format invalid"
+        assert re.fullmatch(r"AP-[0-9]{8}-[0-9]{2}", ref_code), "receipt reference_code format invalid"
         page_pub.set_viewport_size({"width": 320, "height": 740})
         page_pub.wait_for_timeout(100)
         assert_no_horizontal_overflow(page_pub, "public-booking-receipt-320")
@@ -1122,9 +1122,14 @@ def parse_board_envelope(payload):
     data = payload["data"]
     if not isinstance(data, dict):
         raise AssertionError(f"reception board 'data' is not an object: {type(data).__name__}")
-    date = data.get("date")
-    if not isinstance(date, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is None:
-        raise AssertionError("reception board 'data.date' is not a Y-m-d string")
+    # Canonical board date (F4): ASCII shape AND real calendar date,
+    # re-rendered from the parsed value. Unicode digits, impossible
+    # dates (2026-02-30) and trailing newlines fail loudly here, and
+    # only the canonical string is ever compared or printed downstream
+    # (the re-anchor INFO line included).
+    date = _canonical_date(data.get("date"))
+    if date is None:
+        raise AssertionError("reception board 'data.date' is not a valid calendar date")
     appointments = data.get("appointments")
     if not isinstance(appointments, list):
         raise AssertionError(f"reception board 'data.appointments' is not a list: {type(appointments).__name__}")
@@ -1138,7 +1143,7 @@ def parse_board_envelope(payload):
         if not isinstance(row.get("status"), str) or row["status"] == "":
             raise AssertionError("reception board appointment has no status")
         ids.append(row_id)
-    return {"date": date, "appointment_ids": ids}
+    return {"date": date, "appointment_ids": ids}  # date is canonical
 
 
 def anchor_reception_rows(cfg, target_date=None):
@@ -1730,5 +1735,20 @@ def main():
     return 1 if failures else 0
 
 
+def _entry():
+    """Fixed-output guard for everything before (and outside) the
+    per-journey fail() handling: playwright import, env/config parsing
+    (int() on a hostile env value would otherwise traceback WITH the
+    value), browser launch. Only the fixed token is printed; the
+    exception text never reaches stderr. SystemExit (e.g. a missing
+    env var name from env_req) is not an Exception and passes through.
+    """
+    try:
+        return main()
+    except Exception:  # noqa: BLE001 - fixed startup token only
+        print("DAY2_HARNESS_ERROR stage=startup detail_withheld=1", file=sys.stderr)
+        return 1
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_entry())

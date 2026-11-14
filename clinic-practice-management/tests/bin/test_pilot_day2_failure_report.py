@@ -26,7 +26,7 @@ import sys
 import tempfile
 import time
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 BIN_DIR = Path(__file__).resolve().parents[2] / "bin"
@@ -1999,6 +1999,45 @@ class ConsolidatedRoundFieldsTest(unittest.TestCase):
             route="booking/hold", http_status=503, viewport="0390x0844",
         )
         self.assertIn("viewport=390x844", good)
+
+
+class RoundSevenBoardAndStartupTest(unittest.TestCase):
+    """F4 (canonical board date) + F5 (fixed startup output)."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("day2_harness_r7", HARNESS)
+        sys.path.insert(0, str(BIN_DIR))
+        cls.harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.harness)
+
+    def test_board_date_must_be_a_real_canonical_date(self):
+        parse = self.harness.parse_board_envelope
+        good = parse({"data": {"date": "2026-11-14", "appointments": []}})
+        self.assertEqual(good["date"], "2026-11-14")
+        for bad in ("2026-02-30", "2026-13-01", "٢٠٢٦-١١-١٤",
+                    "2026-11-14\n", "2026-11-14 "):
+            with self.subTest(date=bad):
+                with self.assertRaises(AssertionError):
+                    parse({"data": {"date": bad, "appointments": []}})
+
+    def test_startup_failure_prints_only_the_fixed_token(self):
+        """F5: a pre-journey failure (import/config/browser startup)
+        must not traceback with values to stderr."""
+        harness = self.harness
+        original = harness.main
+        harness.main = lambda: (_ for _ in ()).throw(  # noqa: E731
+            ValueError("invalid literal: SYNTH_STARTUP_TOKEN"))
+        try:
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                code = harness._entry()
+        finally:
+            harness.main = original
+        self.assertEqual(code, 1)
+        self.assertEqual(
+            stderr.getvalue(), "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n")
+        self.assertNotIn("SYNTH_STARTUP_TOKEN", stderr.getvalue())
 
 
 if __name__ == "__main__":

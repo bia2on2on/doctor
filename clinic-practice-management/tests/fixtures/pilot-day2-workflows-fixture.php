@@ -33,90 +33,53 @@
 declare(strict_types=1);
 
 // --- Output supervisor (process boundary) --------------------------------
-// The Pilot gate runs this file as `php fixture.php 2>&1 | tee <log>`, so
-// EVERYTHING the fixture process tree writes to stdout/stderr is public:
-// wp-load output before any suppression could be set, PHP warnings and
-// fatals, uncaught exceptions (whose messages can embed SQL/driver text,
-// e.g. CpmsDb::tx_control via assign_clinician_locations) and wpdb's own
-// error_log path. No in-script handler can capture the process's own
-// startup/parse errors, so the boundary is moved one process up: when
-// invoked WITHOUT `--d2w-supervised-child`, this file re-executes ITSELF
-// as a child whose stdout/stderr are private temp files from the moment
-// the child starts (before its wp-load, before any query, before any
-// error can be produced). The supervisor publishes ONLY fixed-schema
-// lines: on success `DAY2_FIXTURE_OK status=ok`; on failure a single
-// `DAY2_FIXTURE_ERROR step=<token>` where the token is re-extracted from
-// the captured output by exact allowlist match (or `unknown`). It
-// preserves the child's exit status and deletes the captured output.
-// Residual, stated honestly: a parse/startup error in THIS supervisor
-// file itself is printed by the PHP engine before any of this code runs
-// (its message carries file/line only, not fixture data); that residual
-// can only be closed by redirecting the process output in the workflow
-// step, which is out of scope for this change.
-if (!in_array('--d2w-supervised-child', $argv ?? [], true)
-    && getenv('DAY2_FIXTURE_SUPERVISED') !== '1') {
-    $d2wSteps = [
-        'insert', 'insert_id', 'user_create', 'clinic_ids', 'public_page',
-        'public_permalink', 'reception_grace', 'reception_row', 'env_write',
-        'membership', 'patient_link', 'note_insert', 'followup_insert',
-        'payment_insert', 'seed_verify', 'supervisor',
-    ];
-    $d2wOut = tempnam(sys_get_temp_dir(), 'd2w-out-');
-    $d2wErr = tempnam(sys_get_temp_dir(), 'd2w-err-');
-    $d2wProc = false;
-    $d2wCode = 1;
-    if ($d2wOut !== false && $d2wErr !== false && PHP_BINARY !== '') {
-        $d2wProc = proc_open(
+// The Pilot gate runs this file through a public tee, so the fixture
+// re-executes itself under `d2w_supervise()` (see
+// day2-fixture-supervisor.php): the child's stdout/stderr are private
+// files from the moment the child starts, and success is accepted only
+// with exit 0 AND exactly one nonce completion line AND an env file
+// created by this run. The supervisor logic installs its handlers
+// before its first fallible call and catches Throwable; this file's
+// own contribution is: child mode requires BOTH the argv flag AND the
+// supervised marker AND the per-run nonce env — either alone fails
+// closed with the fixed token BEFORE WordPress is loaded — and the
+// top-level supervisor call is itself wrapped so only the fixed line
+// it returns is ever printed. Residual: loading this file (or its
+// supervisor include), or a parse/startup error in it, precedes all of
+// this; the PHP engine diagnostic for that is outside the boundary
+// and its content is UNKNOWN (see the supervisor unit's header).
+require_once __DIR__ . '/day2-fixture-supervisor.php';
+
+if (in_array('--d2w-supervised-child', $argv ?? [], true)
+    || getenv('DAY2_FIXTURE_SUPERVISED') === '1'
+    || getenv('DAY2_FIXTURE_NONCE') !== false) {
+    // Child mode was at least partly requested: demand the full proof.
+    if (!d2w_is_supervised_child($argv ?? [])) {
+        fwrite(STDERR, "DAY2_FIXTURE_ERROR step=supervisor\n");
+        exit(1);
+    }
+    // Legitimate supervised child: fall through to the seeding below.
+    // Its raw output is private (supervisor temp files); the ONLY line
+    // that matters is the nonce completion line printed last.
+} else {
+    try {
+        [$d2wExit, $d2wLine, $d2wToStderr] = d2w_supervise(
             [PHP_BINARY, __FILE__, '--d2w-supervised-child'],
+            '/tmp/day2-workflows.env',
             [
-                0 => ['file', '/dev/null', 'r'],
-                1 => ['file', $d2wOut, 'a'],
-                2 => ['file', $d2wErr, 'a'],
-            ],
-            $d2wPipes,
-            null,
-            array_merge(getenv() ?: [], ['DAY2_FIXTURE_SUPERVISED' => '1'])
+                'insert', 'insert_id', 'user_create', 'clinic_ids', 'public_page',
+                'public_permalink', 'reception_grace', 'reception_row', 'env_write',
+                'membership', 'patient_link', 'note_insert', 'followup_insert',
+                'payment_insert', 'seed_verify', 'supervisor',
+            ]
         );
+    } catch (Throwable) {
+        $d2wExit = 1;
+        $d2wLine = 'DAY2_FIXTURE_ERROR step=supervisor';
+        $d2wToStderr = true;
     }
-    if (is_resource($d2wProc)) {
-        $d2wCode = proc_close($d2wProc);
-        if (!is_int($d2wCode) || $d2wCode < 0 || $d2wCode > 255) {
-            $d2wCode = 1;
-        }
-        $d2wToken = null;
-        foreach ([$d2wErr, $d2wOut] as $d2wPath) {
-            $d2wHandle = fopen($d2wPath, 'r');
-            if ($d2wHandle === false) {
-                continue;
-            }
-            while (($d2wLine = fgets($d2wHandle)) !== false) {
-                if (preg_match('/^DAY2_FIXTURE_ERROR step=([a-z_]+)\r?\n?$/', $d2wLine, $d2wMatch)
-                    && in_array($d2wMatch[1], $d2wSteps, true)) {
-                    $d2wToken = $d2wMatch[1];
-                    break 2;
-                }
-            }
-            fclose($d2wHandle);
-        }
-        unlink($d2wOut);
-        unlink($d2wErr);
-        if ($d2wCode === 0) {
-            fwrite(STDOUT, "DAY2_FIXTURE_OK status=ok\n");
-            exit(0);
-        }
-        fwrite(STDERR, 'DAY2_FIXTURE_ERROR step=' . ($d2wToken ?? 'unknown') . "\n");
-        exit($d2wCode !== 0 ? $d2wCode : 1);
-    }
-    if ($d2wOut !== false) {
-        unlink($d2wOut);
-    }
-    if ($d2wErr !== false) {
-        unlink($d2wErr);
-    }
-    // Fail closed WITHOUT running the seed: unsupervized output is worse
-    // than no fixture at all.
-    fwrite(STDERR, "DAY2_FIXTURE_ERROR step=supervisor\n");
-    exit(1);
+    fwrite($d2wToStderr ? STDERR : STDOUT, $d2wLine . "\n");
+    exit($d2wExit);
 }
 
 require getenv('WP_HOME') . '/wp-load.php';
@@ -200,6 +163,46 @@ function d2w_require_id(int $id, string $step): int
 function d2w_verify_one($db, string $sql, array $args): void
 {
     if ((int) $db->fetchValue($sql, $args) !== 1) {
+        d2w_fail('seed_verify');
+    }
+}
+
+/**
+ * Verify one seeded clinical note's FULL identity: the row read back
+ * by id must match clinic, patient, visit, clinician, author, category
+ * and visibility exactly, and its stored content must hash to the
+ * expected synthetic content. (An earlier version of this fixture's
+ * verification checked only id+clinic while its comment implied the
+ * journeys' fields were covered; that wording was wrong and the check
+ * is now the real one.)
+ *
+ * @param array<string, mixed> $expected
+ */
+function d2w_verify_note($db, int $noteId, array $expected): void
+{
+    $row = $db->fetchRow(
+        'SELECT clinic_id, patient_id, visit_id, clinician_id, category,'
+        . ' visibility, content_text, created_by_wp_user_id FROM '
+        . $db->table('cpms_clinical_notes') . ' WHERE id = %d',
+        [$noteId]
+    );
+    if (!is_array($row)) {
+        d2w_fail('seed_verify');
+    }
+    foreach (['clinic_id', 'patient_id', 'visit_id', 'clinician_id', 'created_by_wp_user_id'] as $field) {
+        if ((int) ($row[$field] ?? 0) !== (int) $expected[$field]) {
+            d2w_fail('seed_verify');
+        }
+    }
+    foreach (['category', 'visibility'] as $field) {
+        if ((string) ($row[$field] ?? '') !== (string) $expected[$field]) {
+            d2w_fail('seed_verify');
+        }
+    }
+    if (!hash_equals(
+        hash('sha256', (string) $expected['content_text']),
+        hash('sha256', (string) ($row['content_text'] ?? ''))
+    )) {
         d2w_fail('seed_verify');
     }
 }
@@ -818,31 +821,78 @@ $payB1PosId = d2w_require_id($payRepo->insert($clinicB, [
 // other-Location payments must not leak into a scoped panel; a
 // colleague's doctor_private note must stay hidden). A negative
 // assertion on a row that was never seeded passes vacuously, so every
-// such row is re-read from the database here — exactly one match, with
-// the clinic/status/visibility the journeys rely on — before the env
-// file is written. Any mismatch fails the fixture with the fixed
+// such row is re-read from the database here and matched on the exact
+// fields the journeys rely on (payment number/status/clinic/invoice/
+// location; note clinic/patient/visit/clinician/author/category/
+// visibility/content-hash; DENY capability rows; clinician-location
+// assignments; booking-window settings) before the env file is
+// written. Any mismatch fails the fixture with the fixed
 // `seed_verify` token instead of producing a misleading green journey.
 foreach ([
-    [$payNoA1Cash, 'captured', $clinicA, $invA1],
-    [$payNoA1Pos, 'captured', $clinicA, $invA1],
-    [$payNoA1Void, 'voided', $clinicA, $invA1],
-    [$payNoA2Pos, 'captured', $clinicA, $invA2],
-    [$payNoB1Pos, 'captured', $clinicB, $invB1],
-] as [$verifyPayNo, $verifyPayStatus, $verifyPayClinic, $verifyPayInvoice]) {
+    [$payNoA1Cash, 'captured', $clinicA, $invA1, $locA1],
+    [$payNoA1Pos, 'captured', $clinicA, $invA1, $locA1],
+    [$payNoA1Void, 'voided', $clinicA, $invA1, $locA1],
+    [$payNoA2Pos, 'captured', $clinicA, $invA2, $locA2],
+    [$payNoB1Pos, 'captured', $clinicB, $invB1, $locB1],
+] as [$verifyPayNo, $verifyPayStatus, $verifyPayClinic, $verifyPayInvoice, $verifyPayLocation]) {
+    // location_id included: the accountant journey's Location
+    // isolation assertions rely on it, not only on clinic/status.
     d2w_verify_one(
         $db,
         'SELECT COUNT(*) FROM ' . $db->table('cpms_payments')
-        . ' WHERE payment_number = %s AND status = %s AND clinic_id = %d AND invoice_id = %d',
-        [$verifyPayNo, $verifyPayStatus, $verifyPayClinic, $verifyPayInvoice]
+        . ' WHERE payment_number = %s AND status = %s AND clinic_id = %d AND invoice_id = %d AND location_id = %d',
+        [$verifyPayNo, $verifyPayStatus, $verifyPayClinic, $verifyPayInvoice, $verifyPayLocation]
     );
 }
-foreach ($noteIds as $verifyNoteId) {
+// Every security-relevant note verified by FULL identity (id, clinic,
+// patient, visit, clinician, author, category, visibility, content
+// hash) — the doctor journeys' privacy/sharing assertions read
+// exactly these fields.
+foreach ([
+    [$noteIds[0], $medPt, $priorVisitDoc1, $clinician1, $doc1UserId, 'diagnosis', 'doctor_private', 'یادداشت خصوصی دکتر سپهری قابل مشاهده برای خودش'],
+    [$noteIds[1], $medPt, $priorVisitDoc2, $clinician2, $doc2UserId, 'diagnosis', 'patient_visible', 'تشخیص عمومی دکتر کاظمی در پرونده قبلی'],
+    [$noteIds[2], $medPt, $priorVisitDoc2, $clinician2, $doc2UserId, 'clinical_note', 'doctor_private', 'یادداشت محرمانه دکتر کاظمی هرگز افشا نشود'],
+    [$noteIds[3], $medPtDeny, $priorVisitDenyOwn, $clinicianDeny, $docDenyUserId, 'diagnosis', 'doctor_private', 'یادداشت خصوصی دکتر نادری مسدود با DENY'],
+    [$noteIds[4], $medPtDeny, $priorVisitDenyCol, $clinician2, $doc2UserId, 'diagnosis', 'patient_visible', 'یادداشت عمومی قابل مشاهده برای دکتر نادری'],
+] as [$vNoteId, $vPatient, $vVisit, $vClinician, $vAuthor, $vCategory, $vVisibility, $vContent]) {
+    d2w_verify_note($db, $vNoteId, [
+        'clinic_id' => $clinicA, 'patient_id' => $vPatient, 'visit_id' => $vVisit,
+        'clinician_id' => $vClinician, 'created_by_wp_user_id' => $vAuthor,
+        'category' => $vCategory, 'visibility' => $vVisibility,
+        'content_text' => $vContent,
+    ]);
+}
+// Both explicit DENY overrides must exist with effect=deny (the
+// MembershipRepository write path does not surface its query result,
+// so the rows are read back here; DENY > GRANT is a negative-assertion
+// foundation of the doctor journey).
+foreach ([RolesAndCapabilities::PRIVATE_NOTE_READ, RolesAndCapabilities::RX_READ] as $denyCapability) {
     d2w_verify_one(
         $db,
-        'SELECT COUNT(*) FROM ' . $db->table('cpms_clinical_notes')
-        . ' WHERE id = %d AND clinic_id = %d',
-        [$verifyNoteId, $clinicA]
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_membership_capabilities')
+        . ' WHERE membership_id = %d AND capability = %s AND effect = %s',
+        [$memDocDeny, $denyCapability, 'deny']
     );
+}
+// Clinician <-> Location assignments the portal journeys rely on.
+foreach ([
+    [$clinician1, $locA1, 1], [$clinician1, $locA2, 0],
+    [$clinician2, $locA1, 1], [$clinicianDeny, $locA1, 1],
+] as [$vClinician, $vLocation, $vPrimary]) {
+    d2w_verify_one(
+        $db,
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_clinician_locations')
+        . ' WHERE clinician_id = %d AND location_id = %d AND is_primary = %d',
+        [$vClinician, $vLocation, $vPrimary]
+    );
+}
+// Booking-window settings the reschedule journey's negative (+40d
+// excluded) assertion depends on: read back, never assumed written.
+$verifySettings = App::settingsFactory()->forClinic($clinicA);
+if ((int) $verifySettings->get('booking.max_future_days', 0) !== 30
+    || (int) $verifySettings->get('booking.min_lead_hours', 0) !== 1
+    || (int) $verifySettings->get('booking.reschedule_deadline_hours', 0) !== 24) {
+    d2w_fail('seed_verify');
 }
 d2w_verify_one(
     $db,
@@ -923,10 +973,7 @@ if (file_put_contents('/tmp/day2-workflows.env', implode("\n", $lines) . "\n") =
     d2w_fail('env_write');
 }
 
-echo sprintf(
-    "DAY2_FIXTURE_OK clinic_a=%d clinic_b=%d loc_a1=%d loc_a2=%d doc1_sub=1 doc2_sub=1 doc_deny_sub=1 sec_sub=1 acc_sub=1\n",
-    $clinicA,
-    $clinicB,
-    $locA1,
-    $locA2
-);
+// LAST action of the supervised child, only after seed verification
+// passed and the env file was written: the nonce completion line the
+// supervisor requires (exactly once) before it will report success.
+echo 'DAY2_FIXTURE_COMPLETE nonce=' . (string) getenv('DAY2_FIXTURE_NONCE') . "\n";

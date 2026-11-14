@@ -59,7 +59,7 @@ def _canonical_viewport(value):
     width, height = value.split("x")
     return f"{int(width)}x{int(height)}"
 _DIGITS_RE = re.compile(r"[0-9]{1,10}")
-_SQL_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
+_SQL_DATETIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}")
 
 
 def _coerce_int(value):
