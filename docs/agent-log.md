@@ -5701,3 +5701,19 @@ Scope: branch synchronisation only. This is **not** a merge into `main`, the own
 **Executed checks (accurate statement).** No PHP, WordPress, database or browser code was run; local PHP is PHP-WASM only. Executed: the repository pre-push gates, GitHub REST reads, a whitespace-normalised word-diff against `97fd78f6`. CI does not exercise this document.
 
 **Not changed.** No code, schema, migration, test, workflow or other doc file. No migration is approved; owner acceptance NOT GIVEN; two independent finance reviews and owner approval remain outstanding.
+
+### [2026-11-14] — Refund idempotency design PR #349, round 13: D12 residual stated as the exact set (round-12 wording was too general) (design only)
+
+**Trigger.** The independent reader reviewed head `f31593297b5e156255fb4dba09d2e3330c9a4c58` (main `d1d49c5010260cb94a185a00e3a92e3e5d85ad92`, unchanged) and verified the D11 order, the closed list, the tests, the counts, the CI statements and the ledger rules. One problem: the document, T8, the round-12 ledger entry and the PR body said "an unlisted Default_Ignorable code point alone is accepted". The round-12 wording was too general: several Default_Ignorable code points are not in the D12 closed list but ARE in the D11 raw prohibited set (U+061C, U+200B, U+200D, U+200E, U+200F, U+202A-U+202E, U+2060, U+2066-U+2069, U+FEFF) and are rejected anywhere. No finance approval or owner acceptance exists.
+
+**Exact residual set (OBSERVED, official source).** Computed from https://www.unicode.org/Public/UCD/latest/ucd/DerivedCoreProperties.txt (DerivedCoreProperties-18.0.0, Default_Ignorable_Code_Point section; 4,174 code points, matching the file's stated total) minus (D11 prohibited set + trim set + U+200C + D12 closed list). A Default_Ignorable code point that is in none of those is accepted when a reason is made only of such code points: U+2065, U+FFF0-U+FFF8, U+1BCA0-U+1BCA3, U+1D173-U+1D17A, U+E0000, U+E0002-U+E001F, U+E0080-U+E00FF, U+E01F0-U+E0FFF (3,781 code points, mostly reserved). This is the same set as the round-11 list (no difference); only the surrounding sentences were too general. U+2800 stays in the closed list as blank-looking (not Default_Ignorable). A property list is not proof of PHP runtime behaviour (UNKNOWN: mb_*/PCRE not run).
+
+**Wording only, no rule, list, order or test changed.** In `docs/architecture/refund-idempotency-design.md` the residual sentence now reads "an unlisted Default_Ignorable code point that is also outside the D11 prohibited set (exact set: ...)" in the summary, §4.3 item 4 (which also names the D11-prohibited Default_Ignorable code points as rejected anywhere), the §4.3 patient-name-rule sentence, OQ-5 and T8. No T-test case lost; 21 OQ headings, 32 T-tests and 749 lines unchanged.
+
+**Earlier ledger text is not rewritten (append-only).** The round-12 entry's phrase "a Default_Ignorable code point outside the list ... alone would be ACCEPTED" is superseded by this entry for the D11-prohibited code points. Count wording from round 12 stands: the sticky Integration comment 6875919687 is updated in place and is a snapshot, not stable evidence; counts are tied to head, merge commit and run id in the PR body and the round report.
+
+**Installed WordPress version.** The owner reported (owner-relayed, not verified by me) that the installed WordPress version is 7.1.4; CI uses 7.1.x.
+
+**Executed checks (accurate statement).** No PHP, WordPress, database or browser code was run; local PHP is PHP-WASM only. Executed: the repository pre-push gates, GitHub REST reads, a whitespace-normalised word-diff against `f3159329`, a set computation over the Unicode property list. CI does not exercise this document.
+
+**Not changed.** No code, schema, migration, test, workflow or other doc file. No migration is approved; owner acceptance NOT GIVEN; two independent finance reviews and owner approval remain outstanding.
