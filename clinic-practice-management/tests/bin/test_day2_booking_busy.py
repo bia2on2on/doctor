@@ -537,6 +537,48 @@ class FixtureFailureContractTest(unittest.TestCase):
         self.assertLess(load_at, suppress_at)
         self.assertLess(suppress_at, first_insert_at)
 
+    def test_supervisor_captures_child_output_from_process_start(self):
+        """Item 1: the fixture re-executes itself supervised so raw
+        child stdout/stderr (wp-load output, warnings, fatals, uncaught
+        exceptions) are captured privately; only fixed lines publish,
+        the child exit status is preserved, and an inability to
+        supervise fails closed BEFORE any seeding."""
+        code = self.code
+        self.assertIn("proc_open(", code)
+        self.assertIn("--d2w-supervised-child", code)
+        self.assertIn("DAY2_FIXTURE_SUPERVISED", code)
+        self.assertIn("tempnam(sys_get_temp_dir()", code)
+        self.assertIn('fwrite(STDOUT, "DAY2_FIXTURE_OK status=ok', code)
+        self.assertIn("DAY2_FIXTURE_ERROR step=supervisor", code)
+        supervisor_at = code.index("--d2w-supervised-child")
+        load_at = code.index("wp-load.php")
+        self.assertLess(supervisor_at, load_at)
+        # fail-closed exit comes before the wp-load require in file order
+        fail_closed_at = code.index("exit(1);", supervisor_at)
+        self.assertLess(fail_closed_at, load_at)
+
+    def test_seed_writes_are_checked_and_positively_verified(self):
+        """Item 2: repository/service seed writes must yield positive
+        ids, and the rows behind the journeys' negative assertions
+        (voided + foreign payments among them) are re-read with
+        exactly-one-match before the env file is written."""
+        code = self.code
+        for token in ("'membership'", "'patient_link'", "'note_insert'",
+                      "'followup_insert'", "'payment_insert'", "'seed_verify'"):
+            self.assertIn(token, code)
+        self.assertGreaterEqual(code.count("d2w_require_id("), 15)
+        # definition + payments loop (x5 rows) + notes loop (x5) + link
+        self.assertGreaterEqual(code.count("d2w_verify_one("), 4)
+        self.assertGreaterEqual(code.count("'payment_insert'"), 5)
+        self.assertGreaterEqual(code.count("'note_insert'"), 5)
+        for marker in ("$payNoA1Void", "$payNoB1Pos", "'voided'",
+                       "cpms_payments", "cpms_clinical_notes",
+                       "cpms_patient_user_links", "cpms_clinic_memberships"):
+            self.assertIn(marker, code)
+        verify_at = code.index("d2w_verify_one(")
+        env_at = code.index("$envPayload = [")
+        self.assertLess(verify_at, env_at)
+
     def test_no_driver_text_or_masking_in_fixture_code(self):
         self.assertNotIn("last_error", self.code)
         self.assertNotIn("preg_replace", self.code)
@@ -556,13 +598,17 @@ class FixtureFailureContractTest(unittest.TestCase):
         self.assertEqual(
             steps,
             {"insert", "insert_id", "user_create", "clinic_ids", "public_page",
-             "public_permalink", "reception_grace", "reception_row", "env_write"},
+             "public_permalink", "reception_grace", "reception_row", "env_write",
+             "membership", "patient_link", "note_insert", "followup_insert",
+             "payment_insert", "seed_verify", "supervisor"},
         )
         calls = re.findall(r"d2w_fail\(([^)]*)\)", self.code)
         self.assertGreaterEqual(len(calls), 10)
         for arg in calls:
             arg = arg.strip()
-            if arg == "string $step":
+            if arg in ("string $step", "$step"):
+                # declaration, and the d2w_require_id() helper forwarding
+                # its (caller-validated) step argument
                 continue
             literal = re.fullmatch(r"'([a-z_]+)'", arg)
             self.assertIsNotNone(literal, arg)
@@ -666,20 +712,36 @@ class MainGuardPlacementTest(unittest.TestCase):
     """D2: no module-level class may be defined after the __main__ guard
     in the Day-2 python suites — `unittest.main()` exits at the guard,
     so such classes would silently never run via `python3 <file>` (the
-    exact CI invocation)."""
+    exact CI invocation).
+
+    Scope, stated precisely: this is an AST check over MODULE-LEVEL
+    class definitions in these two files only (it replaced a line-based
+    check). It is not a general guard for other files, nested classes,
+    or classes imported from elsewhere.
+    """
 
     FILES = ("test_day2_booking_busy.py", "test_pilot_day2_failure_report.py")
 
     def test_no_class_after_main_guard(self):
+        import ast
+
         here = Path(__file__).resolve().parent
         for name in self.FILES:
             with self.subTest(file=name):
-                lines = (here / name).read_text(encoding="utf-8").splitlines()
-                guards = [i for i, line in enumerate(lines)
-                          if line.startswith('if __name__ == "__main__":')]
+                tree = ast.parse((here / name).read_text(encoding="utf-8"))
+                guards = [
+                    node for node in tree.body
+                    if isinstance(node, ast.If)
+                    and isinstance(node.test, ast.Compare)
+                    and isinstance(node.test.left, ast.Name)
+                    and node.test.left.id == "__name__"
+                ]
                 self.assertEqual(len(guards), 1, name)
-                after = lines[guards[0] + 1:]
-                offenders = [line for line in after if line.startswith("class ")]
+                guard_at = tree.body.index(guards[0])
+                offenders = [
+                    node.name for node in tree.body[guard_at + 1:]
+                    if isinstance(node, ast.ClassDef)
+                ]
                 self.assertEqual(offenders, [], name)
 
 

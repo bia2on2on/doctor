@@ -50,6 +50,7 @@ import hmac
 import json
 import os
 import re
+from datetime import date
 import subprocess
 import sys
 import time
@@ -176,6 +177,40 @@ def _validated_printable(value, pattern):
     if isinstance(value, str) and re.fullmatch(pattern, value):
         return value
     return "invalid"
+
+
+def _canonical_date(value):
+    """Canonical `YYYY-MM-DD` for a REAL calendar date, else None.
+
+    The value is re-rendered from the parsed date (`date.isoformat()`),
+    never carried as input text: ASCII shape first (hostile Unicode
+    digits and newlines rejected), then calendar validity (Feb 30,
+    month 13 rejected). Output is therefore bounded canonical digits
+    and dashes only — it cannot carry arbitrary text.
+    """
+    if not isinstance(value, str) or not _SLOT_DATE_RE.fullmatch(value):
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
+def _canonical_time(value):
+    """Canonical `HH:MM:SS` for a real wall-clock time, else None.
+
+    Same contract as `_canonical_date`: ASCII shape, range validity
+    (24:00:00 and 09:60:00 rejected), re-rendered from parsed parts.
+    """
+    if not isinstance(value, str) or not _SLOT_TIME_RE.fullmatch(value):
+        return None
+    parts = [int(part) for part in value.split(":")]
+    if len(parts) == 2:
+        parts.append(0)
+    hour, minute, second = parts
+    if hour > 23 or minute > 59 or second > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}:{second:02d}"
 
 
 def env_req(name):
@@ -457,6 +492,17 @@ _ERROR_CODES = frozenset({
     "CLINIC_OTP_EXPIRED", "CLINIC_OTP_INVALID", "CLINIC_OTP_LOCKED",
     "CLINIC_OTP_PURPOSE_INVALID", "CLINIC_RATE_LIMITED",
     "rest_cookie_invalid_nonce",
+    # WordPress core codes reachable on these routes (WP 7.1.3):
+    # rest_invalid_param / rest_missing_callback_param /
+    # rest_invalid_params (class-wp-rest-request.php:881/924/963/983 —
+    # the watched routes declare required args), rest_invalid_json
+    # (:735), rest_no_route (class-wp-rest-server.php:1220 — method
+    # mismatch on a watched URL), rest_forbidden (:1266 — a permission
+    # callback returning false). Unknown codes still collapse to
+    # `other`; this list is the reachable-and-useful set, not a claim
+    # that core can emit nothing else.
+    "rest_forbidden", "rest_invalid_json", "rest_invalid_param",
+    "rest_invalid_params", "rest_missing_callback_param", "rest_no_route",
 })
 
 
@@ -559,12 +605,12 @@ class BookingProbe:
             # Key NAMES only (allowlist), plus the two slot time coordinates when
             # they are well formed: enough to tell "stale tuple" from "server guard".
             entry["keys"] = ",".join(key for key in _REQUEST_KEYS if key in posted)
-            posted_date = posted.get("slot_date")
-            if isinstance(posted_date, str) and _SLOT_DATE_RE.fullmatch(posted_date):
-                entry["slot_date"] = posted_date
-            posted_time = posted.get("slot_time")
-            if isinstance(posted_time, str) and _SLOT_TIME_RE.fullmatch(posted_time):
-                entry["slot_time"] = posted_time
+            canonical_date = _canonical_date(posted.get("slot_date"))
+            if canonical_date is not None:
+                entry["slot_date"] = canonical_date
+            canonical_time = _canonical_time(posted.get("slot_time"))
+            if canonical_time is not None:
+                entry["slot_time"] = canonical_time
         self.entries.append(entry)
 
     def hold_attempts(self, since=0):
@@ -1119,11 +1165,12 @@ def anchor_reception_rows(cfg, target_date=None):
         # bounded canonical exit code, never the bytes.
         rc = proc.returncode if isinstance(proc.returncode, int) and -255 <= proc.returncode <= 255 else "unknown"
         raise AssertionError(f"reception_anchor_failed rc={rc} detail_withheld=1")
-    match = re.search(r"\bdate=(\d{4}-\d{2}-\d{2})\b", out)
-    if not match:
+    match = re.search(r"\bdate=([0-9]{4}-[0-9]{2}-[0-9]{2})\b", out)
+    canonical_anchor = _canonical_date(match.group(1)) if match else None
+    if canonical_anchor is None:
         raise AssertionError("reception_anchor_date_missing")
-    info(f"reception_anchor date={match.group(1)}")
-    return match.group(1)
+    info(f"reception_anchor date={canonical_anchor}")
+    return canonical_anchor
 
 
 def select_reception_scope_and_load_board(page, cfg):
@@ -1642,9 +1689,9 @@ def main():
     info(
         "reception_rows=already_due_inside_grace "
         f"grace_min={_validated_printable(os.environ.get('DAY2_RECEPTION_GRACE_MINUTES', ''), r'[0-9]{1,4}')} "
-        f"doc1_slot={_validated_printable(os.environ.get('DAY2_SEC_SLOT_DOC1', ''), r'[0-9]{2}:[0-9]{2}:[0-9]{2}')} "
-        f"doc2_slot={_validated_printable(os.environ.get('DAY2_SEC_SLOT_DOC2', ''), r'[0-9]{2}:[0-9]{2}:[0-9]{2}')} "
-        f"foreign_slot={_validated_printable(os.environ.get('DAY2_SEC_SLOT_FOREIGN', ''), r'[0-9]{2}:[0-9]{2}:[0-9]{2}')}"
+        f"doc1_slot={_canonical_time(os.environ.get('DAY2_SEC_SLOT_DOC1', '')) or 'invalid'} "
+        f"doc2_slot={_canonical_time(os.environ.get('DAY2_SEC_SLOT_DOC2', '')) or 'invalid'} "
+        f"foreign_slot={_canonical_time(os.environ.get('DAY2_SEC_SLOT_FOREIGN', '')) or 'invalid'}"
     )
 
     os.makedirs(OUT, exist_ok=True)

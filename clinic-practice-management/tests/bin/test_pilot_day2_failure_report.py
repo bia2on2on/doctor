@@ -1918,5 +1918,88 @@ class RoundFourProbeFieldsTest(unittest.TestCase):
         self.assertEqual(good.entries[0]["slot_time"], "09:15:00")
 
 
+class ConsolidatedRoundFieldsTest(unittest.TestCase):
+    """Item 3: canonical dates/times, WP-core codes, viewport canon."""
+
+    @classmethod
+    def setUpClass(cls):
+        spec = importlib.util.spec_from_file_location("day2_harness_r5", HARNESS)
+        sys.path.insert(0, str(BIN_DIR))
+        cls.harness = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.harness)
+        import day2_booking_busy
+        cls.busy = day2_booking_busy
+
+    def _probe_with(self, payload, posted=None, status=503):
+        class _Request:
+            post_data_json = posted or {}
+
+        class _Response:
+            url = "http://fixture.test/wp-json/clinic/v1/booking/hold"
+            request = _Request()
+
+            def json(self):
+                return payload
+
+        _Response.status = status
+        probe = self.harness.BookingProbe()
+        probe._on_response(_Response())
+        return probe
+
+    def test_invalid_and_hostile_dates_times_are_omitted(self):
+        hostile = [
+            {"slot_date": "2026-02-30"},
+            {"slot_date": "2026-13-01"},
+            {"slot_date": "٢٠٢٦-١١-١٤"},
+            {"slot_date": "2026-11-14\n"},
+            {"slot_date": "2026-11-14" + "0" * 500},
+            {"slot_time": "24:00:00"},
+            {"slot_time": "09:60:00"},
+            {"slot_time": "09:15:60"},
+            {"slot_time": "۰۹:۱۵:۰۰"},
+        ]
+        for posted in hostile:
+            with self.subTest(posted=str(posted)[:32]):
+                entry = self._probe_with({"code": ""}, posted=posted).entries[0]
+                self.assertNotIn("slot_date", entry)
+                self.assertNotIn("slot_time", entry)
+
+    def test_valid_date_time_are_stored_canonically(self):
+        entry = self._probe_with(
+            {"code": ""},
+            posted={"slot_date": "2026-11-14", "slot_time": "09:15"},
+        ).entries[0]
+        self.assertEqual(entry["slot_date"], "2026-11-14")
+        self.assertEqual(entry["slot_time"], "09:15:00")
+        self.assertIsNone(self.harness._canonical_date("2026-02-29"))
+        self.assertEqual(self.harness._canonical_date("2024-02-29"), "2024-02-29")
+        self.assertEqual(self.harness._canonical_time("23:59:59"), "23:59:59")
+        self.assertIsNone(self.harness._canonical_time("99:99:99"))
+
+    def test_reachable_wordpress_core_codes_are_retained(self):
+        for code in ("rest_cookie_invalid_nonce", "rest_forbidden",
+                     "rest_invalid_json", "rest_invalid_param",
+                     "rest_invalid_params", "rest_missing_callback_param",
+                     "rest_no_route"):
+            with self.subTest(code=code):
+                probe = self._probe_with({"code": code}, status=403)
+                self.assertEqual(probe.entries[0]["code"], code)
+        unknown = self._probe_with({"code": "rest_made_up_code"}, status=403)
+        self.assertEqual(unknown.entries[0]["code"], "other")
+
+    def test_viewport_is_canonical_ascii_or_omitted(self):
+        busy = self.busy
+        unicode_vp = busy.validate_busy_suffix(
+            "busy_diag=booking.lock_read_failed read=slot sql_errno=1213 "
+            "route=booking/hold http=503 viewport=٣٩٠x٨٤٤"
+        )
+        self.assertNotIn("viewport=", unicode_vp)
+        good = busy.format_busy_suffix(
+            {"read": "slot", "sql_errno": 1213},
+            route="booking/hold", http_status=503, viewport="0390x0844",
+        )
+        self.assertIn("viewport=390x844", good)
+
+
 if __name__ == "__main__":
     unittest.main()

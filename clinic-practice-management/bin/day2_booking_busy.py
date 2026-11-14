@@ -44,7 +44,20 @@ ROUTE_LITERALS = frozenset((
     "v1/availability", "booking/quote", "booking/hold", "booking/confirm",
     "otp/request", "otp/verify",
 ))
-_VIEWPORT_RE = re.compile(r"^\d{2,5}x\d{2,5}$")
+_VIEWPORT_RE = re.compile(r"[0-9]{2,5}x[0-9]{2,5}")
+
+
+def _canonical_viewport(value):
+    """Canonical `<w>x<h>` viewport from ASCII digits, else "".
+
+    Re-rendered from the parsed integers, so the published value is
+    bounded canonical digits only (no Unicode digit shapes, no
+    leading-zero or whitespace variants of the input text).
+    """
+    if not isinstance(value, str) or not _VIEWPORT_RE.fullmatch(value):
+        return ""
+    width, height = value.split("x")
+    return f"{int(width)}x{int(height)}"
 _DIGITS_RE = re.compile(r"[0-9]{1,10}")
 _SQL_DATETIME_RE = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}")
 
@@ -139,8 +152,16 @@ STAGE_ROUTE_SUFFIXES = {
 def find_busy_attempt(entries, stage=""):
     """The busy attempt that belongs to the failing operation, if any.
 
+    Attribution is BEST EFFORT, not proof of causation: the probe
+    history shows responses, not which response made the browser give
+    up, so the rules below infer the failing operation from the stage
+    token and response order. A busy response that this function
+    selects is the most plausible cause the closed evidence supports;
+    it is not proof that this response, rather than a UI/timing
+    failure after it, ended the journey.
+
     Attribution rule (busy is claimed ONLY for the operation that
-    actually failed, never merely because a busy response exists
+    plausibly failed, never merely because a busy response exists
     somewhere in the history):
 
     1. When the failing `stage` is known and maps to a route
@@ -228,7 +249,8 @@ def format_busy_suffix(diag, *, route="", http_status=0, viewport="", missing="n
     status = _coerce_int(http_status)
     if status:
         bits.append(f"http={status}")
-    if isinstance(viewport, str) and _VIEWPORT_RE.fullmatch(viewport):
+    viewport = _canonical_viewport(viewport)
+    if viewport:
         bits.append(f"viewport={viewport}")
     return " ".join(bits)[:MAX_SUFFIX]
 
@@ -282,9 +304,7 @@ def validate_busy_suffix(suffix):
     status = _coerce_int(fields.get("http"))
     if status is None or not 100 <= status <= 599:
         status = 0
-    viewport = fields.get("viewport", "")
-    if not _VIEWPORT_RE.fullmatch(viewport):
-        viewport = ""
+    viewport = _canonical_viewport(fields.get("viewport", ""))
     return format_busy_suffix(
         diag, route=route, http_status=status, viewport=viewport, missing=missing
     )

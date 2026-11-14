@@ -24,11 +24,100 @@
  *  - Accountant Staff Portal reconciliation: scoped Location totals, Location
  *    switching, cross-Clinic denial, and zero patient PHI leakage.
  *
- * Stdout is redacted (IDs/booleans only). Credentials are written only to
+ * Process output is supervisor-mediated (see below): the child's raw
+ * stdout/stderr never reach the caller's log; only fixed-schema lines
+ * are published. Credentials are written only to
  * `/tmp/day2-workflows.env`.
  */
 
 declare(strict_types=1);
+
+// --- Output supervisor (process boundary) --------------------------------
+// The Pilot gate runs this file as `php fixture.php 2>&1 | tee <log>`, so
+// EVERYTHING the fixture process tree writes to stdout/stderr is public:
+// wp-load output before any suppression could be set, PHP warnings and
+// fatals, uncaught exceptions (whose messages can embed SQL/driver text,
+// e.g. CpmsDb::tx_control via assign_clinician_locations) and wpdb's own
+// error_log path. No in-script handler can capture the process's own
+// startup/parse errors, so the boundary is moved one process up: when
+// invoked WITHOUT `--d2w-supervised-child`, this file re-executes ITSELF
+// as a child whose stdout/stderr are private temp files from the moment
+// the child starts (before its wp-load, before any query, before any
+// error can be produced). The supervisor publishes ONLY fixed-schema
+// lines: on success `DAY2_FIXTURE_OK status=ok`; on failure a single
+// `DAY2_FIXTURE_ERROR step=<token>` where the token is re-extracted from
+// the captured output by exact allowlist match (or `unknown`). It
+// preserves the child's exit status and deletes the captured output.
+// Residual, stated honestly: a parse/startup error in THIS supervisor
+// file itself is printed by the PHP engine before any of this code runs
+// (its message carries file/line only, not fixture data); that residual
+// can only be closed by redirecting the process output in the workflow
+// step, which is out of scope for this change.
+if (!in_array('--d2w-supervised-child', $argv ?? [], true)
+    && getenv('DAY2_FIXTURE_SUPERVISED') !== '1') {
+    $d2wSteps = [
+        'insert', 'insert_id', 'user_create', 'clinic_ids', 'public_page',
+        'public_permalink', 'reception_grace', 'reception_row', 'env_write',
+        'membership', 'patient_link', 'note_insert', 'followup_insert',
+        'payment_insert', 'seed_verify', 'supervisor',
+    ];
+    $d2wOut = tempnam(sys_get_temp_dir(), 'd2w-out-');
+    $d2wErr = tempnam(sys_get_temp_dir(), 'd2w-err-');
+    $d2wProc = false;
+    $d2wCode = 1;
+    if ($d2wOut !== false && $d2wErr !== false && PHP_BINARY !== '') {
+        $d2wProc = proc_open(
+            [PHP_BINARY, __FILE__, '--d2w-supervised-child'],
+            [
+                0 => ['file', '/dev/null', 'r'],
+                1 => ['file', $d2wOut, 'a'],
+                2 => ['file', $d2wErr, 'a'],
+            ],
+            $d2wPipes,
+            null,
+            array_merge(getenv() ?: [], ['DAY2_FIXTURE_SUPERVISED' => '1'])
+        );
+    }
+    if (is_resource($d2wProc)) {
+        $d2wCode = proc_close($d2wProc);
+        if (!is_int($d2wCode) || $d2wCode < 0 || $d2wCode > 255) {
+            $d2wCode = 1;
+        }
+        $d2wToken = null;
+        foreach ([$d2wErr, $d2wOut] as $d2wPath) {
+            $d2wHandle = fopen($d2wPath, 'r');
+            if ($d2wHandle === false) {
+                continue;
+            }
+            while (($d2wLine = fgets($d2wHandle)) !== false) {
+                if (preg_match('/^DAY2_FIXTURE_ERROR step=([a-z_]+)\r?\n?$/', $d2wLine, $d2wMatch)
+                    && in_array($d2wMatch[1], $d2wSteps, true)) {
+                    $d2wToken = $d2wMatch[1];
+                    break 2;
+                }
+            }
+            fclose($d2wHandle);
+        }
+        unlink($d2wOut);
+        unlink($d2wErr);
+        if ($d2wCode === 0) {
+            fwrite(STDOUT, "DAY2_FIXTURE_OK status=ok\n");
+            exit(0);
+        }
+        fwrite(STDERR, 'DAY2_FIXTURE_ERROR step=' . ($d2wToken ?? 'unknown') . "\n");
+        exit($d2wCode !== 0 ? $d2wCode : 1);
+    }
+    if ($d2wOut !== false) {
+        unlink($d2wOut);
+    }
+    if ($d2wErr !== false) {
+        unlink($d2wErr);
+    }
+    // Fail closed WITHOUT running the seed: unsupervized output is worse
+    // than no fixture at all.
+    fwrite(STDERR, "DAY2_FIXTURE_ERROR step=supervisor\n");
+    exit(1);
+}
 
 require getenv('WP_HOME') . '/wp-load.php';
 
@@ -51,17 +140,16 @@ global $wpdb;
 // calls `error_log()` with the driver error AND the full SQL on every
 // failed query UNLESS `$wpdb->suppress_errors` is set (:1811 returns
 // before the `error_log` at :1823); `query()` reaches it on the driver-
-// error branch (:2304). PHP CLI sends `error_log()` to stderr, and the
-// Pilot gate step tees this script's stdout+stderr to the public job
-// log — so an unsuppressed failed INSERT would publish driver text and
-// statement text even though this fixture itself prints only fixed
-// tokens. Suppress wpdb error printing for the whole fixture run,
+// error branch (:2304). PHP CLI sends `error_log()` to stderr, which
+// the supervisor above captures privately — but suppress wpdb error
+// printing as well (defense in depth, and it keeps the captured output
+// small). Suppress wpdb error printing for the whole fixture run,
 // immediately after WordPress loads and before any query: failures are
 // still detected exactly as before through return values (`query() ===
 // false`, `$wpdb->insert() === false`, `is_wp_error(...)`,
 // `insert_id <= 0`) and reported via `d2w_fail()`'s fixed step token.
-// This does NOT cover PHP warnings/notices/fatals from other code,
-// which can still print engine text to stderr (known residual debt).
+// PHP warnings/notices/fatals from other code are captured privately
+// by the supervisor and surface only as `step=unknown`.
 $wpdb->suppress_errors(true);
 
 $db   = App::db();
@@ -70,13 +158,16 @@ $uniq = substr(bin2hex(random_bytes(4)), 0, 8);
 
 /**
  * Fixed fixture-failure steps. `d2w_fail()` prints ONLY one of these
- * literals (or `unknown`); no caller-supplied text, driver text
- * ($wpdb->last_error), SQL, label interpolation or value can reach
- * stderr, which the workflow tees to the public job log.
+ * literals (or `unknown`) to the child's private stderr; the supervisor
+ * re-publishes at most that one token. No caller-supplied text, driver
+ * text ($wpdb->last_error), SQL, label interpolation or value is ever
+ * printed by this fixture.
  */
 const D2W_FAIL_STEPS = [
     'insert', 'insert_id', 'user_create', 'clinic_ids', 'public_page',
     'public_permalink', 'reception_grace', 'reception_row', 'env_write',
+    'membership', 'patient_link', 'note_insert', 'followup_insert',
+    'payment_insert', 'seed_verify', 'supervisor',
 ];
 
 function d2w_fail(string $step): void
@@ -84,6 +175,33 @@ function d2w_fail(string $step): void
     $token = in_array($step, D2W_FAIL_STEPS, true) ? $step : 'unknown';
     fwrite(STDERR, 'DAY2_FIXTURE_ERROR step=' . $token . "\n");
     exit(1);
+}
+
+/**
+ * A seed write that yields no positive id has NOT seeded anything:
+ * fail with the fixed step token instead of letting a downstream
+ * negative assertion ("must not appear") pass vacuously on a missing
+ * row.
+ */
+function d2w_require_id(int $id, string $step): int
+{
+    if ($id <= 0) {
+        d2w_fail($step);
+    }
+
+    return $id;
+}
+
+/**
+ * Positive re-verification of a seeded row: exactly one matching row
+ * must exist, read back from the database, or the fixture fails with
+ * the fixed `seed_verify` token before any journey can assert on it.
+ */
+function d2w_verify_one($db, string $sql, array $args): void
+{
+    if ((int) $db->fetchValue($sql, $args) !== 1) {
+        d2w_fail('seed_verify');
+    }
 }
 
 /**
@@ -232,11 +350,11 @@ $clinicianForeign = d2w_insert(
 );
 
 $memSvc     = App::membership_service();
-$memDoc1    = $memSvc->create_membership($clinicA, $doc1UserId, 'cpms_doctor');
-$memDoc2    = $memSvc->create_membership($clinicA, $doc2UserId, 'cpms_doctor');
-$memDocDeny = $memSvc->create_membership($clinicA, $docDenyUserId, 'cpms_doctor');
-$memSec     = $memSvc->create_membership($clinicA, $secUserId, 'cpms_secretary');
-$memAcc     = $memSvc->create_membership($clinicA, $accUserId, 'cpms_accountant');
+$memDoc1    = d2w_require_id($memSvc->create_membership($clinicA, $doc1UserId, 'cpms_doctor'), 'membership');
+$memDoc2    = d2w_require_id($memSvc->create_membership($clinicA, $doc2UserId, 'cpms_doctor'), 'membership');
+$memDocDeny = d2w_require_id($memSvc->create_membership($clinicA, $docDenyUserId, 'cpms_doctor'), 'membership');
+$memSec     = d2w_require_id($memSvc->create_membership($clinicA, $secUserId, 'cpms_secretary'), 'membership');
+$memAcc     = d2w_require_id($memSvc->create_membership($clinicA, $accUserId, 'cpms_accountant'), 'membership');
 
 // Explicit DENY overrides on PRIVATE_NOTE_READ and RX_READ for $docDenyUserId (`DENY > GRANT`).
 $memSvc->set_capability($memDocDeny, RolesAndCapabilities::PRIVATE_NOTE_READ, 'deny');
@@ -306,14 +424,16 @@ $patientId = d2w_insert(
     [$clinicA, 'MR-D2W-PT-' . $uniq, 'مینا', 'شریفی', $ptMobile, 'active', $now, $now],
     'reschedule patient'
 );
-$db->insert('cpms_patient_user_links', [
+if (!$db->insert('cpms_patient_user_links', [
     'clinic_id'      => $clinicA,
     'patient_id'     => $patientId,
     'wp_user_id'     => $ptUserId,
     'mobile_at_link' => $ptMobile,
     'is_primary'     => 1,
     'linked_at'      => $now,
-]);
+])) {
+    d2w_fail('patient_link');
+}
 
 $reschedCurSlot      = $seedSlot($clinicA, $locA1, $clinician1, $day3, '09:00:00', 1, 1);
 $reschedCollideSlot  = $seedSlot($clinicA, $locA1, $clinician1, $day4, '10:00:00', 1, 0);
@@ -508,8 +628,9 @@ $priorVisitDenyOwn = $seedVisit($clinicA, $locA1, $medPtDeny, $clinicianDeny, $p
 $priorVisitDenyCol = $seedVisit($clinicA, $locA1, $medPtDeny, $clinician2, $pastDate2, 'consultation_completed', 0);
 $activeVisitDeny   = $seedVisit($clinicA, $locA1, $medPtDeny, $clinicianDeny, $today, 'in_consultation', 1);
 
+$noteIds   = [];
 $notesRepo = new ClinicalNoteRepository($db);
-$notesRepo->insert($clinicA, [
+$noteIds[] = d2w_require_id($notesRepo->insert($clinicA, [
     'visit_id'              => $priorVisitDoc1,
     'patient_id'            => $medPt,
     'clinician_id'          => $clinician1,
@@ -517,8 +638,8 @@ $notesRepo->insert($clinicA, [
     'visibility'            => 'doctor_private',
     'content_text'          => 'یادداشت خصوصی دکتر سپهری قابل مشاهده برای خودش',
     'created_by_wp_user_id' => $doc1UserId,
-]);
-$notesRepo->insert($clinicA, [
+]), 'note_insert');
+$noteIds[] = d2w_require_id($notesRepo->insert($clinicA, [
     'visit_id'              => $priorVisitDoc2,
     'patient_id'            => $medPt,
     'clinician_id'          => $clinician2,
@@ -526,8 +647,8 @@ $notesRepo->insert($clinicA, [
     'visibility'            => 'patient_visible',
     'content_text'          => 'تشخیص عمومی دکتر کاظمی در پرونده قبلی',
     'created_by_wp_user_id' => $doc2UserId,
-]);
-$notesRepo->insert($clinicA, [
+]), 'note_insert');
+$noteIds[] = d2w_require_id($notesRepo->insert($clinicA, [
     'visit_id'              => $priorVisitDoc2,
     'patient_id'            => $medPt,
     'clinician_id'          => $clinician2,
@@ -535,9 +656,9 @@ $notesRepo->insert($clinicA, [
     'visibility'            => 'doctor_private',
     'content_text'          => 'یادداشت محرمانه دکتر کاظمی هرگز افشا نشود',
     'created_by_wp_user_id' => $doc2UserId,
-]);
+]), 'note_insert');
 
-$notesRepo->insert($clinicA, [
+$noteIds[] = d2w_require_id($notesRepo->insert($clinicA, [
     'visit_id'              => $priorVisitDenyOwn,
     'patient_id'            => $medPtDeny,
     'clinician_id'          => $clinicianDeny,
@@ -545,8 +666,8 @@ $notesRepo->insert($clinicA, [
     'visibility'            => 'doctor_private',
     'content_text'          => 'یادداشت خصوصی دکتر نادری مسدود با DENY',
     'created_by_wp_user_id' => $docDenyUserId,
-]);
-$notesRepo->insert($clinicA, [
+]), 'note_insert');
+$noteIds[] = d2w_require_id($notesRepo->insert($clinicA, [
     'visit_id'              => $priorVisitDenyCol,
     'patient_id'            => $medPtDeny,
     'clinician_id'          => $clinician2,
@@ -554,16 +675,16 @@ $notesRepo->insert($clinicA, [
     'visibility'            => 'patient_visible',
     'content_text'          => 'یادداشت عمومی قابل مشاهده برای دکتر نادری',
     'created_by_wp_user_id' => $doc2UserId,
-]);
+]), 'note_insert');
 
-(new FollowUpRepository($db))->insert($clinicA, [
+$followUpId = d2w_require_id((new FollowUpRepository($db))->insert($clinicA, [
     'visit_id'       => $priorVisitDoc2,
     'patient_id'     => $medPt,
     'clinician_id'   => $clinician2,
     'is_needed'      => 1,
     'suggested_date' => $today,
     'reason'         => 'پایش فشار خون ماهانه',
-]);
+]), 'followup_insert');
 
 foreach ([
     [$priorVisitDoc2, $medPt, 'ValsartanD2'],
@@ -628,7 +749,7 @@ $payNoA2Pos  = 'PAY-D2W-A2P-' . $uniq;
 $payNoB1Pos  = 'PAY-D2W-B1P-' . $uniq;
 
 $payRepo = new PaymentRepository($db);
-$payRepo->insert($clinicA, [
+$payA1CashId = d2w_require_id($payRepo->insert($clinicA, [
     'location_id'            => $locA1,
     'payment_number'         => $payNoA1Cash,
     'invoice_id'             => $invA1,
@@ -639,8 +760,8 @@ $payRepo->insert($clinicA, [
     'idempotency_key'        => 'idem-d2w-a1c-' . $uniq,
     'received_by_wp_user_id' => $secUserId,
     'paid_at'                => $now,
-]);
-$payRepo->insert($clinicA, [
+]), 'payment_insert');
+$payA1PosId = d2w_require_id($payRepo->insert($clinicA, [
     'location_id'            => $locA1,
     'payment_number'         => $payNoA1Pos,
     'invoice_id'             => $invA1,
@@ -651,8 +772,8 @@ $payRepo->insert($clinicA, [
     'idempotency_key'        => 'idem-d2w-a1p-' . $uniq,
     'received_by_wp_user_id' => $secUserId,
     'paid_at'                => $now,
-]);
-$payRepo->insert($clinicA, [
+]), 'payment_insert');
+$payA1VoidId = d2w_require_id($payRepo->insert($clinicA, [
     'location_id'            => $locA1,
     'payment_number'         => $payNoA1Void,
     'invoice_id'             => $invA1,
@@ -665,8 +786,8 @@ $payRepo->insert($clinicA, [
     'idempotency_key'        => 'idem-d2w-a1v-' . $uniq,
     'received_by_wp_user_id' => $secUserId,
     'paid_at'                => $now,
-]);
-$payRepo->insert($clinicA, [
+]), 'payment_insert');
+$payA2PosId = d2w_require_id($payRepo->insert($clinicA, [
     'location_id'            => $locA2,
     'payment_number'         => $payNoA2Pos,
     'invoice_id'             => $invA2,
@@ -677,8 +798,8 @@ $payRepo->insert($clinicA, [
     'idempotency_key'        => 'idem-d2w-a2p-' . $uniq,
     'received_by_wp_user_id' => $secUserId,
     'paid_at'                => $now,
-]);
-$payRepo->insert($clinicB, [
+]), 'payment_insert');
+$payB1PosId = d2w_require_id($payRepo->insert($clinicB, [
     'location_id'            => $locB1,
     'payment_number'         => $payNoB1Pos,
     'invoice_id'             => $invB1,
@@ -689,7 +810,54 @@ $payRepo->insert($clinicB, [
     'idempotency_key'        => 'idem-d2w-b1p-' . $uniq,
     'received_by_wp_user_id' => $secUserId,
     'paid_at'                => $now,
-]);
+]), 'payment_insert');
+
+// --- Positive seed verification -------------------------------------
+// The browser journeys assert NEGATIVE facts on these rows (a voided
+// payment must not appear in the captured ledger; foreign-Clinic and
+// other-Location payments must not leak into a scoped panel; a
+// colleague's doctor_private note must stay hidden). A negative
+// assertion on a row that was never seeded passes vacuously, so every
+// such row is re-read from the database here — exactly one match, with
+// the clinic/status/visibility the journeys rely on — before the env
+// file is written. Any mismatch fails the fixture with the fixed
+// `seed_verify` token instead of producing a misleading green journey.
+foreach ([
+    [$payNoA1Cash, 'captured', $clinicA, $invA1],
+    [$payNoA1Pos, 'captured', $clinicA, $invA1],
+    [$payNoA1Void, 'voided', $clinicA, $invA1],
+    [$payNoA2Pos, 'captured', $clinicA, $invA2],
+    [$payNoB1Pos, 'captured', $clinicB, $invB1],
+] as [$verifyPayNo, $verifyPayStatus, $verifyPayClinic, $verifyPayInvoice]) {
+    d2w_verify_one(
+        $db,
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_payments')
+        . ' WHERE payment_number = %s AND status = %s AND clinic_id = %d AND invoice_id = %d',
+        [$verifyPayNo, $verifyPayStatus, $verifyPayClinic, $verifyPayInvoice]
+    );
+}
+foreach ($noteIds as $verifyNoteId) {
+    d2w_verify_one(
+        $db,
+        'SELECT COUNT(*) FROM ' . $db->table('cpms_clinical_notes')
+        . ' WHERE id = %d AND clinic_id = %d',
+        [$verifyNoteId, $clinicA]
+    );
+}
+d2w_verify_one(
+    $db,
+    'SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links')
+    . ' WHERE clinic_id = %d AND patient_id = %d AND wp_user_id = %d',
+    [$clinicA, $patientId, $ptUserId]
+);
+// The membership check counts the SET: require all five rows.
+if ((int) $db->fetchValue(
+    'SELECT COUNT(*) FROM ' . $db->table('cpms_clinic_memberships')
+    . ' WHERE id IN (%d, %d, %d, %d, %d) AND clinic_id = %d',
+    [$memDoc1, $memDoc2, $memDocDeny, $memSec, $memAcc, $clinicA]
+) !== 5) {
+    d2w_fail('seed_verify');
+}
 
 $staffUrl     = StaffPortalShell::portal_url();
 $receptionUrl = add_query_arg(StaffPortalShell::MODULE_PARAM, StaffPortalShell::MODULE_RECEPTION, $staffUrl);
