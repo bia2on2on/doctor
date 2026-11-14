@@ -5615,3 +5615,34 @@ Scope: branch synchronisation only. This is **not** a merge into `main`, the own
 - **Existing tests touching the shortcode / weekday labels (local):** Unit runs 54 tests / 941 assertions / 0 failures across `PublicWeekdayContractTest`, `PublicDoctorTitleSpecialtyUnitTest`, `PublicShortcodeAdminPageTest`, `DoctorDisplayNameTest`, `MedicalSpecialtyCatalogTest`, `PresentationIntegrityTest` (1 pre-existing risky `testInvalidUtf8FailsClosedInsteadOfMutating`, unrelated). JS specs run: `cpms-public-booking-discovery.spec.js` PASS, `day2-portal-workflows.spec.js` OK, `cpms-jalali-date.spec.js` OK. Integration tests (`PublicDoctorTitleSpecialtyLabelTest`, `Phase8Slice4PublicDiscoverySharedClinicTest`, `Phase9Slice1PatientPortalSelfCancelRedTest`, `PkgP1JalaliAssetsTest`) **NOT RUN locally** — they need the WordPress test suite and MySQL.
 - **Change set vs main:** `PublicBookingShortcode.php` +50/−13, `PublicWeekdayContractTest.php` +328/−0 (new), `PublicDoctorTitleSpecialtyUnitTest.php` +336/−0 (earlier turn), `docs/agent-log.md` +42/−0.
 - **LIMITATION:** all local claims are PHP-WASM 8.4.25 without MySQL; the Integration suite and real WPCS were not executed here. CI results are reported only from the GitHub API for this head, never inferred.
+### [2026-11-14 UTC] — Corrections to the previous entry's figures (review of f07acf59)
+
+Three corrections to the entry above. The entry itself is **not** edited; this is an append at the END.
+
+- **The ledger size figure was wrong.** That entry recorded `docs/agent-log.md` as "+42/−0". The real
+  net numstat versus `main` at head `f07acf59` was **`58  0`** (58 added, 0 deleted). The "+42" was
+  the numstat measured *before* the round-3 entry's own bytes were appended, so it silently excluded
+  the very lines it was describing. The corrected figure for that head is **+58/−0**; the append-only
+  invariant (0 deletions, `main` a byte-prefix) held throughout, which is what actually matters.
+- **Local PHPUnit version differs from the locked one.** The local harness runs the vendored
+  `clinic-practice-management/phpunit.phar`, which is **PHPUnit 11.5.56**. `composer.lock` pins
+  **phpunit/phpunit 10.5.65** (constraint `^9.6 || ^10.5 || ^11.0`), and CI runs
+  `vendor/bin/phpunit`, i.e. **10.5.65**. So every "OK (N tests, M assertions)" reported locally was
+  produced under a **newer major** than CI's. The test file uses no 11.x-only API (plain
+  `TestCase`, reflection, `assertSame/assertCount/assertNotSame/assertArrayHasKey`), but the exact
+  local run is **not** a byte-for-byte reproduction of CI, and CI remains the authority.
+- **The "7 differences" check is a constants check, not a code check.**
+  `PublicWeekdayContractTest::test_the_two_decoders_are_separately_named_and_both_correct` ends with
+  `assertSame( 7, $differences )` computed from the test file's OWN two constants
+  (`STORED_LABELS` vs `GREGORIAN_W_LABELS`). It proves the two *documented* contracts disagree at
+  every index; it does **not** read production tables. The production decoders are covered by the
+  two `foreach` loops immediately above it. Describing that line as verifying the code would
+  overstate it.
+
+Also from the same review: the earlier "0 skipped steps anywhere" claim was **wrong**. At head
+`f07acf59` the 13 runs contain **1002 steps: 881 success, 121 skipped, 0 failed**. It is the
+**check-run** level that has no skips (45 check-runs, all `success`, none skipped) — not the step
+level.
+
+Correction for the citation too: the storage contract is at **`docs/erd/data-dictionary.md:132`**
+(the file lives under `docs/erd/`, not `docs/`), not `:128`.
