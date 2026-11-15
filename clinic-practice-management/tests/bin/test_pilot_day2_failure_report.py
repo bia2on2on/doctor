@@ -2204,38 +2204,80 @@ class AssertionOutputRedactionTest(_RedactedAssertions, unittest.TestCase):
             def __repr__(self):
                 return secret
 
-        class _Throwaway(_RedactedAssertions, unittest.TestCase):
-            def test_probe_equal(self):
-                self.assertEqual(secret, "other")
+        def make_probes(mixin):
+            class _Throwaway(mixin, unittest.TestCase):
+                def test_probe_equal(self):
+                    self.assertEqual(secret, "other")
 
-            def test_probe_in(self):
-                self.assertIn(secret, "abc")
+                def test_probe_in(self):
+                    self.assertIn(secret, "abc")
 
-            def test_probe_not_in(self):
-                self.assertNotIn("MARKER", secret)
+                def test_probe_not_in(self):
+                    self.assertNotIn("MARKER", secret)
 
-            def test_probe_regex(self):
-                self.assertRegex(secret, r"ZZZ-NOMATCH")
+                def test_probe_regex(self):
+                    self.assertRegex(secret, r"ZZZ-NOMATCH")
 
-            def test_probe_true(self):
-                self.assertTrue(_SecretObject())
+                def test_probe_true(self):
+                    self.assertTrue(_SecretObject())
 
-            def test_probe_raises(self):
-                with self.assertRaises(ValueError):
-                    pass
+                def test_probe_raises(self):
+                    with self.assertRaises(ValueError):
+                        pass
 
-        suite = unittest.TestLoader().loadTestsFromTestCase(_Throwaway)
-        stream = io.StringIO()
-        result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
-        output = stream.getvalue()
-        self.assertTrue(result.testsRun == 6,
-                        "redaction probe must run every probe case")
-        self.assertTrue(len(result.failures) + len(result.errors) == 6,
-                        "every redaction probe case must still fail")
-        self.assertTrue(secret not in output,
-                        "assertion output must be structurally redacted (content withheld)")
-        self.assertTrue("assertion failed (details withheld)" in output,
-                        "redacted failures must carry the fixed placeholder (content withheld)")
+            return _Throwaway
+
+        class _RecordingResult(unittest.TextTestResult):
+            def __init__(self, *args, **kwargs):
+                super().__init__(*args, **kwargs)
+                self.exc_types = []
+
+            def addFailure(self, test, err):
+                self.exc_types.append(err[0])
+                super().addFailure(test, err)
+
+            def addError(self, test, err):
+                self.exc_types.append(err[0])
+                super().addError(test, err)
+
+        def run_probes(mixin):
+            suite = unittest.TestLoader().loadTestsFromTestCase(make_probes(mixin))
+            stream = io.StringIO()
+            runner = unittest.TextTestRunner(
+                stream=stream, verbosity=2, resultclass=_RecordingResult
+            )
+            return runner.run(suite), stream.getvalue()
+
+        def meta_ok(result, output):
+            # Strict: exactly six assertion FAILURES (each recorded as
+            # an AssertionError), ZERO errors, marker absent,
+            # placeholder present. A mixin that raises instead of
+            # formatting produces errors and must NOT satisfy this.
+            return (
+                result.testsRun == 6
+                and len(result.failures) == 6
+                and len(result.errors) == 0
+                and all(exc is AssertionError for exc in result.exc_types)
+                and secret not in output
+                and "assertion failed (details withheld)" in output
+            )
+
+        result, output = run_probes(_RedactedAssertions)
+        self.assertTrue(all(exc is AssertionError for exc in result.exc_types),
+                        "every redaction probe failure must be an AssertionError")
+        self.assertTrue(meta_ok(result, output),
+                        "redacted mixin must yield six AssertionError failures, "
+                        "zero errors, no operands, fixed placeholder")
+
+        class _BrokenMixin:
+            def _formatMessage(self, msg, standardMsg):
+                raise RuntimeError("broken mixin (synthetic)")
+
+        broken_result, broken_output = run_probes(_BrokenMixin)
+        self.assertTrue(len(broken_result.errors) > 0,
+                        "broken mixin must produce errors, not clean failures")
+        self.assertTrue(not meta_ok(broken_result, broken_output),
+                        "meta-condition must reject a broken mixin (errors are not failures)")
 
 
 if __name__ == "__main__":

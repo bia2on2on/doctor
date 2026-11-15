@@ -200,21 +200,46 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_post_exit_line_scan_rejects_long_line_under_total_cap(): void
     {
-        // Layer coverage: POST-EXIT line scan, isolated. A single
-        // newline-less line of 20,000 bytes exceeds
-        // D2W_CAPTURE_LINE_MAX (8192) but is far below
-        // D2W_CAPTURE_TOTAL_MAX (262144); the child writes it fast
-        // and exits normally, so the in-execution cap does not fire
-        // and the post-exit scan is the layer that must reject it.
+        // Layer coverage: POST-EXIT line scan, isolated — with VALID
+        // success evidence, so the line check is the only possible
+        // cause of rejection. The child emits the completion marker
+        // and creates the env file exactly as the success protocol
+        // requires (markerCode), then writes a single newline-less
+        // line of 20,000 bytes to STDERR (the scan reads stderr
+        // first) and exits 0. 20,000 > D2W_CAPTURE_LINE_MAX (8192)
+        // but total output stays far below D2W_CAPTURE_TOTAL_MAX
+        // (262144) and the child exits fast, so the in-execution cap
+        // does not fire. (The round-12 version of this test supplied
+        // neither marker nor env file and was vacuous: it failed the
+        // success protocol with or without the line check.)
         $base = $this->workDir . '/scanbase';
         mkdir($base, 0700, true);
         [$code, $line] = $this->supervise(
-            $this->phpChild('echo str_repeat("A", 20000);'),
+            $this->phpChild($this->markerCode() . 'fwrite(STDERR, str_repeat("A", 20000));'),
             $base
         );
-        self::assertTrue($code !== 0, 'oversized line under the total cap must fail');
-        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'oversized line under the total cap must publish the supervisor token');
+        self::assertTrue($code === 1, 'oversized stderr line with valid evidence must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'oversized stderr line with valid evidence must publish the supervisor token');
         self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after a post-exit scan rejection');
+        rmdir($base);
+    }
+
+    public function test_post_exit_line_scan_accepts_short_line_with_valid_evidence(): void
+    {
+        // Positive control paired with the long-line test above:
+        // IDENTICAL child and identical valid success evidence, but
+        // the stderr line is short (under D2W_CAPTURE_LINE_MAX).
+        // This case must be ACCEPTED; together the pair proves the
+        // post-exit line-length check is the deciding cause.
+        $base = $this->workDir . '/scanokbase';
+        mkdir($base, 0700, true);
+        [$code, $line] = $this->supervise(
+            $this->phpChild($this->markerCode() . 'fwrite(STDERR, "short diagnostic line\n");'),
+            $base
+        );
+        self::assertTrue($code === 0, 'short stderr line with valid evidence must be accepted');
+        self::assertTrue($line === 'DAY2_FIXTURE_OK status=ok', 'short stderr line with valid evidence must publish the fixed OK line');
+        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after an accepted run');
         rmdir($base);
     }
 
@@ -223,8 +248,9 @@ final class Day2FixtureSupervisorTest extends TestCase
         // Layer coverage: in-execution cap + bounded SIGTERM/SIGKILL
         // escalation. The child ignores SIGTERM (trap '' TERM) and
         // floods forever; the supervisor must escalate to SIGKILL
-        // after D2W_TERM_GRACE_MS instead of waiting in proc_close
-        // unboundedly. Descendants are NOT covered by the
+        // after D2W_TERM_GRACE_MS — bounded in practice on the
+        // normal path; SIGKILL failure or an uninterruptible child
+        // state is not covered. Descendants are NOT covered by the
         // termination (LIMITATION, stated in the supervisor header);
         // this child has none.
         if (!is_file('/bin/sh')) {
@@ -240,7 +266,7 @@ final class Day2FixtureSupervisorTest extends TestCase
         $elapsed = microtime(true) - $start;
         self::assertTrue($code !== 0, 'SIGTERM-ignoring flooding child must fail');
         self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'SIGTERM-ignoring flooding child must publish the supervisor token');
-        self::assertTrue($elapsed < 30, 'SIGTERM-ignoring flooding child must be SIGKILLed within the bounded grace, never waited on unboundedly');
+        self::assertTrue($elapsed < 30, 'SIGTERM-ignoring flooding child must be SIGKILLed within the bounded grace on the normal path');
         self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after SIGKILL escalation');
         rmdir($base);
     }
@@ -404,18 +430,20 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_oversized_child_output_fails_closed_within_caps(): void
     {
-        // Layer coverage: BOTH cases exceed D2W_CAPTURE_TOTAL_MAX,
-        // so the IN-EXECUTION cap is the layer that fires here (the
-        // post-exit scan would also reject them, but is not isolated
-        // by these cases — the 20,000-byte test below isolates it).
+        // Layer coverage: BOTH cases exceed D2W_CAPTURE_TOTAL_MAX
+        // and carry VALID success evidence (markerCode; oversize
+        // output on stderr), so rejection can only come from the
+        // cap/scan layers — the in-execution cap and/or the post-exit
+        // total scan, which these cases do not isolate (the
+        // 20,000-byte test above isolates the post-exit LINE scan).
         // One huge newline-less line (far beyond D2W_CAPTURE_LINE_MAX)
         // and, separately, many short lines beyond
         // D2W_CAPTURE_TOTAL_MAX: both must fail closed with the
         // fixed token, without the scan ever holding the output.
-        [$code, $line] = $this->supervise($this->phpChild('echo str_repeat("A", 4194304);'));
+        [$code, $line] = $this->supervise($this->phpChild($this->markerCode() . 'fwrite(STDERR, str_repeat("A", 4194304));'));
         self::assertTrue($code !== 0, 'huge single line must fail');
         self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'huge single line must publish the supervisor token');
-        [$code, $line] = $this->supervise($this->phpChild('for ($i = 0; $i < 60000; $i++) { echo "padding line\n"; }'));
+        [$code, $line] = $this->supervise($this->phpChild($this->markerCode() . 'for ($i = 0; $i < 60000; $i++) { fwrite(STDERR, "padding line\n"); }'));
         self::assertTrue($code !== 0, 'output beyond the total cap must fail');
         self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'output beyond the total cap must publish the supervisor token');
     }

@@ -77,10 +77,14 @@ declare(strict_types=1);
 const D2W_CAPTURE_LINE_MAX = 8192;
 const D2W_CAPTURE_TOTAL_MAX = 262144;
 
-// Bounded grace between SIGTERM and SIGKILL when the in-execution
-// cap terminates a runaway child (item C): proc_close must never be
-// able to wait unboundedly on that path.
+// Bounded graces for the runaway-child escalation (item C): grace
+// for SIGTERM to take effect, then grace for SIGKILL to take
+// effect. The escalation is bounded in practice on the normal
+// path; SIGKILL failure or an uninterruptible child state is not
+// covered (see the escalation block), and descendants of the child
+// are not covered either.
 const D2W_TERM_GRACE_MS = 2000;
+const D2W_KILL_GRACE_MS = 2000;
 
 /**
  * Run $command supervised and return [exitCode, fixedLine, toStderr].
@@ -261,6 +265,7 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
         // child are not terminated (LIMITATION, not tested).
         // Poll-only: no output is read here, so nothing can deadlock.
         $capExceeded = false;
+        $sigtermSent = false;
         $status = proc_get_status($proc);
         while (is_array($status) && ($status['running'] ?? false)) {
             $grown = 0;
@@ -277,28 +282,56 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
                 $capExceeded = true;
             }
             if ($capExceeded) {
-                proc_terminate($proc);
+                $sigtermSent = proc_terminate($proc);
                 break;
             }
             usleep(20000);
             $status = proc_get_status($proc);
         }
         if ($capExceeded) {
-            // Bounded escalation: SIGTERM was sent when the cap
-            // fired; give the child D2W_TERM_GRACE_MS to exit, then
-            // SIGKILL (which cannot be caught or ignored), so the
-            // proc_close below can never wait unboundedly on this
-            // path. Only the direct child is signalled; descendants
-            // are NOT covered (LIMITATION, not tested).
-            $deadline = microtime(true) + (D2W_TERM_GRACE_MS / 1000.0);
-            $status = proc_get_status($proc);
-            while (is_array($status) && ($status['running'] ?? false)
-                && microtime(true) < $deadline) {
-                usleep(20000);
-                $status = proc_get_status($proc);
+            // Bounded escalation, best-effort. SIGTERM was sent when
+            // the cap fired (its return value was checked there: if
+            // it could not be delivered there is no grace to wait
+            // out). Poll for exit for up to D2W_TERM_GRACE_MS, then
+            // SIGKILL, then poll for up to D2W_KILL_GRACE_MS. The
+            // polls do NOT depend on a successful status lookup: a
+            // false proc_get_status return is treated as "not
+            // confirmed exited" and still proceeds to SIGKILL.
+            $running = true;
+            if ($sigtermSent) {
+                $deadline = microtime(true) + (D2W_TERM_GRACE_MS / 1000.0);
+                while ($running && microtime(true) < $deadline) {
+                    $status = proc_get_status($proc);
+                    $running = !is_array($status) || ($status['running'] ?? true);
+                    if ($running) {
+                        usleep(20000);
+                    }
+                }
             }
-            if (is_array($status) && ($status['running'] ?? false)) {
-                proc_terminate($proc, 9);
+            $killFailed = false;
+            if ($running) {
+                $killFailed = !proc_terminate($proc, 9);
+                $deadline = microtime(true) + (D2W_KILL_GRACE_MS / 1000.0);
+                while (!$killFailed && $running && microtime(true) < $deadline) {
+                    $status = proc_get_status($proc);
+                    $running = !is_array($status) || ($status['running'] ?? true);
+                    if ($running) {
+                        usleep(20000);
+                    }
+                }
+            }
+            if ($killFailed || $running) {
+                // Fail closed WITHOUT claiming a bound: the child
+                // could not be confirmed dead (SIGKILL failed, or it
+                // is in an uninterruptible state). proc_close is
+                // deliberately not called here; the process resource
+                // destructor may still wait for the child at
+                // shutdown — whether it does is UNKNOWN; the
+                // backstop is the job timeout. Residual stated
+                // honestly; descendants are NOT covered either
+                // (LIMITATION, not tested). Checked cleanup still
+                // runs via $fail.
+                return $fail(1, 'supervisor');
             }
         }
         $code = proc_close($proc);
