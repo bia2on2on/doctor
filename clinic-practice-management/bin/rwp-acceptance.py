@@ -1152,32 +1152,34 @@ def patient_portal_otp_login_surface(browser):
     if a2.status == 200:
         known_code = patch_otp_code_for_browser_acceptance(mobile, tag)
         if known_code:
-            verify_responses = []
-
-            def capture_otp_verify(resp):
-                route, _ = wp_route_and_params(resp.url)
-                if resp.request.method == "POST" and route == "/clinic/v1/otp/verify":
-                    verify_responses.append(resp)
-
-            page.on("response", capture_otp_verify)
             page.locator('[data-role="patient-otp-code"]').fill(known_code)
-            page.locator('[data-role="patient-otp-verify"]').click()
+            # Possession-only (Option A, ADR-0006): verify MUST NOT navigate or
+            # issue a session; wait deterministically for the fetch response.
+            with page.expect_response(
+                lambda r: r.request.method == "POST"
+                and wp_route_and_params(r.url)[0] == "/clinic/v1/otp/verify",
+                timeout=25000,
+            ) as a3_info:
+                page.locator('[data-role="patient-otp-verify"]').click()
+            a3 = a3_info.value
+            verify_status = a3.status
             try:
-                page.wait_for_function(
-                    "document.querySelector('#cpms-patient-portal-shell')?.getAttribute('data-shell-user') === 'patient'",
-                    timeout=25000,
-                )
-            except PlaywrightTimeoutError:
-                pass
-            finally:
-                page.remove_listener("response", capture_otp_verify)
-            verify_status = verify_responses[-1].status if verify_responses else 0
+                verify_payload = a3.json()
+            except Exception:
+                verify_payload = {}
+            verify_data = verify_payload.get("data") if isinstance(verify_payload, dict) else {}
+            verify_data = verify_data if isinstance(verify_data, dict) else {}
             patient_cookie = any(cookie["name"].startswith("wordpress_logged_in") for cookie in ctx.cookies(BASE))
             check(f"{tag}.a3_existing_route_success", verify_status == 200, f"A3 HTTP {verify_status}")
-            check(f"{tag}.a3_wp_session_and_patient_shell",
-                  patient_cookie and page.locator('#cpms-patient-portal-shell[data-shell-user="patient"]').count() == 1
-                  and page.locator('[data-role="patient-nav"]').count() == 1,
-                  "real OTP verify reloads into the Patient shell with a WordPress session")
+            # Option A (possession-only): a valid code proves possession and
+            # NOTHING else. The response carries session_issued=false, no
+            # cookie is set, and the shell never becomes "patient".
+            check(f"{tag}.a3_possession_only_no_session",
+                  verify_data.get("session_issued") is False
+                  and not patient_cookie
+                  and page.locator('#cpms-patient-portal-shell[data-shell-user="patient"]').count() == 0
+                  and page.locator('#cpms-patient-portal-shell[data-shell-user="anonymous"]').count() == 1,
+                  "verify returns session_issued=false; no WordPress session cookie; shell stays anonymous")
     page.screenshot(path=f"{OUT}/screenshots/{tag}.png", full_page=True)
     ctx.close()
 
