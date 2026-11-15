@@ -79,8 +79,37 @@ SYN_LAST_NAME = "توکلی"
 results = []
 failures = []
 
+#: Publication bound for every numeric value interpolated into
+#: PASS/FAIL/INFO output (same bound as _MAX_POSTED_ID below).
+_MAX_PUBLISHED_NUM = 2147483647
+_DIGIT_RUN_RE = re.compile(r"[0-9]+")
+
+
+def _bounded_num(value):
+    """Integer in 0..2**31-1 unchanged; anything else -> fixed token."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "n/a"
+    return value if 0 <= value <= _MAX_PUBLISHED_NUM else "n/a"
+
+
+def _bound_digit_runs(text):
+    """Bound every digit run in an output line via _bounded_num."""
+    if not isinstance(text, str):
+        return text
+
+    def _repl(match):
+        run = match.group(0)
+        try:
+            value = int(run)
+        except ValueError:
+            return "n/a"
+        return run if _bounded_num(value) != "n/a" else "n/a"
+
+    return _DIGIT_RUN_RE.sub(_repl, text)
+
 
 def ok(key, title, detail=""):
+    detail = _bound_digit_runs(detail)
     results.append({"key": key, "status": "PASS", "detail": detail})
     print(f"PASS {key} — {title}" + (f" — {detail}" if detail else ""))
 
@@ -163,13 +192,14 @@ def fail(key, title, err):
         # The suffix exists only when a booking call returned this code.
         bits.append("code=CLINIC_BOOKING_BUSY")
         detail = " ".join(bits)
+    detail = _bound_digit_runs(detail)
     failures.append(key)
     results.append({"key": key, "status": "FAIL", "detail": detail})
     print(f"FAIL {key} — {title} — {detail}")
 
 
 def info(line):
-    print(f"INFO {line}")
+    print(f"INFO {_bound_digit_runs(line)}")
 
 
 def _validated_printable(value, pattern):
@@ -1783,19 +1813,26 @@ def _entry():
         # the payload: the payload is untrusted (False == 0 and
         # 0.0 == 0 would silently pass as success; a hostile object's
         # __eq__/__bool__ could raise or lie). str()/repr()/== on the
-        # payload are never called here.
-        payload = exc.code
-        if payload is None:
-            return 0
-        if type(payload) is int:
-            if payload == 0:
+        # payload are never called here. Reading `.code` itself can
+        # raise (a SystemExit subclass with a hostile accessor), so
+        # the whole classification runs in a protected region: ANY
+        # exception while classifying -> fixed token + 1, no text.
+        try:
+            payload = exc.code
+            if payload is None:
                 return 0
-            if 1 <= payload <= 255:
-                # A genuine small int status (incl. env_req's 1):
-                # preserved silently and exactly — the interpreter
-                # would truncate anything outside 0..255 through the
-                # OS status (256 -> 0), so those become token + 1.
-                return payload
+            if type(payload) is int:
+                if payload == 0:
+                    return 0
+                if 1 <= payload <= 255:
+                    # A genuine small int status (incl. env_req's 1):
+                    # preserved silently and exactly — the interpreter
+                    # would truncate anything outside 0..255 through the
+                    # OS status (256 -> 0), so those become token + 1.
+                    return payload
+        except BaseException:  # noqa: BLE001 - hostile accessor
+            _print_startup_token()
+            return 1
         _print_startup_token()
         return 1
     except KeyboardInterrupt:

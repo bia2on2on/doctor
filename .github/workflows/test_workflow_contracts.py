@@ -2216,10 +2216,36 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
 
 
 def _has_main_guard_call(source):
-    """True only for an executable unittest.main()/main() call inside
-    an `if __name__ == "__main__":` guard (AST, not text: a comment
-    or string mentioning the call does not count)."""
-    for node in ast.walk(ast.parse(source)):
+    """Closed structural rule (round 18): True only when the module
+    has (1) a module-level `import unittest`, (2) no module-level
+    reassignment of the name `unittest`, and (3) a MODULE-LEVEL
+    `if __name__ == "__main__":` whose DIRECT child statements
+    include an Expr calling `unittest.main(...)`. This is a
+    structural check only — it is not proof the tests run; dead
+    code, shadowing and aliasing are rejected by construction, and
+    the suite's own CI execution remains the run proof."""
+    tree = ast.parse(source)
+    imported = any(
+        isinstance(node, ast.Import)
+        and any(alias.name == "unittest" for alias in node.names)
+        for node in tree.body
+    )
+    if not imported:
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "unittest"
+            for target in node.targets
+        ):
+            return False
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "unittest"
+                    for target in inner.targets
+                ):
+                    return False
+    for node in tree.body:
         if not isinstance(node, ast.If):
             continue
         test = node.test
@@ -2231,17 +2257,13 @@ def _has_main_guard_call(source):
                 and test.comparators[0].value == "__main__"):
             continue
         for stmt in node.body:
-            for inner in ast.walk(stmt):
-                if isinstance(inner, ast.Call):
-                    func = inner.func
-                    if (isinstance(func, ast.Attribute) and func.attr == "main"
-                            and isinstance(func.value, ast.Name)
-                            and func.value.id == "unittest"):
-                        return True
-                    if isinstance(func, ast.Name) and func.id == "main":
-                        return True
+            if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Attribute)
+                    and stmt.value.func.attr == "main"
+                    and isinstance(stmt.value.func.value, ast.Name)
+                    and stmt.value.func.value.id == "unittest"):
+                return True
     return False
-
 
 class Day2DiagnosticSuiteCiWiringTests(unittest.TestCase):
     """The Day-2 reader/formatter privacy suite must stay CI-executed.
@@ -2352,14 +2374,23 @@ class IntegrationJobLogHygieneContractTest(unittest.TestCase):
     """
 
     def test_main_guard_check_rejects_comment_and_string_mutations(self):
-        good = 'if __name__ == "__main__":\n    unittest.main()\n'
+        GOOD = 'import unittest\nif __name__ == "__main__":\n    unittest.main()\n'
+        good = GOOD
         self.assertTrue(_has_main_guard_call(good),
                         "real unittest.main() call under the guard must pass")
         mutations = {
-            "call->pass": 'if __name__ == "__main__":\n    pass  # unittest.main()\n',
+            "call->pass": GOOD.replace("unittest.main()", "pass"),
             "comment only": '# if __name__ == "__main__": unittest.main()\n',
-            "string only": 'if __name__ == "__main__":\n    "unittest.main()"\n',
-            "no guard": 'unittest.main()\n',
+            "string only": GOOD.replace("unittest.main()", '"unittest.main()"'),
+            "no guard": GOOD.replace('if __name__ == "__main__":\n    ', ''),
+            "if False nesting": GOOD.replace(
+                "unittest.main()", "if False:\n        unittest.main()"),
+            "uncalled function": GOOD.replace(
+                "unittest.main()", "def run():\n        unittest.main()"),
+            "different main alias": GOOD.replace("unittest.main()", "main()"),
+            "unittest reassigned": GOOD + "unittest = None\n",
+            "guard in function": 'import unittest\ndef boot():\n    if __name__ == "__main__":\n        unittest.main()\n',
+            "no import": GOOD.replace("import unittest\n", ""),
         }
         for label, src in mutations.items():
             self.assertFalse(_has_main_guard_call(src),

@@ -2185,6 +2185,44 @@ class RoundEightStartupGuardTest(_RedactedAssertions, unittest.TestCase):
         self.assertTrue("SYNTH_SECRET_R17" not in err,
                         "BaseException text must not reach stderr (content withheld)")
 
+    def test_hostile_systemexit_subclass_prints_only_token(self):
+        class HostileExit(SystemExit):
+            @property
+            def code(self):
+                raise RuntimeError("SYNTH_SECRET_R18")
+
+        def main():
+            raise HostileExit()
+
+        code, err = self._run_with_main(main)
+        self.assertTrue(code == 1, "hostile SystemExit must exit 1 (content withheld)")
+        self.assertTrue(
+            err == "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n",
+            "hostile SystemExit must print only the fixed token")
+        self.assertTrue("SYNTH_SECRET_R18" not in err,
+                        "hostile SystemExit text must not reach stderr (content withheld)")
+
+    def test_db_value_and_fixture_id_are_bounded_in_pass_output(self):
+        harness = self.harness
+        original_db = harness.db
+        harness.db = lambda sql: "9128887701"
+        try:
+            value = harness.db1("SELECT COUNT(*)")
+            stream = io.StringIO()
+            with redirect_stdout(stream):
+                harness.ok("probe", "probe", f"audit={value} clinic={9128887701}")
+            out = stream.getvalue()
+        finally:
+            harness.db = original_db
+        self.assertTrue("9128887701" not in out,
+                        "above-bound numeric value must not reach PASS output")
+        self.assertTrue("audit=n/a" in out and "clinic=n/a" in out,
+                        "above-bound numeric values must print the fixed token")
+        self.assertTrue(harness._bounded_num(2147483647) == 2147483647,
+                        "at-bound value must pass the helper (content withheld)")
+        self.assertTrue(harness._bounded_num(2147483648) == "n/a",
+                        "above-bound value must become the token (content withheld)")
+
     def test_token_print_failure_does_not_raise(self):
         class BrokenStderr:
             def write(self, _text):
@@ -2318,21 +2356,73 @@ def _is_dynamic_access(node):
     )
 
 
-def _unsafe_assertion_calls(source):
-    """Flag any use that could reach a bypassing assertion helper.
+#: CLOSED BAN (round 18): these names are banned outright in the
+#: Day-2 test suites (best-effort linter; see _unsafe_assertion_calls).
+_BANNED_NAMES = frozenset({
+    "getattr", "setattr", "delattr", "vars", "__dict__",
+    "__getattribute__", "__getattr__", "eval", "exec", "compile",
+    "globals", "locals", "addTypeEqualityFunc", "_getAssertEqualityFunc",
+})
 
-    Scans every attribute/name REFERENCE (not only calls): aliased
-    references (``f = self.assertSequenceEqual``), bare assert*/fail*
-    names, and dynamic access (``getattr``/``setattr``/
-    ``__getattribute__``) with a non-literal or assert*/fail* target
-    are all flagged, so the allowlist cannot be dodged by those\n    indirection forms. LIMIT (round 17): eval/exec of strings and
-    getattr with a computed (non-constant, non-subscript) name that
-    the non-literal branch already flags are covered; a name built
-    by string concatenation of non-forbidden fragments is NOT
-    detected — declared limit, not a claim of completeness.
+
+def _unsafe_assertion_calls(source):
+    """Best-effort linter over test-file source — NOT a security boundary.
+
+    Flags assertion references outside the allowlist plus the CLOSED
+    BAN names (getattr/setattr/delattr/vars/__dict__/__getattribute__/
+    __getattr__/eval/exec/compile/globals/locals/addTypeEqualityFunc/
+    _getAssertEqualityFunc) as names, attributes, or string constants.
+    Known remaining bypasses (declared, not chased): string
+    concatenation of fragments, import tricks, subclass/metaclass
+    tricks, and setattr reached through other means. The real
+    protection is the mixin routing + internal comparisons; this
+    linter only catches accidental or plain uses in these suites.
     """
+    tree = ast.parse(source)
+    # Narrow exemptions (round 18, with reasons): string constants
+    # that are literal-collection elements or dict keys are data
+    # (the ban lists and snippet tables themselves), and the single
+    # qualified stock-dispatch reference
+    # `unittest.TestCase._getAssertEqualityFunc` is the probes'
+    # counterfactual restoring the stock dispatch. Nothing else.
+    _literal_const_ids = set()
+    for _node in ast.walk(tree):
+        if isinstance(_node, (ast.Set, ast.List, ast.Tuple)):
+            for _elt in _node.elts:
+                if isinstance(_elt, ast.Constant):
+                    _literal_const_ids.add(id(_elt))
+        elif isinstance(_node, ast.Dict):
+            for _key in _node.keys:
+                if isinstance(_key, ast.Constant):
+                    _literal_const_ids.add(id(_key))
+        elif isinstance(_node, ast.Compare):
+            # Comparison operands are data (the linter's own literal
+            # checks), not dynamic access.
+            for _operand in [_node.left, *_node.comparators]:
+                if isinstance(_operand, ast.Constant):
+                    _literal_const_ids.add(id(_operand))
+
+    def _is_stock_dispatch_ref(node):
+        return (
+            node.attr == "_getAssertEqualityFunc"
+            and isinstance(node.value, ast.Attribute)
+            and node.value.attr == "TestCase"
+            and isinstance(node.value.value, ast.Name)
+            and node.value.value.id == "unittest"
+        )
+
     bad = []
-    for node in ast.walk(ast.parse(source)):
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Name) and node.id in _BANNED_NAMES
+                and isinstance(node.ctx, ast.Load)):
+            bad.append("banned:" + node.id)
+        elif isinstance(node, ast.Attribute) and node.attr in _BANNED_NAMES:
+            if not _is_stock_dispatch_ref(node):
+                bad.append("banned:" + node.attr)
+        elif (isinstance(node, ast.Constant) and isinstance(node.value, str)
+                and node.value in _BANNED_NAMES
+                and id(node) not in _literal_const_ids):
+            bad.append("banned-string:" + node.value)
         # unittest assertion helpers are camelCase after the prefix
         # (assertEqual, assertSetEqual, ...); snake_case attributes
         # (assert_closed, assert_no_values, .asserts) are this
@@ -2540,6 +2630,16 @@ class AssertionOutputRedactionTest(_RedactedAssertions, unittest.TestCase):
             "wrapper": "def w(a, b):\n    return self.assertSetEqual(a, b)\n",
             "bare name": "g = assertDictEqual\n",
         }
+        ban_forms = {
+            "alias getattr": "g = getattr\ng(self, 'assertSetEqual')(a, b)\n",
+            "vars lookup": "vars(unittest.TestCase).get('assertSetEqual')\n",
+            "eval": "eval('self.assertSetEqual(a, b)')\n",
+            "exec": "exec('x = 1')\n",
+            "globals": "globals()['assertSetEqual']\n",
+        }
+        for label, snippet in ban_forms.items():
+            self.assertTrue(_unsafe_assertion_calls(snippet) != [],
+                            "closed ban must flag: " + label)
         extra = {
             "method __getattribute__": "self.__getattribute__('assertSetEqual')(a, b)\n",
             "vars subscript": "vars(self)['assertSetEqual'](a, b)\n",

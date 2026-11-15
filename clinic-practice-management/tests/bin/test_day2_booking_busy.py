@@ -215,6 +215,15 @@ class ExtractBusyDiagnosticTest(_RedactedAssertions, unittest.TestCase):
         for value in (-1, 100000, "1213\n", "۱۲۱۳"):
             self.assertTrue("sql_errno" not in busy.extract_busy_diagnostic({"sql_errno": value}), "derived output carried forbidden text (content withheld)")
 
+    def test_direct_format_http_above_bound_prints_token(self):
+        out = busy.format_busy_suffix({}, http_status=9128887701)
+        self.assertTrue("http=n/a" in out,
+                        "above-bound http must print the fixed token (content withheld)")
+        self.assertTrue("9128887701" not in out,
+                        "above-bound http digits must not be printed (content withheld)")
+        self.assertTrue(busy._bounded_num(503) == 503,
+                        "in-bound http must pass the helper (content withheld)")
+
     def test_ids_above_the_posted_id_bound_are_omitted(self):
         for value in (9128887701, "9128887701"):
             context = legacy_context("fixed")

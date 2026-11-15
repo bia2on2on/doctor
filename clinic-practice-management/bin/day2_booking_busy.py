@@ -64,6 +64,14 @@ _DIGITS_RE = re.compile(r"[0-9]{1,10}")
 _SQL_DATETIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}")
 
 
+def _bounded_num(value):
+    """Integer in 0..2**31-1 unchanged; anything else -> fixed token."""
+    coerced = _coerce_int(value)
+    if coerced is None:
+        return "n/a"
+    return coerced if 0 <= coerced <= MAX_ID else "n/a"
+
+
 def _coerce_int(value):
     if isinstance(value, bool):
         return None
@@ -250,7 +258,7 @@ def format_busy_suffix(diag, *, route="", http_status=0, viewport="", missing="n
         bits.append(f"route={route}")
     status = _coerce_int(http_status)
     if status:
-        bits.append(f"http={status}")
+        bits.append(f"http={_bounded_num(status)}")
     viewport = _canonical_viewport(viewport)
     if viewport:
         bits.append(f"viewport={viewport}")
