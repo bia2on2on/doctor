@@ -5913,3 +5913,8 @@ Sync-only merge; no behaviour change, no product code, no test touched by this s
   `PublicDoctorTitleSpecialtyUnitTest.php` `6240a0a4`, `PublicWeekdayContractTest.php` `a3c74df2`.
 - **Not changed by this step:** no workflow file of mine, no test of mine, no schema, no dependency.
   main's own files were taken as-is.
+
+### [2026-11-15 UTC] — Messaging rate-limit test window guard
+- OBSERVED: Added a bounded wait and window-ID assertion to `StaffMessagingSecurityTest`; product code was not edited.
+- INFERENCE: The existing test is window-boundary sensitive; a timing cause has not been established.
+- LIMITATION: Local integration execution requires a real WordPress test database; PHP-WASM token parsing is not integration evidence.
