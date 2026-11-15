@@ -34,20 +34,30 @@ use WP_UnitTestCase;
  * to OTP (see testVerifyWithExplicitPreExistingLinkStillIssuesNoAccess);
  * it documents the deliberate slice-1 gap.
  *
- * NON-VACUITY (owner decision A): every test in this class FAILS on live
- * main (pre-change verify() created/resolved/linked from the mobile, wrote
- * LOGIN_SUCCESS and could issue a session) and is intended to PASS on this
- * change. PHP is not available in the authoring sandbox, so the first
- * committed round was written by source inspection only — CI round 1
- * (2026-11-09, run 42762572435) then showed 6 of the failures here were
- * slice-1 TEST defects, not production defects: the seeded challenges were
- * stamped clinic_id=NULL (legacy) and a multi-Clinic fixture has no ambient
- * scope, so verify() failed closed with CLINIC_SCOPE_REQUIRED before any
- * setting/policy logic and before the uniform envelope could be produced;
- * the 503 path likewise asserted an absolute OTP_VERIFY_OK count of 0 even
- * though the audit table is shared across tests. Both were corrected in the
- * follow-up commit (clinic-stamped seeds; baseline-delta audit assertion).
- * Do not merge on a red or unrun suite; CI is the executable proof.
+ * NON-VACUITY (owner decision A) — corrected round 14 (F4b): NOT every
+ * test in this class is known to fail on base. What was explicitly
+ * established:
+ *  - the access-denying contract tests fail against pre-change verify()
+ *    (the old code created/resolved/linked from the mobile, wrote
+ *    LOGIN_SUCCESS and could issue a session) — this is the basis of the
+ *    possession-only tests, confirmed in source inspection and reflected in
+ *    CI round 1 (2026-11-09, run 42762572435), which then showed 6 of the
+ *    failures here were slice-1 TEST defects, not production defects: the
+ *    seeded challenges were stamped clinic_id=NULL (legacy) and a
+ *    multi-Clinic fixture has no ambient scope, so verify() failed closed
+ *    with CLINIC_SCOPE_REQUIRED before any setting/policy logic and before
+ *    the uniform envelope could be produced; the 503 path likewise asserted
+ *    an absolute OTP_VERIFY_OK count of 0 even though the audit table is
+ *    shared across tests. Both were corrected in the follow-up commit
+ *    (clinic-stamped seeds; baseline-delta audit assertion).
+ *  - testVerifyRouteFailsClosedWith503WhenOtpSettingsUnreadable exercises
+ *    the pre-transaction settings-unreadable path that is UNCHANGED by this
+ *    change and is NOT known to fail on base; it pins the fail-closed
+ *    settings contract, not the possession-only change.
+ *  - Other tests here (response-shape/status assertions) are not claimed
+ *    to fail on base either; only the access-denial semantics were
+ *    non-vacuity-checked. Do not merge on a red or unrun suite; CI is the
+ *    executable proof.
  */
 final class OtpPossessionOnlyTest extends WP_UnitTestCase
 {

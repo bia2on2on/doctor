@@ -25,9 +25,11 @@
  * Resolve linked active Patients in the trusted booking Clinic.
  *
  * 0 linked:
- *  - booking subject is NEW in this Clinic;
- *  - B1 creates/maintains a Hold with no bound Patient;
- *  - Slice-2 first_name + last_name policy applies at B2;
+ *  - B1 is fail-closed (no Hold is created for a zero-link caller);
+ *  - a seeded Historical-NULL Hold reaching B2 is fail-closed with ONE uniform
+ *    envelope (HTTP 400 CLINIC_VALIDATION_FAILED, exact message);
+ *  - round 14 OD-A (F1/B1): the B2 names gate is CLOSED — confirm never
+ *    creates a Patient and never auto-links by mobile (names never open it);
  *  - same-mobile unlinked Patient MUST NOT be reused or auto-linked.
  *
  * 1 linked:
@@ -385,6 +387,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         self::assertNotSame(200, $response->get_status(), 'Same-mobile unlinked must NOT be silently reused — must fail closed with safe validation when uniqueness prevents creation. Body: ' . wp_json_encode($response->get_data()));
         $code = is_array($response->get_data()) ? (string) ($response->get_data()['code'] ?? '') : '';
         self::assertSame('CLINIC_VALIDATION_FAILED', $code, 'Must be generic non-enumerating CLINIC_VALIDATION_FAILED.');
+        self::assertSame('پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)', (string) ($response->get_data()['message'] ?? ''), 'Uniform fail-closed message — same-mobile existence is not observable (round 14 OD-A F1).');
         // B2 same-mobile duplicate is pure input validation (400 per error-codes.md registry; BookingService default 400).
         self::assertSame(400, $response->get_status(), 'B2 same-mobile validation must be 400 (generic validation) per registry. Got: ' . $response->get_status() . ' Body: ' . wp_json_encode($response->get_data()));
         self::assertSame(400, (int) ($response->get_data()['data']['status'] ?? 0), 'Envelope data.status must be 400.');
@@ -539,7 +542,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
     // T07 ZERO LINKED — TRUE NEW PATIENT (guards, pass on RED)
     // =================================================================
 
-    public function testZeroLinkedNewPatientRequiresNamesAtB2AndCreatesPatientInBookingClinic(): void
+    public function testZeroLinkedHistoricalNullHoldFailsClosedAtB2(): void
     {
         $this->buildTwoClinicFixture();
         // User with 0 linked patients in booking Clinic A.
@@ -554,46 +557,44 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $slot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '16:00:00', 1);
 
         // owner decision A (2026-11-09): a zero-link OTP identity cannot originate a Hold
-        // via B1 anymore, so this test's subject (B2 new-patient flow, names required,
-        // Patient created in the booking Clinic) starts from a persisted Hold of the
+        // via B1 anymore, so this test's subject starts from a persisted Hold of the
         // historical shape (patient_id NULL) — seed it directly.
+        // Round 14 OD-A (F1/B1): confirm of a Historical-NULL Hold whose caller holds
+        // NO linked Patient in the booking Clinic fails CLOSED — the B2 new-patient
+        // names gate is closed; supplied names never produce a Patient.
         $holdToken = $this->seedLegacyNullHoldRow($this->clinicA, $slot['slot_id'], $userId, $mobile);
         self::assertNotSame('', $holdToken);
-        // Subject remains unbound/new — if column exists, it should be NULL.
         if ($this->slotHoldsHasPatientIdColumn()) {
             $row = $this->holdRowByToken($holdToken);
             self::assertNull($row['patient_id'] ?? null, 'Hold for 0 linked must have NULL patient_id (new subject).');
         }
 
-        // B2 without names must fail Slice-2 validation, no Patient/Appointment, Hold retryable.
+        // B2 without names must fail closed (uniform envelope), no Patient/Appointment, Hold retryable.
         $attempt1 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
         ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        $this->assertClinicError($attempt1, 'CLINIC_VALIDATION_FAILED', 400, 'B2 for new Patient without names must fail validation.');
-        self::assertSame(0, $this->countPatientsForMobile($this->clinicA, $mobile), 'No Patient must be created on validation failure.');
-        self::assertSame(0, $this->countRows('cpms_appointments'), 'No Appointment on validation failure.');
+        $this->assertClinicError($attempt1, 'CLINIC_VALIDATION_FAILED', 400, 'B2 for a 0-linked Historical-NULL Hold must fail closed.');
+        self::assertSame('پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)', (string) ($attempt1->get_data()['message'] ?? ''), 'Uniform fail-closed message.');
+        self::assertSame(0, $this->countPatientsForMobile($this->clinicA, $mobile), 'No Patient must be created on failure.');
+        self::assertSame(0, $this->countRows('cpms_appointments'), 'No Appointment on failure.');
         $holdRow = $this->holdRowByToken($holdToken);
         self::assertSame('active', (string) $holdRow['status'], 'Hold must remain active/retryable.');
         self::assertSame(1, $this->heldCountOf($slot['slot_id']), 'Capacity still held.');
 
-        // B2 with valid names must create Patient in booking Clinic linked to user and Appointment binds it.
+        // B2 with valid names -> the IDENTICAL fail-closed envelope; NO Patient created.
         $attempt2 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
             'first_name' => 'نرگس',
             'last_name' => 'کریمی',
         ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        self::assertSame(200, $attempt2->get_status(), 'B2 with valid names must succeed. Body: ' . wp_json_encode($attempt2->get_data()));
-        $newPatient = $this->patientRowByMobile($this->clinicA, $mobile);
-        self::assertNotNull($newPatient, 'New Patient must be created in booking Clinic.');
-        self::assertSame('نرگس', (string) $newPatient['first_name']);
-        self::assertSame('کریمی', (string) $newPatient['last_name']);
-        self::assertSame($this->clinicA, (int) $newPatient['clinic_id']);
-        self::assertSame(1, $this->countPatientLinksForUser($userId), 'New Patient must be linked to authenticated user.');
-        $apptPatient = (int) App::db()->fetchValue(
-            'SELECT patient_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
-            [(int) $attempt2->get_data()['data']['appointment_id']]
-        );
-        self::assertSame((int) $newPatient['id'], $apptPatient, 'Appointment must bind the new Patient.');
+        self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'The fail-closed envelope is identical with and without names.');
+        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'The fail-closed envelope is byte-identical — names never open the gate.');
+        self::assertSame(0, $this->countPatientsForMobile($this->clinicA, $mobile), 'No Patient must be created even with valid names.');
+        self::assertSame(0, $this->countRows('cpms_appointments'), 'No Appointment must exist.');
+        self::assertSame(0, $this->countPatientLinksForUser($userId), 'No Patient link must be created.');
+        $holdRow = $this->holdRowByToken($holdToken);
+        self::assertSame('active', (string) $holdRow['status'], 'Hold must remain active/retryable.');
+        self::assertSame(1, $this->heldCountOf($slot['slot_id']), 'Capacity still held.');
     }
 
     // =================================================================

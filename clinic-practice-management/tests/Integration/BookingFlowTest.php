@@ -18,7 +18,7 @@ use WP_UnitTestCase;
  *  - Hold Expiry: آزادسازی ظرفیت + خطای CLINIC_HOLD_EXPIRED.
  *  - Duration Snapshot: تغییر Default بعد از رزرو، نوبت موجود را تغییر نمی‌دهد (TP-21).
  *  - Policy لغو: داخل Window = CLINIC_POLICY_VIOLATION.
- *  - Patient Auto-Creation برای کاربر جدید (OTP mobile).
+ *  - Fail-closed confirm — Hold پیشینه‌ای patient_id NULL با کاربرِ بدون لینک (zero-link) هیچ Patient/لینک/نوبتی نمی‌سازد (OD-A round 14).
  *  - Transaction Rollback: شکست Confirm → ظرفیت آزاد می‌شود.
  */
 final class BookingFlowTest extends WP_UnitTestCase
@@ -458,59 +458,90 @@ final class BookingFlowTest extends WP_UnitTestCase
         }
     }
 
-    public function testPatientAutoCreatedForNewUser(): void
+    public function testZeroLinkBridgeHoldFailsClosedAtConfirm(): void
     {
         global $wpdb;
         $slot = $this->makeSlot(3, '10:00', 1);
-        // owner decision A (2026-11-09): a zero-link OTP identity can no longer
-        // originate a Hold via hold() — under personalised-identity rules the
-        // new-patient flow starts from a persisted Hold of the historical shape.
-        // Seed it directly (patient_id NULL, holder = the bridge identity) so the
-        // confirm-side subject of this test is unchanged.
+        // owner decision A (2026-11-09): a zero-link OTP identity cannot originate
+        // a Hold via hold() — under this shape the historical NULL hold is seeded
+        // directly so the confirm-side subject is unchanged.
+        // Round 14 OD-A (F1/B1): confirm of a Historical-NULL Hold whose caller
+        // holds NO linked Patient in the booking Clinic fails closed — no Patient
+        // is created, no link, no appointment, no identity activation. Supplied
+        // names do not open the gate; the response is the uniform fail-closed
+        // envelope regardless of whether a same-mobile Patient exists anywhere.
         $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
-        // Phase 8 Slice 2 (تصمیم مالک ۲): بیمارِ جدید در زمان confirm به نام/
-        // نام‌خانوادگی نیاز دارد — همان قرارداد، اکنون در سطح Service.
-        $result = $this->booking()->confirm($hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی');
-
-        $patient = $wpdb->get_row(
+        try {
+            $this->booking()->confirm($hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی');
+            $this->fail('a zero-link Historical-NULL Hold must fail closed at confirm');
+        } catch (BookingException $exception) {
+            $this->assertSame('CLINIC_VALIDATION_FAILED', $exception->errorCode);
+            $this->assertSame(400, $exception->httpStatus);
+            $this->assertSame(
+                'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)',
+                $exception->getMessage(),
+                'the uniform fail-closed envelope; supplied names never open the gate'
+            );
+        }
+        $this->assertSame(
+            0,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE mobile = %s',
+                ['09120000002']
+            ),
+            'no Patient row is created for the bridge identity'
+        );
+        $this->assertSame(
+            0,
+            (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE wp_user_id = %d',
+                    $this->otherUserId
+                )
+            ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'no Patient link is created'
+        );
+        $this->assertSame(
+            0,
+            (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments WHERE slot_id = %d',
+                    $slot['id']
+                )
+            ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'no Appointment is created'
+        );
+        $audit = App::db()->table('cpms_audit_logs');
+        foreach (['PATIENT_CREATED', 'PATIENT_IDENTITY_CREATED', 'PATIENT_IDENTITY_LINKED'] as $action) {
+            $this->assertSame(
+                0,
+                (int) App::db()->fetchValue(
+                    "SELECT COUNT(*) FROM {$audit} WHERE action = %s",
+                    [$action]
+                ),
+                'no ' . $action . ' evidence may survive the fail-closed confirm'
+            );
+        }
+        $status = (string) $wpdb->get_var(
             $wpdb->prepare(
-                'SELECT p.* FROM ' . $wpdb->prefix . 'cpms_patient_user_links' . ' l
-                 JOIN ' . $wpdb->prefix . 'cpms_patients' . ' p ON p.id = l.patient_id
-                 WHERE l.wp_user_id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $this->otherUserId
-            ),
-            ARRAY_A
-        );
-        $this->assertNotNull($patient, 'Patient Record باید برای کاربر جدید ساخته شود');
-        $this->assertSame('09120000002', $patient['mobile']);
-        $this->assertSame('سارا', (string) $patient['first_name'], 'نام‌های تأییدشده روی بیمارِ تازه‌ساخته می‌نشیند');
-        $this->assertSame('کریمی', (string) $patient['last_name']);
-        $this->assertMatchesRegularExpression('/^MR-\d{6}-[A-Z0-9]{5}$/', (string) $patient['mrn']);
-        $this->assertSame((int) $result['appointment_id'], (int) $wpdb->get_var(
-            $wpdb->prepare('SELECT id FROM ' . $wpdb->prefix . 'cpms_appointments WHERE patient_id = %d', (int) $patient['id']) // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-        ));
-        $identityId = (int) $patient['identity_id'];
-        $audit = App::db()->table( 'cpms_audit_logs' );
-        $this->assertGreaterThan( 0, $identityId, 'BookingService::confirm activates a new organization identity' );
+                'SELECT status FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE token = %s',
+                $hold['hold_token']
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->assertSame('active', $status, 'the fail-closed confirm throws before the transaction — the seeded Hold stays active/retryable');
         $this->assertSame(
             1,
-            (int) App::db()->fetchValue(
-                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d",
-                [ 'PATIENT_IDENTITY_CREATED', $identityId ]
-            ),
-            'production BookingService::confirm persists the identity creation event'
-        );
-        $this->assertSame(
-            1,
-            (int) App::db()->fetchValue(
-                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d AND patient_id = %d AND clinic_id = %d",
-                [ 'PATIENT_IDENTITY_LINKED', $identityId, (int) $patient['id'], $this->clinicId ]
-            ),
-            'production BookingService::confirm persists the identity linkage event'
+            (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT held_count FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d',
+                    $slot['id']
+                )
+            ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'the fail-closed confirm keeps the held capacity (no drift)'
         );
     }
 
-    public function testBookingConfirmReusesVerifiedIdentityAndAuditsLinkage(): void
+    public function testPrelinkedOrganizationIdentityDoesNotCreatePatientAtFailClosedConfirm(): void
     {
         global $wpdb;
         $organizationId = (int) App::db()->fetchValue(
@@ -518,6 +549,10 @@ final class BookingFlowTest extends WP_UnitTestCase
             [ $this->clinicId ]
         );
         $identityService = App::patient_identity_service();
+        // A pre-VERIFIED organization identity for the bridge user — this used
+        // to make confirm "reuse" it when auto-creating the Patient. Round 14
+        // OD-A (F1/B1) removes patient creation from confirm entirely: the
+        // pre-verified identity grants no scope and is left untouched.
         $identityId = $identityService->create_identity( $organizationId );
         $identityService->link_user( $organizationId, $identityId, $this->otherUserId, '09120000002' );
 
@@ -526,82 +561,25 @@ final class BookingFlowTest extends WP_UnitTestCase
         // Hold anymore — seed the persisted (historical, patient_id NULL) Hold so the
         // confirm-side subject is unchanged.
         $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
-        $this->booking()->confirm( $hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی' );
-
-        $patient = $wpdb->get_row(
-            $wpdb->prepare(
-                'SELECT p.id, p.identity_id FROM ' . $wpdb->prefix . 'cpms_patient_user_links l
-                 JOIN ' . $wpdb->prefix . 'cpms_patients p ON p.id = l.patient_id
-                 WHERE l.wp_user_id = %d LIMIT 1', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $this->otherUserId
-            ),
-            ARRAY_A
-        );
-        $this->assertNotNull( $patient );
-        $this->assertSame( $identityId, (int) $patient['identity_id'], 'confirm reuses only the pre-verified identity link' );
-
-        $audit = App::db()->table( 'cpms_audit_logs' );
-        $this->assertSame(
-            1,
-            (int) App::db()->fetchValue(
-                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d",
-                [ 'PATIENT_IDENTITY_CREATED', $identityId ]
-            )
-        );
-        $this->assertSame(
-            1,
-            (int) App::db()->fetchValue(
-                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d AND patient_id = %d AND clinic_id = %d",
-                [ 'PATIENT_IDENTITY_LINKED', $identityId, (int) $patient['id'], $this->clinicId ]
-            ),
-            'verified-reuse path through BookingService::confirm must audit the new patient edge'
-        );
-    }
-
-    public function testBookingConfirmAuditFailureRollsBackNewPatientAndIdentity(): void
-    {
-        global $wpdb;
-        $slot = $this->makeSlot( 3, '12:00', 1 );
-        // owner decision A (2026-11-09): zero-link OTP identities cannot originate a
-        // Hold anymore — seed the persisted (historical, patient_id NULL) Hold so the
-        // confirm-side rollback subject is unchanged.
-        $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
-        $beforeIdentities = (int) App::db()->fetchValue(
-            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identities' )
-        );
-        $audit = App::db()->table( 'cpms_audit_logs' );
-        $createdEventsBefore = (int) App::db()->fetchValue(
-            "SELECT COUNT(*) FROM {$audit} WHERE action = %s",
-            [ 'PATIENT_IDENTITY_CREATED' ]
-        );
-        $linkedEventsBefore = (int) App::db()->fetchValue(
-            "SELECT COUNT(*) FROM {$audit} WHERE action = %s",
-            [ 'PATIENT_IDENTITY_LINKED' ]
-        );
-        $this->failAuditInserts();
         try {
-            try {
-                $this->booking()->confirm( $hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی' );
-                $this->fail( 'confirm must fail closed when identity audit persistence fails' );
-            } catch ( BookingException $exception ) {
-                $this->assertSame( 'CLINIC_INTERNAL_ERROR', $exception->errorCode );
-            }
-        } finally {
-            $this->restoreAuditInserts();
+            $this->booking()->confirm( $hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی' );
+            $this->fail( 'a pre-verified identity must not unlock Patient creation at confirm' );
+        } catch ( BookingException $exception ) {
+            $this->assertSame( 'CLINIC_VALIDATION_FAILED', $exception->errorCode );
+            $this->assertSame( 400, $exception->httpStatus );
+            $this->assertSame(
+                'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)',
+                $exception->getMessage()
+            );
         }
 
-        $this->assertSame(
-            $beforeIdentities,
-            (int) App::db()->fetchValue( 'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identities' ) ),
-            'identity creation must roll back with failed audit'
-        );
         $this->assertSame(
             0,
             (int) $wpdb->get_var( $wpdb->prepare(
                 'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links WHERE wp_user_id = %d',
                 $this->otherUserId
             ) ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            'new patient user-link must roll back with failed identity audit'
+            'no Patient link is created'
         );
         $this->assertSame(
             0,
@@ -609,18 +587,198 @@ final class BookingFlowTest extends WP_UnitTestCase
                 'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments WHERE slot_id = %d',
                 $slot['id']
             ) ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-            'confirmation appointment must not persist'
+            'no Appointment is created'
         );
         $this->assertSame(
-            $createdEventsBefore,
-            (int) App::db()->fetchValue( "SELECT COUNT(*) FROM {$audit} WHERE action = %s", [ 'PATIENT_IDENTITY_CREATED' ] ),
-            'creation success evidence cannot survive the failed transaction'
+            1,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identity_links' )
+                . ' WHERE wp_user_id = %d AND identity_id = %d',
+                [ $this->otherUserId, $identityId ]
+            ),
+            'the pre-verified identity link is preserved, not consumed'
         );
         $this->assertSame(
-            $linkedEventsBefore,
-            (int) App::db()->fetchValue( "SELECT COUNT(*) FROM {$audit} WHERE action = %s", [ 'PATIENT_IDENTITY_LINKED' ] ),
-            'link success evidence cannot survive the failed transaction'
+            1,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identities' )
+                . ' WHERE id = %d',
+                [ $identityId ]
+            ),
+            'the pre-verified identity is preserved'
         );
+
+        $audit = App::db()->table( 'cpms_audit_logs' );
+        foreach ( [ 'PATIENT_IDENTITY_CREATED', 'PATIENT_IDENTITY_LINKED' ] as $action ) {
+            $this->assertSame(
+                0,
+                (int) App::db()->fetchValue(
+                    "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d",
+                    [ $action, $identityId ]
+                ),
+                'no ' . $action . ' evidence may be persisted for the pre-verified identity'
+            );
+        }
+    }
+
+    public function testBookingConfirmAuditFailureRollsBackAppointmentAndReleasesHoldViaCompensation(): void
+    {
+        global $wpdb;
+        // Round 14 OD-A (F1/B1): confirm never creates a Patient on this path,
+        // so the D6 atomicity contract is pinned on the remaining confirm
+        // subject — a linked patient and a live Hold. A failed mandatory
+        // APPOINTMENT_CREATED audit rolls the whole confirmation back and the
+        // guarded compensation releases the Hold and its capacity.
+        $slot = $this->makeSlot( 3, '12:00', 1 );
+        $hold = $this->booking()->hold( $this->patientUserId, $this->clinicianId, $slot['date'], $slot['time'] );
+        $audit = App::db()->table( 'cpms_audit_logs' );
+        $apptCreatedBefore = (int) App::db()->fetchValue(
+            "SELECT COUNT(*) FROM {$audit} WHERE action = %s",
+            [ 'APPOINTMENT_CREATED' ]
+        );
+        $beforeIdentities = (int) App::db()->fetchValue(
+            'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identities' )
+        );
+        $this->failAuditInserts();
+        try {
+            try {
+                $this->booking()->confirm( $hold['hold_token'], $this->patientUserId, null, $this->uuid() );
+                $this->fail( 'confirm must fail closed when mandatory audit persistence fails' );
+            } catch ( BookingException $exception ) {
+                // The audit logger's RuntimeException maps to CLINIC_INTERNAL_ERROR.
+                $this->assertSame( 'CLINIC_INTERNAL_ERROR', $exception->errorCode );
+            }
+        } finally {
+            $this->restoreAuditInserts();
+        }
+
+        $this->assertSame(
+            0,
+            (int) $wpdb->get_var( $wpdb->prepare(
+                'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments WHERE slot_id = %d',
+                $slot['id']
+            ) ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'the confirmation appointment must not persist'
+        );
+        $this->assertSame(
+            $apptCreatedBefore,
+            (int) App::db()->fetchValue(
+                "SELECT COUNT(*) FROM {$audit} WHERE action = %s",
+                [ 'APPOINTMENT_CREATED' ]
+            ),
+            'no APPOINTMENT_CREATED evidence can survive the failed transaction'
+        );
+        $this->assertSame(
+            $beforeIdentities,
+            (int) App::db()->fetchValue(
+                'SELECT COUNT(*) FROM ' . App::db()->table( 'cpms_patient_identities' )
+            ),
+            'no patient identity may be created on the confirm path'
+        );
+        // D6 atomicity compensation: the rolled-back confirmation releases the
+        // Hold and its capacity (the hold conversion rolled back with the
+        // transaction, so the outer compensation frees both).
+        $status = (string) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT status FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE token = %s',
+                $hold['hold_token']
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->assertSame( 'released', $status, 'the compensation releases the Hold whose conversion rolled back' );
+        $this->assertSame(
+            0,
+            (int) $wpdb->get_var( $wpdb->prepare(
+                'SELECT held_count FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d',
+                $slot['id']
+            ) ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            'the held capacity is released by the compensation'
+        );
+    }
+
+    public function testHoldFailsClosedWhenSubjectBindingColumnIsAbsent(): void
+    {
+        global $wpdb;
+        // Round 14 (F3): migration 2026_09_20_0022_slot_holds_patient_binding
+        // has NOT been applied — cpms_slot_holds.patient_id does not exist, so
+        // a Hold can never persist its booking subject. The service must fail
+        // closed with the neutral, existing CLINIC_SERVICE_UNAVAILABLE (503,
+        // the RuntimeSchemaGate public contract) for EVERY caller — linked,
+        // zero-link, N-linked, or with a requested patient_id — and must
+        // persist NOTHING (no Hold row, no capacity movement).
+        //
+        // The column's absence is simulated through the service's private
+        // schema cache (set to false, restored afterwards); the information_schema
+        // probe itself is NOT exercised here, and the schema is never altered.
+        // CI always migrates, so this is the only in-process way to reach the
+        // path (honest label: the real absent-column shape is not separately
+        // executed on a live unmigrated install).
+        $slot = $this->makeSlot(4, '10:30', 1);
+        $service = $this->booking();
+        // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
+        $prop = new \ReflectionProperty(\ClinicCore\Application\Booking\BookingService::class, 'holdsPatientIdColCache');
+        $prop->setValue($service, false);
+        try {
+            $beforeHolds = (int) $wpdb->get_var(
+                $wpdb->prepare(
+                    'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE slot_id = %d',
+                    $slot['id']
+                )
+            ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+            $patientsBefore = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patients');
+            $linksBefore = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links');
+            $bookedBefore = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments');
+
+            foreach ( [ $this->patientUserId => 'linked', $this->otherUserId => 'zero-link' ] as $userId => $kind ) {
+                try {
+                    $service->hold( $userId, $this->clinicianId, $slot['date'], $slot['time'] );
+                    $this->fail( $kind . ' caller must not be admitted when subject binding cannot be persisted' );
+                } catch ( BookingException $exception ) {
+                    $this->assertSame( 'CLINIC_SERVICE_UNAVAILABLE', $exception->errorCode, $kind . ' caller' );
+                    $this->assertSame( 503, $exception->httpStatus, $kind . ' caller' );
+                    $this->assertSame( 'سرویس موقتاً در دسترس نیست.', $exception->getMessage(), $kind . ' caller — neutral message' );
+                }
+            }
+            // N-linked caller with an explicit requested patient_id must get the same
+            // uniform 503 (never CLINIC_PATIENT_SELECTION_REQUIRED, never success).
+            $linked = App::db()->fetchAll(
+                'SELECT patient_id FROM ' . App::db()->table( 'cpms_patient_user_links' ) . ' WHERE wp_user_id = %d LIMIT 1',
+                [ $this->patientUserId ]
+            );
+            $this->assertNotEmpty( $linked, 'fixture: the linked caller has a linked Patient' );
+            try {
+                $service->hold( $this->patientUserId, $this->clinicianId, $slot['date'], $slot['time'], null, (int) $linked[0]['patient_id'] );
+                $this->fail( 'a requested patient_id must not be admitted when subject binding cannot be persisted' );
+            } catch ( BookingException $exception ) {
+                $this->assertSame( 'CLINIC_SERVICE_UNAVAILABLE', $exception->errorCode );
+                $this->assertSame( 503, $exception->httpStatus );
+            }
+
+            $this->assertSame(
+                $beforeHolds,
+                (int) $wpdb->get_var(
+                    $wpdb->prepare(
+                        'SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_slot_holds WHERE slot_id = %d',
+                        $slot['id']
+                    )
+                ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'no Hold row may be persisted on a column-absent install'
+            );
+            $this->assertSame(
+                0,
+                (int) $wpdb->get_var(
+                    $wpdb->prepare(
+                        'SELECT held_count FROM ' . $wpdb->prefix . 'cpms_schedule_slots WHERE id = %d',
+                        $slot['id']
+                    )
+                ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                'held capacity must not move'
+            );
+            $this->assertSame($patientsBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patients'), 'no Patient row may change');
+            $this->assertSame($linksBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links'), 'no Patient link may change');
+            $this->assertSame($bookedBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments'), 'no Appointment may exist');
+        } finally {
+            $prop->setValue( $service, null );
+        }
     }
 
     /**

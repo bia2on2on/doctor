@@ -399,9 +399,10 @@ final class OrganizationPatientIdentityActivationTest extends WP_UnitTestCase {
         $identitiesBefore = $this->countIdentities();
         $now              = App::db()->nowUtcSql();
 
-        // Exactly the production boundary used by PatientService::create() and
-        // BookingService::createMinimalPatient(): clinical row + identity
-        // activation inside ONE transaction. A later failure must leave neither.
+        // Exactly the production boundary used by PatientService::create():
+        // clinical row + identity activation inside ONE transaction. A later
+        // failure must leave neither. (The historical booking auto-create
+        // boundary is gone — round 14, F1: confirm never creates a Patient.)
         try {
             App::db()->transactional(
                 function () use ( $now ): void {

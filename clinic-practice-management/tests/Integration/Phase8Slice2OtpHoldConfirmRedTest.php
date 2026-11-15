@@ -2514,125 +2514,122 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
     }
 
     /**
-     * R5 — ITEM B(1) T14 confirmation-side coverage, restored expressibly.
+     * R5 — ITEM B(1) T14 confirmation-side pin (round 14, OD-A F1/B1).
      *
-     * The T14 premise (hold by a zero-link caller) is inexpressible post-OD-A
-     * — and, after the item-A fix, unreachable even for legacy marker
-     * sessions. What IS still expressible — and what this restores — is the
-     * CONFIRM-side new-Patient names gate, reached exactly when the hold
-     * documents a holder identity that has no Patient anywhere at confirm
-     * time (e.g. staff purged the subject after holding): a seeded active
-     * Hold with holder_mobile and patient_id NULL plus a marker session.
+     * The confirm-side new-Patient names gate is CLOSED. A seeded active
+     * Hold with holder_mobile and patient_id NULL (Historical-NULL) whose
+     * caller holds NO active linked Patient in the booking Clinic fails
+     * CLOSED at confirm time: HTTP 400 CLINIC_VALIDATION_FAILED with the
+     * exact message 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)'
+     * — identical whether or not a same-mobile Patient row exists in the
+     * booking Clinic, with or without names, and regardless of hostile
+     * identity claims. NO Patient row, Patient link, WP-user change,
+     * Appointment, or audit side effect is produced; the seeded Hold stays
+     * active/retryable and keeps its capacity claim.
      *
-     * Pins (same assertions as the pre-flip T14, via seed instead of a live
-     * hold): missing / whitespace-only / empty names -> CLINIC_VALIDATION_FAILED
-     * with nothing created and the Hold active/retryable; then valid names +
-     * hostile identity claims -> normal confirm; the client-sent
-     * patient_id/is_new_user/mobile/clinic_id claims never select or override
-     * the server identity; the DECOY Patient in the booking Clinic is untouched.
+     * The same-mobile Patient seeded here in the booking Clinic is the old
+     * existence-leak vector (the former code answered CLINIC_VALIDATION_FAILED
+     * with a DIFFERENT message and created a Patient when absent); its
+     * presence must be indistinguishable from its absence.
+     *
+     * What is NOT restorable (stated precisely): a LIVE hold for this caller
+     * — after the item-A fix, hold() requires a linked active Patient in the
+     * booking Clinic, so a zero-link caller can never reach confirm through a
+     * live hold. The flipped T14 (fail-closed at hold time) stays in force;
+     * what remains pinned here is the CONFIRM-side defence-in-depth for a
+     * seeded/pre-existing Historical-NULL Hold.
      */
-    public function testSeededZeroLinkHoldStillEnforcesNewPatientNamesGate(): void
+    public function testSeededZeroLinkHoldFailsClosedIdenticallyRegardlessOfSameMobileRow(): void
     {
         $this->buildTwoClinicFixture();
         $slot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '10:00:00', 1);
         $decoyPatient = $this->insertPatient($this->clinicA, self::MOBILE_DECOY, 'Decoy', 'Target');
+        // A same-mobile Patient EXISTS in the booking Clinic (unlinked) — the
+        // caller still holds ZERO active links there.
+        $sameMobilePatient = $this->insertPatient($this->clinicA, self::MOBILE_R5, 'Hamsaye', 'Row');
 
-        // Zero Patient and zero link for this caller; marker snapshot = [].
+        // Zero Patient link for this caller; marker snapshot = [].
         $userId = (int) wp_create_user('r3_names_gate_' . uniqid('', false), 'pass-not-used-123', self::MOBILE_R5 . '@otp.cpms.local');
         self::assertGreaterThan(0, $userId);
         $this->setRole($userId, 'cpms_patient');
+        $wpUserBefore = get_userdata($userId);
+        $capsBefore = get_user_meta($userId, 'wp_capabilities', true);
         $this->seedStampedMarkerSession($userId, $this->clinicA, []);
         $holdToken = $this->seedActiveHoldRow($slot['slot_id'], $userId, self::MOBILE_R5, null);
 
-        // (1) missing first_name -> validation failure, nothing created.
-        $attempt1 = $this->restPost(self::NS . self::CONFIRM_PATH, [
-            'hold_token' => $holdToken,
-            'last_name' => 'احمدی',
-        ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        $this->assertClinicError($attempt1, 'CLINIC_VALIDATION_FAILED', 400, 'B2 with a missing first_name must fail validation.');
-        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId);
-
-        // (2) whitespace-only first_name -> validation failure.
-        $attempt2 = $this->restPost(self::NS . self::CONFIRM_PATH, [
-            'hold_token' => $holdToken,
-            'first_name' => '   ',
-            'last_name' => 'احمدی',
-        ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        $this->assertClinicError($attempt2, 'CLINIC_VALIDATION_FAILED', 400, 'B2 with a whitespace-only first_name must fail validation.');
-        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId);
-
-        // (3) empty last_name -> validation failure.
-        $attempt3 = $this->restPost(self::NS . self::CONFIRM_PATH, [
-            'hold_token' => $holdToken,
-            'first_name' => 'سارا',
-            'last_name' => '',
-        ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        $this->assertClinicError($attempt3, 'CLINIC_VALIDATION_FAILED', 400, 'B2 with a blank last_name must fail validation.');
-        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId);
-
-        // (4) valid names + hostile identity claims -> normal confirm; the
-        // server identity (hold ownership) is the only authority.
-        $attempt4 = $this->restPost(self::NS . self::CONFIRM_PATH, [
-            'hold_token' => $holdToken,
-            'first_name' => 'سارا',
-            'last_name' => 'احمدی',
+        $hostile = [
             'patient_id' => $decoyPatient,
             'is_new_user' => false,
             'mobile' => '09000000000',
             'clinic_id' => $this->clinicB,
-        ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        self::assertSame(200, $attempt4->get_status(), 'B2 with valid names must confirm. Body: ' . wp_json_encode($attempt4->get_data()));
-        $confirmData = $attempt4->get_data();
-        self::assertSame('confirmed', (string) ($confirmData['data']['status'] ?? ''), 'The final confirm produces a confirmed appointment.');
-        self::assertMatchesRegularExpression('/^AP-\d{8}-\d{2,}$/', (string) ($confirmData['data']['reference_code'] ?? ''), 'The confirm returns the reference code.');
-        self::assertNotEmpty($confirmData['data']['jalali'] ?? null, 'The confirm returns the Jalali confirmation date.');
-        self::assertGreaterThan(0, (int) ($confirmData['data']['appointment_id'] ?? 0), 'The confirm returns the appointment id.');
+        ];
+        $expectedMessage = 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)';
 
-        $newPatient = $this->patientRowByMobile($this->clinicA, self::MOBILE_R5);
-        self::assertNotNull($newPatient, 'A genuinely new Patient must be created in the BOOKING Clinic.');
-        self::assertSame('سارا', (string) $newPatient['first_name'], 'The Patient is created with the validated first_name.');
-        self::assertSame('احمدی', (string) $newPatient['last_name'], 'The Patient is created with the validated last_name.');
-        self::assertSame($this->clinicA, (int) $newPatient['clinic_id'], 'The Patient belongs to the hold Clinic, not the client-claimed clinic_id.');
-        self::assertNotSame($decoyPatient, (int) $newPatient['id'], 'The client-sent patient_id claim must never select the identity.');
-        self::assertSame(self::MOBILE_R5, (string) $newPatient['mobile'], 'The Patient mobile comes from the server identity (hold ownership).');
+        // (1) missing first_name + hostile identity claims -> uniform fail-closed.
+        $attempt1 = $this->restPost(self::NS . self::CONFIRM_PATH, [
+            'hold_token' => $holdToken,
+            'last_name' => 'احمدی',
+        ] + $hostile, asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
+        $this->assertConfirmFailClosed($attempt1, $expectedMessage, 'A Historical-NULL confirm with missing first_name must fail closed.');
+        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId, 1);
+        $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
-        self::assertSame(
-            1,
-            $this->countAppointmentsForPatient((int) $newPatient['id']),
-            'Exactly one appointment is created by the successful confirm.'
-        );
-        $apptPatient = (int) App::db()->fetchValue(
-            'SELECT patient_id FROM ' . App::db()->table('cpms_appointments') . ' WHERE id = %d',
-            [(int) $confirmData['data']['appointment_id']]
-        );
-        self::assertSame((int) $newPatient['id'], $apptPatient, 'The appointment binds the server-resolved new Patient.');
-        self::assertSame(0, $this->countAppointmentsForPatient($decoyPatient), 'The client-claimed decoy patient_id gains no appointment.');
-        self::assertSame(1, $this->countPatientLinksForUser($userId), 'The new Patient links to the authenticated user.');
+        // (2) whitespace-only first_name -> byte-identical response.
+        $attempt2 = $this->restPost(self::NS . self::CONFIRM_PATH, [
+            'hold_token' => $holdToken,
+            'first_name' => '   ',
+            'last_name' => 'احمدی',
+        ] + $hostile, asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
+        $this->assertConfirmFailClosed($attempt2, $expectedMessage, 'A Historical-NULL confirm with a whitespace-only first_name must fail closed.');
+        self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'Response status is identical');
+        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'Response body is byte-identical — same-mobile existence is not observable');
+        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId, 1);
+
+        // (3) valid names + hostile identity claims -> the SAME fail-closed
+        // envelope (the former 200 success path, flipped).
+        $attempt3 = $this->restPost(self::NS . self::CONFIRM_PATH, [
+            'hold_token' => $holdToken,
+            'first_name' => 'سارا',
+            'last_name' => 'احمدی',
+        ] + $hostile, asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
+        $this->assertConfirmFailClosed($attempt3, $expectedMessage, 'A Historical-NULL confirm with valid names must still fail closed.');
+        self::assertSame($attempt1->get_data(), $attempt3->get_data(), 'Valid names do not change the fail-closed envelope');
+        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId, 1);
+        $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
+
+        // The pre-existing same-mobile Patient row is untouched; the decoy
+        // gains no appointment and no link.
+        $sameMobileRow = $this->patientRowByMobile($this->clinicA, self::MOBILE_R5);
+        self::assertNotNull($sameMobileRow, 'the pre-existing same-mobile Patient row must remain');
+        self::assertSame($sameMobilePatient, (int) $sameMobileRow['id']);
+        self::assertSame('Hamsaye', (string) $sameMobileRow['first_name'], 'the pre-existing same-mobile row is never overwritten');
+        self::assertSame('Row', (string) $sameMobileRow['last_name']);
+        self::assertSame(0, $this->countAppointmentsForPatient($sameMobilePatient), 'the same-mobile patient gains no appointment');
+        self::assertSame(0, $this->countAppointmentsForPatient($decoyPatient), 'the client-claimed decoy patient gains no appointment');
+        self::assertSame(0, $this->countPatientLinksForUser($userId), 'NO Patient link is ever created for this caller');
 
         $holdRow = $this->holdRowByToken($holdToken);
-        self::assertSame('converted', (string) $holdRow['status'], 'A successful confirm converts the Hold.');
-        self::assertSame(0, $this->heldCountOf($slot['slot_id']), 'The confirmed Hold releases its held capacity.');
+        self::assertSame('active', (string) $holdRow['status'], 'An attacker probe does not consume the Hold.');
+        self::assertSame(1, $this->heldCountOf($slot['slot_id']), 'The held capacity is kept.');
     }
 
     /**
-     * R6 — ITEM B(1) T16 confirmation-side coverage, restored expressibly.
+     * R6 — ITEM B(1) T16 pin (round 14, OD-A F1/B1).
      *
-     * A same-mobile Patient existing ONLY in another Clinic is treated as NEW
-     * in the booking Clinic at confirm time: names are required; with valid
-     * names a NEW Patient is created in the booking Clinic and the
-     * other-Clinic row is untouched. As in R5 the hold is seeded (holder_mobile
-     * and patient_id NULL) with a marker stamped in the booking Clinic while
-     * the caller's live link set sits ONLY in the other Clinic (the
-     * pre-OD-A "verify here while linked elsewhere" marker shape, kept
-     * current because the live set is unchanged).
+     * The mirror situation of R5: a same-mobile Patient exists ONLY in another
+     * Clinic — the booking Clinic holds NO same-mobile row and the caller has
+     * zero links there. The response must be BYTE-IDENTICAL to the R5 case:
+     * HTTP 400 CLINIC_VALIDATION_FAILED with the exact uniform message. No
+     * Patient is created in the booking Clinic; the other-Clinic row is
+     * untouched; no link, Appointment, or WP-user side effect; the Hold stays
+     * active/retryable with its capacity.
      *
-     * What is NOT restorable (stated precisely): the live B1 hold for this
-     * caller — after OD-A and the item-A fix, hold() requires a linked active
-     * Patient in the booking Clinic (or it fails closed), so a zero-link /
-     * other-Clinic-only caller can never reach the names gate through a LIVE
+     * What is NOT restorable (stated precisely): the live B1 hold — after the
+     * item-A fix, hold() requires a linked active Patient in the booking
+     * Clinic, so this caller can never reach the names gate through a LIVE
      * hold again. The flipped T16 (fail-closed at hold time) stays in force.
      */
-    public function testSeededHoldSameMobilePatientOnlyInAnotherClinicTreatedAsNew(): void
+    public function testSeededHoldSameMobilePatientOnlyInAnotherClinicFailsClosedIdentically(): void
     {
         $this->buildTwoClinicFixture();
         $slot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '10:00:00', 1);
@@ -2642,6 +2639,8 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $userId = (int) wp_create_user('r3_names_xclinic_' . uniqid('', false), 'pass-not-used-123', self::MOBILE_R6 . '@otp.cpms.local');
         self::assertGreaterThan(0, $userId);
         $this->setRole($userId, 'cpms_patient');
+        $wpUserBefore = get_userdata($userId);
+        $capsBefore = get_user_meta($userId, 'wp_capabilities', true);
         App::db()->insert('cpms_patient_user_links', [
             'clinic_id' => $this->clinicB,
             'patient_id' => $patientB,
@@ -2653,42 +2652,42 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $this->seedStampedMarkerSession($userId, $this->clinicA, [$this->clinicB]);
         $holdToken = $this->seedActiveHoldRow($slot['slot_id'], $userId, self::MOBILE_R6, null);
 
-        // (1) missing names -> validation failure, nothing created.
+        $hostile = [
+            'patient_id' => $patientB,
+            'is_new_user' => false,
+            'mobile' => '09000000000',
+            'clinic_id' => $this->clinicB,
+        ];
+        $expectedMessage = 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)';
+
+        // (1) missing names + hostile claims -> uniform fail-closed, byte-
+        // identical to the R5 (same-mobile EXISTS in the booking Clinic) case.
         $attempt1 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
-        ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        $this->assertClinicError(
-            $attempt1,
-            'CLINIC_VALIDATION_FAILED',
-            400,
-            'A Patient that exists only in ANOTHER Clinic does not satisfy the booking-Clinic identity — '
-            . 'first_name/last_name are required for the genuinely new Patient here.'
-        );
-        self::assertSame(0, $this->countPatientsForMobile($this->clinicA, self::MOBILE_R6), 'no Patient is created in the booking Clinic.');
-        self::assertSame(0, $this->countRows('cpms_appointments'), 'no Appointment is created.');
-        $holdRow = $this->holdRowByToken($holdToken);
-        self::assertSame('active', (string) $holdRow['status'], 'The failed attempt leaves the Hold active/retryable.');
-        self::assertSame(1, $this->heldCountOf($slot['slot_id']), 'The failed attempt keeps the held capacity (no drift).');
+        ] + $hostile, asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
+        $this->assertConfirmFailClosed($attempt1, $expectedMessage, 'An other-Clinic-only same-mobile Patient opens no gate here.');
+        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R6, $userId);
+        $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
-        // (2) valid names -> NEW Patient in the booking Clinic; the other-Clinic row is untouched.
+        // (2) valid names + hostile claims -> the SAME fail-closed envelope
+        // (the former 200 success path, flipped).
         $attempt2 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
             'first_name' => 'نرگس',
             'last_name' => 'کریمی',
-        ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        self::assertSame(200, $attempt2->get_status(), 'The new booking-Clinic Patient confirms with valid names. Body: ' . wp_json_encode($attempt2->get_data()));
+        ] + $hostile, asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
+        $this->assertConfirmFailClosed($attempt2, $expectedMessage, 'Valid names must not open the gate in the booking Clinic.');
+        self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'Response status is identical');
+        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'Response body is byte-identical — the booking-Clinic situation (no same-mobile row) is not observable apart from R5');
+        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R6, $userId);
+        $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
-        $newPatient = $this->patientRowByMobile($this->clinicA, self::MOBILE_R6);
-        self::assertNotNull($newPatient, 'A NEW Patient is created in the booking Clinic.');
-        self::assertSame('نرگس', (string) $newPatient['first_name']);
-        self::assertSame('کریمی', (string) $newPatient['last_name']);
-        self::assertNotSame($patientB, (int) $newPatient['id'], 'The booking-Clinic Patient is a distinct identity.');
-
+        // The other-Clinic row is untouched; no appointment/link is produced there.
         $otherClinicRow = $this->patientRowByMobile($this->clinicB, self::MOBILE_R6);
         self::assertSame('Elsewhere', (string) $otherClinicRow['first_name'], 'The other-Clinic Patient row is untouched.');
         self::assertSame('Only', (string) $otherClinicRow['last_name'], 'The other-Clinic Patient row is untouched.');
         self::assertSame(0, $this->countAppointmentsForPatient($patientB), 'The other-Clinic Patient gains no appointment here.');
-        self::assertSame(2, $this->countPatientLinksForUser($userId), 'the user ends with both the other-Clinic and the new booking-Clinic link.');
+        self::assertSame(1, $this->countPatientLinksForUser($userId), 'NO booking-Clinic link is created; the other-Clinic link is unchanged.');
     }
 
     /**
@@ -2799,16 +2798,51 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * Hold: the Hold stays active/retryable, the held capacity is kept, and
      * nothing is created for the booking mobile.
      */
-    private function assertSeededHoldUntouchedAndNothingCreated(int $slotId, string $holdToken, string $mobile, int $userId): void
+    private function assertSeededHoldUntouchedAndNothingCreated(int $slotId, string $holdToken, string $mobile, int $userId, int $expectedPatientRows = 0): void
     {
-        self::assertSame(0, $this->countPatientsForMobile($this->clinicA, $mobile), 'A failed validation creates no Patient.');
-        self::assertSame(0, $this->countRows('cpms_appointments'), 'A failed validation creates no Appointment.');
-        self::assertSame(0, $this->countPatientLinksForUser($userId), 'A failed validation creates no Patient link.');
+        self::assertSame($expectedPatientRows, $this->countPatientsForMobile($this->clinicA, $mobile), 'A failed confirm must not change the booking-Clinic Patient rows for the holder mobile.');
+        self::assertSame(0, $this->countRows('cpms_appointments'), 'A failed confirm creates no Appointment.');
+        self::assertSame(0, $this->countPatientLinksForUser($userId), 'A failed confirm creates no Patient link.');
 
         $holdRow = $this->holdRowByToken($holdToken);
         self::assertNotNull($holdRow);
-        self::assertSame('active', (string) $holdRow['status'], 'A failed validation leaves the Hold active/retryable.');
-        self::assertSame(1, $this->heldCountOf($slotId), 'A failed validation keeps the held capacity (no drift).');
+        self::assertSame('active', (string) $holdRow['status'], 'A failed confirm leaves the Hold active/retryable.');
+        self::assertSame(1, $this->heldCountOf($slotId), 'A failed confirm keeps the held capacity (no drift).');
+    }
+
+    /**
+     * Round 14 OD-A F1/B1 — uniform fail-closed envelope for a zero-link
+     * Historical-NULL confirm: HTTP 400 CLINIC_VALIDATION_FAILED with the
+     * exact message, regardless of request body variants.
+     */
+    private function assertConfirmFailClosed(WP_REST_Response $response, string $expectedMessage, string $what): void
+    {
+        $this->assertClinicError($response, 'CLINIC_VALIDATION_FAILED', 400, $what);
+        $data = $response->get_data();
+        self::assertSame($expectedMessage, (string) ($data['message'] ?? ''), $what . ' Body: ' . wp_json_encode($data));
+    }
+
+    /**
+     * Round 14 OD-A F1/B1 — a fail-closed confirm must produce NO WP user
+     * change (email, roles, capabilities, password hash).
+     *
+     * @param WP_User|\stdClass|bool $before  the get_userdata() snapshot taken before the confirm attempts
+     * @param mixed          $capsBefore      the wp_capabilities user meta snapshot
+     */
+    private function assertWpUserUnchanged($before, $capsBefore, int $userId): void
+    {
+        self::assertNotFalse($before, 'the WP user existed before the confirm');
+        $after = get_userdata($userId);
+        self::assertNotFalse($after, 'the WP user must still exist after the fail-closed confirm');
+        self::assertSame((string) $before->user_email, (string) $after->user_email, 'WP user email must not change');
+        self::assertSame((array) $before->roles, (array) $after->roles, 'WP user roles must not change');
+        self::assertSame((int) $before->ID, (int) $after->ID);
+        self::assertSame((string) $before->user_pass, (string) $after->user_pass, 'WP password hash must not change');
+        self::assertSame(
+            (string) wp_json_encode($capsBefore),
+            (string) wp_json_encode(get_user_meta($userId, 'wp_capabilities', true)),
+            'WP user capabilities must not change'
+        );
     }
 
     // =================================================================

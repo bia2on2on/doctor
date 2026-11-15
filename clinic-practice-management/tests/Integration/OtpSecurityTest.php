@@ -144,19 +144,38 @@ final class OtpSecurityTest extends WP_UnitTestCase
 
     /**
      * یک کد `verify_mobile` نباید به Session ورود تبدیل شود.
+     *
+     * علاوه بر پرچمِ بازگشتی، هیچ کوکی احراز/ورودی هم نباید صادر شود —
+     * پروب روی اکشن‌های `set_auth_cookie`/`set_logged_in_cookie` (رجوع به
+     * PatientSessionScope که همان قلاب‌ها را می‌بیند) و نیز وضعیت جاری کاربر.
      */
     public function testVerifyMobilePurposeDoesNotIssueLoginSession(): void
     {
         $this->seedToken('135790', OtpService::PURPOSE_VERIFY_MOBILE);
 
-        $result = $this->service()->verify(
-            self::MOBILE,
-            '135790',
-            OtpService::PURPOSE_VERIFY_MOBILE,
-            '203.0.113.12'
-        );
+        $cookieCalls = [];
+        $listener = static function ( ...$args ) use ( &$cookieCalls ): void {
+            $cookieCalls[] = $args;
+        };
+        add_action( 'set_auth_cookie', $listener, 99, 6 );
+        add_action( 'set_logged_in_cookie', $listener, 99, 6 );
+
+        try {
+            $result = $this->service()->verify(
+                self::MOBILE,
+                '135790',
+                OtpService::PURPOSE_VERIFY_MOBILE,
+                '203.0.113.12'
+            );
+        } finally {
+            remove_action( 'set_auth_cookie', $listener, 99 );
+            remove_action( 'set_logged_in_cookie', $listener, 99 );
+        }
 
         self::assertFalse($result['session_issued'], 'verify_mobile نباید کوکی احراز هویت بسازد.');
+        self::assertSame( [], $cookieCalls, 'verify_mobile must not trigger set_auth_cookie/set_logged_in_cookie.' );
+        self::assertSame( 0, (int) get_current_user_id(), 'no user may be authenticated by verify_mobile.' );
+        self::assertFalse( is_user_logged_in(), 'verify_mobile must not log anyone in.' );
     }
 
     /**
@@ -167,11 +186,25 @@ final class OtpSecurityTest extends WP_UnitTestCase
     {
         $this->seedToken('246810', OtpService::PURPOSE_LOGIN);
 
-        $result = $this->service()->verify(self::MOBILE, '246810', OtpService::PURPOSE_LOGIN, '203.0.113.13');
+        $cookieCalls = [];
+        $listener = static function ( ...$args ) use ( &$cookieCalls ): void {
+            $cookieCalls[] = $args;
+        };
+        add_action( 'set_auth_cookie', $listener, 99, 6 );
+        add_action( 'set_logged_in_cookie', $listener, 99, 6 );
+
+        try {
+            $result = $this->service()->verify(self::MOBILE, '246810', OtpService::PURPOSE_LOGIN, '203.0.113.13');
+        } finally {
+            remove_action( 'set_auth_cookie', $listener, 99 );
+            remove_action( 'set_logged_in_cookie', $listener, 99 );
+        }
 
         self::assertFalse($result['session_issued'], 'owner decision A: OTP never issues a session.');
         self::assertSame(0, (int) $result['user_id']);
         self::assertSame(0, get_current_user_id(), 'no account may be authenticated.');
+        self::assertSame( [], $cookieCalls, 'owner decision A: verify must not trigger set_auth_cookie/set_logged_in_cookie.' );
+        self::assertFalse( is_user_logged_in(), 'owner decision A: verify must not log anyone in.' );
     }
 
     // ---------------------------------------------------------------

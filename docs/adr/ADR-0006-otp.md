@@ -8,6 +8,18 @@
 > هیچ حساب/Patient ساخته/یابیده/لینک نمی‌شود؛ پاکت یکنواخت صفردسترسی؛ بدون Session و بدون
 > `LOGIN_SUCCESS`. موبایل مشترک هرگز مبنای ownership/access نیست. متن اصلی عمداً دست‌نخورده
 > باقی مانده تا تاریخچهٔ تصمیم حفظ شود (قاعدهٔ «ADR تاریخی Superseded می‌شود، نه پاک»).
+> دور ۱۴ (OD-A F1/F2 — ۲۰۲۶-۱۱-۱۰) اضافه شد: حکم «دسترسی بیمار فقط از مسیر لینکِ
+> صریح staff» فقط برای نصب‌های تازه صادق است — پلاگین هنوز منتشر نشده (INFERENCE —
+> راستی‌آزمایی‌نشده). روی نصبی که زمانی کد OTP-loginِ قدیمی را اجرا کرده باشد، لینک‌ها
+> و Sessionهای ساخته‌شده توسط آن کد ابطال نمی‌شوند و رکوردِ legacy فعال با
+> `identity_id=NULL` صرف‌نظر از منشأ لینک پذیرفته می‌شود (`PatientRepository.php` —
+> `active_linked_patients_for_user()`؛ `clinical_access_identity_predicate()` که
+> `identity_id IS NULL` را صریحاً می‌پذیرد). همچنین: B2 confirm هیچ Patient نمی‌سازد
+> (fail-closed — دور ۱۴ OD-A F1) و ستونِ موضوع روی نصب‌های pre-0022 هر caller را با
+> پاکتِ خنثیِ `503 CLINIC_SERVICE_UNAVAILABLE` fail-closed می‌کند (دور ۱۴ F3).
+> Addendumِ زیر (بازاستفادهٔ هویت؛ مرجع Clinic برای OTP، جست‌وجوی Patient و لینک)
+> فقط تاریخچه است.
+>
 > مرجع: `docs/api/api-contract.md` (یادداشت منسوخیِ بازاستفادهٔ هویت) و
 > `docs/agent-log.md` (2026-11-10).
 
