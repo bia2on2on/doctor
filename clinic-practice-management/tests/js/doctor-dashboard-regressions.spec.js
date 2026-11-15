@@ -184,9 +184,11 @@ function testDoctorRendering(shared) {
   assert.ok(html.includes('۱۴۰۵/۰۱/۰۲'), 'prescription created_at_jalali rendered in Persian digits');
   assert.ok(!html.includes('1405/01/01'), 'no ASCII digits in note created_at_jalali');
   assert.ok(!html.includes('1405/01/02'), 'no ASCII digits in prescription created_at_jalali');
-  // Item B: past_visits carries jalali_date from the REST payload; already-Persian
-  // values untouched, visit_date fallback shown in Persian digits.
-  assert.ok(html.includes('۱۴۰۵/۰۱/۰۳'), 'past-visit jalali_date from payload preserved');
+  // past_visits: Item B (server jalali_date) was dropped — the server does not
+  // supply jalali_date yet; this covers the client fallback branch of the
+  // renderer: an already-Persian jalali_date passes through untouched,
+  // otherwise visit_date falls back and is rendered in Persian digits.
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۳'), 'already-Persian jalali_date passes through untouched (client fallback branch)');
   assert.ok(html.includes('۲۰۲۶-۰۳-۲۲'), 'gregorian visit_date fallback shown in Persian digits');
   assert.ok(!html.includes('2026-03-21'), 'no ASCII digits in jalali date');
   assert.ok(!html.includes('2026-03-22'), 'no ASCII digits in visit_date fallback');
