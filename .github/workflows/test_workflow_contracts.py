@@ -1,4 +1,5 @@
 """Static and executable contracts for acceptance workflow routing (stdlib only)."""
+import ast
 import json
 import os
 import re
@@ -7,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -2213,6 +2215,153 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         self.assertRegex(events, r"(?m)^  push:\n    branches: \[main\]$")
 
 
+def _has_main_guard_call(source):
+    """Closed structural rule (round 18): True only when the module
+    has (1) a module-level `import unittest`, (2) no module-level
+    reassignment of the name `unittest`, and (3) a MODULE-LEVEL
+    `if __name__ == "__main__":` whose DIRECT child statements
+    include an Expr calling `unittest.main(...)`. This is a
+    structural check only — it is not proof the tests run; dead
+    code, shadowing and aliasing are rejected by construction, and
+    the suite's own CI execution remains the run proof."""
+    tree = ast.parse(source)
+    imported = any(
+        isinstance(node, ast.Import)
+        and any(alias.name == "unittest" for alias in node.names)
+        for node in tree.body
+    )
+    if not imported:
+        return False
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "unittest"
+            for target in node.targets
+        ):
+            return False
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Assign) and any(
+                    isinstance(target, ast.Name) and target.id == "unittest"
+                    for target in inner.targets
+                ):
+                    return False
+    for node in tree.body:
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
+                and isinstance(test.left, ast.Name) and test.left.id == "__name__"
+                and len(test.comparators) == 1
+                and isinstance(test.comparators[0], ast.Constant)
+                and test.comparators[0].value == "__main__"):
+            continue
+        for stmt in node.body:
+            if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Attribute)
+                    and stmt.value.func.attr == "main"
+                    and isinstance(stmt.value.func.value, ast.Name)
+                    and stmt.value.func.value.id == "unittest"):
+                return True
+    return False
+
+class Day2DiagnosticSuiteCiWiringTests(unittest.TestCase):
+    """The Day-2 reader/formatter privacy suite must stay CI-executed.
+
+    `bin/day2_booking_busy.py` is the public projection boundary for
+    `booking.lock_read_failed`. Its offline suite lives in
+    `clinic-practice-management/tests/bin/test_day2_booking_busy.py`, which no
+    workflow discovers with a `test_*.py` pattern (the only discovery in that
+    directory targets `test_safe_php_fatal_report.py`). It is executed instead
+    by a PHPUnit wrapper inside the Unit testsuite, which ci.yml runs for every
+    PHP in the matrix.
+
+    That chain is implicit and was previously unguarded: a renamed wrapper, a
+    moved suite, a skip-on-missing-python refactor or a dropped `__main__`
+    runner would each turn the security suite into a silent no-op while CI stayed
+    green. These contracts pin every link. They assert wiring only — the
+    projection/publication assertions are neither duplicated nor weakened here,
+    and the suite is not executed a second time.
+    """
+
+    WRAPPER = (
+        ROOT / "clinic-practice-management" / "tests" / "Unit"
+        / "Day2BookingBusyDiagnosticsTest.php"
+    )
+    SUITE = (
+        ROOT / "clinic-practice-management" / "tests" / "bin"
+        / "test_day2_booking_busy.py"
+    )
+
+    def test_unit_testsuite_discovers_the_wrapper(self):
+        config = ET.parse(ROOT / "clinic-practice-management" / "phpunit.xml")
+        suites = {
+            node.get("name"): [
+                (child.text or "").strip() for child in node.findall("directory")
+            ]
+            for node in config.getroot().iter("testsuite")
+        }
+        self.assertIn("Unit", suites)
+        self.assertIn("tests/Unit", suites["Unit"])
+        self.assertTrue(self.WRAPPER.is_file(), str(self.WRAPPER))
+        # PHPUnit's default directory suffix is Test.php; keep the wrapper matched.
+        self.assertTrue(self.WRAPPER.name.endswith("Test.php"), self.WRAPPER.name)
+        self.assertEqual(
+            "tests/Unit",
+            self.WRAPPER.parent.relative_to(
+                ROOT / "clinic-practice-management"
+            ).as_posix(),
+        )
+
+    def test_ci_invokes_the_unit_testsuite(self):
+        self.assertRegex(
+            workflow("ci.yml"), r"vendor/bin/phpunit\s+--testsuite\s+Unit\b"
+        )
+
+    def test_wrapper_runs_the_suite_and_fails_closed(self):
+        text = self.WRAPPER.read_text(encoding="utf-8")
+        self.assertIn("/bin/test_day2_booking_busy.py", text)
+        # A missing interpreter must FAIL the test, never skip it.
+        self.assertRegex(text, r"command\s+-v\s+python3")
+        self.assertRegex(text, r"assertNotSame\(\s*''\s*,\s*\$python")
+        self.assertNotIn("markTestSkipped", text)
+        self.assertRegex(text, r"assertFileExists\(")
+        # The suite's own exit status is the verdict, not merely its output.
+        self.assertRegex(text, r"exec\(\s*\$python")
+        self.assertRegex(text, r"assertSame\(\s*0\s*,\s*\$exit_code")
+
+    def test_suite_runs_as_a_script_and_keeps_the_privacy_cases(self):
+        source = self.SUITE.read_text(encoding="utf-8")
+        # The wrapper invokes `python3 <suite>`; without a __main__ runner that
+        # invocation would exit 0 having executed nothing.
+        self.assertTrue(_has_main_guard_call(source),
+                        "suite must call unittest.main() inside the __main__ guard")
+        cases = {}
+        for node in ast.parse(source).body:
+            if isinstance(node, ast.ClassDef):
+                names = [
+                    member.name
+                    for member in node.body
+                    if isinstance(member, ast.FunctionDef)
+                    and member.name.startswith("test_")
+                ]
+                if names:
+                    cases[node.name] = names
+        required = {
+            "DriverTextExclusionTest": [
+                "test_every_legacy_driver_value_is_dropped_by_every_projection_path",
+                "test_short_names_cannot_masquerade_as_read_labels",
+                "test_categories_come_only_from_errno_not_stored_text",
+            ],
+            "FormatBusySuffixTest": ["test_direct_formatter_cannot_bypass_projection"],
+            "PublicationPathTest": [
+                "test_day2_fail_stdout_and_results_json_carry_only_the_projection"
+            ],
+        }
+        for class_name, methods in required.items():
+            self.assertIn(class_name, cases)
+            for method in methods:
+                self.assertIn(method, cases[class_name], class_name)
 
 class IntegrationJobLogHygieneContractTest(unittest.TestCase):
     """Non-vacuous static contract for the ci.yml Integration job's stdout.
@@ -2223,6 +2372,29 @@ class IntegrationJobLogHygieneContractTest(unittest.TestCase):
     contract is not vacuous, and on the real workflow slice (which must stay
     clean).
     """
+
+    def test_main_guard_check_rejects_comment_and_string_mutations(self):
+        GOOD = 'import unittest\nif __name__ == "__main__":\n    unittest.main()\n'
+        good = GOOD
+        self.assertTrue(_has_main_guard_call(good),
+                        "real unittest.main() call under the guard must pass")
+        mutations = {
+            "call->pass": GOOD.replace("unittest.main()", "pass"),
+            "comment only": '# if __name__ == "__main__": unittest.main()\n',
+            "string only": GOOD.replace("unittest.main()", '"unittest.main()"'),
+            "no guard": GOOD.replace('if __name__ == "__main__":\n    ', ''),
+            "if False nesting": GOOD.replace(
+                "unittest.main()", "if False:\n        unittest.main()"),
+            "uncalled function": GOOD.replace(
+                "unittest.main()", "def run():\n        unittest.main()"),
+            "different main alias": GOOD.replace("unittest.main()", "main()"),
+            "unittest reassigned": GOOD + "unittest = None\n",
+            "guard in function": 'import unittest\ndef boot():\n    if __name__ == "__main__":\n        unittest.main()\n',
+            "no import": GOOD.replace("import unittest\n", ""),
+        }
+        for label, src in mutations.items():
+            self.assertFalse(_has_main_guard_call(src),
+                             "main-guard mutation must fail: " + label)
 
     def _integration_slice(self):
         return ci_job_block(workflow("ci.yml"), "integration")
