@@ -5893,3 +5893,23 @@ Round started `date -u` = **Sat Nov 14 20:02:37 UTC 2026**. Live check before an
   `php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit` (`ci.yml:169-172`) and `phpunit.xml`
   declares the `Unit` testsuite as `<directory>tests/Unit</directory>` (recursive); the file is a
   concrete `final class … extends TestCase` under `tests/Unit/Frontend/`, so it is inside that suite.
+
+### [2026-11-15 UTC] — Sync with main `8c0b94de` before merging PR #350 (`arena/5e012b00-doctor`)
+
+Sync-only merge; no behaviour change, no product code, no test touched by this step.
+
+- **Before:** my head `d4faec76`, `main` `8c0b94dee9299e11c7c483d050e7fc0623c2cf6e` (verified moved from
+  `d1d49c50` — PR #335 merged). Merge base `d1d49c50`. Backup taken first:
+  `/home/user/backup-pr350-sync2/pre-sync.bundle` (verified "records a complete history").
+- **Merge:** `git merge origin/main` as a normal merge commit (`17e30520`). **The only conflict was
+  `docs/agent-log.md`**, exactly as expected; no other file conflicted.
+- **Conflict resolution:** both sides were append-only suffixes of the same base
+  (`d1d49c50`). Resolved by keeping **all of main's bytes first, then my suffix** — main is an exact
+  byte-prefix of the result (`cmp`-style test True), 0 deletions, and all 33,615 bytes of my entries
+  are preserved after main's 1,550,652 bytes. No historical entry was edited and none was dropped.
+- **Proof nothing of mine changed:** `git diff d4faec76 HEAD --name-only` lists exactly main's 12
+  changed files plus the ledger — nothing else. Each of my four non-ledger files is byte-identical by
+  blob SHA: `PublicClinicDirectory.php` `ee7a6552`, `PublicBookingShortcode.php` `493b16a7`,
+  `PublicDoctorTitleSpecialtyUnitTest.php` `6240a0a4`, `PublicWeekdayContractTest.php` `a3c74df2`.
+- **Not changed by this step:** no workflow file of mine, no test of mine, no schema, no dependency.
+  main's own files were taken as-is.
