@@ -66,8 +66,9 @@ final class BookingService
     private const LOCK_BUSY_TEXT = 'سامانه موقتاً مشغول است؛ لطفاً دوباره تلاش کنید.';
 
     /**
-     * Non-PII context of a failed read, emitted after rollback if a
-     * transaction was open when the failure was detected.
+     * Bounded, non-PII context of a failed read, emitted after rollback if a
+     * transaction was open when the failure was detected. Driver text is
+     * deliberately excluded: it can contain statement literals and values.
      *
      * @var array<string, mixed>|null
      */
@@ -2373,7 +2374,9 @@ final class BookingService
      * wpdb keeps the driver text. OpLogger writes are NOT transactional, so a
      * diagnostic written inside the SQL transaction would be discarded by its
      * rollback: defer it to booking_transaction() until after the rollback,
-     * and write it immediately when no booking transaction is open.
+     * and write it immediately when no booking transaction is open. Only the
+     * fixed read label, driver errno and numeric identifiers are recorded; the
+     * driver message is a failure signal, never diagnostic payload.
      *
      * @param string $read Read label for the diagnostic.
      * @param array<string, int> $ids Non-PII identifiers for the diagnostic.
@@ -2384,14 +2387,15 @@ final class BookingService
         if ( $error === '' ) {
             return;
         }
-        $context = array_merge(
-            [
-                'read'      => $read,
-                'sql_errno' => $this->sql_errno(),
-                'sql_error' => mb_substr( $error, 0, 200 ),
-            ],
-            $ids
-        );
+        $context = [
+            'read'      => $read,
+            'sql_errno' => $this->sql_errno(),
+        ];
+        foreach ( [ 'clinic_id', 'organization_id', 'location_id', 'clinician_id', 'slot_id', 'hold_id', 'appointment_id' ] as $key ) {
+            if ( isset( $ids[ $key ] ) && is_int( $ids[ $key ] ) && $ids[ $key ] > 0 ) {
+                $context[ $key ] = $ids[ $key ];
+            }
+        }
         if ( $this->booking_tx_depth > 0 ) {
             $this->lock_failure_context = $context;
         } else {
