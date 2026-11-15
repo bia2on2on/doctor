@@ -6094,3 +6094,10 @@ Merged `origin/main` (`dcbe44d58371ba5e0f5ada27b2ed2a7bb0d94532`, after #335 and
 - OBSERVED: Added a bounded wait and window-ID assertion to `StaffMessagingSecurityTest`; product code was not edited.
 - INFERENCE: The existing test is window-boundary sensitive; a timing cause has not been established.
 - LIMITATION: Local integration execution requires a real WordPress test database; PHP-WASM token parsing is not integration evidence.
+
+### [2026-11-15 UTC] — fix(doctor-dashboard): consistent digits in past-visits display (display only)
+
+- OBSERVED: `DoctorDashboardPage.php:467` rendered `pv.jalali_date || pv.visit_date` raw (HTML-escape only); `ClinicalService.php:212-214` past-visits payload carries `visit_date` (Gregorian) with no `jalali_date`, so the past-visits list could show ASCII digits while the rest of the page shows Persian digits.
+- FIX: Wrapped the display with the existing `displayDigits()` helper: `esc(displayDigits(pv.jalali_date || pv.visit_date))` — display only, no stored-data/REST/DB/name/free-text change.
+- TEST: added regression assertions to `tests/js/doctor-dashboard-regressions.spec.js` (`testDoctorRendering`, past_visits): red on current main (ASCII `2026-03-22` leaked through), green after fix (`۲۰۲۶-۰۳-۲۲`, already-Persian preserved, record unmutated). Runs in Unit suite (`phpunit --testsuite Unit` via `DoctorDashboardRegressionJsTest` → node).
+- GATES: workflow contracts 178 OK; WORKFLOW_YAML_OK files=17; companion-isolation PASS; tenant-tripwire exit 0 (3 pre-existing suspects, none in changed files); `git diff --check` clean; all 19 node JS specs pass. `php -l`/WPCS not run locally (no PHP binary; PHP-WASM only; CI provides).

@@ -464,7 +464,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         }).join('') || '<p class="cpms-doc-muted">فایلی پیوست نشده است.</p>';
 
         var pastHtml = (d.past_visits || []).map(function (pv) {
-            return '<li>' + esc(pv.jalali_date || pv.visit_date) + ' — ' + (STATUS_LABELS[pv.status] || esc(pv.status)) +
+            return '<li>' + esc(displayDigits(pv.jalali_date || pv.visit_date)) + ' — ' + (STATUS_LABELS[pv.status] || esc(pv.status)) +
                 (pv.clinician_name ? ' (' + esc(pv.clinician_name) + ')' : '') + '</li>';
         }).join('') || '<p class="cpms-doc-muted">سابقه‌ای نیست.</p>';
 
