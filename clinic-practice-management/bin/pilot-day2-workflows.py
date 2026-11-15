@@ -1752,8 +1752,11 @@ def _entry():
     per-journey fail() handling: playwright import, env/config parsing
     (int() on a hostile env value would otherwise traceback WITH the
     value), browser launch. Handles BaseException too: SystemExit
-    keeps its exit semantics (None/0 = success, stays silent; nonzero
-    or text-carrying = fixed token + nonzero, the text NEVER printed),
+    payloads are classified by EXACT type (see RoundTenExitStatusTest):
+    None and exact int 0 exit silently with status 0; exact ints
+    1..255 exit silently with that exact status; EVERYTHING else
+    (bool, float, bytes, str, any object, out-of-range ints) prints
+    the fixed token (payload text NEVER printed) and exits 1;
     KeyboardInterrupt becomes the fixed token + 130. Code that runs
     before this function exists — the module imports and constant
     reads at the top of this file — cannot be guarded by it; an

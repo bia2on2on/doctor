@@ -52,10 +52,38 @@ def assert_no_values(test, output):
     test.assertTrue("national_id" not in text, "captured output carried a forbidden key (content withheld)")
 
 
-class DriverTextExclusionTest(unittest.TestCase):
+
+class _RedactedAssertions:
+    """Mixin: assertion FAILURE TEXT is structurally redacted.
+
+    unittest builds the standard failure message for assertEqual /
+    assertIn / assertNotIn / assertRegex / assertIs / assertTrue and
+    friends (repr of both operands) and passes it to the private
+    method TestCase._formatMessage(msg, standardMsg) — private, i.e.
+    not part of the public unittest API
+    (https://docs.python.org/3/library/unittest.html); this override
+    is written against CPython 3.x behaviour and is itself covered by
+    AssertionOutputRedactionTest below / in the failure-report suite.
+    It returns the explicit msg when one is given (callers pass fixed
+    strings only) and a fixed placeholder otherwise, so operand values
+    can never be printed regardless of which assertion failed. This is
+    defence in depth ON TOP of the internal-comparison assertions used
+    throughout this file, not a replacement for them.
+    """
+
+    def _formatMessage(self, msg, standardMsg):
+        return msg if msg is not None else "assertion failed (details withheld)"
+
+    def fail(self, msg=None):
+        raise self.failureException(
+            msg if msg is not None else "assertion failed (details withheld)"
+        )
+
+
+class DriverTextExclusionTest(_RedactedAssertions, unittest.TestCase):
     def test_every_legacy_driver_value_is_dropped_by_every_projection_path(self):
         for value in DRIVER_VALUES:
-            with self.subTest(value="redacted-case"):
+            with self.subTest(value="case"):
                 context = legacy_context(value)
                 diag = busy.extract_busy_diagnostic(context)
                 self.assertTrue({"event": busy.EVENT, "read": "location",
@@ -85,7 +113,7 @@ class DriverTextExclusionTest(unittest.TestCase):
 
     def test_short_names_cannot_masquerade_as_read_labels(self):
         for value in ("li", "ana", "patient_name", "آزمایشی", "location\nLi"):
-            with self.subTest(value="redacted-case"):
+            with self.subTest(value="case"):
                 diag = busy.extract_busy_diagnostic({"read": value, "sql_errno": 1213})
                 self.assertTrue("read" not in diag, "derived output carried forbidden text (content withheld)")
                 assert_no_values(self, busy.format_busy_suffix({"read": value}))
@@ -94,7 +122,7 @@ class DriverTextExclusionTest(unittest.TestCase):
         source = (BIN_DIR.parent / "src" / "Application" / "Booking" /
                   "BookingService.php").read_text(encoding="utf-8")
         labels = set(re.findall(r"assert_read_succeeded\(\s*'([a-z0-9_]+)'", source))
-        self.assertTrue(labels)
+        self.assertTrue(len(labels) > 0, "no read labels found in production source (content withheld)")
         self.assertTrue(labels == busy.READ_LABELS, "derived value mismatch (content withheld)")
 
     def test_categories_come_only_from_errno_not_stored_text(self):
@@ -103,11 +131,11 @@ class DriverTextExclusionTest(unittest.TestCase):
             diag = busy.extract_busy_diagnostic({
                 "sql_errno": errno, "error_category": "Li", "sql_error": "Ana",
             })
-            self.assertEqual(category, diag["error_category"])
+            self.assertTrue(category == diag["error_category"], "derived value mismatch (content withheld)")
             self.assertTrue(f"error_category={category}" in busy.format_busy_suffix(diag), "derived output missing expected fragment (content withheld)")
 
 
-class ExtractBusyDiagnosticTest(unittest.TestCase):
+class ExtractBusyDiagnosticTest(_RedactedAssertions, unittest.TestCase):
     def test_allowlist_projection_drops_everything_else(self):
         context = {
             "read": "persisted_slot",
@@ -121,17 +149,14 @@ class ExtractBusyDiagnosticTest(unittest.TestCase):
             "sql": "SELECT * FROM t WHERE mobile=" + PHONE,
         }
         diag = busy.extract_busy_diagnostic(context)
-        self.assertEqual(
-            {
+        self.assertTrue({
                 "event": "booking.lock_read_failed",
                 "read": "persisted_slot",
                 "sql_errno": 1213,
                 "error_category": "deadlock",
                 "slot_id": 42,
                 "clinician_id": 7,
-            },
-            diag,
-        )
+            } == diag, "derived value mismatch (content withheld)")
 
     def test_rejects_bad_field_shapes(self):
         diag = busy.extract_busy_diagnostic(
@@ -149,9 +174,9 @@ class ExtractBusyDiagnosticTest(unittest.TestCase):
 
     def test_errno_digit_string_and_zero_are_kept(self):
         diag = busy.extract_busy_diagnostic({"sql_errno": "1205"})
-        self.assertEqual(1205, diag["sql_errno"])
+        self.assertTrue(1205 == diag["sql_errno"], "derived value mismatch (content withheld)")
         diag_zero = busy.extract_busy_diagnostic({"sql_errno": 0})
-        self.assertEqual(0, diag_zero["sql_errno"])
+        self.assertTrue(0 == diag_zero["sql_errno"], "derived value mismatch (content withheld)")
 
     def test_malformed_unknown_and_out_of_range_fields_are_dropped(self):
         diag = busy.extract_busy_diagnostic({
@@ -164,36 +189,33 @@ class ExtractBusyDiagnosticTest(unittest.TestCase):
             self.assertTrue("sql_errno" not in busy.extract_busy_diagnostic({"sql_errno": value}), "derived output carried forbidden text (content withheld)")
 
     def test_non_object_context_is_none(self):
-        self.assertIsNone(busy.extract_busy_diagnostic(None))
-        self.assertIsNone(busy.extract_busy_diagnostic("booking.lock_read_failed"))
-        self.assertIsNone(busy.extract_busy_diagnostic([{"sql_errno": 1}]))
+        self.assertTrue(busy.extract_busy_diagnostic(None) is None, "derived value mismatch (content withheld)")
+        self.assertTrue(busy.extract_busy_diagnostic("booking.lock_read_failed") is None, "derived value mismatch (content withheld)")
+        self.assertTrue(busy.extract_busy_diagnostic([{"sql_errno": 1}]) is None, "derived value mismatch (content withheld)")
 
 
-class ParseBusyRowsTest(unittest.TestCase):
+class ParseBusyRowsTest(_RedactedAssertions, unittest.TestCase):
     def test_missing_or_unparseable_rows_are_none(self):
-        self.assertIsNone(busy.parse_busy_rows([]))
-        self.assertIsNone(busy.parse_busy_rows(None))
-        self.assertIsNone(busy.parse_busy_rows([("NULL",)]))
-        self.assertIsNone(busy.parse_busy_rows([("not json",)]))
-        self.assertIsNone(busy.parse_busy_rows([('["a"]',)]))
+        self.assertTrue(busy.parse_busy_rows([]) is None, "derived value mismatch (content withheld)")
+        self.assertTrue(busy.parse_busy_rows(None) is None, "derived value mismatch (content withheld)")
+        self.assertTrue(busy.parse_busy_rows([("NULL",)]) is None, "derived value mismatch (content withheld)")
+        self.assertTrue(busy.parse_busy_rows([("not json",)]) is None, "derived value mismatch (content withheld)")
+        self.assertTrue(busy.parse_busy_rows([('["a"]',)]) is None, "derived value mismatch (content withheld)")
         for cell in (None, 42, b'{"sql_errno":1213}', "", "null", "true", "[]"):
-            self.assertIsNone(busy.parse_busy_rows([(cell,)]))
+            self.assertTrue(busy.parse_busy_rows([(cell,)]) is None, "derived value mismatch (content withheld)")
         self.assertTrue({"event": busy.EVENT} == busy.parse_busy_rows([("{}",)]), "derived value mismatch (content withheld)")
 
     def test_valid_row_parses_and_extra_columns_are_ignored(self):
         row = ('{"read": "slot", "sql_errno": 1146, "slot_id": 5}', "ignored")
         diag = busy.parse_busy_rows([row])
-        self.assertEqual(1146, diag["sql_errno"])
-        self.assertEqual(5, diag["slot_id"])
+        self.assertTrue(1146 == diag["sql_errno"], "derived value mismatch (content withheld)")
+        self.assertTrue(5 == diag["slot_id"], "derived value mismatch (content withheld)")
 
 
-class LatestBusySqlTest(unittest.TestCase):
+class LatestBusySqlTest(_RedactedAssertions, unittest.TestCase):
     def test_exact_sql_for_bare_identifier(self):
-        self.assertEqual(
-            "SELECT context_json FROM cpmswp_cpms_operational_logs "
-            "WHERE message='booking.lock_read_failed' ORDER BY id DESC LIMIT 1",
-            busy.latest_busy_sql("cpmswp_cpms_operational_logs"),
-        )
+        self.assertTrue("SELECT context_json FROM cpmswp_cpms_operational_logs "
+            "WHERE message='booking.lock_read_failed' ORDER BY id DESC LIMIT 1" == busy.latest_busy_sql("cpmswp_cpms_operational_logs"), "derived value mismatch (content withheld)")
 
     def test_unsafe_table_identifier_raises(self):
         for bad in ("", "a b", "t; DROP TABLE x", "t`", None, 5):
@@ -201,7 +223,7 @@ class LatestBusySqlTest(unittest.TestCase):
                 busy.latest_busy_sql(bad)
 
 
-class FindBusyAttemptTest(unittest.TestCase):
+class FindBusyAttemptTest(_RedactedAssertions, unittest.TestCase):
     def test_picks_last_busy_entry_only(self):
         entries = [
             {"route": "/clinic/v1/booking/hold", "status": 503, "code": "CLINIC_BOOKING_BUSY"},
@@ -209,17 +231,15 @@ class FindBusyAttemptTest(unittest.TestCase):
             {"route": "/clinic/v1/booking/confirm", "status": 503, "code": "CLINIC_BOOKING_BUSY"},
         ]
         found = busy.find_busy_attempt(entries)
-        self.assertEqual("/clinic/v1/booking/confirm", found["route"])
+        self.assertTrue("/clinic/v1/booking/confirm" == found["route"], "derived value mismatch (content withheld)")
 
     def test_no_busy_entry_is_none(self):
-        self.assertIsNone(busy.find_busy_attempt([]))
-        self.assertIsNone(busy.find_busy_attempt(None))
-        self.assertIsNone(
-            busy.find_busy_attempt([{"code": "CLINIC_NOT_FOUND"}, {"code": ""}, "junk"])
-        )
+        self.assertTrue(busy.find_busy_attempt([]) is None, "derived value mismatch (content withheld)")
+        self.assertTrue(busy.find_busy_attempt(None) is None, "derived value mismatch (content withheld)")
+        self.assertTrue(busy.find_busy_attempt([{"code": "CLINIC_NOT_FOUND"}, {"code": ""}, "junk"]) is None, "derived value mismatch (content withheld)")
 
 
-class FormatBusySuffixTest(unittest.TestCase):
+class FormatBusySuffixTest(_RedactedAssertions, unittest.TestCase):
     def test_full_suffix_single_line_within_cap(self):
         diag = busy.extract_busy_diagnostic(
             {
@@ -260,12 +280,12 @@ class FormatBusySuffixTest(unittest.TestCase):
 
     def test_missing_states_and_invalid_parts(self):
         out = busy.format_busy_suffix(None, missing="fetch-failed", viewport="bogus")
-        self.assertEqual("busy_diag=fetch-failed", out)
+        self.assertTrue("busy_diag=fetch-failed" == out, "derived value mismatch (content withheld)")
         out_bad_state = busy.format_busy_suffix(None, missing="whatever")
-        self.assertEqual("busy_diag=not-found", out_bad_state)
+        self.assertTrue("busy_diag=not-found" == out_bad_state, "derived value mismatch (content withheld)")
 
 
-class BusySuffixForTest(unittest.TestCase):
+class BusySuffixForTest(_RedactedAssertions, unittest.TestCase):
     BUSY_ENTRIES = [
         {"route": "/clinic/v1/booking/hold", "status": 503, "code": "CLINIC_BOOKING_BUSY"}
     ]
@@ -282,8 +302,8 @@ class BusySuffixForTest(unittest.TestCase):
             fake_query,
             "cpmswp_cpms_operational_logs",
         )
-        self.assertEqual("", out)
-        self.assertEqual([], calls)
+        self.assertTrue("" == out, "derived value mismatch (content withheld)")
+        self.assertTrue([] == calls, "derived value mismatch (content withheld)")
 
     def test_busy_attempt_with_row_yields_cause_without_pii(self):
         stored = (
@@ -293,7 +313,7 @@ class BusySuffixForTest(unittest.TestCase):
         )
 
         def fake_query(sql):
-            self.assertIn("cpmswp_cpms_operational_logs", sql)
+            self.assertTrue("cpmswp_cpms_operational_logs" in sql, "derived output missing expected fragment (content withheld)")
             return [(stored,)]
 
         out = busy.busy_suffix_for(
@@ -330,7 +350,7 @@ class BusySuffixForTest(unittest.TestCase):
         self.assertTrue("busy_diag=fetch-failed" in out, "derived output missing expected fragment (content withheld)")
 
 
-class JourneyStartBoundTest(unittest.TestCase):
+class JourneyStartBoundTest(_RedactedAssertions, unittest.TestCase):
     """NEW: the busy row must come from THIS journey, not an earlier run."""
 
     SINCE = "2026-11-04 10:00:00"
@@ -339,16 +359,13 @@ class JourneyStartBoundTest(unittest.TestCase):
 
     def test_since_adds_inclusive_created_at_bound(self):
         sql = busy.latest_busy_sql(self.TABLE, self.SINCE)
-        self.assertIn("AND created_at >= '2026-11-04 10:00:00'", sql)
-        self.assertIn("message='booking.lock_read_failed'", sql)
-        self.assertIn("ORDER BY id DESC LIMIT 1", sql)
+        self.assertTrue("AND created_at >= '2026-11-04 10:00:00'" in sql, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("message='booking.lock_read_failed'" in sql, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("ORDER BY id DESC LIMIT 1" in sql, "derived output missing expected fragment (content withheld)")
 
     def test_no_since_keeps_exact_legacy_unbounded_sql(self):
-        self.assertEqual(
-            "SELECT context_json FROM cpmswp_cpms_operational_logs "
-            "WHERE message='booking.lock_read_failed' ORDER BY id DESC LIMIT 1",
-            busy.latest_busy_sql(self.TABLE),
-        )
+        self.assertTrue("SELECT context_json FROM cpmswp_cpms_operational_logs "
+            "WHERE message='booking.lock_read_failed' ORDER BY id DESC LIMIT 1" == busy.latest_busy_sql(self.TABLE), "derived value mismatch (content withheld)")
 
     def test_invalid_or_injected_since_raises_valueerror(self):
         for bad in ("", "2026-11-04T10:00:00", "2026-11-04 10:00",
@@ -370,8 +387,8 @@ class JourneyStartBoundTest(unittest.TestCase):
         out = busy.busy_suffix_for(
             self.ENTRIES, fake_query, self.TABLE, since=self.SINCE
         )
-        self.assertEqual(1, len(seen))
-        self.assertIn("created_at >= '2026-11-04 10:00:00'", seen[0])
+        self.assertTrue(1 == len(seen), "derived value mismatch (content withheld)")
+        self.assertTrue("created_at >= '2026-11-04 10:00:00'" in seen[0], "derived output missing expected fragment (content withheld)")
         self.assertTrue("busy_diag=not-found" in out, "derived output missing expected fragment (content withheld)")
 
     def test_invalid_since_degrades_to_fetch_failed_never_raises(self):
@@ -390,7 +407,7 @@ class JourneyStartBoundTest(unittest.TestCase):
         self.assertTrue("busy_diag=fetch-failed" in out, "derived output missing expected fragment (content withheld)")
 
 
-class StaleOrMismatchTest(unittest.TestCase):
+class StaleOrMismatchTest(_RedactedAssertions, unittest.TestCase):
     """NEW: a row whose ids disagree with the attempt is never its cause."""
 
     SINCE = "2026-11-04 10:00:00"
@@ -445,13 +462,10 @@ class StaleOrMismatchTest(unittest.TestCase):
         self.assertTrue("stale-or-mismatch" not in out, "derived output carried forbidden text (content withheld)")
 
     def test_formatter_accepts_stale_state(self):
-        self.assertEqual(
-            "busy_diag=stale-or-mismatch",
-            busy.format_busy_suffix(None, missing="stale-or-mismatch"),
-        )
+        self.assertTrue("busy_diag=stale-or-mismatch" == busy.format_busy_suffix(None, missing="stale-or-mismatch"), "derived value mismatch (content withheld)")
 
 
-class PublicationPathTest(unittest.TestCase):
+class PublicationPathTest(_RedactedAssertions, unittest.TestCase):
     def test_day2_fail_stdout_and_results_json_carry_only_the_projection(self):
         path = BIN_DIR / "pilot-day2-workflows.py"
         old_argv = sys.argv
@@ -499,11 +513,11 @@ class PublicationPathTest(unittest.TestCase):
             self.assertTrue("sql_errno=1213" in output, "captured output missing expected fragment (content withheld)")
             self.assertTrue("error_category=deadlock" in output, "captured output missing expected fragment (content withheld)")
             self.assertTrue("code=CLINIC_BOOKING_BUSY" in output, "captured output missing expected fragment (content withheld)")
-        self.assertEqual(["journey-A1-public"], module.failures)
+        self.assertTrue(["journey-A1-public"] == module.failures, "derived value mismatch (content withheld)")
         self.assertTrue(stdout.startswith("FAIL journey-A1-public"))
 
 
-class FixtureFailureContractTest(unittest.TestCase):
+class FixtureFailureContractTest(_RedactedAssertions, unittest.TestCase):
     """C5: the Day-2 PHP fixture must never print driver text to stderr.
 
     Static contract over `tests/fixtures/pilot-day2-workflows-fixture.php`
@@ -533,8 +547,8 @@ class FixtureFailureContractTest(unittest.TestCase):
         class-wpdb.php:1811-1823, reached from query() :2304); the gate
         tees this fixture's stderr to the public log. The fixture must
         suppress it right after wp-load, before the first insert."""
-        self.assertIn("$wpdb->suppress_errors(true);", self.code)
-        self.assertNotIn("suppress_errors(false", self.code)
+        self.assertTrue("$wpdb->suppress_errors(true);" in self.code, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("suppress_errors(false" not in self.code, "derived output carried forbidden text (content withheld)")
         load_at = self.code.index("wp-load.php")
         suppress_at = self.code.index("$wpdb->suppress_errors(true);")
         first_insert_at = self.code.index("d2w_insert(")
@@ -561,10 +575,10 @@ class FixtureFailureContractTest(unittest.TestCase):
         Day2FixtureSupervisorTest in the Unit suite, run by CI)."""
         code = self.code
         unit = self.SUPERVISOR.read_text(encoding="utf-8")
-        self.assertIn("day2-fixture-supervisor.php", code)
-        self.assertIn("d2w_supervise(", code)
-        self.assertIn("d2w_is_supervised_child($argv ?? [])", code)
-        self.assertIn("DAY2_FIXTURE_COMPLETE nonce=", code)
+        self.assertTrue("day2-fixture-supervisor.php" in code, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("d2w_supervise(" in code, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("d2w_is_supervised_child($argv ?? [])" in code, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("DAY2_FIXTURE_COMPLETE nonce=" in code, "derived output missing expected fragment (content withheld)")
         supervisor_at = code.index("d2w_supervise(")
         load_at = code.index("wp-load.php")
         self.assertLess(supervisor_at, load_at)
@@ -581,7 +595,7 @@ class FixtureFailureContractTest(unittest.TestCase):
                        "$state->tempDir = $dir;", "$lastOutLine",
                        "D2W_CAPTURE_LINE_MAX", "D2W_CAPTURE_TOTAL_MAX",
                        "malicious or compromised child"):
-            self.assertIn(marker, unit)
+            self.assertTrue(marker in unit, "derived output missing expected fragment (content withheld)")
         handler_at = unit.index("set_error_handler")
         proc_at = unit.index("proc_open(")
         self.assertLess(handler_at, proc_at)
@@ -594,7 +608,7 @@ class FixtureFailureContractTest(unittest.TestCase):
         code = self.code
         for token in ("'membership'", "'patient_link'", "'note_insert'",
                       "'followup_insert'", "'payment_insert'", "'seed_verify'"):
-            self.assertIn(token, code)
+            self.assertTrue(token in code, "derived output missing expected fragment (content withheld)")
         self.assertGreaterEqual(code.count("d2w_require_id("), 15)
         # definition + payments loop (x5 rows) + notes loop (x5) + link
         self.assertGreaterEqual(code.count("d2w_verify_one("), 4)
@@ -611,34 +625,31 @@ class FixtureFailureContractTest(unittest.TestCase):
                        "cpms_clinician_locations", "location_id = %d",
                        "role_key = %s",
                        "booking.max_future_days"):
-            self.assertIn(marker, code)
+            self.assertTrue(marker in code, "derived output missing expected fragment (content withheld)")
         verify_at = code.index("d2w_verify_one(")
         env_at = code.index("$envPayload = [")
         self.assertLess(verify_at, env_at)
 
     def test_no_driver_text_or_masking_in_fixture_code(self):
-        self.assertNotIn("last_error", self.code)
-        self.assertNotIn("preg_replace", self.code)
-        self.assertNotIn("[redacted]", self.code)
+        self.assertTrue("last_error" not in self.code, "derived output carried forbidden text (content withheld)")
+        self.assertTrue("preg_replace" not in self.code, "derived output carried forbidden text (content withheld)")
+        self.assertTrue("[redacted]" not in self.code, "derived output carried forbidden text (content withheld)")
 
     def test_d2w_fail_prints_only_a_fixed_step_token(self):
-        self.assertIn("DAY2_FIXTURE_ERROR step=", self.code)
-        self.assertIn("in_array($step, D2W_FAIL_STEPS, true)", self.code)
+        self.assertTrue("DAY2_FIXTURE_ERROR step=" in self.code, "derived output missing expected fragment (content withheld)")
+        self.assertTrue("in_array($step, D2W_FAIL_STEPS, true)" in self.code, "derived output missing expected fragment (content withheld)")
         body = self.code.split("function d2w_fail", 1)[1].split("}", 1)[0]
-        self.assertNotIn("$msg", body)
+        self.assertTrue("$msg" not in body, "derived output carried forbidden text (content withheld)")
 
     def test_every_d2w_fail_call_site_passes_a_fixed_literal(self):
         steps = set(re.findall(
             r"'([a-z_]+)'",
             self.code.split("D2W_FAIL_STEPS = [", 1)[1].split("]", 1)[0],
         ))
-        self.assertEqual(
-            steps,
-            {"insert", "insert_id", "user_create", "clinic_ids", "public_page",
+        self.assertTrue(steps == {"insert", "insert_id", "user_create", "clinic_ids", "public_page",
              "public_permalink", "reception_grace", "reception_row", "env_write",
              "membership", "patient_link", "note_insert", "followup_insert",
-             "payment_insert", "seed_verify", "supervisor"},
-        )
+             "payment_insert", "seed_verify", "supervisor"}, "derived value mismatch (content withheld)")
         calls = re.findall(r"d2w_fail\(([^)]*)\)", self.code)
         self.assertGreaterEqual(len(calls), 10)
         for arg in calls:
@@ -648,11 +659,11 @@ class FixtureFailureContractTest(unittest.TestCase):
                 # its (caller-validated) step argument
                 continue
             literal = re.fullmatch(r"'([a-z_]+)'", arg)
-            self.assertIsNotNone(literal, arg)
-            self.assertIn(literal.group(1), steps, arg)
+            self.assertTrue(literal is not None, "derived value mismatch (content withheld)")
+            self.assertTrue(literal.group(1) in steps, "derived output missing expected fragment (content withheld)")
 
 
-class BusyAttributionRuleTest(unittest.TestCase):
+class BusyAttributionRuleTest(_RedactedAssertions, unittest.TestCase):
     """D4: busy is claimed only for the operation that actually failed.
 
     Rule (see `find_busy_attempt`): with a known failing stage, only
@@ -694,7 +705,7 @@ class BusyAttributionRuleTest(unittest.TestCase):
             self.entry(self.HOLD, 200, ""),
             self.entry(self.CONFIRM, 200, ""),
         ])
-        self.assertEqual("", out)
+        self.assertTrue("" == out, "derived value mismatch (content withheld)")
 
     def test_case_a_busy_then_failure_on_another_route(self):
         """(a) busy on hold, then a 409 on confirm: no busy claim."""
@@ -702,8 +713,8 @@ class BusyAttributionRuleTest(unittest.TestCase):
             self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
             self.entry(self.CONFIRM, 409, "CLINIC_VALIDATION_FAILED"),
         ]
-        self.assertEqual("", self.suffix(entries, stage="names-form"))
-        self.assertEqual("", self.suffix(entries))
+        self.assertTrue("" == self.suffix(entries, stage="names-form"), "derived value mismatch (content withheld)")
+        self.assertTrue("" == self.suffix(entries), "derived value mismatch (content withheld)")
 
     def test_case_b_later_route_failure_displaces_earlier_busy(self):
         """(b) busy on A, busy on B, non-busy failure on B: no claim."""
@@ -712,8 +723,8 @@ class BusyAttributionRuleTest(unittest.TestCase):
             self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
             self.entry(self.HOLD, 409, "CLINIC_VALIDATION_FAILED"),
         ]
-        self.assertEqual("", self.suffix(entries, stage="hold-request"))
-        self.assertEqual("", self.suffix(entries))
+        self.assertTrue("" == self.suffix(entries, stage="hold-request"), "derived value mismatch (content withheld)")
+        self.assertTrue("" == self.suffix(entries), "derived value mismatch (content withheld)")
 
     def test_case_c_stage_failure_keeps_busy_despite_later_success(self):
         """(c) journey failed AT the busy hold; a later same-route 200
@@ -733,7 +744,7 @@ class BusyAttributionRuleTest(unittest.TestCase):
             self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
             self.entry(self.HOLD, 409, "CLINIC_VALIDATION_FAILED"),
         ]
-        self.assertEqual("", self.suffix(entries, stage="hold-request"))
+        self.assertTrue("" == self.suffix(entries, stage="hold-request"), "derived value mismatch (content withheld)")
 
     def test_multiple_busy_attempts_on_one_route_pick_the_last(self):
         entries = [
@@ -741,11 +752,11 @@ class BusyAttributionRuleTest(unittest.TestCase):
             self.entry(self.HOLD, 503, "CLINIC_BOOKING_BUSY"),
         ]
         found = busy.find_busy_attempt(entries, stage="hold-request")
-        self.assertIs(found, entries[-1])
-        self.assertIn("busy_diag=booking.lock_read_failed", self.suffix(entries))
+        self.assertTrue(found is entries[-1], "derived value mismatch (content withheld)")
+        self.assertTrue("busy_diag=booking.lock_read_failed" in self.suffix(entries), "derived output missing expected fragment (content withheld)")
 
 
-class MainGuardPlacementTest(unittest.TestCase):
+class MainGuardPlacementTest(_RedactedAssertions, unittest.TestCase):
     """D2: no module-level class may be defined after the __main__ guard
     in the Day-2 python suites — `unittest.main()` exits at the guard,
     so such classes would silently never run via `python3 <file>` (the
@@ -764,7 +775,7 @@ class MainGuardPlacementTest(unittest.TestCase):
 
         here = Path(__file__).resolve().parent
         for name in self.FILES:
-            with self.subTest(file=name):
+            with self.subTest(file="case"):
                 tree = ast.parse((here / name).read_text(encoding="utf-8"))
                 guards = [
                     node for node in tree.body
@@ -773,13 +784,13 @@ class MainGuardPlacementTest(unittest.TestCase):
                     and isinstance(node.test.left, ast.Name)
                     and node.test.left.id == "__name__"
                 ]
-                self.assertEqual(len(guards), 1, name)
+                self.assertTrue(len(guards) == 1, "derived value mismatch (content withheld)")
                 guard_at = tree.body.index(guards[0])
                 offenders = [
                     node.name for node in tree.body[guard_at + 1:]
                     if isinstance(node, ast.ClassDef)
                 ]
-                self.assertEqual(offenders, [], name)
+                self.assertTrue(offenders == [], "derived value mismatch (content withheld)")
 
 
 if __name__ == "__main__":

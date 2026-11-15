@@ -46,8 +46,13 @@ declare(strict_types=1);
  * line may not exceed D2W_CAPTURE_LINE_MAX bytes and the captured
  * total may not exceed D2W_CAPTURE_TOTAL_MAX bytes. The total cap
  * is enforced WHILE the child runs (the wait loop polls capture
- * file sizes and terminates the child on excess) as well as at
- * scan time, so capture files cannot grow without bound. Exceeding
+ * file sizes every 20 ms and terminates the child on excess) as
+ * well as at scan time. That polling bounds growth IN PRACTICE —
+ * by the polling interval multiplied by the child's write rate,
+ * plus the bounded SIGTERM/SIGKILL escalation below — it is NOT a
+ * hard byte guarantee, and descendant processes of the child are
+ * NOT covered by the termination (stated LIMITATION, not tested).
+ * Exceeding
  * either cap is a protocol failure (fixed token, non-success
  * exit). The child writes to FILES, not pipes, so output volume
  * can never block the child on a full pipe (no deadlock) and never
@@ -71,6 +76,11 @@ declare(strict_types=1);
  */
 const D2W_CAPTURE_LINE_MAX = 8192;
 const D2W_CAPTURE_TOTAL_MAX = 262144;
+
+// Bounded grace between SIGTERM and SIGKILL when the in-execution
+// cap terminates a runaway child (item C): proc_close must never be
+// able to wait unboundedly on that path.
+const D2W_TERM_GRACE_MS = 2000;
 
 /**
  * Run $command supervised and return [exitCode, fixedLine, toStderr].
@@ -239,14 +249,17 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
             return $fail(1, 'supervisor');
         }
 
-        // Wait loop with IN-EXECUTION cap enforcement: capture files
-        // must not grow without bound while the child runs (a child
-        // flooding output could otherwise exhaust the disk before
-        // the post-exit scan ever saw it). File sizes are polled;
-        // exceeding the per-file bound (the total cap, applied per
-        // file as well as combined at scan time) terminates the
-        // child and fails closed. Poll-only: 20 ms, no output is read
-        // here, so nothing can deadlock.
+        // Wait loop with IN-EXECUTION cap enforcement: a flooding
+        // child could otherwise grow the capture files for its whole
+        // lifetime before the post-exit scan ever saw them. File
+        // sizes are polled every 20 ms; exceeding the per-file bound
+        // (the total cap, applied per file as well as combined)
+        // terminates the child (SIGTERM, then SIGKILL after
+        // D2W_TERM_GRACE_MS if it ignores SIGTERM) and fails closed.
+        // This bounds growth in practice (poll interval x write
+        // rate), not as a hard byte guarantee; descendants of the
+        // child are not terminated (LIMITATION, not tested).
+        // Poll-only: no output is read here, so nothing can deadlock.
         $capExceeded = false;
         $status = proc_get_status($proc);
         while (is_array($status) && ($status['running'] ?? false)) {
@@ -269,6 +282,24 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
             }
             usleep(20000);
             $status = proc_get_status($proc);
+        }
+        if ($capExceeded) {
+            // Bounded escalation: SIGTERM was sent when the cap
+            // fired; give the child D2W_TERM_GRACE_MS to exit, then
+            // SIGKILL (which cannot be caught or ignored), so the
+            // proc_close below can never wait unboundedly on this
+            // path. Only the direct child is signalled; descendants
+            // are NOT covered (LIMITATION, not tested).
+            $deadline = microtime(true) + (D2W_TERM_GRACE_MS / 1000.0);
+            $status = proc_get_status($proc);
+            while (is_array($status) && ($status['running'] ?? false)
+                && microtime(true) < $deadline) {
+                usleep(20000);
+                $status = proc_get_status($proc);
+            }
+            if (is_array($status) && ($status['running'] ?? false)) {
+                proc_terminate($proc, 9);
+            }
         }
         $code = proc_close($proc);
         if ($capExceeded) {

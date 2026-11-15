@@ -198,6 +198,53 @@ final class Day2FixtureSupervisorTest extends TestCase
         rmdir($base);
     }
 
+    public function test_post_exit_line_scan_rejects_long_line_under_total_cap(): void
+    {
+        // Layer coverage: POST-EXIT line scan, isolated. A single
+        // newline-less line of 20,000 bytes exceeds
+        // D2W_CAPTURE_LINE_MAX (8192) but is far below
+        // D2W_CAPTURE_TOTAL_MAX (262144); the child writes it fast
+        // and exits normally, so the in-execution cap does not fire
+        // and the post-exit scan is the layer that must reject it.
+        $base = $this->workDir . '/scanbase';
+        mkdir($base, 0700, true);
+        [$code, $line] = $this->supervise(
+            $this->phpChild('echo str_repeat("A", 20000);'),
+            $base
+        );
+        self::assertTrue($code !== 0, 'oversized line under the total cap must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'oversized line under the total cap must publish the supervisor token');
+        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after a post-exit scan rejection');
+        rmdir($base);
+    }
+
+    public function test_sigterm_ignoring_flooding_child_is_killed_and_fails_closed(): void
+    {
+        // Layer coverage: in-execution cap + bounded SIGTERM/SIGKILL
+        // escalation. The child ignores SIGTERM (trap '' TERM) and
+        // floods forever; the supervisor must escalate to SIGKILL
+        // after D2W_TERM_GRACE_MS instead of waiting in proc_close
+        // unboundedly. Descendants are NOT covered by the
+        // termination (LIMITATION, stated in the supervisor header);
+        // this child has none.
+        if (!is_file('/bin/sh')) {
+            self::markTestSkipped('SIGTERM-escalation case needs /bin/sh');
+        }
+        $base = $this->workDir . '/killbase';
+        mkdir($base, 0700, true);
+        $start = microtime(true);
+        [$code, $line] = $this->supervise(
+            ['/bin/sh', '-c', "trap '' TERM; while :; do printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; done"],
+            $base
+        );
+        $elapsed = microtime(true) - $start;
+        self::assertTrue($code !== 0, 'SIGTERM-ignoring flooding child must fail');
+        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'SIGTERM-ignoring flooding child must publish the supervisor token');
+        self::assertTrue($elapsed < 30, 'SIGTERM-ignoring flooding child must be SIGKILLed within the bounded grace, never waited on unboundedly');
+        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after SIGKILL escalation');
+        rmdir($base);
+    }
+
     public function test_fatal_in_supervised_process_prints_only_fixed_token(): void
     {
         // Drive d2w_supervise() in a subprocess whose fake child
@@ -207,7 +254,21 @@ final class Day2FixtureSupervisorTest extends TestCase
         // uncatchable E_USER_ERROR. This fatal fires AFTER
         // d2w_supervise has returned (finished=true): it covers the
         // shutdown path with cleanup still failing. The companion
-        // test below covers a fatal INSIDE d2w_supervise.
+        // test below covers a deterministic process TERMINATION
+        // inside d2w_supervise — not an engine fatal (see its own
+        // comment for the two failed genuine-fatal attempts and the
+        // resulting LIMITATION). A third directed mechanism — an
+        // uncaught Error thrown from the wrapper hook (e.g. an
+        // undefined function) — was not pushed: every
+        // wrapper-invocable call inside d2w_supervise sits inside
+        // its try/catch (Throwable) (or the shutdown closure's own
+        // try/catch), and catch (Throwable) catches Error
+        // (https://www.php.net/manual/en/class.throwable.php), so
+        // the hook would be converted to the checked fail-closed
+        // return and could never become an engine fatal; where an
+        // internal call converts it to a warning instead, the
+        // supervisor's swallowing handler absorbs it. Proven from
+        // the code and php.net semantics before pushing.
         // The shutdown function must answer the fatal with only the
         // fixed token, no warning text, and a non-success exit.
         // (Trigger history, kept honest: CPU-limit exhaustion in the
@@ -343,6 +404,10 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_oversized_child_output_fails_closed_within_caps(): void
     {
+        // Layer coverage: BOTH cases exceed D2W_CAPTURE_TOTAL_MAX,
+        // so the IN-EXECUTION cap is the layer that fires here (the
+        // post-exit scan would also reject them, but is not isolated
+        // by these cases — the 20,000-byte test below isolates it).
         // One huge newline-less line (far beyond D2W_CAPTURE_LINE_MAX)
         // and, separately, many short lines beyond
         // D2W_CAPTURE_TOTAL_MAX: both must fail closed with the
@@ -435,7 +500,8 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_flooding_child_is_terminated_during_execution(): void
     {
-        // In-execution cap: a child that floods output (and one that
+        // Layer coverage: IN-EXECUTION total cap (not the post-exit
+        // scan): a child that floods output (and one that
         // writes past the cap then keeps running) must be terminated
         // by the wait loop, fail closed with the fixed token, have
         // its private dir removed, and finish fast.
