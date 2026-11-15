@@ -288,6 +288,18 @@ function d2w_supervise(array $command, string $envFile, array $allowedSteps, ?st
             usleep(20000);
             $status = proc_get_status($proc);
         }
+        if (!$capExceeded && !is_array($status)) {
+            // The child's exit was never confirmed by a status
+            // lookup (reachability UNKNOWN; no deterministic test):
+            // do not fall through to a proc_close that could wait on
+            // a possibly-live child. Route through the same bounded
+            // SIGKILL escalation as the cap path above; unless exit
+            // is confirmed, that path fails closed WITHOUT
+            // proc_close. The normal path (status array reporting
+            // not-running) is unchanged.
+            $capExceeded = true;
+            $sigtermSent = false;
+        }
         if ($capExceeded) {
             // Bounded escalation, best-effort. SIGTERM was sent when
             // the cap fired (its return value was checked there: if

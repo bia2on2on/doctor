@@ -17,6 +17,7 @@ They are deliberately not tautologies: each test would fail if the projector
 started echoing log text, if it stopped validating tokens, or if its vocabulary
 drifted from what the harness/BookingService really print.
 """
+import ast
 import importlib.util
 import io
 import os
@@ -72,6 +73,28 @@ def failure_line(extra=""):
 
 
 
+def _run_subprocess(case, argv, timeout=None):
+    """subprocess.run with fail-closed error handling.
+
+    A timeout or OS error becomes a FIXED-message test failure: the
+    exceptions caught here embed the command line in their message
+    (TimeoutExpired above all), and one call site passes an inline
+    driver whose source contains a synthetic secret marker, so the
+    exception itself must never reach unittest output.
+    """
+    try:
+        return subprocess.run(
+            argv, capture_output=True, text=True, errors="replace",
+            check=False, timeout=timeout,
+        )
+    except (subprocess.TimeoutExpired, OSError, UnicodeError):
+        # `from None`: the caught exception's message embeds the
+        # command line, and a chained traceback would print it.
+        raise case.failureException(
+            "subprocess driver did not complete (details withheld)"
+        ) from None
+
+
 class _RedactedAssertions:
     """Mixin: assertion FAILURE TEXT is structurally redacted.
 
@@ -84,10 +107,24 @@ class _RedactedAssertions:
     is written against CPython 3.x behaviour and is itself covered by
     AssertionOutputRedactionTest below / in the failure-report suite.
     It returns the explicit msg when one is given (callers pass fixed
-    strings only) and a fixed placeholder otherwise, so operand values
-    can never be printed regardless of which assertion failed. This is
-    defence in depth ON TOP of the internal-comparison assertions used
-    throughout this file, not a replacement for them.
+    strings only) and a fixed placeholder otherwise.
+
+    QUALIFIED SCOPE (round 14): this covers only assertion methods
+    that route their failure message through _formatMessage. On the
+    CPython 3.11 unittest/case.py read for this change, the methods
+    used by these suites — assertTrue, assertFalse, assertEqual,
+    assertNotEqual, assertIn, assertNotIn, assertRegex, assertNotRegex,
+    assertLess, assertLessEqual, assertGreater, assertGreaterEqual,
+    assertRaises — all build their message via _formatMessage (or,
+    for assertRaises context failures, via this class's fail()).
+    Other helpers bypass it: assertSequenceEqual raises
+    failureException directly with the operand's repr on a type
+    mismatch (case.py), and assertListEqual/assertTupleEqual route
+    through it; assertSetEqual calls fail() with exception text.
+    Those methods are FORBIDDEN in these suites and an AST test
+    (AssertionOutputRedactionTest) enforces the allowlist. This is
+    defence in depth ON TOP of the internal-comparison assertions,
+    not a replacement for them.
     """
 
     def _formatMessage(self, msg, standardMsg):
@@ -404,12 +441,7 @@ class CommandLineTest(_RedactedAssertions, unittest.TestCase):
     SCRIPT = BIN_DIR / "pilot-day2-failure-report.py"
 
     def run_script(self, *args):
-        return subprocess.run(
-            [sys.executable, str(self.SCRIPT), *args],
-            capture_output=True,
-            text=True, errors="replace",
-            check=False,
-        )
+        return _run_subprocess(self, [sys.executable, str(self.SCRIPT), *args])
 
     def test_missing_log_exits_zero_with_one_closed_line(self):
         result = self.run_script("--log", "/nonexistent/definitely-absent.log")
@@ -753,10 +785,10 @@ class BoundsAndCliHardeningTest(_RedactedAssertions, unittest.TestCase):
             fifo = Path(tmp) / "fifo.log"
             os.mkfifo(fifo)
             started = time.monotonic()
-            result = subprocess.run(
+            result = _run_subprocess(self,
                 [sys.executable, str(BIN_DIR / "pilot-day2-failure-report.py"),
                  "--log", str(fifo)],
-                capture_output=True, text=True, errors="replace", check=False, timeout=30,
+                timeout=30,
             )
             elapsed = time.monotonic() - started
         self.assertTrue(result.returncode == 0, "derived value mismatch (content withheld)")
@@ -777,11 +809,10 @@ class BoundsAndCliHardeningTest(_RedactedAssertions, unittest.TestCase):
             )
             for field in projector.FIELDS:
                 with self.subTest(field="case"):
-                    result = subprocess.run(
+                    result = _run_subprocess(self,
                         [sys.executable, str(BIN_DIR / "pilot-day2-failure-report.py"),
                          "--log", str(path), "--field", field],
-                        capture_output=True, text=True, errors="replace", check=False,
-                    )
+                                            )
                     self.assertTrue(result.returncode == 0, "derived value mismatch (content withheld)")
                     token = result.stdout.rstrip("\n")
                     if field in projector.ENUMS:
@@ -803,10 +834,9 @@ class BoundsAndCliHardeningTest(_RedactedAssertions, unittest.TestCase):
             ("--test", "--field", "journey", "--bogus"),
         ):
             with self.subTest(args="case"):
-                result = subprocess.run(
+                result = _run_subprocess(self,
                     [sys.executable, str(BIN_DIR / "pilot-day2-failure-report.py"), *args],
-                    capture_output=True, text=True, errors="replace", check=False,
-                )
+                                    )
                 self.assertTrue(result.returncode != 0, "derived values unexpectedly equal (content withheld)")
                 for canary in (CANARY_TOKEN, CANARY_EMAIL, CANARY_SQL, "Traceback"):
                     self.assertTrue(canary not in result.stdout + result.stderr, "captured output carried forbidden text (content withheld)")
@@ -836,11 +866,10 @@ class BoundsAndCliHardeningTest(_RedactedAssertions, unittest.TestCase):
     def test_directory_and_device_paths_are_total(self):
         for path in ("/dev/null", "/proc/self/cmdline", "/", "/nonexistent/x.log"):
             with self.subTest(path="case"):
-                result = subprocess.run(
+                result = _run_subprocess(self,
                     [sys.executable, str(BIN_DIR / "pilot-day2-failure-report.py"),
                      "--log", path],
-                    capture_output=True, text=True, errors="replace", check=False,
-                )
+                                    )
                 self.assertTrue(result.returncode == 0, "derived value mismatch (content withheld)")
                 self.assertTrue(result.stdout.count("\n") == 1, "derived value mismatch (content withheld)")
                 self.assertTrue(
@@ -1658,7 +1687,14 @@ class Day2ProbeClosedFieldsTest(_RedactedAssertions, unittest.TestCase):
         self.assertTrue(absent.entries[0]["code"] == "", "derived value mismatch (content withheld)")
 
     def test_phone_shaped_and_unbounded_posted_ids_are_omitted(self):
-        """C3: posted ids above 2**31 - 1 (phone-shaped) never print."""
+        """C3: posted ids above 2**31 - 1 never print.
+
+        Corrected (round 14): this does NOT cover every phone-shaped
+        value — a phone-shaped number at or below the bound (e.g. a
+        10-digit 912,345,678) is retained and printed; the cases here
+        use above-bound phone-shaped values (9,128,887,701 and its
+        11-digit string form). See "Known limits" in the PR body.
+        """
         probe = self._probe_with(
             {"code": "CLINIC_BOOKING_BUSY"},
             posted={"slot_id": 9128887701, "location_id": "09128887701",
@@ -2151,9 +2187,9 @@ class RoundTenExitStatusTest(_RedactedAssertions, unittest.TestCase):
 
     def _run(self, payload):
         driver = self.DRIVER.format(bin_dir=str(BIN_DIR), harness=str(HARNESS))
-        result = subprocess.run(
+        result = _run_subprocess(self,
             [sys.executable, "-c", driver, payload],
-            capture_output=True, text=True, errors="replace", check=False, timeout=60,
+            timeout=60,
         )
         return result.returncode, result.stderr
 
@@ -2181,6 +2217,31 @@ class RoundTenExitStatusTest(_RedactedAssertions, unittest.TestCase):
                                 "stderr must be empty or only the fixed token")
                 self.assertTrue("SYNTH_SECRET_R11" not in err,
                                 "SystemExit payload must never reach stderr")
+
+
+
+#: Assertion methods verified (CPython 3.11 unittest/case.py) to
+#: route their failure message through _formatMessage. Anything else
+#: (assertSequenceEqual & friends raise failureException directly
+#: with operand reprs) is forbidden in the two Day-2 suites.
+_SAFE_ASSERTION_METHODS = frozenset({
+    "assertTrue", "assertFalse", "assertEqual", "assertNotEqual",
+    "assertIn", "assertNotIn", "assertRegex", "assertNotRegex",
+    "assertLess", "assertLessEqual", "assertGreater",
+    "assertGreaterEqual", "assertRaises",
+})
+
+
+def _unsafe_assertion_calls(source):
+    bad = []
+    for node in ast.walk(ast.parse(source)):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr.startswith("assert")
+                and node.func.attr not in _SAFE_ASSERTION_METHODS
+                and node.func.attr != "assert_closed"):
+            bad.append(node.func.attr)
+    return bad
 
 
 class AssertionOutputRedactionTest(_RedactedAssertions, unittest.TestCase):
@@ -2270,15 +2331,80 @@ class AssertionOutputRedactionTest(_RedactedAssertions, unittest.TestCase):
                         "zero errors, no operands, fixed placeholder")
 
         class _BrokenMixin:
+            # Raises with the placeholder TEXT as the exception
+            # message: marker absent AND placeholder present in the
+            # runner output, but as ERRORS, not failures — the case
+            # that distinguishes the strict predicate (round 14).
             def _formatMessage(self, msg, standardMsg):
-                raise RuntimeError("broken mixin (synthetic)")
+                raise RuntimeError("assertion failed (details withheld)")
+
+            def fail(self, msg=None):
+                raise RuntimeError("assertion failed (details withheld)")
+
+        def old_predicate(result, output):
+            # The round-13 predicate: errors counted as failures.
+            return (
+                len(result.failures) + len(result.errors) == 6
+                and secret not in output
+                and "assertion failed (details withheld)" in output
+            )
 
         broken_result, broken_output = run_probes(_BrokenMixin)
         self.assertTrue(len(broken_result.errors) > 0,
                         "broken mixin must produce errors, not clean failures")
+        self.assertTrue(old_predicate(broken_result, broken_output),
+                        "old predicate must (wrongly) accept the broken mixin — "
+                        "this is the gap the strict predicate closes")
         self.assertTrue(not meta_ok(broken_result, broken_output),
                         "meta-condition must reject a broken mixin (errors are not failures)")
 
+    def test_subprocess_timeout_cannot_print_the_driver(self):
+        marker = "SYNTH_SECRET_R14_TIMEOUT"
+
+        class _TimeoutCase(_RedactedAssertions, unittest.TestCase):
+            def test_probe(self):
+                original_run = subprocess.run
+
+                def _raising_run(*args, **kwargs):
+                    raise subprocess.TimeoutExpired(
+                        cmd=["python", "-c", marker], timeout=1
+                    )
+
+                subprocess.run = _raising_run
+                try:
+                    _run_subprocess(self, ["python", "-c", marker], timeout=1)
+                finally:
+                    subprocess.run = original_run
+
+        suite = unittest.TestLoader().loadTestsFromTestCase(_TimeoutCase)
+        stream = io.StringIO()
+        result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
+        output = stream.getvalue()
+        self.assertTrue(len(result.failures) == 1 and len(result.errors) == 0,
+                        "timeout probe must surface as one fixed failure, not an error")
+        self.assertTrue(marker not in output,
+                        "timeout failure must not contain the command text (content withheld)")
+        self.assertTrue("subprocess driver did not complete (details withheld)" in output,
+                        "timeout failure must carry the fixed message (content withheld)")
+
+    def test_only_format_message_routed_assertions_are_used(self):
+        here = Path(__file__).resolve().parent
+        for name in ("test_pilot_day2_failure_report.py",
+                     "test_day2_booking_busy.py"):
+            bad = _unsafe_assertion_calls((here / name).read_text(encoding="utf-8"))
+            self.assertTrue(bad == [],
+                            "assertion methods outside the _formatMessage-routed "
+                            "allowlist are forbidden (content withheld)")
+        # The checker itself must be able to fail:
+        self.assertTrue(
+            _unsafe_assertion_calls("self.assertSequenceEqual(a, b)\n")
+            == ["assertSequenceEqual"],
+            "allowlist checker must flag a bypassing assertion method",
+        )
+        self.assertTrue(
+            _unsafe_assertion_calls("self.assertTrue(a == b)\n") == [],
+            "allowlist checker must accept routed assertion methods",
+        )
 
 if __name__ == "__main__":
     unittest.main()

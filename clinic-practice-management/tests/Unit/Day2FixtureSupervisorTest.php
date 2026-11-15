@@ -202,44 +202,58 @@ final class Day2FixtureSupervisorTest extends TestCase
     {
         // Layer coverage: POST-EXIT line scan, isolated — with VALID
         // success evidence, so the line check is the only possible
-        // cause of rejection. The child emits the completion marker
-        // and creates the env file exactly as the success protocol
-        // requires (markerCode), then writes a single newline-less
-        // line of 20,000 bytes to STDERR (the scan reads stderr
-        // first) and exits 0. 20,000 > D2W_CAPTURE_LINE_MAX (8192)
-        // but total output stays far below D2W_CAPTURE_TOTAL_MAX
-        // (262144) and the child exits fast, so the in-execution cap
-        // does not fire. (The round-12 version of this test supplied
-        // neither marker nor env file and was vacuous: it failed the
-        // success protocol with or without the line check.)
+        // cause of rejection. TWO cases differing ONLY in length
+        // (same filler byte 'A', same stream STDERR, same valid
+        // evidence via markerCode): one newline-TERMINATED, one
+        // newline-LESS. Traced from the scan code (not run locally;
+        // PHP-WASM proc_open unavailable): the check fires when an
+        // fgets chunk is exactly D2W_CAPTURE_LINE_MAX bytes without
+        // a trailing newline, so a terminated 20,001-byte line and a
+        // newline-less 20,000-byte line take the SAME branch — the
+        // first 8192-byte chunk has no trailing newline either way.
+        // 20,000 > D2W_CAPTURE_LINE_MAX (8192); total output stays
+        // far below D2W_CAPTURE_TOTAL_MAX (262144) and the child
+        // exits fast, so the in-execution cap does not fire.
         $base = $this->workDir . '/scanbase';
         mkdir($base, 0700, true);
-        [$code, $line] = $this->supervise(
-            $this->phpChild($this->markerCode() . 'fwrite(STDERR, str_repeat("A", 20000));'),
-            $base
-        );
-        self::assertTrue($code === 1, 'oversized stderr line with valid evidence must fail');
-        self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'oversized stderr line with valid evidence must publish the supervisor token');
-        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after a post-exit scan rejection');
+        foreach (["\n", ''] as $eol) {
+            [$code, $line] = $this->supervise(
+                $this->phpChild($this->markerCode() . 'fwrite(STDERR, str_repeat("A", 20000) . ' . var_export($eol, true) . ');'),
+                $base
+            );
+            self::assertTrue($code === 1, 'oversized stderr line with valid evidence must fail');
+            self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'oversized stderr line with valid evidence must publish the supervisor token');
+            self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after a post-exit scan rejection');
+        }
         rmdir($base);
     }
 
     public function test_post_exit_line_scan_accepts_short_line_with_valid_evidence(): void
     {
-        // Positive control paired with the long-line test above:
-        // IDENTICAL child and identical valid success evidence, but
-        // the stderr line is short (under D2W_CAPTURE_LINE_MAX).
-        // This case must be ACCEPTED; together the pair proves the
-        // post-exit line-length check is the deciding cause.
+        // Positive controls paired with the long-line test above:
+        // IDENTICAL child and identical valid success evidence, same
+        // filler byte, same stream — only the length differs (16
+        // bytes, well below D2W_CAPTURE_LINE_MAX), in the same two
+        // termination shapes (newline-terminated and newline-less).
+        // Both must be ACCEPTED. Mutations traced (INFERENCE —
+        // traced from the scan code, not run locally; PHP-WASM
+        // proc_open unavailable): removing the line-length check
+        // makes the long cases succeed, failing their code/token
+        // assertions; a mutant rejecting every newline-less stderr
+        // line fails the newline-less control; a mutant rejecting
+        // all stderr fails both controls. So the pairs isolate the
+        // line-length check as the deciding cause.
         $base = $this->workDir . '/scanokbase';
         mkdir($base, 0700, true);
-        [$code, $line] = $this->supervise(
-            $this->phpChild($this->markerCode() . 'fwrite(STDERR, "short diagnostic line\n");'),
-            $base
-        );
-        self::assertTrue($code === 0, 'short stderr line with valid evidence must be accepted');
-        self::assertTrue($line === 'DAY2_FIXTURE_OK status=ok', 'short stderr line with valid evidence must publish the fixed OK line');
-        self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after an accepted run');
+        foreach (["\n", ''] as $eol) {
+            [$code, $line] = $this->supervise(
+                $this->phpChild($this->markerCode() . 'fwrite(STDERR, str_repeat("A", 16) . ' . var_export($eol, true) . ');'),
+                $base
+            );
+            self::assertTrue($code === 0, 'short stderr line with valid evidence must be accepted');
+            self::assertTrue($line === 'DAY2_FIXTURE_OK status=ok', 'short stderr line with valid evidence must publish the fixed OK line');
+            self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after an accepted run');
+        }
         rmdir($base);
     }
 
@@ -253,14 +267,19 @@ final class Day2FixtureSupervisorTest extends TestCase
         // state is not covered. Descendants are NOT covered by the
         // termination (LIMITATION, stated in the supervisor header);
         // this child has none.
+        // Skip condition: /bin/sh absent. On the CI runners
+        // (ubuntu-latest) /bin/sh is always present (dash), so the
+        // case runs there (INFERENCE from the runner image, not from
+        // this sandbox).
         if (!is_file('/bin/sh')) {
             self::markTestSkipped('SIGTERM-escalation case needs /bin/sh');
         }
         $base = $this->workDir . '/killbase';
         mkdir($base, 0700, true);
+        $pidFile = $base . '/child.pid';
         $start = microtime(true);
         [$code, $line] = $this->supervise(
-            ['/bin/sh', '-c', "trap '' TERM; while :; do printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; done"],
+            ['/bin/sh', '-c', 'echo $$ > ' . var_export($pidFile, true) . "; trap '' TERM; while :; do printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'; done"],
             $base
         );
         $elapsed = microtime(true) - $start;
@@ -268,6 +287,21 @@ final class Day2FixtureSupervisorTest extends TestCase
         self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'SIGTERM-ignoring flooding child must publish the supervisor token');
         self::assertTrue($elapsed < 30, 'SIGTERM-ignoring flooding child must be SIGKILLed within the bounded grace on the normal path');
         self::assertTrue((glob($base . '/d2w-sup-*') ?: []) === [], 'private dir must be removed after SIGKILL escalation');
+        // The child recorded its own PID before flooding; after the
+        // supervisor returns, that process must really be GONE (a
+        // version of this test that only checks token/time/dir would
+        // also pass if the child were left running).
+        self::assertTrue(is_file($pidFile), 'SIGTERM-ignoring child must record its pid');
+        $childPid = (int) trim((string) file_get_contents($pidFile));
+        self::assertTrue($childPid > 0, 'recorded child pid must be positive');
+        if (function_exists('posix_kill')) {
+            self::assertTrue(!posix_kill($childPid, 0), 'escalated child process must be gone after the escalation');
+        } elseif (is_dir('/proc')) {
+            self::assertTrue(!is_dir('/proc/' . $childPid), 'escalated child process must be gone after the escalation');
+        } else {
+            self::markTestSkipped('no posix_kill and no /proc available to assert child death');
+        }
+        unlink($pidFile);
         rmdir($base);
     }
 
@@ -383,8 +417,15 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_stale_env_file_is_removed_and_cannot_prove_success(): void
     {
+        // Isolation: the child prints a VALID completion marker and
+        // creates NO new env file, so the ONLY failing success
+        // condition is the env-presence condition; a stale env file
+        // planted beforehand must be removed by the supervisor and
+        // must not prove success.
         file_put_contents($this->envFile, "DAY2_STALE=1\n");
-        [$code, $line] = $this->supervise($this->phpChild('exit(0);'));
+        [$code, $line] = $this->supervise($this->phpChild(
+            'fwrite(STDOUT, "DAY2_FIXTURE_COMPLETE nonce=" . getenv("DAY2_FIXTURE_NONCE") . "\n");'
+        ));
         self::assertTrue($code === 1, 'exit 0 without completion evidence must fail');
         self::assertTrue($line === 'DAY2_FIXTURE_ERROR step=supervisor', 'stale env file must not prove success');
         self::assertFileDoesNotExist($this->envFile);
@@ -560,21 +601,38 @@ final class Day2FixtureSupervisorTest extends TestCase
 
     public function test_child_guard_requires_both_markers(): void
     {
+        // d2w_is_supervised_child requires THREE things: the argv
+        // flag, DAY2_FIXTURE_SUPERVISED === '1', and a nonce matching
+        // /^[a-f0-9]{32}$/. Each subprocess case below violates
+        // EXACTLY ONE requirement and satisfies the other two, so
+        // each rejection isolates that requirement; the positive
+        // control (all three satisfied) is asserted in-process on
+        // the guard function itself, because a subprocess that
+        // passes the guard proceeds into WordPress-dependent
+        // seeding and cannot succeed end-to-end in the Unit suite.
         $fixture = dirname(__DIR__) . '/fixtures/pilot-day2-workflows-fixture.php';
+        $baseEnv = getenv() ?: [];
+        unset($baseEnv['WP_HOME'], $baseEnv['DAY2_FIXTURE_SUPERVISED'], $baseEnv['DAY2_FIXTURE_NONCE']);
         $cases = [
-            'arg only' => [[PHP_BINARY, $fixture, '--d2w-supervised-child'], []],
-            'env only' => [[PHP_BINARY, $fixture], ['DAY2_FIXTURE_SUPERVISED' => '1', 'DAY2_FIXTURE_NONCE' => str_repeat('a', 32)]],
-            'nonce only' => [[PHP_BINARY, $fixture], ['DAY2_FIXTURE_NONCE' => str_repeat('b', 32)]],
+            'argv flag missing only' => [
+                [PHP_BINARY, $fixture],
+                ['DAY2_FIXTURE_SUPERVISED' => '1', 'DAY2_FIXTURE_NONCE' => str_repeat('a', 32)],
+            ],
+            'supervised marker missing only' => [
+                [PHP_BINARY, $fixture, '--d2w-supervised-child'],
+                ['DAY2_FIXTURE_NONCE' => str_repeat('b', 32)],
+            ],
+            'nonce missing only' => [
+                [PHP_BINARY, $fixture, '--d2w-supervised-child'],
+                ['DAY2_FIXTURE_SUPERVISED' => '1'],
+            ],
+            'nonce malformed only' => [
+                [PHP_BINARY, $fixture, '--d2w-supervised-child'],
+                ['DAY2_FIXTURE_SUPERVISED' => '1', 'DAY2_FIXTURE_NONCE' => 'not-a-hex-nonce'],
+            ],
         ];
         foreach ($cases as $label => [$command, $extraEnv]) {
-            $env = array_merge(getenv() ?: [], $extraEnv);
-            unset($env['WP_HOME']);
-            if ($label !== 'env only') {
-                unset($env['DAY2_FIXTURE_SUPERVISED']);
-            }
-            if ($label === 'arg only') {
-                unset($env['DAY2_FIXTURE_SUPERVISED'], $env['DAY2_FIXTURE_NONCE']);
-            }
+            $env = array_merge($baseEnv, $extraEnv);
             $proc = proc_open($command, [0 => ['file', '/dev/null', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes, null, $env);
             self::assertIsResource($proc, 'guard case could not launch: ' . $label);
             $out = stream_get_contents($pipes[1]);
@@ -588,5 +646,20 @@ final class Day2FixtureSupervisorTest extends TestCase
             // export cannot republish child output.
             self::assertTrue(($out . $err) === "DAY2_FIXTURE_ERROR step=supervisor\n", 'guard case must print only the fixed token: ' . $label);
         }
+        // Positive control: all three requirements satisfied.
+        $previousSupervised = getenv('DAY2_FIXTURE_SUPERVISED');
+        $previousNonce = getenv('DAY2_FIXTURE_NONCE');
+        putenv('DAY2_FIXTURE_SUPERVISED=1');
+        putenv('DAY2_FIXTURE_NONCE=' . str_repeat('c', 32));
+        try {
+            self::assertTrue(
+                d2w_is_supervised_child(['--d2w-supervised-child']) === true,
+                'guard must accept argv flag + supervised marker + well-formed nonce together'
+            );
+        } finally {
+            putenv($previousSupervised === false ? 'DAY2_FIXTURE_SUPERVISED' : 'DAY2_FIXTURE_SUPERVISED=' . $previousSupervised);
+            putenv($previousNonce === false ? 'DAY2_FIXTURE_NONCE' : 'DAY2_FIXTURE_NONCE=' . $previousNonce);
+        }
     }
+
 }

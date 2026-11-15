@@ -516,13 +516,20 @@ def _closed_code(candidate):
     return candidate if candidate in _ERROR_CODES else "other"
 
 
-#: Posted ids are retained only as small diagnostic integers. Maximum is
-#: 2**31 - 1 (signed INT max): every id the fixture seeds in this
-#: acceptance run is a fresh-install auto-increment far below it, while
-#: phone-shaped digit strings (an 11-digit mobile is ~9.1e9) exceed it and
-#: are OMITTED, never printed. The ids are evidence/comparison values
-#: only; omitting an out-of-bound id cannot change a journey verdict,
-#: because `observe_hold_attempt` compares against the small fixture id.
+#: Posted ids are retained only when 0 < id <= 2**31 - 1 (signed INT
+#: max, and at most 10 ASCII digits per _POSTED_ID_RE): ids above the
+#: bound are OMITTED, never printed. CORRECTED CLAIM (round 14): the
+#: bound does NOT omit every phone-shaped value — a phone-shaped
+#: number at or below 2**31 - 1 (e.g. a 10-digit value like
+#: 912,345,678) IS retained and printed by describe(); typical
+#: 11-digit mobiles (~9.1e9) exceed the bound and are omitted. Every
+#: id the fixture seeds in this acceptance run is a fresh-install
+#: auto-increment far below the bound (INFERENCE from the fixture's
+#: fresh-install seeding, not a proven maximum), so lowering the
+#: bound was NOT done: no provably-safe lower bound is known. The
+#: ids are evidence/comparison values only; omitting an out-of-bound
+#: id cannot change a journey verdict, because
+#: `observe_hold_attempt` compares against the small fixture id.
 _MAX_POSTED_ID = 2147483647
 _REQUEST_ID_KEYS = ("slot_id", "clinician_id", "location_id")
 _REQUEST_KEYS = ("slot_id", "slot_date", "slot_time", "clinician_id", "location_id", "patient_id")

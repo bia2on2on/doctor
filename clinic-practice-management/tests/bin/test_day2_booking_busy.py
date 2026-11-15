@@ -65,10 +65,22 @@ class _RedactedAssertions:
     is written against CPython 3.x behaviour and is itself covered by
     AssertionOutputRedactionTest below / in the failure-report suite.
     It returns the explicit msg when one is given (callers pass fixed
-    strings only) and a fixed placeholder otherwise, so operand values
-    can never be printed regardless of which assertion failed. This is
-    defence in depth ON TOP of the internal-comparison assertions used
-    throughout this file, not a replacement for them.
+    strings only) and a fixed placeholder otherwise.
+
+    QUALIFIED SCOPE (round 14): this covers only assertion methods
+    that route their failure message through _formatMessage (on the
+    CPython 3.11 unittest/case.py read for this change: assertTrue,
+    assertFalse, assertEqual, assertNotEqual, assertIn, assertNotIn,
+    assertRegex, assertNotRegex, assertLess, assertLessEqual,
+    assertGreater, assertGreaterEqual, assertRaises — the methods
+    these suites use). Helpers that bypass _formatMessage
+    (assertSequenceEqual raises failureException directly with the
+    operand's repr on a type mismatch; assertListEqual /
+    assertTupleEqual route through it; assertSetEqual calls fail()
+    with exception text) are FORBIDDEN here and are enforced by an
+    AST allowlist test in test_pilot_day2_failure_report.py. Defence
+    in depth ON TOP of the internal-comparison assertions, not a
+    replacement for them.
     """
 
     def _formatMessage(self, msg, standardMsg):
