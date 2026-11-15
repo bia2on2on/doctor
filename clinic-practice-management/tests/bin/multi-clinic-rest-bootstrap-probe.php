@@ -101,7 +101,6 @@ use ClinicCore\Bootstrap\App;
 // ============================================================================
 
 $probePid      = getmypid();
-$phpBinary     = PHP_BINARY;
 $pluginRoot    = dirname(__DIR__, 2);
 $pluginFile    = $pluginRoot . '/clinic-practice-management.php';
 $testsDir      = rtrim((string) (getenv('WP_TESTS_DIR') ?: '/tmp/wordpress-test-lib'), '/');
@@ -118,30 +117,127 @@ $out = static function (string $line): void {
     fwrite(STDOUT, $line . PHP_EOL);
 };
 
+/**
+ * Fixed-schema machine line. ONLY key=value tokens with keys from a fixed set
+ * per event are ever emitted; values are ints, fixed vocabularies or tokens
+ * matching a strict charset. The workflow publishes ONLY the projection of
+ * these lines (bin/integration_evidence.py red1-probe) — never raw output.
+ *
+ * @param array<string, scalar> $fields
+ */
+$emitProbe = static function (array $fields): void {
+    $parts = [];
+    foreach ($fields as $key => $value) {
+        $parts[] = $key . '=' . (string) $value;
+    }
+    fwrite(STDOUT, 'RED1_PROBE v1 ' . implode(' ', $parts) . PHP_EOL);
+};
+
+
+/**
+ * Last-resort fatal handler: PHP errors bypass every exit() above. Emits the
+ * fixed `event=fatal` line so the projection still says what died, with
+ * class/file/line only — never a message.
+ */
+register_shutdown_function(static function (): void {
+    $err = error_get_last();
+    if (!is_array($err)) {
+        return;
+    }
+    $type = (int) ($err['type'] ?? 0);
+    $fatalTypes = [E_ERROR, E_PARSE, E_CORE_ERROR, E_COMPILE_ERROR, E_USER_ERROR];
+    if (!in_array($type, $fatalTypes, true)) {
+        return; // a mere warning that happened before a clean exit is not a fatal
+    }
+    $class = match ($type) {
+        E_PARSE => 'ParseError',
+        E_COMPILE_ERROR, E_CORE_ERROR => 'CompileError',
+        default => 'Error',
+    };
+    $file = isset($err['file']) ? basename((string) $err['file']) : 'unknown';
+    if (preg_match('/\A[A-Za-z0-9_.-]{1,80}\z/', $file) !== 1) {
+        $file = 'unknown';
+    }
+    $line = isset($err['line']) ? (int) $err['line'] : 0;
+    fwrite(STDOUT, 'RED1_PROBE v1 event=fatal class=' . $class . ' file=' . $file . ' line=' . $line . PHP_EOL);
+});
+
+// RED1_PROBE v1 fixed-schema output starts here.
+$emitProbe(['event' => 'start']);
+
+/**
+ * A REST envelope `code` is printed only if it is a member of the exact
+ * bounded vocabulary below; anything else prints as `unavailable`. The list
+ * is the same fixed set the integration-evidence projector allow-lists
+ * (bin/integration_evidence.py REST_CODES): WordPress core rest_* codes plus
+ * the source-verified product booking/scope-envelope codes. Never prints
+ * messages. Keep in sync with REST_CODES — a divergence fails closed on both
+ * sides (extra words never pass, missing words project as unavailable).
+ *
+ * @param mixed $data
+ */
+$boundedCode = static function ($data): string {
+    static $allow = [
+        'rest_no_route' => true,
+        'rest_invalid_param' => true,
+        'rest_missing_callback_param' => true,
+        'rest_invalid_handler' => true,
+        'rest_forbidden' => true,
+        'rest_not_logged_in' => true,
+        'rest_forbidden_context' => true,
+        'CLINIC_SCOPE_REQUIRED' => true,
+        'CLINIC_SCOPE_UNAVAILABLE' => true,
+        'CLINIC_NOT_FOUND' => true,
+        'CLINIC_PERMISSION_DENIED' => true,
+        'CLINIC_UNAUTHORIZED' => true,
+        'CLINIC_VALIDATION_FAILED' => true,
+        'CLINIC_INTERNAL_ERROR' => true,
+        'CLINIC_HOLD_EXPIRED' => true,
+        'CLINIC_POLICY_VIOLATION' => true,
+        'CLINIC_PATIENT_SELECTION_REQUIRED' => true,
+        'CLINIC_INVALID_TRANSITION' => true,
+        'CLINIC_SLOT_AMBIGUOUS' => true,
+        'CLINIC_DUPLICATE_IN_FLIGHT' => true,
+        'CLINIC_SLOT_TAKEN' => true,
+        'CLINIC_SUSPENDED' => true,
+        'CLINIC_DUPLICATE_APPOINTMENT' => true,
+    ];
+    $code = is_array($data) ? ($data['code'] ?? '') : '';
+    if (!is_string($code) || !isset($allow[$code])) {
+        return 'unavailable';
+    }
+
+    return $code;
+};
+
 $out('=== RED 1 — process-fresh multi-Clinic REST bootstrap probe ===');
-$out('process: pid=' . $probePid . ' php=' . $phpBinary . ' argv=' . implode(' ', $_SERVER['argv'] ?? []));
-$out('plugin : ' . $pluginFile);
-$out('wp     : WP_TESTS_DIR=' . $testsDir . ' WP_CORE_DIR=' . $coreDir);
-$out('db     : ' . $dbName . '@' . $dbHost . ' (isolated from the PHPUnit suite database)');
+$out('process: pid=' . (int) $probePid);
+$out('plugin : clinic-practice-management.php');
+$out('wp     : WP_TESTS_DIR/WP_CORE_DIR configured');
+$out('db     : isolated probe database (isolated from the PHPUnit suite database)');
 
 if (!is_file($pluginFile)) {
-    fwrite(STDERR, 'INVALID RED (class D): plugin main file not found at ' . $pluginFile . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): plugin main file not found' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'plugin_file']);
     exit(2);
 }
 
 $autoload = $pluginRoot . '/vendor/autoload.php';
 if (!is_file($autoload)) {
-    fwrite(STDERR, 'INVALID RED (class D): composer autoload missing at ' . $autoload . ' — run `composer install`.' . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): composer autoload missing — run `composer install`.' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'autoload']);
     exit(2);
 }
 require_once $autoload;
 
 if (!is_dir($testsDir . '/includes')) {
-    fwrite(STDERR, 'INVALID RED (class D): WP test library missing at ' . $testsDir . ' — run tests/bin/install-wp-tests.sh.' . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): WP test library missing — run tests/bin/install-wp-tests.sh.' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'test_library']);
     exit(2);
 }
 if (!is_file($coreDir . 'wp-settings.php')) {
-    fwrite(STDERR, 'INVALID RED (class D): WP core missing at ' . $coreDir . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): WP core missing' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'core']);
     exit(2);
 }
 
@@ -151,19 +247,23 @@ if (!is_file($coreDir . 'wp-settings.php')) {
 
 $mysqli = @new mysqli($dbHost, $dbUser, $dbPass);
 if ($mysqli->connect_errno !== 0) {
-    fwrite(STDERR, 'INVALID RED (class D): mysqli connect failed: ' . $mysqli->connect_error . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): mysqli connect failed (driver detail suppressed)' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'database']);
     exit(2);
 }
 if (!$mysqli->query('DROP DATABASE IF EXISTS `' . $dbName . '`')) {
-    fwrite(STDERR, 'INVALID RED (class D): DROP DATABASE failed: ' . $mysqli->error . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): DROP DATABASE failed (driver detail suppressed)' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'database']);
     exit(2);
 }
 if (!$mysqli->query('CREATE DATABASE `' . $dbName . '` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci')) {
-    fwrite(STDERR, 'INVALID RED (class D): CREATE DATABASE failed: ' . $mysqli->error . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): CREATE DATABASE failed (driver detail suppressed)' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'database']);
     exit(2);
 }
 $mysqli->close();
-$out('[PASS] S1 isolated probe database created (dropped + re-created): ' . $dbName);
+$out('[PASS] S1 isolated probe database created (dropped + re-created)');
+$emitProbe(['event' => 'step', 'step' => 'S1', 'result' => 'pass']);
 
 // ============================================================================
 // 2) Isolated wp-tests-config for this probe only.
@@ -175,7 +275,8 @@ $out('[PASS] S1 isolated probe database created (dropped + re-created): ' . $dbN
 
 $configDir = sys_get_temp_dir() . '/cpms-red1-probe-' . $probePid;
 if (!is_dir($configDir) && !@mkdir($configDir, 0777, true) && !is_dir($configDir)) {
-    fwrite(STDERR, 'INVALID RED (class D): cannot create ' . $configDir . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): cannot create probe config directory' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'precondition']);
     exit(2);
 }
 
@@ -206,7 +307,8 @@ $configBody = str_replace(
 );
 $configFile = $configDir . '/wp-tests-config.php';
 if (file_put_contents($configFile, $configBody) === false) {
-    fwrite(STDERR, 'INVALID RED (class D): cannot write ' . $configFile . PHP_EOL);
+    fwrite(STDERR, 'INVALID RED (class D): cannot write probe config file' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'precondition']);
     exit(2);
 }
 define('WP_TESTS_CONFIG_FILE_PATH', $configFile);
@@ -225,13 +327,14 @@ try {
     require_once $testsDir . '/includes/bootstrap.php';
 } catch (Throwable $e) {
     fwrite(STDERR, 'INVALID RED (class D): WordPress/bootstrap failed before the probe could run: '
-        . get_class($e) . ': ' . $e->getMessage()
-        . ' @ ' . $e->getFile() . ':' . $e->getLine() . PHP_EOL);
+        . get_class($e) . ' @ ' . basename($e->getFile()) . ':' . (int) $e->getLine() . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'bootstrap']);
     exit(3);
 }
 
 if (!function_exists('rest_do_request') || !class_exists(WP_REST_Request::class)) {
     fwrite(STDERR, 'INVALID RED (class D): REST API not available after WordPress bootstrap.' . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'bootstrap']);
     exit(3);
 }
 
@@ -243,12 +346,14 @@ try {
     App::migrations()->migrate();
 } catch (Throwable $e) {
     fwrite(STDERR, 'INVALID RED (class D): migration failed: '
-        . get_class($e) . ': ' . $e->getMessage() . PHP_EOL);
+        . get_class($e) . ' @ ' . basename($e->getFile()) . ':' . (int) $e->getLine() . PHP_EOL);
+    $emitProbe(['event' => 'outcome', 'verdict' => 'invalid', 'reason' => 'migration']);
     exit(3);
 }
 
 $schemaVersion = App::migrations()->currentVersion();
-$out('[PASS] S2 WordPress bootstrapped + plugin migrations applied; schema=' . $schemaVersion);
+$out('[PASS] S2 WordPress bootstrapped + plugin migrations applied; schema=' . (int) $schemaVersion);
+$emitProbe(['event' => 'step', 'step' => 'S2', 'result' => 'pass']);
 
 // ============================================================================
 // 5) Step harness (steps S3..S8)
@@ -262,14 +367,16 @@ $firstFailure = null;
  *
  * @param callable():string $fn
  */
-$run = static function (string $id, string $title, callable $fn) use (&$results, &$firstFailure, $out): bool {
+$run = static function (string $id, string $title, callable $fn) use (&$results, &$firstFailure, $out, $emitProbe): bool {
+    $e = null;
     try {
         $detail = (string) $fn();
         $ok     = true;
-    } catch (Throwable $e) {
+    } catch (Throwable $caught) {
+        $e      = $caught;
         $ok     = false;
-        $detail = get_class($e) . ': ' . $e->getMessage()
-            . ' @ ' . basename($e->getFile()) . ':' . $e->getLine();
+        $detail = get_class($e)
+            . ' @ ' . basename($e->getFile()) . ':' . (int) $e->getLine();
 
         // Which CONSTRUCTOR in the rest_api_init chain reached the eager ambient
         // scope dependency? The exception is always raised deep inside
@@ -292,6 +399,29 @@ $run = static function (string $id, string $title, callable $fn) use (&$results,
 
     $out('[' . ($ok ? 'PASS' : 'FAIL') . '] ' . $id . ' ' . $title . ' — ' . $detail);
 
+    if ($ok) {
+        $emitProbe(['event' => 'step', 'step' => $id, 'result' => 'pass']);
+    } else {
+        // Re-derive bounded failure attributes from the raw exception rather
+        // than from the human detail string.
+        $class = 'Error';
+        $file = 'unknown';
+        $line = 0;
+        if (isset($e) && $e instanceof Throwable) {
+            $short = basename(str_replace('\\', '/', get_class($e)));
+            if (preg_match('/\A[A-Za-z_][A-Za-z0-9_]{0,79}\z/', $short) === 1) {
+                $class = $short;
+            }
+            $base = basename((string) $e->getFile());
+            if (preg_match('/\A[A-Za-z0-9_.-]{1,80}\z/', $base) === 1) {
+                $file = $base;
+            }
+            $line = (int) $e->getLine();
+        }
+        $emitProbe(['event' => 'step', 'step' => $id, 'result' => 'fail',
+                    'class' => $class, 'file' => $file, 'line' => $line]);
+    }
+
     return $ok;
 };
 
@@ -305,7 +435,7 @@ $insertRow = static function (string $table, array $data, string $label): int {
 
     $ok = $wpdb->insert($wpdb->prefix . $table, $data);
     if (!$ok) {
-        throw new RuntimeException('fixture insert failed (' . $label . '): ' . $wpdb->last_error);
+        throw new RuntimeException('fixture insert failed (' . $label . ')');
     }
     $id = (int) $wpdb->insert_id;
     if ($id <= 0) {
@@ -427,11 +557,7 @@ $run('S3', 'seed two non-trivial real Clinics + persisted Clinic B clinician + f
 
     $fixture['slotB'] = ['slot_id' => $slotId, 'date' => $date, 'time' => $time];
 
-    return 'org=' . $fixture['orgId']
-        . ' clinicA=' . $fixture['clinicAId']
-        . ' clinicB=' . $fixture['clinicBId']
-        . ' clinicianB=' . $fixture['clinicianB']
-        . ' slotB=' . $slotId . ' (' . $date . ' ' . $time . ' Asia/Tehran)';
+    return 'clinics=2 (non-trivial ids) · clinicianB=1 · slotB=free-future (ids suppressed)';
 });
 
 // ============================================================================
@@ -502,25 +628,28 @@ $routeRegistered = static function (string $route): void {
     }
 };
 
-$run('S6', 'GET /clinic/v1/health is reachable (HTTP 200)', static function () use ($routeRegistered): string {
+$emitHttp = static function (string $step, int $status, string $code) use ($emitProbe): void {
+    $emitProbe(['event' => 'http', 'step' => $step, 'status' => $status, 'code' => $code]);
+};
+
+$run('S6', 'GET /clinic/v1/health is reachable (HTTP 200)', static function () use ($routeRegistered, $emitHttp): string {
     $routeRegistered('/clinic/v1/health');
 
     $response = rest_do_request(new WP_REST_Request('GET', '/clinic/v1/health'));
     $status   = $response->get_status();
+    $emitHttp('S6', (int) $status, 'unavailable');
     if ($status !== 200) {
-        throw new RuntimeException(
-            'health returned HTTP ' . $status . ' — ' . wp_json_encode($response->get_data())
-        );
+        throw new RuntimeException('health returned HTTP ' . $status);
     }
 
-    return 'HTTP 200 · ' . wp_json_encode($response->get_data());
+    return 'HTTP 200';
 });
 
 // ============================================================================
 // S7 — anonymous A1 for the persisted Clinic B clinician must reach the route
 // ============================================================================
 
-$run('S7', 'anonymous A1 GET /clinic/v1/availability for the Clinic B clinician reaches the product route', static function () use ($fixture, $routeRegistered): string {
+$run('S7', 'anonymous A1 GET /clinic/v1/availability for the Clinic B clinician reaches the product route', static function () use ($fixture, $routeRegistered, $boundedCode, $emitHttp): string {
     $routeRegistered('/clinic/v1/availability');
 
     wp_set_current_user(0);
@@ -531,7 +660,8 @@ $run('S7', 'anonymous A1 GET /clinic/v1/availability for the Clinic B clinician 
     $response = rest_do_request($request);
     $status   = $response->get_status();
     $data     = $response->get_data();
-    $code     = is_array($data) ? (string) ($data['code'] ?? '') : '';
+    $code     = $boundedCode($data);
+    $emitHttp('S7', (int) $status, $code);
 
     if ($status === 404 && $code === 'rest_no_route') {
         throw new RuntimeException(
@@ -539,15 +669,14 @@ $run('S7', 'anonymous A1 GET /clinic/v1/availability for the Clinic B clinician 
         );
     }
 
-    return 'HTTP ' . $status . ' · code=' . ($code === '' ? '(none — normal envelope)' : $code)
-        . ' · body=' . substr((string) wp_json_encode($data), 0, 220);
+    return 'HTTP ' . (int) $status . ' · code=' . ($code === '' ? '(none — normal envelope)' : $code);
 });
 
 // ============================================================================
 // S8 — anonymous A4 for Clinic B must reach a normal product envelope
 // ============================================================================
 
-$run('S8', 'anonymous A4 POST /clinic/v1/booking/quote for Clinic B reaches a normal product envelope', static function () use ($fixture, $routeRegistered): string {
+$run('S8', 'anonymous A4 POST /clinic/v1/booking/quote for Clinic B reaches a normal product envelope', static function () use ($fixture, $routeRegistered, $boundedCode, $emitHttp): string {
     $routeRegistered('/clinic/v1/booking/quote');
 
     wp_set_current_user(0);
@@ -561,7 +690,8 @@ $run('S8', 'anonymous A4 POST /clinic/v1/booking/quote for Clinic B reaches a no
     $response = rest_do_request($request);
     $status   = $response->get_status();
     $data     = $response->get_data();
-    $code     = is_array($data) ? (string) ($data['code'] ?? '') : '';
+    $code     = $boundedCode($data);
+    $emitHttp('S8', (int) $status, $code);
 
     if ($status === 404 && $code === 'rest_no_route') {
         throw new RuntimeException(
@@ -569,8 +699,7 @@ $run('S8', 'anonymous A4 POST /clinic/v1/booking/quote for Clinic B reaches a no
         );
     }
 
-    return 'HTTP ' . $status . ' · code=' . ($code === '' ? '(none — normal envelope)' : $code)
-        . ' · body=' . substr((string) wp_json_encode($data), 0, 220);
+    return 'HTTP ' . (int) $status . ' · code=' . ($code === '' ? '(none — normal envelope)' : $code);
 });
 
 // ============================================================================
@@ -593,5 +722,17 @@ if ($firstFailure !== null) {
 $out('VERDICT: ' . ($failed === 0
     ? 'NO RED — REST bootstrap was scope-neutral at this head (report honestly, do not claim RED)'
     : 'RED reproduced — process-fresh multi-Clinic REST bootstrap fails at ' . $firstFailure));
+
+if ($failed === 0) {
+    $emitProbe(['event' => 'outcome', 'verdict' => 'pass',
+                'steps' => count($results), 'passed' => count($results), 'failed' => 0]);
+} else {
+    $outcome = ['event' => 'outcome', 'verdict' => 'red',
+                'steps' => count($results), 'passed' => count($results) - $failed, 'failed' => $failed];
+    if (is_string($firstFailure) && preg_match('/\A(S[1-8])\z/', $firstFailure) === 1) {
+        $outcome['first_failure'] = $firstFailure;
+    }
+    $emitProbe($outcome);
+}
 
 exit($failed === 0 ? 0 : 1);

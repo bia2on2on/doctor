@@ -693,7 +693,9 @@ jobs:
 
   http-profile:
     name: Real HTTP profile (MySQL 8, same runner)
-    runs-on: ubuntu-latest
+    # EXPIRY 2026-12-15: temporary Ubuntu pin, see
+    # docs/decisions/2026-11-06-ci-environment-repair.md.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     services:
       mysql:

@@ -280,6 +280,19 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
         );
     }
 
+    private function waitForSendWindow(): int
+    {
+        $deadline = hrtime(true) + 65_000_000_000;
+        while (hrtime(true) < $deadline) {
+            $now = time();
+            if (60 - ($now % 60) >= 25) {
+                return intdiv($now, 60);
+            }
+            usleep(100000);
+        }
+        self::fail('Timed out waiting for a send rate-limit window with at least 25 seconds remaining');
+    }
+
     public function testRestRejectsMissingNonceXssAndAppliesSendRateLimit(): void
     {
         $world = $this->world();
@@ -298,6 +311,7 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
         self::assertSame(403, $no_nonce->get_status());
         self::assertSame('CLINIC_INVALID_NONCE', $this->iv1_code($no_nonce));
 
+        $send_window = $this->waitForSendWindow();
         $xss = $this->iv1_dispatch('POST', $route, [], $this->iv1_headers((int) $world['clinic']), [
             'body' => '<img src=x onerror="alert(1)">پیام تست',
         ]);
@@ -318,6 +332,8 @@ final class StaffMessagingSecurityTest extends WP_UnitTestCase
                 break;
             }
         }
+        $last_send_window = intdiv(time(), 60);
+        self::assertSame($send_window, $last_send_window, 'Send window boundary crossed: test-environment timing condition, not a rate-limit product result');
         self::assertSame(429, $limited->get_status());
         self::assertSame('CLINIC_RATE_LIMITED', $this->iv1_code($limited));
 

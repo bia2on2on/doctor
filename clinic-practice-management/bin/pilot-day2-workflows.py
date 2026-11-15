@@ -37,11 +37,16 @@ strictly isolated BrowserContexts per persona:
     `Loc A2`), cross-Clinic denial (`Clinic B`), zero patient PHI leakage, and
     `390px` + `320px` mobile layouts (`scrollWidth <= innerWidth + 1`).
 
-Evidence lines contain only booleans, counts, HTTP statuses, and non-sensitive
-numeric IDs — never passwords, OTP codes, mobile numbers, patient names, nonces,
-or cookies. One bounded exception, on a `CLINIC_BOOKING_BUSY` failure only: the
-allow-listed, sanitized `booking.lock_read_failed` cause (read label, integer
-errno, truncated/digit-redacted sql_error, numeric IDs) is read back from the
+Evidence lines contain only booleans, counts, HTTP statuses, and retained
+numeric IDs (posted slot/clinician/location ids at or below 2**31 - 1; a
+phone-shaped value at or below that bound IS printed — see the _MAX_POSTED_ID
+note). Because retained IDs are printed, a printed numeric value can
+coincide with the synthetic fixture OTP digits (KNOWN_OTP) or a phone-shaped
+number; only synthetic fixture data is used (INFERENCE — by fixture design).
+Passwords, patient names, nonces, and cookies are not read into evidence. One
+bounded exception, on a `CLINIC_BOOKING_BUSY` failure only: the
+fail-closed `booking.lock_read_failed` projection (fixed read label, integer
+errno, errno-derived category, numeric IDs; never driver text) is read back from the
 operational-log table — see `day2_booking_busy`.
 """
 
@@ -50,12 +55,13 @@ import hmac
 import json
 import os
 import re
+from datetime import date
 import subprocess
 import sys
 import time
 from urllib.parse import parse_qs, urlparse
 
-from day2_booking_busy import busy_suffix_for
+from day2_booking_busy import busy_suffix_for, validate_busy_suffix
 
 SELFTEST = "--test" in sys.argv[1:]
 
@@ -73,26 +79,182 @@ SYN_LAST_NAME = "توکلی"
 results = []
 failures = []
 
+#: Publication bound for every numeric value interpolated into
+#: PASS/FAIL/INFO output (same bound as _MAX_POSTED_ID below).
+_MAX_PUBLISHED_NUM = 2147483647
+_DIGIT_RUN_RE = re.compile(r"[0-9]+")
+
+
+def _bounded_num(value):
+    """Integer in 0..2**31-1 unchanged; anything else -> fixed token."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return "n/a"
+    return value if 0 <= value <= _MAX_PUBLISHED_NUM else "n/a"
+
+
+def _bound_digit_runs(text):
+    """Bound every digit run in an output line via _bounded_num."""
+    if not isinstance(text, str):
+        return text
+
+    def _repl(match):
+        run = match.group(0)
+        try:
+            value = int(run)
+        except ValueError:
+            return "n/a"
+        return run if _bounded_num(value) != "n/a" else "n/a"
+
+    return _DIGIT_RUN_RE.sub(_repl, text)
+
 
 def ok(key, title, detail=""):
+    detail = _bound_digit_runs(detail)
     results.append({"key": key, "status": "PASS", "detail": detail})
     print(f"PASS {key} — {title}" + (f" — {detail}" if detail else ""))
 
 
+def _error_kind(err):
+    """Closed vocabulary for an exception's type — never its text."""
+    if isinstance(err, AssertionError):
+        return "assertion"
+    if isinstance(err, subprocess.TimeoutExpired):
+        return "timeout"
+    if isinstance(err, TimeoutError):
+        return "timeout"
+    if isinstance(err, RuntimeError):
+        return "runtime"
+    if isinstance(err, ValueError):
+        return "value"
+    if isinstance(err, TypeError):
+        return "type"
+    if isinstance(err, KeyError):
+        return "key"
+    return "other"
+
+
+#: Stage tokens `visible_or_diagnose` / the hold-request raise can print.
+#: Kept in step with `pilot-day2-failure-report.STAGES` (the workflow
+#: contract cross-check derives that set from this file's stage literals).
+_STAGE_TOKENS = (
+    "otp-mobile",
+    "otp-code",
+    "hold-countdown",
+    "hold-request",
+    "confirm-btn",
+    "names-form",
+    "receipt",
+)
+_STAGE_VALUE_RE = re.compile(r"(?:^|\s)stage=([a-z0-9-]+)")
+
+
+class BusyJourneyFailure(AssertionError):
+    """A journey failure carrying ONLY a validated busy diagnosis.
+
+    `busy_suffix` is re-projected through `validate_busy_suffix`, so the
+    attribute can hold nothing outside the closed busy schema (state, read
+    label, bounded errno/ids, bounded status, route, viewport), whatever
+    string the caller built. The original exception's text is NOT carried:
+    only its `stage=` token survives, and only when it is one of the closed
+    stage literals this harness itself prints. This restores the busy
+    diagnosis on the FAIL line without restoring arbitrary exception text.
+    """
+
+    def __init__(self, busy_suffix, origin_text=""):
+        self.busy_suffix = validate_busy_suffix(busy_suffix)
+        self.stage = ""
+        if isinstance(origin_text, str):
+            match = _STAGE_VALUE_RE.search(origin_text)
+            if match and match.group(1) in _STAGE_TOKENS:
+                self.stage = match.group(1)
+        super().__init__("journey_failed | journey=A1-public busy_diagnosis=1")
+
+
 def fail(key, title, err):
+    # Fixed schema only: the journey key, the caller's fixed title and a
+    # closed error-kind token. Exception text is never printed or stored:
+    # it can carry database stderr, SQL, lock data or page content, and this
+    # line is piped to the public job log. The one exception is a
+    # `BusyJourneyFailure`, whose validated busy suffix (plus its closed
+    # stage token and the busy code the suffix exists only for) is appended
+    # so the busy diagnosis still reaches the failure-report projection.
+    # The failure itself is unchanged — `failures` still records the key
+    # and main() still exits nonzero.
+    kind = _error_kind(err)
+    detail = f"error_kind={kind}"
+    busy_suffix = validate_busy_suffix(getattr(err, "busy_suffix", ""))
+    if busy_suffix:
+        bits = [detail]
+        stage = getattr(err, "stage", "")
+        if stage in _STAGE_TOKENS:
+            bits.append(f"stage={stage}")
+        bits.append(busy_suffix)
+        # The suffix exists only when a booking call returned this code.
+        bits.append("code=CLINIC_BOOKING_BUSY")
+        detail = " ".join(bits)
+    detail = _bound_digit_runs(detail)
     failures.append(key)
-    results.append({"key": key, "status": "FAIL", "detail": str(err)})
-    print(f"FAIL {key} — {title} — {err}")
+    results.append({"key": key, "status": "FAIL", "detail": detail})
+    print(f"FAIL {key} — {title} — {detail}")
 
 
 def info(line):
-    print(f"INFO {line}")
+    print(f"INFO {_bound_digit_runs(line)}")
+
+
+def _validated_printable(value, pattern):
+    """`value` only when it FULLY matches `pattern`, else the fixed token.
+
+    `re.fullmatch` anchors both ends, so a trailing newline (which a
+    `$`-anchored `match` would tolerate) or any extra character makes the
+    value `invalid` instead of printable.
+    """
+    if isinstance(value, str) and re.fullmatch(pattern, value):
+        return value
+    return "invalid"
+
+
+def _canonical_date(value):
+    """Canonical `YYYY-MM-DD` for a REAL calendar date, else None.
+
+    The value is re-rendered from the parsed date (`date.isoformat()`),
+    never carried as input text: ASCII shape first (hostile Unicode
+    digits and newlines rejected), then calendar validity (Feb 30,
+    month 13 rejected). Output is therefore bounded canonical digits
+    and dashes only — it cannot carry arbitrary text.
+    """
+    if not isinstance(value, str) or not _SLOT_DATE_RE.fullmatch(value):
+        return None
+    try:
+        return date.fromisoformat(value).isoformat()
+    except ValueError:
+        return None
+
+
+def _canonical_time(value):
+    """Canonical `HH:MM:SS` for a real wall-clock time, else None.
+
+    Same contract as `_canonical_date`: ASCII shape, range validity
+    (24:00:00 and 09:60:00 rejected), re-rendered from parsed parts.
+    """
+    if not isinstance(value, str) or not _SLOT_TIME_RE.fullmatch(value):
+        return None
+    parts = [int(part) for part in value.split(":")]
+    if len(parts) == 2:
+        parts.append(0)
+    hour, minute, second = parts
+    if hour > 23 or minute > 59 or second > 59:
+        return None
+    return f"{hour:02d}:{minute:02d}:{second:02d}"
 
 
 def env_req(name):
     val = os.environ.get(name, "").strip()
     if not val and not SELFTEST:
-        raise SystemExit(f"Missing required environment variable: {name}")
+        # Fixed-token path: the missing variable's NAME is not printed
+        # (it is configuration surface); _entry answers this SystemExit
+        # with the same fixed startup token as every other failure.
+        raise SystemExit(1)
     return val
 
 
@@ -146,7 +308,10 @@ def db(sql):
         timeout=30,
     )
     if out.returncode != 0:
-        raise RuntimeError(f"db query failed: {out.stderr.strip()[:300]}")
+        # Never carry database stderr: it can contain SQL, lock data or
+        # values. Only the bounded canonical exit code is reported.
+        rc = out.returncode if isinstance(out.returncode, int) and -255 <= out.returncode <= 255 else "unknown"
+        raise RuntimeError(f"db_failed rc={rc} detail_withheld=1")
     return out.stdout.strip()
 
 
@@ -157,7 +322,12 @@ def db1(sql):
     cell = raw.split("\n")[0].strip()
     if not cell or cell.upper() == "NULL":
         return 0
-    return int(float(cell))
+    try:
+        return int(float(cell))
+    except (TypeError, ValueError, OverflowError):
+        # Database output is untrusted text; never let its bytes ride the
+        # exception (Python's conversion error would quote the cell).
+        raise RuntimeError("db_value_not_numeric") from None
 
 
 def dbrows(sql):
@@ -321,20 +491,101 @@ BOOKING_ROUTES = (
     "/clinic/v1/otp/request",
     "/clinic/v1/otp/verify",
 )
-_ERROR_CODE = re.compile(r"^[A-Z][A-Z0-9_]{1,40}$")
+#: The exact, finite set of error codes the booking/OTP REST endpoints of
+#: this plugin can return, derived from `src/` (each literal is thrown or
+#: emitted there; see the PR report for file:line per code):
+#:  - BookingService BookingException throws + BookingController/RestBase
+#:    error mapping (CLINIC_BOOKING_BUSY … CLINIC_UNAUTHORIZED),
+#:  - RestBase::requireNonce (CLINIC_INVALID_NONCE, RestBase.php:34 —
+#:    reached from every authenticated patient endpoint, e.g.
+#:    BookingController.php:479),
+#:  - RuntimeSchemaGate (CLINIC_SERVICE_UNAVAILABLE for non-admin
+#:    callers, RuntimeSchemaGate.php:34 via OtpController.php:119/151 and
+#:    the gate's own rest_pre_dispatch at :84; and
+#:    CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE, :32/:84, which the
+#:    same gate returns to manage_options callers on these routes),
+#:  - OtpService/OtpException + OtpController (CLINIC_MOBILE_INVALID …
+#:    CLINIC_OTP_DELIVERY_FAILED),
+#:  - `rest_cookie_invalid_nonce`: WordPress core's cookie-nonce failure for
+#:    these same authenticated routes (already exercised by the self-test
+#:    below); WP is platform, not plugin `src/`, and is listed explicitly.
+#: Any other code value — newline-terminated, digit-shaped, SQL-looking,
+#: non-ASCII or arbitrarily long — is retained ONLY as the fixed token
+#: `other`. Membership is an exact string comparison, so no trailing
+#: newline or near-match can pass.
+_ERROR_CODES = frozenset({
+    "CLINIC_BOOKING_BUSY", "CLINIC_DB_SCHEMA_PENDING_UNSUPPORTED_ENGINE",
+    "CLINIC_DUPLICATE_APPOINTMENT",
+    "CLINIC_DUPLICATE_IN_FLIGHT", "CLINIC_HOLD_EXPIRED",
+    "CLINIC_INTERNAL_ERROR", "CLINIC_INVALID_NONCE",
+    "CLINIC_INVALID_TRANSITION",
+    "CLINIC_LICENSE_BLOCKED", "CLINIC_NOT_FOUND",
+    "CLINIC_PATIENT_SELECTION_REQUIRED", "CLINIC_PERMISSION_DENIED",
+    "CLINIC_POLICY_VIOLATION", "CLINIC_SCOPE_REQUIRED",
+    "CLINIC_SERVICE_UNAVAILABLE",
+    "CLINIC_SLOT_AMBIGUOUS", "CLINIC_SLOT_TAKEN", "CLINIC_SUSPENDED",
+    "CLINIC_UNAUTHORIZED", "CLINIC_VALIDATION_FAILED",
+    "CLINIC_MOBILE_INVALID", "CLINIC_OTP_COOLDOWN",
+    "CLINIC_OTP_DAILY_LIMIT", "CLINIC_OTP_DELIVERY_FAILED",
+    "CLINIC_OTP_EXPIRED", "CLINIC_OTP_INVALID", "CLINIC_OTP_LOCKED",
+    "CLINIC_OTP_PURPOSE_INVALID", "CLINIC_RATE_LIMITED",
+    "rest_cookie_invalid_nonce",
+    # WordPress core codes reachable on these routes (WP 7.1.3):
+    # rest_invalid_param / rest_missing_callback_param /
+    # rest_invalid_params (class-wp-rest-request.php:881/924/963/983 —
+    # the watched routes declare required args), rest_invalid_json
+    # (:735), rest_no_route (class-wp-rest-server.php:1220 — method
+    # mismatch on a watched URL), rest_forbidden (:1266 — a permission
+    # callback returning false). Unknown codes still collapse to
+    # `other`; this list is the reachable-and-useful set, not a claim
+    # that core can emit nothing else.
+    "rest_forbidden", "rest_invalid_json", "rest_invalid_param",
+    "rest_invalid_params", "rest_missing_callback_param", "rest_no_route",
+})
+
+
+def _closed_code(candidate):
+    """Exact allowed code literal, `other` for anything else present, "" if absent."""
+    if not isinstance(candidate, str) or candidate == "":
+        return ""
+    return candidate if candidate in _ERROR_CODES else "other"
+
+
+#: Posted ids are retained only when 0 < id <= 2**31 - 1 (signed INT
+#: max, and at most 10 ASCII digits per _POSTED_ID_RE): ids above the
+#: bound are OMITTED, never printed. CORRECTED CLAIM (round 14): the
+#: bound does NOT omit every phone-shaped value — a phone-shaped
+#: number at or below 2**31 - 1 (e.g. a 10-digit value like
+#: 912,345,678) IS retained and printed by describe(); typical
+#: 11-digit mobiles (~9.1e9) exceed the bound and are omitted. Every
+#: id the fixture seeds in this acceptance run is a fresh-install
+#: auto-increment far below the bound (INFERENCE from the fixture's
+#: fresh-install seeding, not a proven maximum), so lowering the
+#: bound was NOT done: no provably-safe lower bound is known. The
+#: ids are evidence/comparison values only; omitting an out-of-bound
+#: id cannot change a journey verdict, because
+#: `observe_hold_attempt` compares against the small fixture id.
+_MAX_POSTED_ID = 2147483647
 _REQUEST_ID_KEYS = ("slot_id", "clinician_id", "location_id")
 _REQUEST_KEYS = ("slot_id", "slot_date", "slot_time", "clinician_id", "location_id", "patient_id")
-_SLOT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-_SLOT_TIME_RE = re.compile(r"^\d{2}:\d{2}(:\d{2})?$")
+#: ASCII digits only, always used with `fullmatch`: `\d` and
+#: `str.isdigit()` accept non-ASCII digits (Arabic-Indic, Persian,
+#: superscripts — the last even crashes `int()`), and `$`-anchored
+#: `match` tolerates a trailing newline. Neither may reach `int()` or
+#: a printed entry inside the Playwright response callback.
+_POSTED_ID_RE = re.compile(r"[0-9]{1,10}")
+_SLOT_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+_SLOT_TIME_RE = re.compile(r"[0-9]{2}:[0-9]{2}(:[0-9]{2})?")
 
 
 class BookingProbe:
     """Sanitized REST outcomes of the public-booking journey.
 
     Every entry keeps only: the REST route, the HTTP status, an allowlisted error
-    code, and the three numeric ids the client itself posted. Tokens, nonces,
-    cookies, mobile numbers and names are never read, so a failure message can be
-    published without leaking anything. The probe exists because the previous
+    code, and the three numeric ids the client itself posted (ids at or
+    below 2**31-1 print, so a printed id can coincide numerically with the
+    synthetic fixture OTP digits). Tokens, nonces, cookies, mobile numbers,
+    names and the server `message` text are not read. The probe exists because the previous
     failure line (`stage=hold-countdown root_state=bookable visible=0`) could not
     distinguish "the server rejected the hold" from "the browser never asked".
     """
@@ -357,18 +608,25 @@ class BookingProbe:
         except Exception:  # noqa: BLE001 - non-JSON error pages are still recorded by status
             payload = None
         if isinstance(payload, dict):
-            raw_message = payload.get("message")
-            if not isinstance(raw_message, str):
-                data_payload = payload.get("data")
-                raw_message = data_payload.get("message") if isinstance(data_payload, dict) else None
-            if isinstance(raw_message, str):
-                # Server-generated error text only (the envelope message), bounded.
-                entry["message"] = " ".join(raw_message.split())[:300]
-            for candidate in (payload.get("code"), (payload.get("data") or {}).get("code")
-                              if isinstance(payload.get("data"), dict) else None):
-                if isinstance(candidate, str) and _ERROR_CODE.match(candidate):
-                    entry["code"] = candidate
-                    break
+            # The envelope `message` is server free text: it is never read or
+            # retained. Entries carry only the closed fields below (route,
+            # status, allowlisted code, posted numeric ids / key names /
+            # validated slot coordinates), because entries are printed via
+            # `info()` to the public job log.
+            candidates = [
+                payload.get("code"),
+                (payload.get("data") or {}).get("code")
+                if isinstance(payload.get("data"), dict) else None,
+            ]
+            strings = [c for c in candidates if isinstance(c, str) and c != ""]
+            if "CLINIC_BOOKING_BUSY" in strings:
+                # A busy diagnosis in ANY code field of the envelope is
+                # never hidden behind an empty/unknown sibling field.
+                entry["code"] = "CLINIC_BOOKING_BUSY"
+            elif strings:
+                # Otherwise the first present field decides: an exact
+                # allowed literal, or the single fixed token `other`.
+                entry["code"] = _closed_code(strings[0])
         try:
             posted = response.request.post_data_json
         except Exception:  # noqa: BLE001
@@ -376,19 +634,29 @@ class BookingProbe:
         if isinstance(posted, dict):
             for key in _REQUEST_ID_KEYS:
                 if key in posted:
-                    try:
-                        entry[key] = int(posted[key])
-                    except (TypeError, ValueError):
+                    raw = posted[key]
+                    if isinstance(raw, bool):
                         continue
+                    if isinstance(raw, int):
+                        value = raw
+                    elif isinstance(raw, str) and _POSTED_ID_RE.fullmatch(raw):
+                        # Exact ASCII [0-9]{1,10}: int() cannot raise here,
+                        # so no value-bearing traceback can escape this
+                        # callback; hostile digit shapes are dropped.
+                        value = int(raw)
+                    else:
+                        continue
+                    if 0 < value <= _MAX_POSTED_ID:
+                        entry[key] = value
             # Key NAMES only (allowlist), plus the two slot time coordinates when
             # they are well formed: enough to tell "stale tuple" from "server guard".
             entry["keys"] = ",".join(key for key in _REQUEST_KEYS if key in posted)
-            posted_date = posted.get("slot_date")
-            if isinstance(posted_date, str) and _SLOT_DATE_RE.match(posted_date):
-                entry["slot_date"] = posted_date
-            posted_time = posted.get("slot_time")
-            if isinstance(posted_time, str) and _SLOT_TIME_RE.match(posted_time):
-                entry["slot_time"] = posted_time
+            canonical_date = _canonical_date(posted.get("slot_date"))
+            if canonical_date is not None:
+                entry["slot_date"] = canonical_date
+            canonical_time = _canonical_time(posted.get("slot_time"))
+            if canonical_time is not None:
+                entry["slot_time"] = canonical_time
         self.entries.append(entry)
 
     def hold_attempts(self, since=0):
@@ -475,7 +743,6 @@ def visible_or_diagnose(page, selector, stage, probe=None, since=0, hold_attempt
                     f" hold_attempt=slot={hold_attempt.get('slot_id')}"
                     f" http={hold_attempt['status']}"
                     f"{' code=' + hold_attempt['code'] if hold_attempt['code'] else ''}"
-                    f"{' msg=' + hold_attempt['message'] if hold_attempt.get('message') else ''}"
                     f"{' keys=' + hold_attempt['keys'] if hold_attempt.get('keys') else ''}"
                     f"{' slot_date=' + hold_attempt['slot_date'] if hold_attempt.get('slot_date') else ''}"
                     f"{' slot_time=' + hold_attempt['slot_time'] if hold_attempt.get('slot_time') else ''}"
@@ -690,7 +957,7 @@ def run_journey_a_public_booking(browser, cfg):
         assert conf_resp.value.status == 200, f"booking/confirm HTTP {conf_resp.value.status}"
         visible_or_diagnose(page_pub, '[data-role="receipt"]', "receipt")
         ref_code = (page_pub.locator('[data-role="reference-code"]').first.text_content() or "").strip()
-        assert re.fullmatch(r"AP-\d{8}-\d{2}", ref_code), "receipt reference_code format invalid"
+        assert re.fullmatch(r"AP-[0-9]{8}-[0-9]{2}", ref_code), "receipt reference_code format invalid"
         page_pub.set_viewport_size({"width": 320, "height": 740})
         page_pub.wait_for_timeout(100)
         assert_no_horizontal_overflow(page_pub, "public-booking-receipt-320")
@@ -705,7 +972,7 @@ def run_journey_a_public_booking(browser, cfg):
     except Exception as exc:  # noqa: BLE001 - enrichment only; original failure wins
         # A 503 CLINIC_BOOKING_BUSY hides the real database cause, which the
         # server already stored as `booking.lock_read_failed` in the
-        # operational log. Append its allow-listed excerpt (plus the viewport
+        # operational log. Append its allow-listed projection (plus the viewport
         # in effect) so the FAIL line — the text CI republishes as an
         # annotation — names the cause instead of only the busy code.
         try:
@@ -713,15 +980,22 @@ def run_journey_a_public_booking(browser, cfg):
             viewport = f"{int(size['width'])}x{int(size['height'])}" if size else ""
         except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
             viewport = ""
+        fail_stage = ""
+        _stage_match = _STAGE_VALUE_RE.search(str(exc))
+        if _stage_match and _stage_match.group(1) in _STAGE_TOKENS:
+            fail_stage = _stage_match.group(1)
         try:
             suffix = busy_suffix_for(
                 probe.entries, dbrows, T("cpms_operational_logs"), viewport,
-                since=journey_start
+                since=journey_start, stage=fail_stage
             )
         except Exception:  # noqa: BLE001 - diagnostics must never mask the real failure
             suffix = ""
         if suffix:
-            raise AssertionError(f"{exc} | journey=A1-public {suffix}") from exc
+            # Keep the validated busy diagnosis, drop the original exception
+            # text (it can carry database or page free text); only its closed
+            # stage token is read, inside BusyJourneyFailure.
+            raise BusyJourneyFailure(suffix, origin_text=str(exc)) from None
         raise
     finally:
         ctx_pub.close()
@@ -894,9 +1168,14 @@ def parse_board_envelope(payload):
     data = payload["data"]
     if not isinstance(data, dict):
         raise AssertionError(f"reception board 'data' is not an object: {type(data).__name__}")
-    date = data.get("date")
-    if not isinstance(date, str) or re.fullmatch(r"\d{4}-\d{2}-\d{2}", date) is None:
-        raise AssertionError(f"reception board 'data.date' is not a Y-m-d string: {date!r}")
+    # Canonical board date (F4): ASCII shape AND real calendar date,
+    # re-rendered from the parsed value. Unicode digits, impossible
+    # dates (2026-02-30) and trailing newlines fail loudly here, and
+    # only the canonical string is ever compared or printed downstream
+    # (the re-anchor INFO line included).
+    date = _canonical_date(data.get("date"))
+    if date is None:
+        raise AssertionError("reception board 'data.date' is not a valid calendar date")
     appointments = data.get("appointments")
     if not isinstance(appointments, list):
         raise AssertionError(f"reception board 'data.appointments' is not a list: {type(appointments).__name__}")
@@ -906,11 +1185,11 @@ def parse_board_envelope(payload):
             raise AssertionError("reception board appointment entry is not an object")
         row_id = row.get("id")
         if not isinstance(row_id, int) or isinstance(row_id, bool) or row_id <= 0:
-            raise AssertionError(f"reception board appointment id is not a positive int: {row_id!r}")
+            raise AssertionError("reception board appointment id is not a positive int")
         if not isinstance(row.get("status"), str) or row["status"] == "":
-            raise AssertionError(f"reception board appointment {row_id} has no status")
+            raise AssertionError("reception board appointment has no status")
         ids.append(row_id)
-    return {"date": date, "appointment_ids": ids}
+    return {"date": date, "appointment_ids": ids}  # date is canonical
 
 
 def anchor_reception_rows(cfg, target_date=None):
@@ -932,17 +1211,17 @@ def anchor_reception_rows(cfg, target_date=None):
     env["WP_HOME"] = WP_DIR
     proc = subprocess.run(cmd, capture_output=True, text=True, env=env, timeout=120)
     out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
     if proc.returncode != 0 or "DAY2_ANCHOR_OK" not in out:
-        raise AssertionError(
-            "reception row anchor failed: exit="
-            f"{proc.returncode} detail={(err or out)[:300]}"
-        )
-    match = re.search(r"\bdate=(\d{4}-\d{2}-\d{2})\b", out)
-    if not match:
-        raise AssertionError(f"reception row anchor returned no date: {out[:200]}")
-    info(out)
-    return match.group(1)
+        # Subprocess stdout/stderr are untrusted free text; report only the
+        # bounded canonical exit code, never the bytes.
+        rc = proc.returncode if isinstance(proc.returncode, int) and -255 <= proc.returncode <= 255 else "unknown"
+        raise AssertionError(f"reception_anchor_failed rc={rc} detail_withheld=1")
+    match = re.search(r"\bdate=([0-9]{4}-[0-9]{2}-[0-9]{2})\b", out)
+    canonical_anchor = _canonical_date(match.group(1)) if match else None
+    if canonical_anchor is None:
+        raise AssertionError("reception_anchor_date_missing")
+    info(f"reception_anchor date={canonical_anchor}")
+    return canonical_anchor
 
 
 def select_reception_scope_and_load_board(page, cfg):
@@ -981,8 +1260,8 @@ def select_reception_scope_and_load_board(page, cfg):
     assert board_info.value.status == 200, "reception board load failed"
     try:
         return board_info.value.json()
-    except Exception as exc:  # malformed body is a failure, never a silent pass
-        raise AssertionError(f"reception board response is not decodable JSON: {exc}") from exc
+    except Exception:  # malformed body is a failure, never a silent pass
+        raise AssertionError("reception board response is not decodable JSON") from None
 
 
 def run_journey_b_receptionist(browser, cfg):
@@ -1460,16 +1739,19 @@ def main():
     # when the Location-local clock cannot host that window.
     info(
         "reception_rows=already_due_inside_grace "
-        f"grace_min={os.environ.get('DAY2_RECEPTION_GRACE_MINUTES', 'n/a')} "
-        f"doc1_slot={os.environ.get('DAY2_SEC_SLOT_DOC1', 'n/a')} "
-        f"doc2_slot={os.environ.get('DAY2_SEC_SLOT_DOC2', 'n/a')} "
-        f"foreign_slot={os.environ.get('DAY2_SEC_SLOT_FOREIGN', 'n/a')}"
+        f"grace_min={_validated_printable(os.environ.get('DAY2_RECEPTION_GRACE_MINUTES', ''), r'[0-9]{1,4}')} "
+        f"doc1_slot={_canonical_time(os.environ.get('DAY2_SEC_SLOT_DOC1', '')) or 'invalid'} "
+        f"doc2_slot={_canonical_time(os.environ.get('DAY2_SEC_SLOT_DOC2', '')) or 'invalid'} "
+        f"foreign_slot={_canonical_time(os.environ.get('DAY2_SEC_SLOT_FOREIGN', '')) or 'invalid'}"
     )
 
     os.makedirs(OUT, exist_ok=True)
     with sync_playwright() as pw:
         browser = pw.chromium.launch(headless=True)
-        info(f"browser_engine=chromium version={browser.version}")
+        browser_version = _validated_printable(
+            browser.version, r"[0-9]{1,3}(\.[0-9]{1,6}){1,3}"
+        )
+        info(f"browser_engine=chromium version={browser_version}")
         for key, fn in (
             ("journey-A1-public", lambda: run_journey_a_public_booking(browser, cfg)),
             ("journey-A2-reschedule", lambda: run_journey_a_patient_reschedule(browser, cfg)),
@@ -1477,10 +1759,20 @@ def main():
             ("journey-C-doctors", lambda: run_journey_c_doctors(browser, cfg)),
             ("journey-D-accountant", lambda: run_journey_d_accountant(browser, cfg)),
         ):
+            journey_started = time.monotonic()
             try:
                 fn()
             except Exception as exc:
                 fail(key, f"Day-2 browser journey failed ({key})", exc)
+            finally:
+                # Bounded, non-PII wall clock of this journey. It exists so the
+                # closed-vocabulary projection (bin/pilot-day2-failure-report.py)
+                # can report elapsed_s without reading anything else from the
+                # log, on PASS and on FAIL alike.
+                info(
+                    f"day2-journey-timing journey={key} "
+                    f"elapsed_s={int(time.monotonic() - journey_started)}"
+                )
         browser.close()
 
     with open("pilot-day2-workflows-results.json", "w", encoding="utf-8") as fh:
@@ -1489,5 +1781,72 @@ def main():
     return 1 if failures else 0
 
 
+def _print_startup_token():
+    """Print the fixed startup token; even THAT is guarded — a broken
+    stderr (closed pipe) must not turn the guard into a traceback."""
+    try:
+        print("DAY2_HARNESS_ERROR stage=startup detail_withheld=1", file=sys.stderr)
+    except Exception:  # noqa: BLE001 - nowhere safe left to report
+        pass
+
+
+def _entry():
+    """Fixed-output guard for everything before (and outside) the
+    per-journey fail() handling: playwright import, env/config parsing
+    (int() on a hostile env value would otherwise traceback WITH the
+    value), browser launch. Handles BaseException too: SystemExit
+    payloads are classified by EXACT type (see RoundTenExitStatusTest):
+    None and exact int 0 exit silently with status 0; exact ints
+    1..255 exit silently with that exact status; EVERYTHING else
+    (bool, float, bytes, str, any object, out-of-range ints) prints
+    the fixed token (payload text NEVER printed) and exits 1;
+    KeyboardInterrupt becomes the fixed token + 130. Code that runs
+    before this function exists — the module imports and constant
+    reads at the top of this file — cannot be guarded by it; an
+    interpreter traceback from a failing stdlib import there is a
+    disclosed residual, not covered by this guard's claim.
+    """
+    try:
+        return main()
+    except SystemExit as exc:
+        # Classify by EXACT type BEFORE any equality/truthiness on
+        # the payload: the payload is untrusted (False == 0 and
+        # 0.0 == 0 would silently pass as success; a hostile object's
+        # __eq__/__bool__ could raise or lie). str()/repr()/== on the
+        # payload are never called here. Reading `.code` itself can
+        # raise (a SystemExit subclass with a hostile accessor), so
+        # the whole classification runs in a protected region: ANY
+        # exception while classifying -> fixed token + 1, no text.
+        try:
+            payload = exc.code
+            if payload is None:
+                return 0
+            if type(payload) is int:
+                if payload == 0:
+                    return 0
+                if 1 <= payload <= 255:
+                    # A genuine small int status (incl. env_req's 1):
+                    # preserved silently and exactly — the interpreter
+                    # would truncate anything outside 0..255 through the
+                    # OS status (256 -> 0), so those become token + 1.
+                    return payload
+        except BaseException:  # noqa: BLE001 - hostile accessor
+            _print_startup_token()
+            return 1
+        _print_startup_token()
+        return 1
+    except KeyboardInterrupt:
+        _print_startup_token()
+        return 130
+    except Exception:  # noqa: BLE001 - fixed startup token only
+        _print_startup_token()
+        return 1
+    except BaseException:  # noqa: BLE001 - GeneratorExit / plain BaseException
+        # Remaining BaseException subclasses (GeneratorExit, a direct
+        # BaseException subclass): fixed token, exit 1, no text.
+        _print_startup_token()
+        return 1
+
+
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(_entry())

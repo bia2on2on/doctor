@@ -27,7 +27,7 @@
 | T5 | `confirmed` | `cancelled_by_patient` | `cancel` | بیمار (خودش) | در Policy (≥ X ساعت قبل)؛ مالکیت؛ Visit فعال وجود ندارد | آزادسازی Slot؛ اعلان به مطب؛ Audit |
 | T6 | `confirmed` | `cancelled_by_staff` | `cancel` | منشی/پزشک | دلیل الزامی؛ Visit فعال ندارد | آزادسازی Slot؛ اعلان به بیمار (در صورت فعال بودن کانال)؛ Audit |
 | T7 | `confirmed` | `rescheduled` | `reschedule` | بیمار (Policy) / منشی | Slot جدید آزاد؛ در Policy | **اتوم:** ساخت نوبت جدید `confirmed` (Transfer Hold) + ارجاع دوطرفه + اعلان تغییر؛ Audit |
-| T8 | `confirmed` | `no_show` | `mark_no_show` | منشی (دستی) یا Job (خودکار ≥ Grace Period) | Visit فعال برای این نوبت **ندارد** | Audit؛ (آمار) |
+| T8 | `confirmed` | `no_show` | `mark_no_show` | منشی (دستی) یا Job (خودکار ≥ Grace Period) | Visit فعال برای این نوبت **ندارد** | Audit؛ (آمار)؛ **هیچ شمارندهٔ اسلاتی تغییر نمی‌کند و ظرفیتی آزاد نمی‌شود** — وضعیتِ فعلیِ کد (یادداشت ۲۰۲۶-۱۱-۱۰ در §4) |
 | T9 | `confirmed` | `completed` | `visit_checked_out` | سیستم (در Transaction Checkout) | Visit مرتبط `checked_out` باشد | هیچ (Slot قبلاً آزاد/مربوط به گذشته)؛ Audit |
 
 ## 3. دیاگرام
@@ -52,12 +52,20 @@ stateDiagram-v2
 
 ## 4. Invariants (قوانین سفت — در سطح دیتابیس/Transaction)
 
-- **I-1** آزادسازی Slot فقط با T4/T5/T6. T7 Slot **قدیم** را آزاد و Slot **جدید** را Claim می‌کند (Transaction واحد).
+- **I-1** آزادسازی Slot فقط با T4/T5/T6. T7 Slot **قدیم** را آزاد و Slot **جدید** را Claim می‌کند (Transaction واحد). **T8 (no-show) در وضعیتِ فعلی هیچ ظرفیتی آزاد نمی‌کند** — جزئیات و تصمیمِ مالک در یادداشتِ ۲۰۲۶-۱۱-۱۰ پایین همین بخش.
 - **I-2** هیچ Transitionی از حالت Terminal خروج ندارد.
 - **I-3** T5/T6/T7/T8 وقتی `visit.active` وجود دارد **ممنوع** است (خطای `HAS_ACTIVE_VISIT`) — اگر بیمار رسیده، از فرایند Visit (cancel visit) باید استفاده شود.
 - **I-4** دو نوبت فعال (pending/confirmed) هم‌زمان برای یک بیمار روی Slot یکسان ممکن نیست (Unique `patient_id + slot_date + slot_time` روی رکوردهای فعال، در سطح Transaction).
 - **I-5** `completed` فقط از `confirmed` و فقط از مسیر Visit → Checkout (مسیر تکی؛ Anti Double-Complete).
 - **I-6** هر Transition → Audit (action=`APPOINTMENT_TRANSITION`, before/after) + در صورت نیاز اعلان.
+
+> **یادداشت (۲۰۲۶-۱۱-۱۰) — T8/no-show و آزادسازیِ ظرفیت (پایه: `main` = `643150e`):**
+>
+> **وضعیتِ فعلی (کد، خوانده‌شده نه اجراشده):** T8 در هر دو مسیر (`BookingService::markNoShowByStaff` برای دستی، `VisitService::markAppointmentNoShow` برای sweepِ خودکار) فقط وضعیت/`no_show_at` را می‌نویسد و Audit می‌کند؛ **هیچ شمارندهٔ اسلات (`booked_count`) کاهش نمی‌یابد** — یعنی I-1 در عمل هیچ ظرفیتی را برای T8 آزاد نمی‌کند.
+>
+> **تصمیمِ مالک (۲۰۲۶-۱۱-۰۸، `docs/status/ledger.md` §3.1 بند ۲.۲):** آزادسازیِ دستی فقط با کاربرِ مجاز + دلیل + ثبتِ actor؛ تاریخچه حفظ می‌شود؛ پس از شروع/تکمیلِ ویزیت ممنوع؛ تراکنشی و concurrency-safe؛ **ظرفیت فقط وقتی آزاد می‌شود که زمانِ باقی‌مانده قابلِ استفادهٔ مجدد باشد**؛ رفتارِ no-show خودکار تا اصلاحِ ظرفیت بدون تغییر می‌ماند. **وضعیت: تصمیم گرفته شده — پیاده‌سازی نشده.**
+>
+> **شکاف:** سازوکارِ آزادسازیِ مشروط در کد وجود ندارد؛ این سند فقط وضعیت را ثبت می‌کند (بدون تغییر کد). انطباقِ REST در `docs/api/api-contract.md` D11c و شرحِ کامل در `docs/srs/SRS.md` (یادداشتِ ER-07) آمده است.
 
 ## 5. خطاها
 

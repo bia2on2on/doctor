@@ -93,7 +93,7 @@ The sanitized reporter/annotation changes and temporary trigger were pushed toge
 
 ## Run cost estimate
 
-A successful scheduled run is estimated at **15–25 runner-minutes per week**; this has not been measured. The first two failed attempts lasted about 1m 15s each; the first controlled observability run lasted 1m 39s and the final bounded bootstrap diagnostic 1m 25s, both stopping at the focused-test/reporting stage. None is a successful-run cost measurement. One scheduled run creates one standard `ubuntu-latest` job and one short-lived MariaDB service. The repository is public and standard GitHub-hosted runners are free for public repositories under GitHub's published policy: [GitHub Actions billing and usage](https://docs.github.com/en/actions/concepts/billing-and-usage). This is runner usage, not a promise about external artifact/network/storage charges.
+A successful scheduled run is estimated at **15–25 runner-minutes per week**; this has not been measured. The first two failed attempts lasted about 1m 15s each; the first controlled observability run lasted 1m 39s and the final bounded bootstrap diagnostic 1m 25s, both stopping at the focused-test/reporting stage. None is a successful-run cost measurement. One scheduled run creates one standard `ubuntu-24.04` job and one short-lived MariaDB service. The repository is public and standard GitHub-hosted runners are free for public repositories under GitHub's published policy: [GitHub Actions billing and usage](https://docs.github.com/en/actions/concepts/billing-and-usage). This is runner usage, not a promise about external artifact/network/storage charges.
 
 ## Final bounded PHPUnit bootstrap diagnostic — 2026-10-17
 

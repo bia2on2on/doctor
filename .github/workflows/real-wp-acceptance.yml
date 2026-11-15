@@ -54,8 +54,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
-  # contents: write for the existing acceptance evidence comments.
-  contents: write
+  contents: read
   actions: read
 
 env:
@@ -92,14 +91,12 @@ jobs:
     # install the VERSIONED php8.3-* apt packages, and the ubuntu-latest label
     # moved to Ubuntu 26.04 where those packages do not exist
     # ("E: Unable to locate package libapache2-mod-php8.3"), so all seven failed
-    # at apt before doing any work. Only those callers are pinned; this
-    # workflow's own direct lanes (APACHE_PHP_SUFFIX empty, unversioned
-    # metapackages, green on 26.04) stay on ubuntu-latest. The job name and the
+    # at apt before doing any work. All lanes are pinned; the job name and the
     # matrix are unchanged, so the required status checks keep their names.
-    # Remove this expression and go back to `ubuntu-latest` once the versioned
+    # Remove this pin and go back to `ubuntu-latest` once the versioned
     # php8.3 packages exist for the current label, or once the lanes stop
     # needing versioned package names.
-    runs-on: ${{ inputs.persian_coexistence && 'ubuntu-24.04' || 'ubuntu-latest' }}
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
     strategy:
       fail-fast: false
@@ -974,24 +971,6 @@ jobs:
             exit "$RC"
           fi
 
-      # Bounded diagnostics for the portal step on lanes that do not publish the
-      # full evidence comment (persian_coexistence). Only runs when a step failed.
-      - name: Publish Management Portal browser diagnostics (bounded)
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if [ ! -f /tmp/acc/management-portal.log ]; then exit 0; fi
-          {
-            echo "### Management Portal browser diagnostics — prefix \`${{ matrix.prefix }}\`"
-            echo
-            echo '```'
-            grep -E '^(STAGE|FAIL|ERROR:|MP_DIAG=|MP_RESULTS=|RESULT:)' /tmp/acc/management-portal.log | tail -40 \
-              || tail -40 /tmp/acc/management-portal.log
-            echo '```'
-          } > /tmp/acc/mp-diag.md
-          gh api "repos/{owner}/{repo}/commits/$GITHUB_SHA/comments" -X POST -F body=@/tmp/acc/mp-diag.md --jq '.id' || true
-
       # ---------- 7) بررسی لاگ‌ها (همیشه — حتی در شکست) ----------
       - name: PHP/WP/Apache logs review
         if: always()
@@ -1221,70 +1200,3 @@ jobs:
             tail -30 /tmp/acc/acceptance.log 2>/dev/null || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-
-      # Evidence به‌صورت Commit Comment (لاگ خام Job در این محیط خوانده نمی‌شود —
-      # الگوی «Post failures to PR» ریپو، این‌بار روی Commit تا در push-events هم کار کند)
-      - name: Publish evidence as commit comment
-        if: always() && !inputs.persian_coexistence
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          {
-            echo "### Real WP Acceptance — prefix \`${{ matrix.prefix }}\` (job: ${{ job.status }})"
-            echo
-            echo "- actual_table_count: \`$(cat /tmp/acc/actual_count.txt 2>/dev/null || echo '?')\` / ui_table_count: \`$(cat /tmp/acc/ui_count.txt 2>/dev/null || echo '?')\`"
-            echo "- migration failure probe:"
-            echo '```'
-            cat /tmp/acc/migration-failure-probe.txt 2>/dev/null || echo '(probe اجرا نشد)'
-            echo '```'
-            echo '- official release ZIP size vs current main:'
-            echo '```'
-            cat /tmp/acc/release-size-delta.txt 2>/dev/null || echo '(measured on the wp_ matrix job only or this stage did not run)'
-            echo '```'
-            echo '- browser acceptance:'
-            echo '```'
-            cat /tmp/acc/acceptance.log 2>/dev/null || echo '(مرحلهٔ مرورگر اجرا نشد)'
-            echo '```'
-            echo '- coexistence gate lines (every FAIL plus the named coexistence checks):'
-            echo '```'
-            grep -E '^FAIL|coexistence\.|\.not_granted|no_woo_redirect' /tmp/acc/acceptance.log 2>/dev/null | head -60 || echo '(no coexistence/FAIL lines)'
-            echo '```'
-            echo '- public CPMS health failure diagnostics (only present if the gate failed):'
-            echo '```'
-            cat /tmp/acc/coexistence-health-failure.txt 2>/dev/null || echo '(health gate did not fail)'
-            echo '```'
-            echo '- standalone shell technical proof (Phase 9 Slice 3 — NON-PRODUCTION fixture):'
-            echo '```'
-            cat /tmp/acc/shell-proof.log 2>/dev/null || echo '(shell proof اجرا نشد)'
-            echo '```'
-            echo "- fixture users (login/roles) + membership rows: \`$(cat /tmp/acc/fixture-memberships.txt 2>/dev/null || echo '?')\`"
-            echo '```'
-            cat /tmp/acc/fixture-users.txt 2>/dev/null || echo '(fixture users ثبت نشد)'
-            echo '```'
-            echo '- login failures (structured evidence):'
-            echo '```'
-            cat /tmp/acc/logs/*-login.json 2>/dev/null || echo '(no login failure)'
-            echo '```'
-            echo '- sanitized PHP/WP/Apache final log-gate summary:'
-            echo '```'
-            cat /tmp/acc/log-gate-summary.txt 2>/dev/null || echo '(sanitized summary unavailable; gate remains authoritative)'
-            echo '```'
-            echo '- pinned pre-CPMS WordPress.org package install logs:'
-            echo '```'
-            for f in /tmp/acc/coexistence-install-*.log; do
-              [ -f "$f" ] || continue
-              echo "--- $(basename "$f") ---"
-              tail -40 "$f"
-            done
-            echo '```'
-            echo '- exact WooCommerce 10.3.8 WC_Admin source evidence (read from the pinned installed package):'
-            echo '```'
-            cat /tmp/acc/woocommerce-10.3.8-admin-access-source.txt 2>/dev/null || echo '(source inspection not reached)'
-            echo '```'
-            echo '- Management Portal browser regression (real Chromium; last 60 lines, empty if the step never ran):'
-            echo '```'
-            tail -60 /tmp/acc/management-portal.log 2>/dev/null || echo '(management-portal.log missing)'
-            echo '```'
-            echo "artifacts: rwp-acceptance-${{ matrix.prefix }} (screenshots/logs/results.json)"
-          } > /tmp/acc/evidence-comment.md
-          gh api "repos/{owner}/{repo}/commits/$GITHUB_SHA/comments" -X POST -F body=@/tmp/acc/evidence-comment.md --jq '.id'

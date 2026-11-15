@@ -882,13 +882,54 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
         self::assertNotContains($slotTehranPast1d, $idsCrossMidnight, 'Slot at +24.5h in Tehran local time must be excluded under max_future_days=1.');
 
         // Case E: Real REST endpoint under small Clinic window (max_future_days = 7, previously broken by hardcoded +29 days).
+        //
+        // Dates stay LIVE-derived (same Asia/Tehran clock as production's now()),
+        // because this case exercises the REST path, which computes its window from
+        // the real clock. A fixed future anchor would only move the time bomb.
+        //
+        // Every clock this method uses on this Location is a UTC instant; under
+        // Asia/Tehran (+03:30, no DST in 2026-2028) a UTC clock instant therefore
+        // implies exactly ONE possible Tehran day, and vice versa. The three Case E
+        // days below are T+2..T+10 from the live Tehran date (T = today), while
+        // every other slot already inserted by this method sits on a fixed date
+        // (2026-11-10, 2026-11-11, 2026-11-12, 2026-11-17, 2026-12-10). Each of
+        // those five can be the T+2, T+3 or T+10 of some live day, and on those
+        // exact dates this method used 00:30, 01:30, 09:00, 09:30, 10:30, 11:00
+        // and 13:00. A 23:xx slot time is therefore u_slot-free against every
+        // other slot of this method, on any date, for any clock.
+        // (23:00/23:10/23:20 are at least 47h ahead of ANY instant of the live Tehran
+        // day T, since T+2 23:00 is >= 47h after T 00:00. So min_lead_hours=2 never
+        // excludes them and the 24h reschedule deadline never rejects the request;
+        // what the two assertions below prove is unchanged — the T+3 slot is inside
+        // the 7-day horizon, the T+10 slot is outside it.)
+        // A unique-key collision or any other failed INSERT is swallowed by
+        // insertSlot() (wpdb::insert's false is discarded), which would silently
+        // hand back a stale id and make the two assertions below meaningless.
+        // After EACH insert, re-read the row by its u_slot identity and fail loudly
+        // with a fixed message that contains no DB value.
+        $assertSlotRowExists = function (string $date, string $time) use ($clinicA, $locA, $clinician): void {
+            $row = App::db()->fetchRow(
+                'SELECT id FROM ' . App::db()->table('cpms_schedule_slots')
+                . ' WHERE location_id = %d AND clinician_id = %d AND slot_date = %s AND slot_time = %s LIMIT 1',
+                [$locA, $clinician, $date, $time]
+            );
+            self::assertNotNull($row, 'Case E fixture slot row is missing (silent insert failure).');
+        };
+
         $liveCurDate  = $this->localDate(self::TZ, '+2 days');
         $liveNearDate = $this->localDate(self::TZ, '+3 days');
         $liveFarDate  = $this->localDate(self::TZ, '+10 days');
-        $liveCurSlot  = $this->insertSlot($clinicA, $locA, $clinician, $liveCurDate, '09:00:00', 1, ['booked' => 1]);
-        $liveNearSlot = $this->insertSlot($clinicA, $locA, $clinician, $liveNearDate, '10:00:00', 2);
-        $liveFarSlot  = $this->insertSlot($clinicA, $locA, $clinician, $liveFarDate, '10:00:00', 2);
-        $liveAppt     = $this->insertAppointment($clinicA, $locA, $patientId, $clinician, $liveCurSlot, $liveCurDate, '09:00:00', 'confirmed');
+
+        $liveCurSlot = $this->insertSlot($clinicA, $locA, $clinician, $liveCurDate, '23:00:00', 1, ['booked' => 1]);
+        $assertSlotRowExists($liveCurDate, '23:00:00');
+
+        $liveNearSlot = $this->insertSlot($clinicA, $locA, $clinician, $liveNearDate, '23:10:00', 2);
+        $assertSlotRowExists($liveNearDate, '23:10:00');
+
+        $liveFarSlot = $this->insertSlot($clinicA, $locA, $clinician, $liveFarDate, '23:20:00', 2);
+        $assertSlotRowExists($liveFarDate, '23:20:00');
+
+        $liveAppt     = $this->insertAppointment($clinicA, $locA, $patientId, $clinician, $liveCurSlot, $liveCurDate, '23:00:00', 'confirmed');
 
         $targetSettings->set('booking.max_future_days', 7);
         Settings::flushCache();

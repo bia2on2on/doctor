@@ -84,7 +84,7 @@ baseline reports a different version.
   pinned mapping — and the run still fails if the re-verified dry-run is not
   clean. `install --with-deps` is still never used.
 
-### 2.3 Runner OS pins (all expiring 2026-12-15)
+### 2.3 Runner OS pins at the 2026-11-06 decision (all expiring 2026-12-15; see amendment)
 
 | Workflow / job | Pin | Status |
 |---|---|---|
@@ -444,7 +444,7 @@ PHP version, cache entry), so the cause of the green remains unproven.
   and the architecture, read from the runner, with the fail-closed text present.
   It contains **no date comparison**, so it can never start failing because time
   passed; the date is checked for presence, not compared to today.
-  **Correction after reviewer challenge (2026-11-06):** the first version of this
+  **Historical correction after reviewer challenge (2026-11-06; superseded by the 2026-11-12 amendment):** the first version of this
   test matched only the literal string `runs-on: ubuntu-24.04`, so the seven
   coexistence lanes pinned through
   `${{ inputs.persian_coexistence && 'ubuntu-24.04' || 'ubuntu-latest' }}` in
@@ -478,3 +478,12 @@ PHP version, cache entry), so the cause of the green remains unproven.
 marker) on a pin whose reasoning predates this change. That job was green at
 head `fb63a977` and its behaviour is unchanged; the comment exists so the
 long-lived pin is revisited with the others rather than by inattention.
+
+
+### 2026-11-12 amendment — Tooling runner mitigation
+
+On the PR branch, all direct and wrapper-reachable Tooling jobs are literal
+`ubuntu-24.04` pins; no conditional pin remains. This is a mitigation, not a
+root-cause fix: the root cause of the failures on Ubuntu 26.04 is not established.
+Removal condition: root cause found and fixed, or a new recorded decision, before
+the EXPIRY date 2026-12-15. Expiry is not enforced automatically.
