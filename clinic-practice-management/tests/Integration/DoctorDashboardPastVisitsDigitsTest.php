@@ -18,6 +18,8 @@ declare(strict_types=1);
  * Mutation that makes this fail: remove the `jalali_date` line from
  * ClinicalService::record() past_visits mapping, or render `visit_date` raw
  * in the dashboard without `displayDigits()`.
+ *
+ * Each test method covers ONE concern so a failure localizes itself by name.
  */
 
 namespace ClinicCore\Tests\Integration;
@@ -33,7 +35,8 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
     private const VISIT_DATE = '2026-03-21'; // Jalali 1405/01/01 -> Persian ۱۴۰۵/۰۱/۰۱
     private const TZ_TEHRAN = 'Asia/Tehran';
 
-    protected function setUp(): void {
+    protected function setUp(): void
+    {
         parent::setUp();
         wp_set_current_user( 0 );
         ScopeContext::clear();
@@ -41,7 +44,8 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         App::migrations()->migrate();
     }
 
-    protected function tearDown(): void {
+    protected function tearDown(): void
+    {
         wp_set_current_user( 0 );
         $_GET = []; $_POST = []; $_REQUEST = []; $_SERVER['REQUEST_METHOD'] = 'GET';
         ScopeContext::clear();
@@ -49,7 +53,14 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         parent::tearDown();
     }
 
-    public function test_past_visits_payload_carries_jalali_date_and_keeps_visit_date(): void {
+    /**
+     * Builds one clinic + location + doctor + clinician + patient + two visits
+     * (one past, one current) sharing the same patient and visit date.
+     *
+     * @return array{clinic: int, location: int, doctor: int, patient: int, past_visit: int, current_visit: int}
+     */
+    private function stageWithTwoVisits(): array
+    {
         $stage = $this->makeStage();
         $patientId = $this->insertPatient( $stage['clinic'], 'pv' );
         $pastVisitId = $this->insertVisit(
@@ -61,40 +72,146 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
             'consultation_completed', self::VISIT_DATE
         );
 
-        wp_set_current_user( $stage['doctor'] );
-        $headers = $this->scopeHeaders( $stage['clinic'], $stage['location'] );
-        $r = $this->dispatch( 'GET', '/' . sprintf( self::SHARED_RECORD, $currentVisitId ), [], $headers );
-        self::assertSame( 200, $r->get_status(), 'record endpoint must succeed' );
+        return [
+            'clinic' => $stage['clinic'],
+            'location' => $stage['location'],
+            'doctor' => $stage['doctor'],
+            'patient' => $patientId,
+            'past_visit' => $pastVisitId,
+            'current_visit' => $currentVisitId,
+        ];
+    }
+
+    /**
+     * (1) HTTP status is 200. Diagnostic message carries the observed status
+     * and any WP error code from the synthetic fixture's own response body.
+     */
+    public function test_past_visits_endpoint_returns_200(): void
+    {
+        $s = $this->stageWithTwoVisits();
+        wp_set_current_user( $s['doctor'] );
+        $headers = $this->scopeHeaders( $s['clinic'], $s['location'] );
+        $r = $this->dispatch(
+            'GET', '/' . sprintf( self::SHARED_RECORD, $s['current_visit'] ), [], $headers
+        );
+        $data = $r->get_data();
+        $code = is_array( $data ) && isset( $data['code'] ) ? (string) $data['code'] : 'none';
+        self::assertSame(
+            200, (int) $r->get_status(),
+            'record endpoint must return HTTP 200; got ' . (int) $r->get_status() . ' code=' . $code
+        );
+    }
+
+    /**
+     * (2) past_visits contains exactly the one expected past visit.
+     * Diagnostic message lists the observed ids from this run's fixture.
+     */
+    public function test_past_visits_contains_expected_past_visit(): void
+    {
+        $s = $this->stageWithTwoVisits();
+        wp_set_current_user( $s['doctor'] );
+        $headers = $this->scopeHeaders( $s['clinic'], $s['location'] );
+        $r = $this->dispatch(
+            'GET', '/' . sprintf( self::SHARED_RECORD, $s['current_visit'] ), [], $headers
+        );
+        self::assertSame(
+            200, (int) $r->get_status(), 'precondition: endpoint must be 200'
+        );
         $payload = $this->payload( $r );
         self::assertIsArray( $payload['past_visits'] ?? null, 'past_visits must be a list' );
-
-        $found = false;
+        $ids = [];
         foreach ( $payload['past_visits'] as $pv ) {
-            if ( (int) $pv['id'] === $pastVisitId ) {
-                $found = true;
-                self::assertSame( self::VISIT_DATE, (string) $pv['visit_date'], 'stored visit_date unchanged' );
+            $ids[] = (int) $pv['id'];
+        }
+        self::assertContains(
+            $s['past_visit'], $ids,
+            'past visit id ' . $s['past_visit'] . ' must be among past_visits ids [' . implode( ',', $ids ) . ']'
+        );
+    }
+
+    /**
+     * (3) jalali_date equals Jalali::format_display_ymd(fixture date).
+     * Diagnostic message carries expected vs observed from this run's fixture.
+     */
+    public function test_past_visits_jalali_date_equals_format_display_ymd(): void
+    {
+        $s = $this->stageWithTwoVisits();
+        wp_set_current_user( $s['doctor'] );
+        $headers = $this->scopeHeaders( $s['clinic'], $s['location'] );
+        $r = $this->dispatch(
+            'GET', '/' . sprintf( self::SHARED_RECORD, $s['current_visit'] ), [], $headers
+        );
+        self::assertSame(
+            200, (int) $r->get_status(), 'precondition: endpoint must be 200'
+        );
+        $payload = $this->payload( $r );
+        $expected = Jalali::format_display_ymd( self::VISIT_DATE );
+        foreach ( $payload['past_visits'] as $pv ) {
+            if ( (int) $pv['id'] === $s['past_visit'] ) {
                 self::assertSame(
-                    Jalali::format_display_ymd( self::VISIT_DATE ),
-                    (string) $pv['jalali_date'],
-                    'jalali_date is the Persian Jalali of the same visit date'
+                    $expected, (string) $pv['jalali_date'],
+                    'jalali_date for past visit ' . $s['past_visit'] .
+                        ' must be ' . $expected . ', got ' . (string) $pv['jalali_date']
                 );
-                break;
+                return;
             }
         }
-        self::assertTrue( $found, 'past visit present in record payload' );
+        self::fail( 'past visit id ' . $s['past_visit'] . ' not found in past_visits' );
+    }
 
-        // Stored row untouched (display only).
+    /**
+     * (4) visit_date still equals the original ISO date string (display only,
+     * stored value untouched).
+     */
+    public function test_past_visits_visit_date_stays_iso(): void
+    {
+        $s = $this->stageWithTwoVisits();
+        wp_set_current_user( $s['doctor'] );
+        $headers = $this->scopeHeaders( $s['clinic'], $s['location'] );
+        $r = $this->dispatch(
+            'GET', '/' . sprintf( self::SHARED_RECORD, $s['current_visit'] ), [], $headers
+        );
+        self::assertSame(
+            200, (int) $r->get_status(), 'precondition: endpoint must be 200'
+        );
+        $payload = $this->payload( $r );
+        foreach ( $payload['past_visits'] as $pv ) {
+            if ( (int) $pv['id'] === $s['past_visit'] ) {
+                self::assertSame(
+                    self::VISIT_DATE, (string) $pv['visit_date'],
+                    'visit_date for past visit ' . $s['past_visit'] .
+                        ' must be ' . self::VISIT_DATE . ', got ' . (string) $pv['visit_date']
+                );
+                return;
+            }
+        }
+        self::fail( 'past visit id ' . $s['past_visit'] . ' not found in past_visits' );
+    }
+
+    /**
+     * (5) Stored DB row untouched — display only, no storage change.
+     */
+    public function test_past_visits_stored_row_untouched(): void
+    {
+        $s = $this->stageWithTwoVisits();
         $row = App::db()->fetchRow(
             'SELECT visit_date FROM ' . App::db()->table( 'cpms_visits' ) . ' WHERE id = %d',
-            [ $pastVisitId ]
+            [ $s['past_visit'] ]
         );
-        self::assertNotNull( $row );
-        self::assertSame( self::VISIT_DATE, (string) $row['visit_date'] );
+        self::assertNotNull(
+            $row, 'stored row for visit ' . $s['past_visit'] . ' must exist'
+        );
+        self::assertSame(
+            self::VISIT_DATE, (string) $row['visit_date'],
+            'stored visit_date for visit ' . $s['past_visit'] .
+                ' must be ' . self::VISIT_DATE . ', got ' . (string) $row['visit_date']
+        );
     }
 
     // ================= fixtures (mirror Phase10DoctorPortalVisitWorkspaceRedTest) =================
 
-    private function makeStage(): array {
+    private function makeStage(): array
+    {
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $org = (int) $wpdb->insert(
@@ -112,7 +229,7 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         $loc = (int) $wpdb->insert(
             $wpdb->prefix . 'cpms_locations',
             [ 'clinic_id' => $clinic, 'name' => 'Loc pv', 'slug' => 'loc-pv-' . bin2hex( random_bytes( 3 ) ), 'timezone' => self::TZ_TEHRAN, 'is_primary' => 1, 'is_active' => 1, 'created_at' => $now, 'updated_at' => $now ],
-            [ '%d', '%s', '%s', '%s', '%d', '%d', '%s', '%s' ]
+            [ '%d', '%s', '%d', '%d', '%s', '%s' ]
         );
         self::assertGreaterThan( 0, $loc );
         $doctor = $this->makeUser( 'qa_pv_doc', \ClinicCore\Auth\RolesAndCapabilities::ROLE_DOCTOR );
@@ -128,7 +245,8 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         return [ 'clinic' => $clinic, 'location' => $loc, 'clinician' => $clinician, 'doctor' => $doctor ];
     }
 
-    private function scopeHeaders( int $clinic, ?int $location = null ): array {
+    private function scopeHeaders( int $clinic, ?int $location = null ): array
+    {
         $headers = [ 'X-CPMS-Clinic-Id' => (string) $clinic ];
         if ( $location !== null ) {
             $headers['X-CPMS-Location-Id'] = (string) $location;
@@ -136,7 +254,8 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         return $headers;
     }
 
-    private function dispatch( string $method, string $route, array $params = [], array $headers = [], bool $withNonce = true ): \WP_REST_Response {
+    private function dispatch( string $method, string $route, array $params = [], array $headers = [], bool $withNonce = true ): \WP_REST_Response
+    {
         $r = new \WP_REST_Request( $method, $route );
         foreach ( $params as $k => $v ) {
             $r->set_param( $k, $v );
@@ -150,7 +269,8 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         return rest_do_request( $r );
     }
 
-    private function payload( \WP_REST_Response $res ): array {
+    private function payload( \WP_REST_Response $res ): array
+    {
         $b = $res->get_data();
         if ( is_array( $b ) && isset( $b['data'] ) && is_array( $b['data'] ) ) {
             return $b['data'];
@@ -158,7 +278,8 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         return is_array( $b ) ? $b : [];
     }
 
-    private function makeUser( string $login, string $role ): int {
+    private function makeUser( string $login, string $role ): int
+    {
         $u = $login . '_' . bin2hex( random_bytes( 3 ) );
         $id = (int) wp_create_user( $u, 'pass-not-used-123', $u . '@test.local' );
         self::assertGreaterThan( 0, $id );
@@ -168,7 +289,8 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         return $id;
     }
 
-    private function insertPatient( int $clinicId, string $tag ): int {
+    private function insertPatient( int $clinicId, string $tag ): int
+    {
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $mrn = 'MR-PV-' . strtoupper( $tag ) . '-' . bin2hex( random_bytes( 2 ) );
@@ -187,7 +309,8 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
         int $locId,
         string $status,
         string $visitDate
-    ): int {
+    ): int
+    {
         global $wpdb;
         $now = App::db()->nowUtcSql();
         $active = 'skipped' === $status ? 0 : 1;
