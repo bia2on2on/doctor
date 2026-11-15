@@ -19,7 +19,9 @@ import re
 BUSY_CODE = "CLINIC_BOOKING_BUSY"
 EVENT = "booking.lock_read_failed"
 ID_KEYS = ("clinic_id", "organization_id", "location_id", "clinician_id", "slot_id")
-MAX_ID = 9223372036854775807
+# Same bound as the harness posted-ID projection (_MAX_POSTED_ID):
+# caller-supplied IDs above 2**31-1 are omitted, never printed.
+MAX_ID = 2147483647
 MAX_SUFFIX = 400
 STALE_STATE = "stale-or-mismatch"
 MISSING_STATES = ("not-found", "fetch-failed", STALE_STATE)

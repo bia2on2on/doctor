@@ -151,8 +151,15 @@ class _RedactedAssertions:
         # set difference: %s' % e) when a set difference raises
         # TypeError. Always returning _baseAssertEqual (verified in
         # case.py: its only message is built through _formatMessage)
-        # removes that path. Equality semantics are unchanged (the
-        # same == comparison); only the failure TEXT differs.
+        # removes that path. This ROUTES ALL comparisons through
+        # the base equality path: type-specific comparators
+        # (assertSetEqual/assertListEqual/etc. and any comparator
+        # registered via addTypeEqualityFunc) are bypassed, and
+        # failure messages carry no operand repr; tests relying on
+        # custom type comparators or asymmetric element equality
+        # are NOT supported (round 17: reproduced in-memory — a
+        # comparator registered via addTypeEqualityFunc passes with
+        # the stock dispatch and fails with this override).
         return self._baseAssertEqual
 
 
@@ -2151,6 +2158,33 @@ class RoundEightStartupGuardTest(_RedactedAssertions, unittest.TestCase):
         self.assertTrue("SYNTH_SECRET_R8" not in err,
                         "KeyboardInterrupt text must never reach stderr")
 
+    def test_generator_exit_prints_only_token(self):
+        def main():
+            raise GeneratorExit("SYNTH_SECRET_R17")
+
+        code, err = self._run_with_main(main)
+        self.assertTrue(code == 1, "GeneratorExit must exit 1 (content withheld)")
+        self.assertTrue(
+            err == "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n",
+            "GeneratorExit must print only the fixed token")
+        self.assertTrue("SYNTH_SECRET_R17" not in err,
+                        "GeneratorExit text must not reach stderr (content withheld)")
+
+    def test_plain_base_exception_prints_only_token(self):
+        class _Bare(BaseException):
+            pass
+
+        def main():
+            raise _Bare("SYNTH_SECRET_R17")
+
+        code, err = self._run_with_main(main)
+        self.assertTrue(code == 1, "plain BaseException must exit 1 (content withheld)")
+        self.assertTrue(
+            err == "DAY2_HARNESS_ERROR stage=startup detail_withheld=1\n",
+            "plain BaseException must print only the fixed token")
+        self.assertTrue("SYNTH_SECRET_R17" not in err,
+                        "BaseException text must not reach stderr (content withheld)")
+
     def test_token_print_failure_does_not_raise(self):
         class BrokenStderr:
             def write(self, _text):
@@ -2259,7 +2293,29 @@ _BYPASSING_ASSERTION_METHODS = frozenset({
     "assertAlmostEqual", "assertNotAlmostEqual", "assertWarns",
     "assertWarnsRegex", "assertRaisesRegex", "assertLogs",
     "assertNoLogs", "assertIsInstance", "assertNotIsInstance",
+    "addTypeEqualityFunc",
 })
+
+
+def _dynamic_target(node):
+    """The attribute-name argument of a dynamic-access call, or None."""
+    if isinstance(node.func, ast.Name) and node.func.id in (
+        "getattr", "setattr", "__getattribute__",
+    ):
+        return node.args[1] if len(node.args) >= 2 else None
+    if isinstance(node.func, ast.Attribute) and node.func.attr in (
+        "getattr", "setattr", "__getattribute__",
+    ):
+        return node.args[0] if node.args else None
+    return None
+
+
+def _is_dynamic_access(node):
+    if isinstance(node.func, ast.Name):
+        return node.func.id in ("getattr", "setattr", "__getattribute__")
+    return isinstance(node.func, ast.Attribute) and node.func.attr in (
+        "getattr", "setattr", "__getattribute__",
+    )
 
 
 def _unsafe_assertion_calls(source):
@@ -2269,7 +2325,11 @@ def _unsafe_assertion_calls(source):
     references (``f = self.assertSequenceEqual``), bare assert*/fail*
     names, and dynamic access (``getattr``/``setattr``/
     ``__getattribute__``) with a non-literal or assert*/fail* target
-    are all flagged, so the allowlist cannot be dodged by those\n    indirection forms (eval/exec of strings is out of scope).
+    are all flagged, so the allowlist cannot be dodged by those\n    indirection forms. LIMIT (round 17): eval/exec of strings and
+    getattr with a computed (non-constant, non-subscript) name that
+    the non-literal branch already flags are covered; a name built
+    by string concatenation of non-forbidden fragments is NOT
+    detected — declared limit, not a claim of completeness.
     """
     bad = []
     for node in ast.walk(ast.parse(source)):
@@ -2288,17 +2348,28 @@ def _unsafe_assertion_calls(source):
             or node.id in _BYPASSING_ASSERTION_METHODS
         ):
             bad.append(node.id)
-        elif (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id in ("getattr", "setattr", "__getattribute__")
-        ):
-            target = node.args[1] if len(node.args) >= 2 else None
+        elif isinstance(node, ast.Call) and _is_dynamic_access(node):
+            target = _dynamic_target(node)
             if not (isinstance(target, ast.Constant)
                     and isinstance(target.value, str)):
-                bad.append(node.func.id + "(dynamic)")
-            elif target.value.startswith(("assert", "fail")):
-                bad.append("getattr(assert*)")
+                bad.append("dynamic-access(dynamic)")
+            elif (target.value.startswith(("assert", "fail"))
+                    or target.value in _BYPASSING_ASSERTION_METHODS):
+                bad.append("dynamic-access(assert*)")
+        elif isinstance(node, ast.Subscript):
+            # vars(obj)['name'] / obj.__dict__['name'] with a forbidden
+            # attribute name reaches the same helpers by indirection.
+            value = node.value
+            via_dict = (
+                (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                 and value.func.id == "vars")
+                or (isinstance(value, ast.Attribute) and value.attr == "__dict__")
+            )
+            key = node.slice
+            if via_dict and isinstance(key, ast.Constant) and isinstance(key.value, str) and (
+                key.value.startswith("assert") or key.value in _BYPASSING_ASSERTION_METHODS
+            ):
+                bad.append("dict-access(assert*)")
     return bad
 
 
@@ -2469,6 +2540,14 @@ class AssertionOutputRedactionTest(_RedactedAssertions, unittest.TestCase):
             "wrapper": "def w(a, b):\n    return self.assertSetEqual(a, b)\n",
             "bare name": "g = assertDictEqual\n",
         }
+        extra = {
+            "method __getattribute__": "self.__getattribute__('assertSetEqual')(a, b)\n",
+            "vars subscript": "vars(self)['assertSetEqual'](a, b)\n",
+            "__dict__ subscript": "self.__dict__['assertDictEqual'](a, b)\n",
+            "addTypeEqualityFunc": "self.addTypeEqualityFunc(T, cmp)\n",
+            "method getattr forbidden": "self.getattr('assertListEqual')(a, b)\n",
+        }
+        snippets.update(extra)
         for label, snippet in snippets.items():
             self.assertTrue(_unsafe_assertion_calls(snippet) != [],
                             "allowlist guard must flag indirection: " + label)

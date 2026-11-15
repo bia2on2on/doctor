@@ -2215,6 +2215,34 @@ class CompanionCompatibilityGateContractTests(unittest.TestCase):
         self.assertRegex(events, r"(?m)^  push:\n    branches: \[main\]$")
 
 
+def _has_main_guard_call(source):
+    """True only for an executable unittest.main()/main() call inside
+    an `if __name__ == "__main__":` guard (AST, not text: a comment
+    or string mentioning the call does not count)."""
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.If):
+            continue
+        test = node.test
+        if not (isinstance(test, ast.Compare) and len(test.ops) == 1
+                and isinstance(test.ops[0], ast.Eq)
+                and isinstance(test.left, ast.Name) and test.left.id == "__name__"
+                and len(test.comparators) == 1
+                and isinstance(test.comparators[0], ast.Constant)
+                and test.comparators[0].value == "__main__"):
+            continue
+        for stmt in node.body:
+            for inner in ast.walk(stmt):
+                if isinstance(inner, ast.Call):
+                    func = inner.func
+                    if (isinstance(func, ast.Attribute) and func.attr == "main"
+                            and isinstance(func.value, ast.Name)
+                            and func.value.id == "unittest"):
+                        return True
+                    if isinstance(func, ast.Name) and func.id == "main":
+                        return True
+    return False
+
+
 class Day2DiagnosticSuiteCiWiringTests(unittest.TestCase):
     """The Day-2 reader/formatter privacy suite must stay CI-executed.
 
@@ -2284,8 +2312,8 @@ class Day2DiagnosticSuiteCiWiringTests(unittest.TestCase):
         source = self.SUITE.read_text(encoding="utf-8")
         # The wrapper invokes `python3 <suite>`; without a __main__ runner that
         # invocation would exit 0 having executed nothing.
-        self.assertRegex(source, r'(?m)^if __name__ == "__main__":\s*$')
-        self.assertRegex(source, r"unittest\.main\(")
+        self.assertTrue(_has_main_guard_call(source),
+                        "suite must call unittest.main() inside the __main__ guard")
         cases = {}
         for node in ast.parse(source).body:
             if isinstance(node, ast.ClassDef):
@@ -2322,6 +2350,20 @@ class IntegrationJobLogHygieneContractTest(unittest.TestCase):
     contract is not vacuous, and on the real workflow slice (which must stay
     clean).
     """
+
+    def test_main_guard_check_rejects_comment_and_string_mutations(self):
+        good = 'if __name__ == "__main__":\n    unittest.main()\n'
+        self.assertTrue(_has_main_guard_call(good),
+                        "real unittest.main() call under the guard must pass")
+        mutations = {
+            "call->pass": 'if __name__ == "__main__":\n    pass  # unittest.main()\n',
+            "comment only": '# if __name__ == "__main__": unittest.main()\n',
+            "string only": 'if __name__ == "__main__":\n    "unittest.main()"\n',
+            "no guard": 'unittest.main()\n',
+        }
+        for label, src in mutations.items():
+            self.assertFalse(_has_main_guard_call(src),
+                             "main-guard mutation must fail: " + label)
 
     def _integration_slice(self):
         return ci_job_block(workflow("ci.yml"), "integration")

@@ -40,7 +40,10 @@ strictly isolated BrowserContexts per persona:
 Evidence lines contain only booleans, counts, HTTP statuses, and retained
 numeric IDs (posted slot/clinician/location ids at or below 2**31 - 1; a
 phone-shaped value at or below that bound IS printed — see the _MAX_POSTED_ID
-note) — never passwords, OTP codes, patient names, nonces, or cookies. One
+note). Because retained IDs are printed, a printed numeric value can
+coincide with the synthetic fixture OTP digits (KNOWN_OTP) or a phone-shaped
+number; only synthetic fixture data is used (INFERENCE — by fixture design).
+Passwords, patient names, nonces, and cookies are not read into evidence. One
 bounded exception, on a `CLINIC_BOOKING_BUSY` failure only: the
 fail-closed `booking.lock_read_failed` projection (fixed read label, integer
 errno, errno-derived category, numeric IDs; never driver text) is read back from the
@@ -549,9 +552,10 @@ class BookingProbe:
     """Sanitized REST outcomes of the public-booking journey.
 
     Every entry keeps only: the REST route, the HTTP status, an allowlisted error
-    code, and the three numeric ids the client itself posted. Tokens, nonces,
-    cookies, mobile numbers, names and the server `message` text are never read, so a failure message can be
-    published without leaking anything. The probe exists because the previous
+    code, and the three numeric ids the client itself posted (ids at or
+    below 2**31-1 print, so a printed id can coincide numerically with the
+    synthetic fixture OTP digits). Tokens, nonces, cookies, mobile numbers,
+    names and the server `message` text are not read. The probe exists because the previous
     failure line (`stage=hold-countdown root_state=bookable visible=0`) could not
     distinguish "the server rejected the hold" from "the browser never asked".
     """
@@ -1798,6 +1802,11 @@ def _entry():
         _print_startup_token()
         return 130
     except Exception:  # noqa: BLE001 - fixed startup token only
+        _print_startup_token()
+        return 1
+    except BaseException:  # noqa: BLE001 - GeneratorExit / plain BaseException
+        # Remaining BaseException subclasses (GeneratorExit, a direct
+        # BaseException subclass): fixed token, exit 1, no text.
         _print_startup_token()
         return 1
 

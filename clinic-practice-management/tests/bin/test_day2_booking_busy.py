@@ -98,7 +98,12 @@ class _RedactedAssertions:
         # whose failure text bypasses _formatMessage (assertSetEqual
         # fails with exception text on a set-difference TypeError),
         # so always use _baseAssertEqual (message only via
-        # _formatMessage). Equality semantics unchanged.
+        # _formatMessage). This ROUTES ALL comparisons through the
+        # base equality path: type-specific comparators
+        # (assertSetEqual/assertListEqual/etc. and any comparator
+        # registered via addTypeEqualityFunc) are bypassed, so tests
+        # relying on custom type comparators or asymmetric element
+        # equality are NOT supported (round 17, reproduced in-memory).
         return self._baseAssertEqual
 
 
@@ -210,6 +215,18 @@ class ExtractBusyDiagnosticTest(_RedactedAssertions, unittest.TestCase):
         for value in (-1, 100000, "1213\n", "۱۲۱۳"):
             self.assertTrue("sql_errno" not in busy.extract_busy_diagnostic({"sql_errno": value}), "derived output carried forbidden text (content withheld)")
 
+    def test_ids_above_the_posted_id_bound_are_omitted(self):
+        for value in (9128887701, "9128887701"):
+            context = legacy_context("fixed")
+            context.update(slot_id=value, clinic_id=2147483647)
+            diag = busy.extract_busy_diagnostic(context)
+            self.assertTrue("slot_id" not in diag,
+                            "above-bound slot_id must be omitted (content withheld)")
+            self.assertTrue(diag.get("clinic_id") == 2147483647,
+                            "at-bound clinic_id must be retained (content withheld)")
+            self.assertTrue("9128887701" not in busy.format_busy_suffix(context),
+                            "above-bound slot_id must not reach the suffix")
+
     def test_non_object_context_is_none(self):
         self.assertTrue(busy.extract_busy_diagnostic(None) is None, "derived value mismatch (content withheld)")
         self.assertTrue(busy.extract_busy_diagnostic("booking.lock_read_failed") is None, "derived value mismatch (content withheld)")
@@ -305,6 +322,47 @@ class FormatBusySuffixTest(_RedactedAssertions, unittest.TestCase):
         self.assertTrue("busy_diag=fetch-failed" == out, "derived value mismatch (content withheld)")
         out_bad_state = busy.format_busy_suffix(None, missing="whatever")
         self.assertTrue("busy_diag=not-found" == out_bad_state, "derived value mismatch (content withheld)")
+
+
+    def test_this_suites_mixin_dispatch_override_withholds_operands(self):
+        secret = "SYNTH_SECRET_R17_BUSY"
+
+        class _Hostile:
+            def __hash__(self):
+                return 42
+
+            def __eq__(self, other):
+                if other is self:
+                    return True
+                raise TypeError(secret)
+
+        set1 = {_Hostile(), "filler"}
+        set2 = {_Hostile()}
+
+        def run(mixin):
+            class _Probe(mixin, unittest.TestCase):
+                def test_probe(self):
+                    self.assertEqual(set1, set2)
+
+            suite = unittest.TestLoader().loadTestsFromTestCase(_Probe)
+            stream = io.StringIO()
+            result = unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)
+            return result, stream.getvalue()
+
+        fixed_result, fixed_output = run(_RedactedAssertions)
+        self.assertTrue(len(fixed_result.failures) == 1 and len(fixed_result.errors) == 0,
+                        "busy mixin probe must be one clean failure (content withheld)")
+        self.assertTrue(secret not in fixed_output,
+                        "busy mixin must withhold hostile set text (content withheld)")
+
+        class _WithoutOverride(_RedactedAssertions, unittest.TestCase):
+            _getAssertEqualityFunc = unittest.TestCase._getAssertEqualityFunc
+
+        bare_result, bare_output = run(_WithoutOverride)
+        self.assertTrue(len(bare_result.failures) + len(bare_result.errors) == 1,
+                        "busy probe without the override must fail exactly once")
+        self.assertTrue(secret in bare_output,
+                        "busy probe must detect the set-difference leak (content withheld)")
 
 
 class BusySuffixForTest(_RedactedAssertions, unittest.TestCase):
