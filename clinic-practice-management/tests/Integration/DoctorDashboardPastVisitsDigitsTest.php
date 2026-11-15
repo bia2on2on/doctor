@@ -63,7 +63,7 @@ final class DoctorDashboardPastVisitsDigitsTest extends WP_UnitTestCase
 
         wp_set_current_user( $stage['doctor'] );
         $headers = $this->scopeHeaders( $stage['clinic'], $stage['location'] );
-        $r = $this->dispatch( 'GET', sprintf( self::SHARED_RECORD, $currentVisitId ), [], $headers );
+        $r = $this->dispatch( 'GET', '/' . sprintf( self::SHARED_RECORD, $currentVisitId ), [], $headers );
         self::assertSame( 200, $r->get_status(), 'record endpoint must succeed' );
         $payload = $this->payload( $r );
         self::assertIsArray( $payload['past_visits'] ?? null, 'past_visits must be a list' );
