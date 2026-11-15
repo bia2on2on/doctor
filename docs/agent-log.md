@@ -6089,3 +6089,8 @@ Sync-only merge; no behaviour change, no product code, no test touched by this s
 ### [2026-11-15] — Refund idempotency design PR #349: sync with main before merge (docs only)
 
 Merged `origin/main` (`dcbe44d58371ba5e0f5ada27b2ed2a7bb0d94532`, after #335 and #350) into the PR branch (previous head `8f418521df67b9e6049aa6eaf85a4c64976b2c9d`) with a normal merge commit. The only conflict was this ledger: all of main's entries are kept first, followed by this branch's entries; 0 deletions versus main and main's bytes are an exact prefix. The design document (125,796 bytes, blob `3650da760ca55b0897cf8b72fc2734a22c481954`), `docs/srs/SRS.md` and `docs/api/api-contract.md` are byte-identical to the previous head. This PR is design only: merging it is NOT permission to build; no schema, migration or implementation without a separate explicit owner approval; the delegated decisions D1-D12 are owner-delegated manager decisions subject to two independent finance reviews; the open owner decisions remain listed in the PR body and the design document. No PHP was run (local PHP is PHP-WASM only).
+
+### [2026-11-15 UTC] — Messaging rate-limit test window guard
+- OBSERVED: Added a bounded wait and window-ID assertion to `StaffMessagingSecurityTest`; product code was not edited.
+- INFERENCE: The existing test is window-boundary sensitive; a timing cause has not been established.
+- LIMITATION: Local integration execution requires a real WordPress test database; PHP-WASM token parsing is not integration evidence.
