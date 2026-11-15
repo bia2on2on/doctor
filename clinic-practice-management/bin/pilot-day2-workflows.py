@@ -37,9 +37,11 @@ strictly isolated BrowserContexts per persona:
     `Loc A2`), cross-Clinic denial (`Clinic B`), zero patient PHI leakage, and
     `390px` + `320px` mobile layouts (`scrollWidth <= innerWidth + 1`).
 
-Evidence lines contain only booleans, counts, HTTP statuses, and non-sensitive
-numeric IDs — never passwords, OTP codes, mobile numbers, patient names, nonces,
-or cookies. One bounded exception, on a `CLINIC_BOOKING_BUSY` failure only: the
+Evidence lines contain only booleans, counts, HTTP statuses, and retained
+numeric IDs (posted slot/clinician/location ids at or below 2**31 - 1; a
+phone-shaped value at or below that bound IS printed — see the _MAX_POSTED_ID
+note) — never passwords, OTP codes, patient names, nonces, or cookies. One
+bounded exception, on a `CLINIC_BOOKING_BUSY` failure only: the
 fail-closed `booking.lock_read_failed` projection (fixed read label, integer
 errno, errno-derived category, numeric IDs; never driver text) is read back from the
 operational-log table — see `day2_booking_busy`.

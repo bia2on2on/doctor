@@ -109,19 +109,24 @@ class _RedactedAssertions:
     It returns the explicit msg when one is given (callers pass fixed
     strings only) and a fixed placeholder otherwise.
 
-    QUALIFIED SCOPE (round 14): this covers only assertion methods
-    that route their failure message through _formatMessage. On the
-    CPython 3.11 unittest/case.py read for this change, the methods
-    used by these suites — assertTrue, assertFalse, assertEqual,
-    assertNotEqual, assertIn, assertNotIn, assertRegex, assertNotRegex,
-    assertLess, assertLessEqual, assertGreater, assertGreaterEqual,
-    assertRaises — all build their message via _formatMessage (or,
-    for assertRaises context failures, via this class's fail()).
-    Other helpers bypass it: assertSequenceEqual raises
-    failureException directly with the operand's repr on a type
-    mismatch (case.py), and assertListEqual/assertTupleEqual route
-    through it; assertSetEqual calls fail() with exception text.
-    Those methods are FORBIDDEN in these suites and an AST test
+    QUALIFIED SCOPE (rounds 14-15): this covers only assertion
+    methods that route their failure message through _formatMessage.
+    On the CPython 3.11 unittest/case.py read for this change, the
+    methods used by these suites — assertTrue, assertFalse,
+    assertEqual, assertNotEqual, assertIn, assertNotIn, assertRegex,
+    assertNotRegex, assertLess, assertLessEqual, assertGreater,
+    assertGreaterEqual, assertRaises — all build their message via
+    _formatMessage (case.py lines: assertTrue/False ~705-715,
+    _baseAssertEqual ~861-866, assertIn/NotIn/Is/IsNot ~1133-1160,
+    assertLess/LessEqual/Greater/GreaterEqual/IsNone ~1255-1290,
+    assertRegex/NotRegex ~1339-1365; assertRaises context failures
+    go via this class's fail()). assertEqual's stock TYPE DISPATCH
+    is overridden below (_getAssertEqualityFunc) because the
+    type-specific helpers it selects can bypass _formatMessage
+    (assertSetEqual ~1108-1117 fails with exception text;
+    assertSequenceEqual ~981-984 raises failureException directly
+    with the operand's repr on a type mismatch). Calling those
+    helpers DIRECTLY remains forbidden; an AST test
     (AssertionOutputRedactionTest) enforces the allowlist. This is
     defence in depth ON TOP of the internal-comparison assertions,
     not a replacement for them.
@@ -134,6 +139,21 @@ class _RedactedAssertions:
         raise self.failureException(
             msg if msg is not None else "assertion failed (details withheld)"
         )
+
+    def _getAssertEqualityFunc(self, first, second):
+        # Private CPython API (unittest/case.py in CPython 3.11, read
+        # for this change; only the public surface is documented at
+        # https://docs.python.org/3/library/unittest.html): the stock
+        # dispatch routes set/frozenset/dict/list/tuple/str operands
+        # to type-specific helpers whose failure paths can embed
+        # exception or operand text WITHOUT _formatMessage — e.g.
+        # assertSetEqual calls fail('invalid type when attempting
+        # set difference: %s' % e) when a set difference raises
+        # TypeError. Always returning _baseAssertEqual (verified in
+        # case.py: its only message is built through _formatMessage)
+        # removes that path. Equality semantics are unchanged (the
+        # same == comparison); only the failure TEXT differs.
+        return self._baseAssertEqual
 
 
 class VocabularyDerivationTest(_RedactedAssertions, unittest.TestCase):
@@ -2232,15 +2252,53 @@ _SAFE_ASSERTION_METHODS = frozenset({
 })
 
 
+_BYPASSING_ASSERTION_METHODS = frozenset({
+    "assertSequenceEqual", "assertListEqual", "assertTupleEqual",
+    "assertSetEqual", "assertDictEqual", "assertMultiLineEqual",
+    "assertCountEqual", "assertDictContainsSubset",
+    "assertAlmostEqual", "assertNotAlmostEqual", "assertWarns",
+    "assertWarnsRegex", "assertRaisesRegex", "assertLogs",
+    "assertNoLogs", "assertIsInstance", "assertNotIsInstance",
+})
+
+
 def _unsafe_assertion_calls(source):
+    """Flag any use that could reach a bypassing assertion helper.
+
+    Scans every attribute/name REFERENCE (not only calls): aliased
+    references (``f = self.assertSequenceEqual``), bare assert*/fail*
+    names, and dynamic access (``getattr``/``setattr``/
+    ``__getattribute__``) with a non-literal or assert*/fail* target
+    are all flagged, so the allowlist cannot be dodged by those\n    indirection forms (eval/exec of strings is out of scope).
+    """
     bad = []
     for node in ast.walk(ast.parse(source)):
-        if (isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr.startswith("assert")
-                and node.func.attr not in _SAFE_ASSERTION_METHODS
-                and node.func.attr != "assert_closed"):
-            bad.append(node.func.attr)
+        # unittest assertion helpers are camelCase after the prefix
+        # (assertEqual, assertSetEqual, ...); snake_case attributes
+        # (assert_closed, assert_no_values, .asserts) are this
+        # suite's own helpers, not unittest assertions.
+        if isinstance(node, ast.Attribute) and (
+            (node.attr.startswith("assert") and len(node.attr) > 6 and node.attr[6].isupper())
+            or node.attr in _BYPASSING_ASSERTION_METHODS
+        ):
+            if node.attr not in _SAFE_ASSERTION_METHODS:
+                bad.append(node.attr)
+        elif isinstance(node, ast.Name) and (
+            (node.id.startswith("assert") and len(node.id) > 6 and node.id[6].isupper())
+            or node.id in _BYPASSING_ASSERTION_METHODS
+        ):
+            bad.append(node.id)
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id in ("getattr", "setattr", "__getattribute__")
+        ):
+            target = node.args[1] if len(node.args) >= 2 else None
+            if not (isinstance(target, ast.Constant)
+                    and isinstance(target.value, str)):
+                bad.append(node.func.id + "(dynamic)")
+            elif target.value.startswith(("assert", "fail")):
+                bad.append("getattr(assert*)")
     return bad
 
 
@@ -2357,6 +2415,67 @@ class AssertionOutputRedactionTest(_RedactedAssertions, unittest.TestCase):
                         "this is the gap the strict predicate closes")
         self.assertTrue(not meta_ok(broken_result, broken_output),
                         "meta-condition must reject a broken mixin (errors are not failures)")
+
+    def test_set_equality_cannot_reach_the_bypassing_helper(self):
+        secret = "SYNTH_SECRET_R15_SET"
+
+        class _Hostile:
+            def __hash__(self):
+                return 42
+
+            def __eq__(self, other):
+                if other is self:
+                    return True
+                raise TypeError(secret)
+
+        # Size mismatch makes `set1 == set2` False WITHOUT calling
+        # the hostile __eq__ (so _baseAssertEqual records a clean
+        # failure), while assertSetEqual's difference raises
+        # TypeError(secret) first (its fail path embeds the text).
+        set1 = {_Hostile(), "filler"}
+        set2 = {_Hostile()}
+
+        def run(case_mixin):
+            class _Probe(case_mixin, unittest.TestCase):
+                def test_probe(self):
+                    self.assertEqual(set1, set2)
+
+            suite = unittest.TestLoader().loadTestsFromTestCase(_Probe)
+            stream = io.StringIO()
+            result = unittest.TextTestRunner(stream=stream, verbosity=0).run(suite)
+            return result, stream.getvalue()
+
+        class _WithoutOverride(_RedactedAssertions, unittest.TestCase):
+            _getAssertEqualityFunc = unittest.TestCase._getAssertEqualityFunc
+
+        bare_result, bare_output = run(_WithoutOverride)
+        self.assertTrue(len(bare_result.failures) + len(bare_result.errors) == 1,
+                        "set probe without the override must fail exactly once")
+        self.assertTrue(secret in bare_output,
+                        "without the dispatch override the set-difference "
+                        "TypeError text reaches runner output (probe must detect it)")
+
+        fixed_result, fixed_output = run(_RedactedAssertions)
+        self.assertTrue(len(fixed_result.failures) == 1 and len(fixed_result.errors) == 0,
+                        "set probe with the override must be one clean failure")
+        self.assertTrue(secret not in fixed_output,
+                        "set operands must never reach runner output (content withheld)")
+
+    def test_assertion_allowlist_guard_catches_indirection(self):
+        snippets = {
+            "alias": "f = self.assertSequenceEqual\nf(a, b)\n",
+            "getattr": "getattr(self, 'assertListEqual')(a, b)\n",
+            "dynamic getattr": "getattr(self, name)(a, b)\n",
+            "wrapper": "def w(a, b):\n    return self.assertSetEqual(a, b)\n",
+            "bare name": "g = assertDictEqual\n",
+        }
+        for label, snippet in snippets.items():
+            self.assertTrue(_unsafe_assertion_calls(snippet) != [],
+                            "allowlist guard must flag indirection: " + label)
+        self.assertTrue(
+            _unsafe_assertion_calls("self.assertTrue(a == b)\nself.fail('fixed')\n") == [],
+            "allowlist guard must accept routed assertions and fixed fail()",
+        )
 
     def test_subprocess_timeout_cannot_print_the_driver(self):
         marker = "SYNTH_SECRET_R14_TIMEOUT"

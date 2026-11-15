@@ -67,20 +67,21 @@ class _RedactedAssertions:
     It returns the explicit msg when one is given (callers pass fixed
     strings only) and a fixed placeholder otherwise.
 
-    QUALIFIED SCOPE (round 14): this covers only assertion methods
-    that route their failure message through _formatMessage (on the
-    CPython 3.11 unittest/case.py read for this change: assertTrue,
-    assertFalse, assertEqual, assertNotEqual, assertIn, assertNotIn,
-    assertRegex, assertNotRegex, assertLess, assertLessEqual,
-    assertGreater, assertGreaterEqual, assertRaises — the methods
-    these suites use). Helpers that bypass _formatMessage
-    (assertSequenceEqual raises failureException directly with the
-    operand's repr on a type mismatch; assertListEqual /
-    assertTupleEqual route through it; assertSetEqual calls fail()
-    with exception text) are FORBIDDEN here and are enforced by an
-    AST allowlist test in test_pilot_day2_failure_report.py. Defence
-    in depth ON TOP of the internal-comparison assertions, not a
-    replacement for them.
+    QUALIFIED SCOPE (rounds 14-15): this covers only assertion
+    methods that route their failure message through _formatMessage
+    (on the CPython 3.11 unittest/case.py read for this change:
+    assertTrue, assertFalse, assertEqual, assertNotEqual, assertIn,
+    assertNotIn, assertRegex, assertNotRegex, assertLess,
+    assertLessEqual, assertGreater, assertGreaterEqual, assertRaises
+    — the methods these suites use). assertEqual's stock TYPE
+    DISPATCH is overridden in this mixin (_getAssertEqualityFunc)
+    because its type-specific helpers can bypass _formatMessage
+    (assertSetEqual fails with exception text on a set-difference
+    TypeError; assertSequenceEqual raises failureException directly
+    with the operand's repr on a type mismatch). Calling those
+    helpers DIRECTLY is FORBIDDEN here, enforced by an AST allowlist
+    test in test_pilot_day2_failure_report.py. Defence in depth ON
+    TOP of the internal-comparison assertions, not a replacement.
     """
 
     def _formatMessage(self, msg, standardMsg):
@@ -90,6 +91,15 @@ class _RedactedAssertions:
         raise self.failureException(
             msg if msg is not None else "assertion failed (details withheld)"
         )
+
+    def _getAssertEqualityFunc(self, first, second):
+        # See the failure-report suite for the full note: private
+        # CPython API; the stock type dispatch can reach helpers
+        # whose failure text bypasses _formatMessage (assertSetEqual
+        # fails with exception text on a set-difference TypeError),
+        # so always use _baseAssertEqual (message only via
+        # _formatMessage). Equality semantics unchanged.
+        return self._baseAssertEqual
 
 
 class DriverTextExclusionTest(_RedactedAssertions, unittest.TestCase):
