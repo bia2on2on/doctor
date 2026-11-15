@@ -883,14 +883,17 @@ final class PublicBookingShortcode
     /**
      * خلاصهٔ روزهای کاری هفتگی (برچسبِ فارسی، بدون هیچ دلیلی از استثناها).
      *
-     * @param list<int> $weekdays ISO-8601 weekday numbers (0..6 as stored)
+     * @param list<int> $weekdays Stored `cpms_schedule.day_of_week` values:
+     *                            0=شنبه … 6=جمعه (Iranian week, Saturday first).
      */
     private static function weekday_summary( array $weekdays ): string {
         $labels = [];
         foreach ( $weekdays as $day ) {
-            // cpms_schedule.day_of_week is 0..6 (0 = Sunday) — map to a stable
-            // Persian label without assuming where the week starts.
-            $label = self::weekday_label_from_db( (int) $day );
+            // cpms_schedule.day_of_week is the STORED contract, 0=شنبه … 6=جمعه
+            // (docs/erd/data-dictionary.md; ScheduleService; both admin DAYS
+            // arrays; SlotsGenerateHandler::toIranianDow). Decode it with the
+            // stored-value table only — never with the Gregorian `w` table.
+            $label = self::weekday_label_from_stored_day( (int) $day );
             if ( $label !== '' ) {
                 $labels[ $label ] = $label;
             }
@@ -904,15 +907,47 @@ final class PublicBookingShortcode
     }
 
     /**
-     * Persian label for the `day_of_week` encoding used by `cpms_schedule`.
+     * Persian label for a STORED `cpms_schedule.day_of_week` value.
      *
-     * The schema stores a TINYINT weekday and the admin UI presents the Persian
-     * week starting at Saturday; the exact ordinal convention is legacy. To stay
-     * truthful on a public surface we never guess: the set is published as the
-     * ordered list of *persisted* days and only the label of a day index is
-     * resolved through this single table.
+     * The storage contract is the Iranian week, Saturday first:
+     *
+     *   0=شنبه  1=یک‌شنبه  2=دوشنبه  3=سه‌شنبه  4=چهارشنبه  5=پنجشنبه  6=جمعه
+     *
+     * It is asserted independently by `docs/erd/data-dictionary.md` (the
+     * `cpms_schedule` section), `ScheduleService`'s validation message,
+     * `ClinicianAdminPage::DAYS`, `FacilitySetupPage::DAYS` (the form submits
+     * `$index`) and `SlotsGenerateHandler::toIranianDow()`, which is the one
+     * place that converts a real calendar date INTO this contract.
+     *
+     * This is NOT the Gregorian `w` order (0=Sunday). An earlier version of this
+     * file applied a `w`-ordered table to stored values, which published every
+     * doctor's working day one day late. The two orders are both integers in
+     * 0..6, so the mistake is invisible to the type system — which is why the
+     * two meanings now live in two separately named functions.
      */
-    private static function weekday_label_from_db( int $day_of_week ): string {
+    private static function weekday_label_from_stored_day( int $day_of_week ): string {
+        $map = [
+            0 => 'شنبه',
+            1 => 'یک‌شنبه',
+            2 => 'دوشنبه',
+            3 => 'سه‌شنبه',
+            4 => 'چهارشنبه',
+            5 => 'پنجشنبه',
+            6 => 'جمعه',
+        ];
+
+        return $map[ $day_of_week ] ?? '';
+    }
+
+    /**
+     * Persian label for a GREGORIAN weekday number, i.e. the value of PHP's
+     * `DateTimeInterface::format( 'w' )` (0=یک‌شنبه … 6=شنبه).
+     *
+     * Use this ONLY for a value produced by `format( 'w' )` off a real date.
+     * For a stored `cpms_schedule.day_of_week` value use
+     * `weekday_label_from_stored_day()` instead — the orders differ by one day.
+     */
+    private static function weekday_label_from_gregorian_w( int $gregorian_w ): string {
         $map = [
             0 => 'یک‌شنبه',
             1 => 'دوشنبه',
@@ -923,7 +958,7 @@ final class PublicBookingShortcode
             6 => 'شنبه',
         ];
 
-        return $map[ $day_of_week ] ?? '';
+        return $map[ $gregorian_w ] ?? '';
     }
 
     /**
@@ -1871,7 +1906,9 @@ final class PublicBookingShortcode
             $calendar[] = [
                 'date'    => $date,
 				'jalali'  => Jalali::format_display_ymd( $date ),
-                'weekday' => self::weekday_label_from_db( (int) $cursor->format( 'w' ) ),
+                // Real calendar date -> Gregorian `w` -> Gregorian label. This
+                // path was always correct; it uses the `w` table on purpose.
+                'weekday' => self::weekday_label_from_gregorian_w( (int) $cursor->format( 'w' ) ),
             ];
             $cursor     = $cursor->modify( '+1 day' );
         }

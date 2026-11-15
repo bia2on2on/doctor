@@ -96,7 +96,17 @@ final class PublicClinicDirectory {
 	 */
 	public const PUBLIC_SHARED_CLINICIAN_LISTING = true;
 
-	/** Persian weekday names, indexed by ISO-8601 weekday number ( 1 = Monday ). */
+	/**
+	 * Persian weekday names in MONDAY-FIRST order, keyed 1..7 (1 = دوشنبه).
+	 *
+	 * NOT the storage contract. `cpms_schedule.day_of_week` is stored as the
+	 * Iranian week, Saturday first: `0=شنبه … 6=جمعه`
+	 * (docs/erd/data-dictionary.md:132; see
+	 * PublicBookingShortcode::weekday_label_from_stored_day()). This table is a
+	 * legacy Monday-first helper with no callers anywhere in src/, templates/,
+	 * assets/js/, bin/, tools/ or tests/ — it is kept only for compatibility and
+	 * must not be used to decode a stored `day_of_week` value.
+	 */
 	public const WEEKDAY_LABELS = [
 		1 => 'دوشنبه',
 		2 => 'سه‌شنبه',
@@ -320,7 +330,12 @@ final class PublicClinicDirectory {
 	}
 
 	/**
-	 * Publication-safe Persian weekday label.
+	 * Publication-safe Persian weekday label — MONDAY-FIRST table, keyed 1..7.
+	 *
+	 * The parameter is NOT the stored `cpms_schedule.day_of_week` contract
+	 * (`0=شنبه … 6=جمعه`); do not pass a stored value here. For stored values use
+	 * PublicBookingShortcode::weekday_label_from_stored_day(). Currently has no
+	 * callers (verified across src/, templates/, assets/js/, bin/, tools/, tests/).
 	 */
 	public static function weekday_label( int $iso_weekday ): string {
 		return self::WEEKDAY_LABELS[ $iso_weekday ] ?? '';
@@ -516,8 +531,12 @@ final class PublicClinicDirectory {
 			$map[ $clinic_id ][ $clinician_id ][ $day ] = $day;
 		}
 
-		// Sort each weekday list ascending (Saturday-first Persian week order is
-		// a presentation concern; the list stays a stable ISO-weekday set).
+		// Sort each weekday list ascending. These values are STORED
+		// `cpms_schedule.day_of_week` values, i.e. the Iranian week Saturday
+		// first (`0=شنبه … 6=جمعه`), so ascending order is Saturday→Friday — not
+		// an ISO/Monday-first set. Formatting is done by the caller
+		// (PublicBookingShortcode::weekday_label_from_stored_day()); this array
+		// stays raw stored numbers.
 		$sorted = [];
 		foreach ( $map as $clinic_id => $clinicians ) {
 			foreach ( $clinicians as $clinician_id => $days ) {

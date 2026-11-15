@@ -1,30 +1,16 @@
-"""Allow-listed cause extraction for Day-2 `CLINIC_BOOKING_BUSY` failures.
+"""Fail-closed cause projection for Day-2 `CLINIC_BOOKING_BUSY` failures.
 
-Provenance (production code, read-only for this harness): when a booking lock
-read fails, `BookingService::assert_read_succeeded()` records the real database
-cause via `OpLogger::error('booking.lock_read_failed', $context)` and only then
-answers `503 CLINIC_BOOKING_BUSY`. The context is `{read, sql_errno, sql_error}`
-merged with non-PII numeric ids, and `OpLogger` persists it as `context_json`
-in the `{wp_prefix}cpms_operational_logs` table. For booking transactions the
-diagnostic is written after the rollback, so the row exists when the browser
-observes the 503; a raw transactional boundary can roll that write back, in
-which case the harness reports `busy_diag=not-found`.
+`BookingService::assert_read_succeeded()` records only a fixed read label,
+driver errno and numeric identifiers via `OpLogger::error(...)`, then answers
+`503 CLINIC_BOOKING_BUSY`. Transactional diagnostics are emitted after rollback.
+Legacy rows may still contain `sql_error` or arbitrary extra fields. This reader
+never publishes driver text, even from those legacy rows: redaction patterns
+cannot reliably remove short names, numbers, Unicode or unquoted SQL values.
 
-This module is the harness-side reader for that sink. It is deliberately pure:
-the caller supplies the DB query function (the Day-2 harness already reads the
-same database through its `dbrows()` helper), and every value that can reach a
-failure line passes an allow-list — event name, read label, integer errno,
-sanitized/truncated sql_error, and integer `*_id` fields only. Everything else
-in the stored context is dropped. This is a best-effort allow-list, not a proof
-of absence: `sql_error` is untrusted driver text, so the sanitizer collapses
-whitespace, caps its length and redacts phone-like digit runs, quoted SQL
-fragments and e-mail-like tokens rather than guaranteeing that no PII, token,
-phone number or full SQL statement can ever survive a failure message.
-
-Staleness: `latest_busy_sql()` is bounded by the failing journey's UTC start
-(captured by the harness), and a row whose allow-listed ids conflict with the
-busy attempt is reported as `busy_diag=stale-or-mismatch` instead of being
-attributed to this failure.
+Every publication path re-projects through the same allow-list: fixed read
+labels, bounded integer errno/ids, and an errno-derived category. Unknown fields
+and malformed values are dropped. The journey-start bound and id mismatch guard
+are unchanged; missing/fetch/stale states remain bounded fallback labels.
 """
 
 import json
@@ -33,51 +19,57 @@ import re
 BUSY_CODE = "CLINIC_BOOKING_BUSY"
 EVENT = "booking.lock_read_failed"
 ID_KEYS = ("clinic_id", "organization_id", "location_id", "clinician_id", "slot_id")
-MAX_SQL_ERROR = 200
+# Same bound as the harness posted-ID projection (_MAX_POSTED_ID):
+# caller-supplied IDs above 2**31-1 are omitted, never printed.
+MAX_ID = 2147483647
 MAX_SUFFIX = 400
 STALE_STATE = "stale-or-mismatch"
 MISSING_STATES = ("not-found", "fetch-failed", STALE_STATE)
 
-_READ_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+# Fixed labels emitted by BookingService::assert_read_succeeded(). A grammar
+# alone is insufficient: a short patient name can also look like a label.
+READ_LABELS = frozenset((
+    "slot", "confirm_hold", "confirm_slot", "reschedule_appointment",
+    "reschedule_first_slot", "reschedule_second_slot", "staff_create_slot",
+    "no_show_appointment", "cancel_appointment", "location_active",
+    "location_timezone", "location", "organization_active", "organization",
+    "clinic", "persisted_slot",
+))
+ERROR_CATEGORIES = {0: "unknown", 1205: "lock_wait_timeout", 1213: "deadlock"}
 _TABLE_RE = re.compile(r"^[A-Za-z0-9_]{1,128}$")
-_ROUTE_RE = re.compile(r"^[a-z0-9/_.-]{1,64}$")
-_VIEWPORT_RE = re.compile(r"^\d{2,5}x\d{2,5}$")
-_DIGITS_RE = re.compile(r"^\d{1,10}$")
-_DIGIT_RUN = re.compile(r"\d{7,}")
-_QUOTED = re.compile(r"'([^']*)'")
-_EMAIL_RE = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
-_SQL_DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+#: The exact route literals a busy suffix may carry — the short forms
+#: (`_short_route`) of the six booking routes the probe watches
+#: (`BOOKING_ROUTES` in pilot-day2-workflows.py). A route is published only
+#: when it is exactly one of these; grammar-shaped lookalikes, unknown
+#: fields and any other string are omitted, never carried.
+ROUTE_LITERALS = frozenset((
+    "v1/availability", "booking/quote", "booking/hold", "booking/confirm",
+    "otp/request", "otp/verify",
+))
+_VIEWPORT_RE = re.compile(r"[0-9]{2,5}x[0-9]{2,5}")
 
 
-def _quoted_repl(match):
-    """Keep short identifier-like quotes; redact SQL-fragment-like quotes.
+def _canonical_viewport(value):
+    """Canonical `<w>x<h>` viewport from ASCII digits, else "".
 
-    MySQL error text quotes database/table names (`Table 'db.wp_x' doesn't
-    exist`) — that identifier is the diagnostic value and is not PII. A quoted
-    fragment that contains whitespace, a long digit run, or is very long looks
-    like embedded statement text or a literal value, so it is redacted.
+    Re-rendered from the parsed integers, so the published value is
+    bounded canonical digits only (no Unicode digit shapes, no
+    leading-zero or whitespace variants of the input text).
     """
-    inner = match.group(1)
-    if len(inner) > 80 or any(ch.isspace() for ch in inner) or _DIGIT_RUN.search(inner):
-        return "'…'"
-    return match.group(0)
-
-
-def sanitize_sql_error(value):
-    """One-line, length-capped, best-effort redaction of sql_error.
-
-    Digit runs, quoted SQL fragments and e-mail-like tokens are redacted; this
-    reduces (but cannot prove the absence of) sensitive values in driver text.
-    """
-    if not isinstance(value, str):
+    if not isinstance(value, str) or not _VIEWPORT_RE.fullmatch(value):
         return ""
-    text = value.replace('"', "'").replace("`", "")
-    text = " ".join(text.split())
-    text = "".join(ch for ch in text if ch.isprintable() or ch == " ")
-    text = _QUOTED.sub(_quoted_repl, text)
-    text = _EMAIL_RE.sub("[email]", text)
-    text = _DIGIT_RUN.sub("[digits]", text)
-    return text[:MAX_SQL_ERROR]
+    width, height = value.split("x")
+    return f"{int(width)}x{int(height)}"
+_DIGITS_RE = re.compile(r"[0-9]{1,10}")
+_SQL_DATETIME_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}")
+
+
+def _bounded_num(value):
+    """Integer in 0..2**31-1 unchanged; anything else -> fixed token."""
+    coerced = _coerce_int(value)
+    if coerced is None:
+        return "n/a"
+    return coerced if 0 <= coerced <= MAX_ID else "n/a"
 
 
 def _coerce_int(value):
@@ -85,33 +77,31 @@ def _coerce_int(value):
         return None
     if isinstance(value, int):
         return value
-    if isinstance(value, str) and _DIGITS_RE.match(value.strip()):
-        return int(value.strip())
+    if isinstance(value, str) and _DIGITS_RE.fullmatch(value):
+        return int(value)
     return None
 
 
 def extract_busy_diagnostic(context):
-    """Allow-listed projection of a stored `booking.lock_read_failed` context.
+    """Project current or legacy stored context without reading driver text.
 
-    Returns None when the stored value is not an object at all. An object with
-    no usable fields still yields `{"event": EVENT}` so the failure line can
-    prove the row existed even when its context was empty.
+    Non-object input returns None. An object with no usable fields still yields
+    the fixed event label, proving that a row existed without echoing its data.
+    The category is derived only from validated errno, never from stored text.
     """
     if not isinstance(context, dict):
         return None
     diag = {"event": EVENT}
     read = context.get("read")
-    if isinstance(read, str) and _READ_RE.match(read):
+    if isinstance(read, str) and read in READ_LABELS:
         diag["read"] = read
     errno = _coerce_int(context.get("sql_errno"))
     if errno is not None and 0 <= errno <= 99999:
         diag["sql_errno"] = errno
-    error = sanitize_sql_error(context.get("sql_error"))
-    if error:
-        diag["sql_error"] = error
+        diag["error_category"] = ERROR_CATEGORIES.get(errno, "driver_error")
     for key in ID_KEYS:
         value = _coerce_int(context.get(key))
-        if value is not None and value > 0:
+        if value is not None and 0 < value <= MAX_ID:
             diag[key] = value
     return diag
 
@@ -141,11 +131,11 @@ def latest_busy_sql(table, since=None):
     An invalid value raises, which degrades to `busy_diag=fetch-failed` in the
     caller. With no `since`, the legacy unbounded query is returned unchanged.
     """
-    if not isinstance(table, str) or not _TABLE_RE.match(table):
+    if not isinstance(table, str) or not _TABLE_RE.fullmatch(table):
         raise ValueError("unsafe operational-log table identifier")
     bound = ""
     if since is not None:
-        if not isinstance(since, str) or not _SQL_DATETIME_RE.match(since):
+        if not isinstance(since, str) or not _SQL_DATETIME_RE.fullmatch(since):
             raise ValueError("unsafe journey-start timestamp")
         bound = f" AND created_at >= '{since}'"
     return (
@@ -154,12 +144,76 @@ def latest_busy_sql(table, since=None):
     )
 
 
-def find_busy_attempt(entries):
-    """Last probe entry whose REST error code is CLINIC_BOOKING_BUSY, if any."""
-    for entry in reversed(list(entries or [])):
-        if isinstance(entry, dict) and entry.get("code") == BUSY_CODE:
-            return entry
-    return None
+#: Failing-stage token -> the watched route suffix that stage operates
+#: on (short suffix of the probe's full route). Only these stages can
+#: pin a busy attribution to an operation; any other stage (or none)
+#: falls back to the trailing-response rule in `find_busy_attempt`.
+STAGE_ROUTE_SUFFIXES = {
+    "hold-request": "/booking/hold",
+    "hold-countdown": "/booking/hold",
+    "confirm-btn": "/booking/confirm",
+    "names-form": "/booking/confirm",
+    "receipt": "/booking/confirm",
+    "otp-mobile": "/otp/request",
+    "otp-code": "/otp/verify",
+}
+
+
+def find_busy_attempt(entries, stage=""):
+    """The busy attempt that belongs to the failing operation, if any.
+
+    Attribution is BEST EFFORT, not proof of causation: the probe
+    history shows responses, not which response made the browser give
+    up, so the rules below infer the failing operation from the stage
+    token and response order. A busy response that this function
+    selects is the most plausible cause the closed evidence supports;
+    it is not proof that this response, rather than a UI/timing
+    failure after it, ended the journey.
+
+    Attribution rule (busy is claimed ONLY for the operation that
+    plausibly failed, never merely because a busy response exists
+    somewhere in the history):
+
+    1. When the failing `stage` is known and maps to a route
+       (`STAGE_ROUTE_SUFFIXES`), only busy entries for THAT route are
+       candidates, and the last of them is the attempt — UNLESS a later
+       entry for the same route is a non-busy FAILURE (HTTP >= 400):
+       that later response, not the busy one, is what the operation
+       failed with, so busy is not claimed. A later same-route SUCCESS
+       does not supersede here: the stage had already failed on the
+       busy response (e.g. the countdown never appeared) before a
+       retry succeeded.
+    2. When the stage is unknown or unmapped, busy is claimed only
+       when the busy entry is the LAST observed response overall:
+       the most recent response is the best available proxy for the
+       failing operation, and any later response (success on the same
+       route, a failure on any route) means the journey moved past
+       the busy one.
+    """
+    items = [e for e in (entries or []) if isinstance(e, dict)]
+    busy_indexes = [i for i, e in enumerate(items) if e.get("code") == BUSY_CODE]
+    if not busy_indexes:
+        return None
+    suffix = STAGE_ROUTE_SUFFIXES.get(stage) if isinstance(stage, str) else None
+    if suffix:
+        route_indexes = [
+            i for i in busy_indexes
+            if isinstance(items[i].get("route"), str)
+            and items[i]["route"].endswith(suffix)
+        ]
+        if not route_indexes:
+            return None
+        chosen = route_indexes[-1]
+        for later in items[chosen + 1:]:
+            if not (isinstance(later.get("route"), str)
+                    and later["route"].endswith(suffix)):
+                continue
+            status = _coerce_int(later.get("status"))
+            if later.get("code") != BUSY_CODE and status is not None and status >= 400:
+                return None
+        return items[chosen]
+    last = items[-1]
+    return last if last.get("code") == BUSY_CODE else None
 
 
 def _stale_for_attempt(attempt, diag):
@@ -183,6 +237,8 @@ def _stale_for_attempt(attempt, diag):
 
 def format_busy_suffix(diag, *, route="", http_status=0, viewport="", missing="not-found"):
     """Single-line `key=value` suffix, in the existing harness message style."""
+    # Defend direct formatter callers too, not only the DB-reader path.
+    diag = extract_busy_diagnostic(diag) if isinstance(diag, dict) else None
     bits = []
     if diag:
         bits.append(f"busy_diag={EVENT}")
@@ -190,20 +246,21 @@ def format_busy_suffix(diag, *, route="", http_status=0, viewport="", missing="n
             bits.append(f"read={diag['read']}")
         if "sql_errno" in diag:
             bits.append(f"sql_errno={diag['sql_errno']}")
-        if diag.get("sql_error"):
-            bits.append(f'sql_error="{diag["sql_error"]}"')
+        if diag.get("error_category"):
+            bits.append(f'error_category={diag["error_category"]}')
         for key in ID_KEYS:
             if key in diag:
                 bits.append(f"{key}={diag[key]}")
     else:
         state = missing if missing in MISSING_STATES else "not-found"
         bits.append(f"busy_diag={state}")
-    if isinstance(route, str) and _ROUTE_RE.match(route):
+    if isinstance(route, str) and route in ROUTE_LITERALS:
         bits.append(f"route={route}")
     status = _coerce_int(http_status)
     if status:
-        bits.append(f"http={status}")
-    if isinstance(viewport, str) and _VIEWPORT_RE.match(viewport):
+        bits.append(f"http={_bounded_num(status)}")
+    viewport = _canonical_viewport(viewport)
+    if viewport:
         bits.append(f"viewport={viewport}")
     return " ".join(bits)[:MAX_SUFFIX]
 
@@ -214,7 +271,56 @@ def _short_route(route):
     return route.rsplit("/", 2)[-2] + "/" + route.rsplit("/", 1)[-1]
 
 
-def busy_suffix_for(entries, query, table, viewport="", since=None):
+def validate_busy_suffix(suffix):
+    """Re-project a busy suffix string to its canonical closed form, or "".
+
+    The suffix is a publication boundary: only its known `key=value` tokens
+    are read, each value is re-validated against the same closed schema
+    `format_busy_suffix` emits from (`busy_diag` state, fixed read label,
+    bounded integer errno/ids, bounded HTTP status, validated route and
+    viewport), and the result is rebuilt by `format_busy_suffix`. Free text,
+    unknown keys and out-of-vocabulary values are dropped — never carried,
+    escaped or pattern-redacted. Anything without a valid `busy_diag=` state
+    yields "", so a caller can publish the result verbatim and nothing else
+    from the original string can ride along.
+    """
+    if not isinstance(suffix, str) or not suffix.strip():
+        return ""
+    fields = {}
+    for token in suffix.split():
+        key, sep, value = token.partition("=")
+        if sep and key not in fields:
+            fields[key] = value
+    state = fields.get("busy_diag", "")
+    if state == EVENT:
+        context = {}
+        if fields.get("read") in READ_LABELS:
+            context["read"] = fields["read"]
+        errno = _coerce_int(fields.get("sql_errno"))
+        if errno is not None and 0 <= errno <= 99999:
+            context["sql_errno"] = errno
+        for key in ID_KEYS:
+            value = _coerce_int(fields.get(key))
+            if value is not None and 0 < value <= MAX_ID:
+                context[key] = value
+        diag, missing = extract_busy_diagnostic(context), "not-found"
+    elif state in MISSING_STATES:
+        diag, missing = None, state
+    else:
+        return ""
+    route = fields.get("route", "")
+    if route not in ROUTE_LITERALS:
+        route = ""
+    status = _coerce_int(fields.get("http"))
+    if status is None or not 100 <= status <= 599:
+        status = 0
+    viewport = _canonical_viewport(fields.get("viewport", ""))
+    return format_busy_suffix(
+        diag, route=route, http_status=status, viewport=viewport, missing=missing
+    )
+
+
+def busy_suffix_for(entries, query, table, viewport="", since=None, stage=""):
     """Full failure suffix for a probe history, or "" when nothing was busy.
 
     `query` is the harness DB reader (sql -> row tuples). It is invoked only
@@ -223,8 +329,11 @@ def busy_suffix_for(entries, query, table, viewport="", since=None):
     must never mask or replace the real journey failure. `since` bounds the row
     to this journey's start; a row whose ids conflict with the attempt yields
     `busy_diag=stale-or-mismatch` instead of a misleading cause.
+    `stage` is the failing journey stage token, when the caller knows
+    it; it pins the busy attribution to that stage's operation (see
+    `find_busy_attempt` for the exact rule).
     """
-    attempt = find_busy_attempt(entries)
+    attempt = find_busy_attempt(entries, stage=stage)
     if attempt is None:
         return ""
     try:
