@@ -212,6 +212,7 @@ final class ClinicalService
             'past_visits' => array_map(static fn (array $v): array => [
                 'id' => (int) $v['id'],
                 'visit_date' => (string) $v['visit_date'],
+                'jalali_date' => Jalali::format_display_ymd( (string) $v['visit_date'] ),
                 'status' => (string) $v['status'],
                 'source' => (string) $v['source'],
                 'clinician_name' => $v['clinician_name'],

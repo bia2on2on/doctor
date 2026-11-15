@@ -155,15 +155,15 @@ function testDoctorRendering(shared) {
       allergies: { medication: [], other: [] } },
     visit: { id: 31, status: 'consultation_completed' },
     notes: [{ id: 4, category: 'history', version: 3, versions: 12,
-      created_at_jalali: '۱۴۰۵/۰۱/۰۱', content_text: 'یادداشت' }],
+      created_at_jalali: '1405/01/01', content_text: 'یادداشت' }],
     prescriptions: [{ id: 5, prescription_number: 'RX-34', status: 'finalized',
-      created_at_jalali: '۱۴۰۵/۰۱/۰۱', items: [{ generic_name: 'دارو', dose: 'x',
+      created_at_jalali: '1405/01/02', items: [{ generic_name: 'دارو', dose: 'x',
         frequency: 'y', duration_days: 21 }] }],
     follow_ups: [{ id: 6, interval_days: 14, reason: 'پیگیری', status: 'open' }],
     files: [{ id: 7, original_filename: 'report-9.pdf', category: 'document',
       file_size: 4096, visibility: 'patient_visible' }],
     past_visits: [
-      { id: 101, jalali_date: '۱۴۰۵/۰۱/۰۱', visit_date: '2026-03-21',
+      { id: 101, jalali_date: '۱۴۰۵/۰۱/۰۳', visit_date: '2026-03-21',
         status: 'consultation_completed', clinician_name: 'دکتر رضایی' },
       { id: 102, visit_date: '2026-03-22', status: 'checked_out' }
     ]
@@ -176,10 +176,18 @@ function testDoctorRendering(shared) {
     .forEach(function (expected) { assert.ok(html.includes(expected), expected); });
   assert.ok(html.includes('report-9.pdf'), 'file names remain unchanged');
   assert.ok(html.includes('data-id="4"'), 'machine ids remain ASCII');
-  // Past visits: every digit Persian (no ASCII digits); already-Persian values
-  // untouched; stored record not mutated (display only).
-  assert.ok(html.includes('۱۴۰۵/۰۱/۰۱'), 'already-Persian jalali date preserved');
-  assert.ok(html.includes('۲۰۲۶-۰۳-۲۲'), 'gregorian visit_date shown in Persian digits');
+  // Item A: notes/prescriptions created_at_jalali is ASCII Jalali from the PHP
+  // layer; the page must render it in Persian digits via displayDigits(), keeping
+  // esc() around it (XSS intact). Distinct dates per item so each assertion is
+  // specific to its source.
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۱'), 'note created_at_jalali rendered in Persian digits');
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۲'), 'prescription created_at_jalali rendered in Persian digits');
+  assert.ok(!html.includes('1405/01/01'), 'no ASCII digits in note created_at_jalali');
+  assert.ok(!html.includes('1405/01/02'), 'no ASCII digits in prescription created_at_jalali');
+  // Item B: past_visits carries jalali_date from the REST payload; already-Persian
+  // values untouched, visit_date fallback shown in Persian digits.
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۳'), 'past-visit jalali_date from payload preserved');
+  assert.ok(html.includes('۲۰۲۶-۰۳-۲۲'), 'gregorian visit_date fallback shown in Persian digits');
   assert.ok(!html.includes('2026-03-21'), 'no ASCII digits in jalali date');
   assert.ok(!html.includes('2026-03-22'), 'no ASCII digits in visit_date fallback');
   assert.strictEqual(JSON.stringify(record), recordBefore, 'record is unchanged');
