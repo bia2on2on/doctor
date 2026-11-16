@@ -1524,7 +1524,13 @@
 					return;
 				}
 				codeInput.setAttribute('aria-invalid', 'true');
-				setNodeMessage(status, result.ok ? '' : (serverMessage(result) || 'کد تأیید معتبر نیست یا منقضی شده است.'));
+				// تصمیم مالک ۲۰۲۶-۱۱-۰۹ (Option A): verify دیگر Session صادر نمی‌کند.
+				// پاسخِ ۲۰۰ِ «بدون session» پاکتِ generic failure می‌گیرد و هیچ
+				// وجود/عدم‌وجود حسابی فاش نمی‌شود؛ خطایِ ۴xxِ آشنا همان پیامِ
+				// قبل (کد نامعتبر/منقضی) را نگه می‌دارد.
+				setNodeMessage(status, result.ok
+					? 'ورود با کد یک‌بارمصرف در حال حاضر فعال نیست. لطفاً با پذیرش مرکز تماس بگیرید.'
+					: (serverMessage(result) || 'کد تأیید معتبر نیست یا منقضی شده است.'));
 			}, function () {
 				setBusy(false);
 				setNodeMessage(status, 'ارتباط با سرور برقرار نشد. لطفاً دوباره تلاش کنید.');

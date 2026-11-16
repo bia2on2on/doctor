@@ -878,8 +878,10 @@ final class BookingService
 
         // Phase 8 Slice 3 — B2 subject resolution: frozen vs historical NULL compat.
         // Ownership and status proven before any Patient/link resolution — preserves 403 parity.
+        // firstName/lastName (REST first_name/last_name) are accepted for
+        // backwards compatibility of the REST contract and are IGNORED here:
+        // confirm never creates a Patient (round 14, F1).
         $patient = null;
-        $newPatientNames = null;
         if ($holdPatientId !== null) {
             // Frozen subject: revalidate active/clinic/link; ignore supplied names.
             $patient = $this->patients->find($holdPatientId);
@@ -898,21 +900,19 @@ final class BookingService
             $linkedForConfirm = $this->linkedActivePatientsForClinic($wpUserId, $holdClinicId);
             $cntC = count($linkedForConfirm);
             if ($cntC === 0) {
-                // NEW patient path — never reuse same-mobile unlinked; detect uniqueness collision first.
-                $existingSameMobile = $this->db->fetchRow(
-                    'SELECT id FROM ' . $this->db->table('cpms_patients') . ' WHERE clinic_id = %d AND mobile = %s LIMIT 1',
-                    [$holdClinicId, $mobile]
-                );
-                if ($existingSameMobile !== null) {
-                    throw BookingException::of('CLINIC_VALIDATION_FAILED', 'موبایل تکراری — بیمار با این موبایل از قبل موجود است', 400);
-                }
-                $patient = null;
-                $newPatientNames = $this->requireNewPatientNames($firstName, $lastName);
+                // OD-A round 14 (F1/B1, manager decision): a holder with NO
+                // active linked Patient in the Hold Clinic NEVER gets a Patient
+                // row created or a Patient<->User link inserted from the Hold's
+                // mobile — regardless of names, and regardless of whether a
+                // same-mobile Patient exists in this Clinic. One uniform error
+                // (status, code, message — identical for every such caller);
+                // no query here consults the same-mobile row on this path.
+                throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)', 400 );
             } elseif ($cntC === 1) {
                 $patient = $linkedForConfirm[0];
             } else {
                 // >1 without selection: fail closed, do not accept arbitrary B2 patient_id to repair.
-                throw BookingException::of('CLINIC_PATIENT_SELECTION_REQUIRED', 'انتخاب بیمار برای تکمیل رزرو الزامی است', 422);
+                throw BookingException::of( 'CLINIC_PATIENT_SELECTION_REQUIRED', 'انتخاب بیمار برای تکمیل رزرو الزامی است', 422 );
             }
         }
 
@@ -921,9 +921,8 @@ final class BookingService
             return $this->replayOrInFlight($check, $wpUserId);
         }
 
-        $slot_id            = (int) $hold['slot_id'];
-        $hold_id            = (int) $hold['id'];
-        $confirmation_input = compact( 'newPatientNames' );
+        $slot_id = (int) $hold['slot_id'];
+        $hold_id = (int) $hold['id'];
 
         try {
             $confirmation = $this->booking_transaction(
@@ -931,7 +930,6 @@ final class BookingService
                     $hold,
                     $reason,
                     $patient,
-                    $confirmation_input,
                     $mobile
                 ): array {
                     $hold_id        = (int) $hold['id'];
@@ -991,17 +989,11 @@ final class BookingService
 
                     // Re-authorize after lock acquisition, before any new patient side effect.
                     $this->assertLicense( LicenseGate::OP_APPOINTMENT_BOOK );
-                    $new_patient_names = $confirmation_input['newPatientNames'];
 
-                    $confirmed_patient   = $patient;
-                    $patient_was_created = false;
-                    if ( $confirmed_patient === null ) {
-                        // N-1: create the new Patient inside the same protected
-                        // mutation boundary, after the final Slot validation.
-                        $confirmed_patient   = $this->createMinimalPatient( $hold_clinic_id, $mobile, $wp_user_id, $new_patient_names );
-                        $patient_was_created = true;
-                    }
-                    $patient_id = (int) $confirmed_patient['id'];
+                    // F1 (round 14): confirm only ever proceeds for a resolved
+                    // existing Patient (frozen subject or single-linked
+                    // Historical-NULL auto-bind). No Patient row is created here.
+                    $patient_id = (int) $patient['id'];
 
                     $dup = $this->appointments->findActiveForPatientSlot( $patient_id, $slot_id, self::ACTIVE_STATUSES );
                     if ( $dup !== null ) {
@@ -1057,27 +1049,11 @@ final class BookingService
                         throw new \RuntimeException( 'confirm hold conversion write affected zero rows' );
                     }
 
-                    // D6 audit atomicity: appointment (and any auto-created
-                    // patient), slot claim, hold conversion and the mandatory
-                    // audits commit/roll back together inside this boundary.
+                    // D6 audit atomicity: the appointment, slot claim, Hold
+                    // conversion and the mandatory audits all commit/roll
+                    // back together inside this boundary. No Patient row or
+                    // link is created on this path (round 14, F1).
                     $confirmed_view = $this->appointmentView( (array) $this->appointments->find( $appt_id ) );
-                    if ( $patient_was_created ) {
-                        $this->audit(
-                            'PATIENT_CREATED',
-                            $wp_user_id,
-                            'patient',
-                            'patient',
-                            $patient_id,
-                            $patient_id,
-                            null,
-                            [
-                                'auto'   => 'booking_confirm',
-                                'mobile' => MobileValidator::mask( $mobile ),
-                            ],
-                            [],
-                            $hold_clinic_id
-                        );
-                    }
                     $this->audit(
                         'APPOINTMENT_CREATED',
                         $wp_user_id,
@@ -1094,10 +1070,9 @@ final class BookingService
                     );
 
                     return [
-                        'appointment'         => $this->appointments->find( $appt_id ),
-                        'appointment_id'      => $appt_id,
-                        'patient_id'          => $patient_id,
-                        'patient_was_created' => $patient_was_created,
+                        'appointment'    => $this->appointments->find( $appt_id ),
+                        'appointment_id' => $appt_id,
+                        'patient_id'     => $patient_id,
                     ];
                 }
             );
@@ -1163,11 +1138,10 @@ final class BookingService
             throw $denial;
         }
 
-        $appt                = $confirmation['appointment'];
-        $appt_id             = (int) $confirmation['appointment_id'];
-        $patient_id          = (int) $confirmation['patient_id'];
-        $patient_was_created = (bool) $confirmation['patient_was_created'];
-        $view                = $this->appointmentView( $appt );
+        $appt       = $confirmation['appointment'];
+        $appt_id    = (int) $confirmation['appointment_id'];
+        $patient_id = (int) $confirmation['patient_id'];
+        $view       = $this->appointmentView( $appt );
         $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view, $idemClinicId);
 
         // Mandatory PATIENT_CREATED/APPOINTMENT_CREATED audits now commit inside
@@ -3034,7 +3008,8 @@ final class BookingService
 
     /**
      * Mobile بیمار برای Hold درونِ همان Clinicِ معتبر: (1) پیوند فعالِ همان Clinic
-     * با تطابق clinic_id دوطرفه → (2) ایمیل هویتِ قطعیِ OTP (F2) → (3) null.
+     * با تطابق clinic_id دوطرفه → (2) null. (Fallback «ایمیل هویتِ قطعیِ OTP (F2)»
+     * در دور ۳ حذف شد — تصمیم مالک A، ۲۰۲۶-۱۱-۰۹.)
      */
     private function mobile_for_user_in_clinic( int $wp_user_id, int $clinic_id ): ?string {
         $primary = $this->db->fetchRow(
@@ -3049,14 +3024,16 @@ final class BookingService
             return (string) $primary['mobile'];
         }
 
-        $email = $this->db->fetchValue(
-            'SELECT user_email FROM ' . $this->db->dbPrefix() . 'users WHERE ID = %d LIMIT 1',
-            [ $wp_user_id ]
-        );
-        if ( is_string( $email ) && str_ends_with( $email, '@otp.cpms.local' ) ) {
-            return substr( $email, 0, -strlen( '@otp.cpms.local' ) );
-        }
-
+        // owner decision A (2026-11-09) + review round 3 (2026-11-10):
+        // the historical bridge-email fallback ({mobile}@otp.cpms.local) is
+        // REMOVED. It was the last path deriving a booking-relevant identity
+        // (a mobile) from a mobile-derived artifact, which let a pre-OD-A
+        // stamped OTP session with no Patient link in the booking Clinic book
+        // as a "new patient" with mobile-derived identity — a shared mobile
+        // is never an ownership/access basis. Callers with no linked active
+        // Patient in the Clinic fail closed below (null -> CLINIC_VALIDATION_FAILED)
+        // before any capacity or Patient/Appointment write. Callers holding a
+        // link reach the primary branch above (unchanged).
         return null;
     }
 
@@ -3106,12 +3083,21 @@ final class BookingService
     /**
      * Phase 8 Slice 3 — B1 patient resolution: 0/1/N with LINKED-ONLY authority.
      *
+     * Round 14 (F3): when migration 2026_09_20_0022 has not been applied the
+     * Hold cannot durably persist its booking subject. Every caller that
+     * reaches this resolver — linked or not, requested patient_id or not —
+     * receives the neutral, existing CLINIC_SERVICE_UNAVAILABLE (503, the
+     * same public envelope contract as RuntimeSchemaGate) BEFORE any
+     * capacity claim or Patient/link write, so no NULL-shape Hold can ever
+     * be persisted on such an install. The selection decision is never
+     * made from a column that does not exist.
+     *
      * @return int|null patient_id to persist (null = NEW path) or throws
      */
     private function resolveBookingPatientForHold(int $wpUserId, int $trustedClinicId, ?int $requestedPatientId): ?int
     {
         if (!$this->holdsHasPatientIdColumn()) {
-            return null;
+            throw BookingException::of( 'CLINIC_SERVICE_UNAVAILABLE', 'سرویس موقتاً در دسترس نیست.', 503 );
         }
         $linked = $this->linkedActivePatientsForClinic($wpUserId, $trustedClinicId);
         $cnt = count($linked);
@@ -3167,87 +3153,13 @@ final class BookingService
     }
 
     /**
-     * N-1: ساخت Patient Record Minimal برای کاربر جدید (OTP verified).
+     * Phase 8 Slice 2 (retained at the Unit boundary). confirm() no longer
+     * creates a Patient nor calls this validator — round 14 F1 makes confirm
+     * fail closed for zero-link Historical-NULL holds before any patient
+     * resolution-dependent validation.
      *
-     * Phase 8 Slice 2 — تصمیم مالک ۲: نام‌ها پیش از این فراخوانی توسط
-     * requireNewPatientNames() اعتبارسنجی شده‌اند (برای بیمارِ جدید الزامی؛
-     * بیمارِ موجود هرگز از این مسیر نمی‌گذرد). موبایل فقط از هویتِ سرورِ
-     * مالکِ Hold می‌آید.
-     *
-     * @param array{first_name: string, last_name: string}|null $names
-     *
-     * @return array<string, mixed>
-     */
-    private function createMinimalPatient(int $clinic_id, string $mobile, int $wpUserId, ?array $names = null): array
-    {
-        $nowSql = $this->db->nowUtcSql();
-        $id = $this->patients->create([
-            'clinic_id' => $clinic_id,
-            'mrn' => $this->generateMrn($clinic_id),
-            'first_name' => (string) ($names['first_name'] ?? ''),
-            'last_name' => (string) ($names['last_name'] ?? ''),
-            'mobile' => $mobile,
-            'status' => 'active',
-            'created_at' => $nowSql,
-            'updated_at' => $nowSql,
-        ]);
-        $this->db->insert('cpms_patient_user_links', [
-            'clinic_id' => $clinic_id,
-            'patient_id' => $id,
-            'wp_user_id' => $wpUserId,
-            'mobile_at_link' => $mobile,
-            'is_primary' => 1,
-            'linked_at' => $nowSql,
-        ]);
-
-        // Organization Patient Identity activation — inside the caller's
-        // confirm transaction, so a failure rolls the new Patient, its user
-        // link and the whole confirmation back (fail-closed). The Clinic comes
-        // from the persisted Hold, never from the request body.
-        $wp_user_id = $wpUserId; // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
-        $this->activate_patient_identity( $clinic_id, (int) $id, $mobile, $wp_user_id );
-
-        return (array) $this->patients->find( $id );
-    }
-
-    /**
-     * فعال‌سازی هویتِ سازمانی برای بیمارِ تازهٔ مسیرِ رزرو.
-     *
-     * `$wp_user_id` همان مالکِ احرازشدهٔ Hold (OTP-verified) است و فقط برای
-     * «تأییدِ صریحِ قابل‌اتکا» استفاده می‌شود: اگر و تنها اگر همین کاربر از
-     * قبل دقیقاً یک لینکِ صریحِ کاربر↔هویت در همان Organization داشته باشد،
-     * همان هویت دوباره استفاده می‌شود. هیچ تطبیقی بر اساس موبایل/کد ملی/نام
-     * انجام نمی‌شود — در غیر این صورت هویتِ تازه ساخته می‌شود.
-     */
-    private function activate_patient_identity( int $clinic_id, int $patient_id, string $mobile, int $wp_user_id ): void {
-        try {
-            $this->identities->activate_for_new_patient( $clinic_id, $patient_id, $mobile, $wp_user_id );
-        } catch ( PatientIdentityException $e ) {
-            $this->op->error(
-                'booking.patient_identity_activation_failed',
-                [
-                    'patient_id' => $patient_id,
-                    'clinic_id'  => $clinic_id,
-                    'error_code' => $e->error_code,
-                ]
-            );
-
-            throw BookingException::of( 'CLINIC_INTERNAL_ERROR', 'ثبت بیمار انجام نشد', 500 );
-        }
-    }
-
-    /**
-     * Phase 8 Slice 2 — تصمیم مالک ۲: دروازهٔ نام برای بیمارِ «جدید» در
-     * hold.clinic_id.
-     *
-     * وقتی سرور Patient فعالِ همان موبایل در hold.clinic_id نبیند،
-     * first_name و last_name الزامی‌اند: خالی/فقط-فاصله/بیش از حد بلند →
-     * CLINIC_VALIDATION_FAILED (400) — بدون ساخت Patient/Appointment و بدون
-     * به‌جاگذاشتن رزرو Idempotency (فراخوانی پیش از idem->check انجام
-     * می‌شود) و Hold فعال و قابل retry می‌ماند.
-     *
-     * قواعد پاک‌سازی، همان قواعد تثبیت‌شدهٔ PatientService::cleanName است:
-     * حذف کاراکترهای کنترلی، trim، سقف ۱۲۰ نویسه.
+     * Retained so the Unit contract (Unit\BookingNewPatientBoundaryTest)
+     * keeps pinning the exact name-cleaning rules.
      *
      * @return array{first_name: string, last_name: string}
      *
@@ -3331,24 +3243,6 @@ final class BookingService
             . " AND a.status IN ('pending','confirmed') ORDER BY a.id DESC LIMIT 1",
             [ $clinic_id, $clinic_id, $slot_id, $wp_user_id ]
         );
-    }
-
-    /**
-     * N-6: `MR-{YYMMDD}-{5char}` — Retry روی Unique Constraint.
-     */
-    private function generateMrn(int $clinic_id): string
-    {
-        for ($i = 0; $i < 5; $i++) {
-            $mrn = 'MR-' . gmdate('ymd') . '-' . strtoupper(substr(bin2hex(random_bytes(4)), 0, 5));
-            $exists = $this->db->fetchValue(
-                'SELECT COUNT(*) FROM ' . $this->db->table('cpms_patients') . ' WHERE clinic_id = %d AND mrn = %s',
-                [$clinic_id, $mrn]
-            );
-            if ((int) $exists === 0) {
-                return $mrn;
-            }
-        }
-        throw new BookingException('CLINIC_VALIDATION_FAILED', 'خطا در ساخت MRN — دوباره تلاش کنید', 500);
     }
 
     private function referenceCode( string $slot_date ): string // phpcs:ignore WordPress.NamingConventions.ValidFunctionName.MethodNameInvalid -- established private method.
