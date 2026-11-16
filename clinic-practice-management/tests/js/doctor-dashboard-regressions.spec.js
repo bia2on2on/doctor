@@ -45,9 +45,14 @@ var dashboardSource = read('src/Admin/DoctorDashboardPage.php');
 assert.match(dashboardSource,
   /'clinician_name'\s*=>\s*DoctorDisplayName::with_title_or_fallback\(\s*\$clinician\['name'\]\s*\)/,
   'the config is normalized on the PHP side');
-var begin = dashboardSource.indexOf('<script>\n(function () {');
+var opener = '<script>\n(function () {';
+var iifeCount = 0;
+var pos = dashboardSource.indexOf(opener);
+while (pos >= 0) { iifeCount++; pos = dashboardSource.indexOf(opener, pos + 1); }
+assert.strictEqual(iifeCount, 1, 'exactly one dashboard IIFE block (found ' + iifeCount + ')');
+var begin = dashboardSource.indexOf(opener);
 var end = dashboardSource.indexOf('\n</script>', begin);
-assert.ok(begin >= 0 && end > begin, 'real dashboard IIFE exists');
+assert.ok(end > begin, 'real dashboard IIFE close tag');
 var dashboardJs = dashboardSource.slice(begin + '<script>\n'.length, end);
 var marker = '    // ================= Wiring =================';
 assert.ok(dashboardJs.includes(marker));
@@ -155,13 +160,18 @@ function testDoctorRendering(shared) {
       allergies: { medication: [], other: [] } },
     visit: { id: 31, status: 'consultation_completed' },
     notes: [{ id: 4, category: 'history', version: 3, versions: 12,
-      created_at_jalali: '۱۴۰۵/۰۱/۰۱', content_text: 'یادداشت' }],
+      created_at_jalali: "1405/01/01 it's", content_text: 'یادداشت' }],
     prescriptions: [{ id: 5, prescription_number: 'RX-34', status: 'finalized',
-      created_at_jalali: '۱۴۰۵/۰۱/۰۱', items: [{ generic_name: 'دارو', dose: 'x',
+      created_at_jalali: "1405/01/02 he said \"hi\"", items: [{ generic_name: 'دارو', dose: 'x',
         frequency: 'y', duration_days: 21 }] }],
     follow_ups: [{ id: 6, interval_days: 14, reason: 'پیگیری', status: 'open' }],
     files: [{ id: 7, original_filename: 'report-9.pdf', category: 'document',
-      file_size: 4096, visibility: 'patient_visible' }]
+      file_size: 4096, visibility: 'patient_visible' }],
+    past_visits: [
+      { id: 101, jalali_date: '۱۴۰۵/۰۱/۰۳', visit_date: '2026-03-21',
+        status: 'consultation_completed', clinician_name: 'دکتر رضایی' },
+      { id: 102, visit_date: "2026-03-22 it's <b>&</b>", status: 'checked_out' }
+    ]
   };
   var recordBefore = JSON.stringify(record);
   env.test.state.record = record;
@@ -171,6 +181,35 @@ function testDoctorRendering(shared) {
     .forEach(function (expected) { assert.ok(html.includes(expected), expected); });
   assert.ok(html.includes('report-9.pdf'), 'file names remain unchanged');
   assert.ok(html.includes('data-id="4"'), 'machine ids remain ASCII');
+  // Item A: notes/prescriptions created_at_jalali is ASCII Jalali from the PHP
+  // layer; the page must render it in Persian digits via displayDigits(), keeping
+  // esc() around it (XSS intact). Distinct dates per item so each assertion is
+  // specific to its source.
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۱'), 'note created_at_jalali rendered in Persian digits');
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۲'), 'prescription created_at_jalali rendered in Persian digits');
+  assert.ok(!html.includes('1405/01/01'), 'no ASCII digits in note created_at_jalali');
+  assert.ok(!html.includes('1405/01/02'), 'no ASCII digits in prescription created_at_jalali');
+  // Escaping at the three render lines (:421 note, :443 prescription, :467
+  // past_visit): esc() is applied to the digit-converted value, so HTML-special
+  // characters are entity-encoded and no raw tag/quote leaks. The apostrophe
+  // case also asserts esc() runs BEFORE displayDigits: a swapped order
+  // displayDigits(esc(x)) would convert the digits inside &#39; and the exact
+  // entity text below would not match.
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۱ it&#39;s'), 'note meta escaped; esc before displayDigits');
+  assert.ok(!html.includes("1405/01/01 it's"), 'note meta has no raw digits or quote');
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۲ he said &quot;hi&quot;'), 'prescription meta escaped');
+  assert.ok(!html.includes('he said "hi"'), 'prescription no raw quote');
+  assert.ok(html.includes('۲۰۲۶-۰۳-۲۲ it&#39;s &lt;b&gt;&amp;&lt;/b&gt;'), 'past_visit fallback escaped');
+  assert.ok(!html.includes('<b>&</b>'), 'past_visit no raw <b>&</b> tag');
+  assert.ok(!html.includes("2026-03-22 it's"), 'past_visit no raw digits or quote');
+  // past_visits: Item B (server jalali_date) was dropped — the server does not
+  // supply jalali_date yet; this covers the client fallback branch of the
+  // renderer: an already-Persian jalali_date passes through untouched,
+  // otherwise visit_date falls back and is rendered in Persian digits.
+  assert.ok(html.includes('۱۴۰۵/۰۱/۰۳'), 'already-Persian jalali_date passes through untouched (client fallback branch)');
+  assert.ok(html.includes('۲۰۲۶-۰۳-۲۲'), 'gregorian visit_date fallback shown in Persian digits');
+  assert.ok(!html.includes('2026-03-21'), 'no ASCII digits in jalali date');
+  assert.ok(!html.includes('2026-03-22'), 'no ASCII digits in visit_date fallback');
   assert.strictEqual(JSON.stringify(record), recordBefore, 'record is unchanged');
 }
 
