@@ -581,14 +581,14 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         self::assertSame('active', (string) $holdRow['status'], 'Hold must remain active/retryable.');
         self::assertSame(1, $this->heldCountOf($slot['slot_id']), 'Capacity still held.');
 
-        // B2 with valid names -> the IDENTICAL fail-closed envelope; NO Patient created.
+        // B2 with valid names -> the same fail-closed envelope (identical decoded data); NO Patient created.
         $attempt2 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
             'first_name' => 'نرگس',
             'last_name' => 'کریمی',
         ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
-        self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'The fail-closed envelope is identical with and without names.');
-        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'The fail-closed envelope is byte-identical — names never open the gate.');
+        self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'The fail-closed response has the same HTTP status with and without names.');
+        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'The fail-closed response carries identical decoded response data with and without names — names never open the gate.');
         self::assertSame(0, $this->countPatientsForMobile($this->clinicA, $mobile), 'No Patient must be created even with valid names.');
         self::assertSame(0, $this->countRows('cpms_appointments'), 'No Appointment must exist.');
         self::assertSame(0, $this->countPatientLinksForUser($userId), 'No Patient link must be created.');

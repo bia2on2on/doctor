@@ -3084,12 +3084,13 @@ final class BookingService
      * Phase 8 Slice 3 — B1 patient resolution: 0/1/N with LINKED-ONLY authority.
      *
      * Round 14 (F3): when migration 2026_09_20_0022 has not been applied the
-     * Hold cannot durably persist its booking subject. Every caller — linked
-     * or not, requested patient_id or not — receives the neutral, existing
-     * CLINIC_SERVICE_UNAVAILABLE (503, the same public envelope contract as
-     * RuntimeSchemaGate) BEFORE any capacity claim or Patient/link write, so
-     * no NULL-shape Hold can ever be persisted on such an install. The
-     * selection decision is never made from a column that does not exist.
+     * Hold cannot durably persist its booking subject. Every caller that
+     * reaches this resolver — linked or not, requested patient_id or not —
+     * receives the neutral, existing CLINIC_SERVICE_UNAVAILABLE (503, the
+     * same public envelope contract as RuntimeSchemaGate) BEFORE any
+     * capacity claim or Patient/link write, so no NULL-shape Hold can ever
+     * be persisted on such an install. The selection decision is never
+     * made from a column that does not exist.
      *
      * @return int|null patient_id to persist (null = NEW path) or throws
      */

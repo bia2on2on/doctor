@@ -2574,7 +2574,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId, 1);
         $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
-        // (2) whitespace-only first_name -> byte-identical response.
+        // (2) whitespace-only first_name -> identical decoded-data response.
         $attempt2 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
             'first_name' => '   ',
@@ -2582,7 +2582,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         ] + $hostile, asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
         $this->assertConfirmFailClosed($attempt2, $expectedMessage, 'A Historical-NULL confirm with a whitespace-only first_name must fail closed.');
         self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'Response status is identical');
-        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'Response body is byte-identical — same-mobile existence is not observable');
+        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'Response decoded data is identical — same-mobile existence is not observable');
         $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId, 1);
 
         // (3) valid names + hostile identity claims -> the SAME fail-closed
@@ -2618,7 +2618,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      *
      * The mirror situation of R5: a same-mobile Patient exists ONLY in another
      * Clinic — the booking Clinic holds NO same-mobile row and the caller has
-     * zero links there. The response must be BYTE-IDENTICAL to the R5 case:
+     * zero links there. The response data must be IDENTICAL to the R5 case:
      * HTTP 400 CLINIC_VALIDATION_FAILED with the exact uniform message. No
      * Patient is created in the booking Clinic; the other-Clinic row is
      * untouched; no link, Appointment, or WP-user side effect; the Hold stays
@@ -2660,7 +2660,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         ];
         $expectedMessage = 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)';
 
-        // (1) missing names + hostile claims -> uniform fail-closed, byte-
+        // (1) missing names + hostile claims -> uniform fail-closed, identical-
         // identical to the R5 (same-mobile EXISTS in the booking Clinic) case.
         $attempt1 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
@@ -2678,7 +2678,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         ] + $hostile, asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
         $this->assertConfirmFailClosed($attempt2, $expectedMessage, 'Valid names must not open the gate in the booking Clinic.');
         self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'Response status is identical');
-        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'Response body is byte-identical — the booking-Clinic situation (no same-mobile row) is not observable apart from R5');
+        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'Response decoded data is identical — the booking-Clinic situation (no same-mobile row) is not observable apart from R5');
         $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R6, $userId, 0, 1);
         $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 

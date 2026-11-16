@@ -223,7 +223,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         self::assertIsArray($existingBody);
         self::assertIsArray($ghostBody);
         self::assertSame(array_keys($existingBody), array_keys($ghostBody), 'envelope keys must match.');
-        self::assertSame($existingBody, $ghostBody, 'the 200 verification envelope must be byte-for-byte identical for existing and non-existing numbers.');
+        self::assertSame($existingBody, $ghostBody, 'the 200 verification envelope must carry identical decoded response data (get_data() arrays) for existing and non-existing numbers.');
     }
 
     public function testVerifyWithExplicitPreExistingLinkStillIssuesNoAccess(): void

@@ -846,9 +846,9 @@ final class BookingFlowTest extends WP_UnitTestCase
                 ), // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
                 'held capacity must not move'
             );
-            $this->assertSame($patientsBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patients'), 'no Patient row may change');
-            $this->assertSame($linksBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links'), 'no Patient link may change');
-            $this->assertSame($bookedBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments'), 'no Appointment may exist');
+            $this->assertSame($patientsBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patients'), 'the total Patient row count must match the pre-call count');
+            $this->assertSame($linksBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_patient_user_links'), 'the total Patient link row count must match the pre-call count');
+            $this->assertSame($bookedBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'cpms_appointments'), 'the total Appointment row count must match the pre-call count');
         } finally {
             $prop->setValue( $service, null );
         }
