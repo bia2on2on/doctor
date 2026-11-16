@@ -26,10 +26,10 @@ function stripComments(s) {
  let out='', quote='', escaped=false;
  for (let i=0;i<s.length;i++) {
   const c=s[i], n=s[i+1];
-  if (quote) { out+=c; if (escaped) escaped=false; else if (c==='\\\\') escaped=true; else if (c===quote) quote=''; continue; }
+  if (quote) { out+=c; if (escaped) escaped=false; else if (c==='\\') escaped=true; else if (c===quote) quote=''; continue; }
   if (c==='"' || c==="'" || c==='`') { quote=c; out+=c; continue; }
   if (c==='/' && n==='*') { i+=2; while(i<s.length && !(s[i]==='*' && s[i+1]==='/')) i++; i++; continue; }
-  if (c==='/' && n==='/') { while(i<s.length && s[i]!=='\\n') i++; out+='\\n'; continue; }
+  if (c==='/' && n==='/') { while(i<s.length && s[i]!=='\n') i++; out+='\n'; continue; }
   out+=c;
  }
  return out;
@@ -50,7 +50,7 @@ assert(!sandbox.validateRefundAmount('\uFEFF300000').ok, 'refund BOM input must 
 for (const s of ['1','300000','9999999999','007','300.0','300.00','۳۰۰۰۰۰','١٢٣',' 300 \t']) assert(money(s).ok, 'money should accept ' + JSON.stringify(s));
 for (const s of ['', '300,000','300.5','1e2','-1','+1','10000000000','３００','\uFEFF300','300\uFEFF','\uFEFF','\u00a0300','300\u2009','3\u200b00','3\u200c00','3\u200d00','3\u061c00','3\u00ad00','3\u180e00','3\u202e00']) assert(!money(s).ok, 'money should reject ' + JSON.stringify(s));
 for (const s of ['0.01','1','1.2','1.20','100',' ۱٫']) { if (s === ' ۱٫') continue; assert(qty(s).ok, 'quantity should accept ' + JSON.stringify(s)); }
-for (const s of ['0','100.01','1e2','1.234','1000','\uFEFF1','1\u200b']) assert(!qty(s).ok, 'quantity should reject ' + JSON.stringify(s));
+for (const s of ['0','100.01','1e2','1.234','1.200','100.000','1.005','1000','\uFEFF1','1\u200b']) assert(!qty(s).ok, 'quantity should reject ' + JSON.stringify(s));
 assert(money('0', {required:true,min:0,max:9999999999}).ok, 'zero allowed for zero-min field');
 assert(!money(' ', {required:true,min:1}).ok, 'blank rejected');
 assert(money(' ', {required:false,min:0}).blank, 'optional blank accepted');
@@ -63,6 +63,22 @@ assert(!commentDecoy.includes('hasBadInput(') && !commentDecoy.includes('validat
 const movedCheckSource = 'function first(){ return true; } function second(){ if (hasBadInput(el)) {} }';
 const firstBody = stripComments(balanced(movedCheckSource, movedCheckSource.indexOf('function first')));
 assert(!firstBody.includes('hasBadInput('), 'cross-handler moved-check control must be RED');
+const lexicalSample = [
+ 'function lexical(){',
+ ' const a = "//";',
+ ' const b = "/*";',
+ ' const c = "escaped \\" quote";',
+ ' const re = /a\\/b/;',
+ ' // actual line comment',
+ ' return a+b+c+re;',
+'}'
+].join('\n');
+const lexicalBlock=balanced(lexicalSample,lexicalSample.indexOf('function lexical'));
+const lexicalCode=stripComments(lexicalBlock);
+assert(lexicalCode.includes('const a = "//"') && lexicalCode.includes('const b = "/*"'),'string comment-like text must be retained');
+assert(lexicalCode.includes('escaped '+String.fromCharCode(92)+'\" quote'),'escaped quote must be retained');
+assert(lexicalCode.includes('/a'+String.fromCharCode(92)+'/b/'),'regex-like text must be retained');
+assert(lexicalCode.includes('return a+b+c+re;') && !lexicalCode.includes('actual line comment'),'line comment must stop at real newline');
 const handlers = [
  ['service price','svcSave.addEventListener','hasBadInput(','validateMoneyAmount('],
  ['item quantity','function submitIssue','hasBadInput(qtyEl)','validateQuantity('],
@@ -128,6 +144,38 @@ async function runHandler(code, env) {
   if (shouldRequest) assert(ctx.request.body.price===300000||ctx.request.body.amount===300000,label+' must normalize digits in request');
  }
 }
+// BEHAVIORAL: run the shipped submitIssue callback with stubbed row/DOM/request.
+const submitIssueFn=fn('submitIssue');
+function extractIfBlock(body, marker) { const at=body.indexOf(marker); assert(at>=0,'missing '+marker); return stripComments(balanced(body,at)); }
+const issueBranches=[['quantity','hasBadInput(qtyEl)','if (!qtyRes.ok)'],['discount','hasBadInput(discEl)','if (!itemDiscRes.ok)'],['unit price','hasBadInput(priceEl)','if (!itemPriceRes.ok)'],['invoice discount','hasBadInput(invDiscEl)','if (!invDiscRes.ok)'],['invoice tax','hasBadInput(invTaxEl)','if (!invTaxRes.ok)']];
+for(const [label,badGuard,invalidGuard] of issueBranches){
+ for(const marker of ['if ('+badGuard+')',invalidGuard]) assert(extractIfBlock(submitIssueFn,marker).includes('return;'),label+' failure branch requires return');
+}
+async function runIssue(changes) {
+ const values={qty:'1',disc:'0',price:'300000',invDisc:'0',invTax:'0'};
+ const bad={qty:false,disc:false,price:false,invDisc:false,invTax:false};
+ Object.assign(values,changes.values||{});Object.assign(bad,changes.bad||{});
+ const els={qtyEl:{value:values.qty,validity:{badInput:bad.qty}},discEl:{value:values.disc,validity:{badInput:bad.disc}},priceEl:{value:values.price,validity:{badInput:bad.price}},invDiscEl:{value:values.invDisc,validity:{badInput:bad.invDisc}},invTaxEl:{value:values.invTax,validity:{badInput:bad.invTax}},submit:{disabled:false}};
+ const row={querySelector(sel){return {'.cpms-fin-i-svc':null,'.cpms-fin-i-desc':{value:'Manual item'},'.cpms-fin-i-qty':els.qtyEl,'.cpms-fin-i-disc':els.discEl,'.cpms-fin-i-price':els.priceEl}[sel]||null;}};
+ const ctx={Number,String,parseInt,parseFloat,Promise,MAX_MONEY:9999999999,MAX_QUANTITY_HUNDREDTHS:10000,MAX_INPUT_LEN:40,
+  document:{querySelectorAll:()=>[row],getElementById:id=>id==='cpms-fin-inv-discount'?els.invDiscEl:id==='cpms-fin-inv-tax'?els.invTaxEl:id==='cpms-fin-issue-submit'?els.submit:{value:''}},
+  state:{issueVisit:71},lastNotice:null,request:null,notice:(m,t)=>{ctx.lastNotice={message:m,type:t};},api:(m,u,b)=>{ctx.request={method:m,url:u,body:b};return Promise.resolve({__status:201,body:{data:{invoice_number:'INV-TEST',id:9}}});},closeDrawers(){},refreshAll(){},openInvoice(){},errMessage:r=>r.message||'error'};
+ vm.createContext(ctx);vm.runInContext(source.slice(helperStart,helperEnd)+';'+submitIssueFn+'; submitIssue();',ctx);await new Promise(r=>setImmediate(r));return ctx;
+}
+const issueFields=[
+ ['quantity','qty','۱.۲۰',c=>c.request.body.items[0].quantity===1.2],
+ ['discount','disc','۳۰۰۰۰۰',c=>c.request.body.items[0].discount===300000],
+ ['unit price','price','۳۰۰۰۰۰',c=>c.request.body.items[0].unit_price===300000],
+ ['invoice discount','invDisc','۳۰۰۰۰۰',c=>c.request.body.discount===300000],
+ ['invoice tax','invTax','۳۰۰۰۰۰',c=>c.request.body.tax===300000]
+];
+for(const [label,key,valid,bodyCheck] of issueFields){
+ const invalids=[{value:'300000',bad:true},...['300,000','1e2','\uFEFF300000'].map(value=>({value,bad:false}))];
+ if(key==='qty') invalids.push({value:'0',bad:false});
+ for(const item of invalids){const ctx=await runIssue({values:{[key]:item.value},bad:{[key]:item.bad}});assert(!ctx.request,label+' invalid '+JSON.stringify(item.value)+' sent request');assert(ctx.lastNotice&&/[\u0600-\u06FF]/.test(ctx.lastNotice.message),label+' invalid must show Persian error');}
+ const ctx=await runIssue({values:{[key]:valid}});assert(ctx.request&&bodyCheck(ctx),label+' valid Persian digits not normalized in payload');
+}
+
 const pactAt=source.indexOf("body.querySelectorAll('button[data-pact]')");
 const pactCallback=eventFunction("btn.addEventListener('click'");
 async function runRefundClick(amount) {
@@ -144,4 +192,14 @@ for(const [amount,expected] of [['',false],['\uFEFF300000',false],['۳۰۰۰۰۰
  assert(ctx.promptOptions.length===2,'refund click must request reason and amount');
  if(ctx.promptOptions.length===2)assert(ctx.promptOptions[1].raw===true,'refund amount prompt must preserve raw value');
 }
-console.log('PASS: BEHAVIORAL service-price/payment/adjustment/refund callbacks; STRUCTURAL other finance guards'); })().catch(e=>{ console.error(e); process.exitCode=1; });
+// BEHAVIORAL: execute shipped CpmsDialog.prompt against a small DOM stub.
+function fakeNode(tag){return {tagName:tag.toUpperCase(),children:[],listeners:{},attributes:{},style:{},className:'',value:'',hidden:false,parentNode:null,setAttribute(k,v){this.attributes[k]=v;},getAttribute(k){return this.attributes[k];},appendChild(n){n.parentNode=this;this.children.push(n);},removeChild(n){this.children=this.children.filter(x=>x!==n);n.parentNode=null;},addEventListener(k,f){(this.listeners[k]||(this.listeners[k]=[])).push(f);},removeEventListener(){},focus(){fakeDoc.activeElement=this;},select(){}};}
+const fakeDoc={head:fakeNode('head'),body:fakeNode('body'),documentElement:fakeNode('html'),activeElement:{focus(){}},listeners:{},createElement:fakeNode,getElementById(){return null;},addEventListener(k,f){(this.listeners[k]||(this.listeners[k]=[])).push(f);},removeEventListener(){}};
+const dialogContext={window:{},document:fakeDoc,String,Promise,console};vm.createContext(dialogContext);vm.runInContext(read('assets/js/cpms-dialog.js'),dialogContext);
+function findClass(node,name){if((' '+node.className+' ').includes(' '+name+' '))return node;for(const child of node.children||[]){const found=findClass(child,name);if(found)return found;}return null;}
+async function realPrompt(value,options){const promise=dialogContext.window.CpmsDialog.prompt('Amount',options||{});const input=findClass(fakeDoc.body,'cpms-dialog__input'),confirm=findClass(fakeDoc.body,'cpms-modal-confirm');assert(input&&confirm,'real dialog input/confirm missing');input.value=value;confirm.listeners.click[0]();return promise;}
+assert(await realPrompt(' 300 ')==='300','default real prompt must trim ASCII whitespace');
+assert(await realPrompt('\uFEFF300000')==='300000','default real prompt must trim BOM');
+assert(await realPrompt('\uFEFF300000',{raw:true})==='\uFEFF300000','raw real prompt must preserve BOM for validator');
+
+console.log('PASS: BEHAVIORAL service-price/payment/adjustment/refund and CpmsDialog prompt; STRUCTURAL other finance guards'); })().catch(e=>{ console.error(e); process.exitCode=1; });

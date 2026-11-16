@@ -362,7 +362,7 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
             return { ok: false, error: 'تعداد نامعتبر است. طول ورودی بیش از حد مجاز است.' };
         }
         var normalized = normalizeDigits(str);
-        var match = /^([0-9]+)(?:\.([0-9]{1,2})0*)?$/.exec(normalized);
+        var match = /^([0-9]+)(?:\.([0-9]{1,2}))?$/.exec(normalized);
         if (!match) {
             return { ok: false, error: 'تعداد نامعتبر است. حداکثر دو رقم اعشار بدون جداکننده یا نماد علمی مجاز است.' };
         }
