@@ -1051,12 +1051,21 @@ def patch_otp_code_for_browser_acceptance(mobile, tag, purpose="login"):
 
 
 def auth_cookie_present(cookies):
-    """True when WP issued any authentication cookie (logged-in or admin scheme)."""
+    """True when the browser context holds ANY WordPress session cookie.
+
+    Round 15 (Reader-2 G2): a name-prefix scan on ALL cookies of the context —
+    `ctx.cookies(BASE)` can omit admin-path cookies, and the secure-auth scheme
+    issues `wordpress_sec_<hash>` which the previous `wordpress_[0-9a-f]{32}$`
+    pattern and the `wordpress_logged_in`-only check both missed. Flags ANY
+    cookie starting with `wordpress_` (covers `wordpress_<hash>`,
+    `wordpress_sec_<hash>`, `wordpress_logged_in_<hash>` — see pluggable.php)
+    or `wp-settings-` (settings cookies are only set for a session-aware
+    context). Fail-closed: any such cookie here is a failure of the
+    zero-access contract.
+    """
     for cookie in cookies:
         name = str(cookie.get("name", ""))
-        if name.startswith("wordpress_logged_in"):
-            return True
-        if re.match(r"^wordpress_[0-9a-f]{32}$", name):
+        if name.startswith("wordpress_") or name.startswith("wp-settings-"):
             return True
     return False
 
@@ -1073,6 +1082,18 @@ def wp_scalar(sql, wp_dir):
         return None
     lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
     return int(lines[-1]) if lines and lines[-1].isdigit() else None
+
+
+def wp_table_prefix():
+    """Return the isolated test DB's real table prefix, or None when unreadable."""
+    if not WP_DIR:
+        return None
+    proc = subprocess.run(
+        ["wp", "db", "prefix", f"--path={WP_DIR}", "--allow-root"],
+        check=False, capture_output=True, text=True, timeout=20,
+    )
+    prefix = proc.stdout.strip()
+    return prefix if re.fullmatch(r"[A-Za-z0-9_]+", prefix or "") else None
 
 
 def resolve_portal_url(page_slug):
@@ -1137,6 +1158,12 @@ def patient_portal_otp_login_surface(browser):
     check(f"{tag}.existing_routes_only",
           config.get("otp_request_path") == "/otp/request" and config.get("otp_verify_path") == "/otp/verify",
           f"configured routes={config.get('otp_request_path')},{config.get('otp_verify_path')}")
+    # Round 15 (Reader-2 G3): before/after DELTA across the OTP request+verify
+    # steps — total wp_users and total patient_links counts must be UNCHANGED.
+    # Fail-closed when the isolated DB or its table prefix cannot be read.
+    delta_prefix = wp_table_prefix()
+    users_before = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}users", WP_DIR) if delta_prefix else None
+    links_before = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}cpms_patient_user_links", WP_DIR) if delta_prefix else None
     mobile = "0912" + str(int(time.time()))[-7:]
     page.locator('[data-role="patient-otp-mobile"]').fill(mobile)
     request_payloads = []
@@ -1172,7 +1199,7 @@ def patient_portal_otp_login_surface(browser):
           not allowed_denial,
           "A2 returned CLINIC_SCOPE_REQUIRED — the A3 possession-only contract cannot be exercised on this run; this is a FAILURE, not a skip (round 14 F4a)")
     check(f"{tag}.no_session_before_verification",
-          not any(cookie["name"].startswith("wordpress_logged_in") for cookie in ctx.cookies(BASE)),
+          not auth_cookie_present(ctx.cookies()),
           "OTP request alone never authenticates the Patient")
 
     if a2.status == 200:
@@ -1195,7 +1222,7 @@ def patient_portal_otp_login_surface(browser):
                 verify_payload = {}
             verify_data = verify_payload.get("data") if isinstance(verify_payload, dict) else {}
             verify_data = verify_data if isinstance(verify_data, dict) else {}
-            cookies_after_login_verify = ctx.cookies(BASE)
+            cookies_after_login_verify = ctx.cookies()
             patient_cookie = auth_cookie_present(cookies_after_login_verify)
             check(f"{tag}.a3_existing_route_success", verify_status == 200, f"A3 HTTP {verify_status}")
             # Option A (possession-only): a valid code proves possession and
@@ -1262,7 +1289,7 @@ def patient_portal_otp_login_surface(browser):
                     a3b_body = (a3b or {}).get("body") or {}
                     verify_b = a3b_body.get("data") if isinstance(a3b_body, dict) else {}
                     verify_b = verify_b if isinstance(verify_b, dict) else {}
-                    cookies_after_vm_verify = ctx.cookies(BASE)
+                    cookies_after_vm_verify = ctx.cookies()
                     patient_cookie2 = auth_cookie_present(cookies_after_vm_verify)
                     check(f"{tag}.a3_verify_mobile_existing_route_success", (a3b or {}).get("status") == 200,
                           f"verify_mobile A3 HTTP {(a3b or {}).get('status')}")
@@ -1297,6 +1324,18 @@ def patient_portal_otp_login_surface(browser):
                     check(f"{tag}.a3_db_absence_assertions", False, "table prefix unavailable — DB absence assertions not executed")
             else:
                 check(f"{tag}.a3_db_absence_assertions", False, "WP_DIR unavailable — WP-user/link absence UNKNOWN (not executed)")
+    # Round 15 (Reader-2 G3): DELTA vs the baseline captured before the OTP
+    # request — fail-closed when unreadable; executed on every path above.
+    if delta_prefix and users_before is not None and links_before is not None:
+        users_after = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}users", WP_DIR)
+        links_after = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}cpms_patient_user_links", WP_DIR)
+        check(f"{tag}.delta_wp_users_unchanged", users_after == users_before,
+              f"wp_users before={users_before} after={users_after}")
+        check(f"{tag}.delta_patient_links_unchanged", links_after == links_before,
+              f"patient_user_links before={links_before} after={links_after}")
+    else:
+        check(f"{tag}.delta_db_assertions", False,
+              "WP-CLI/DB or table prefix unavailable — wp_users/patient_links DELTA not executed (fail-closed)")
     page.screenshot(path=f"{OUT}/screenshots/{tag}.png", full_page=True)
     ctx.close()
 
@@ -1333,7 +1372,7 @@ def portal_password_sign_in(browser, page_slug, user, password, tag, expected_su
     finally:
         page.remove_listener("response", on_portal_post)
 
-    cookies = ctx.cookies(BASE)
+    cookies = ctx.cookies()
     has_login_cookie = any(cookie["name"].startswith("wordpress_logged_in") for cookie in cookies)
     login_form_remains = page.locator("form.cpms-portal-login__form").count() > 0
     error_visible = page.locator(".cpms-portal-login__error[role='alert']").count() > 0

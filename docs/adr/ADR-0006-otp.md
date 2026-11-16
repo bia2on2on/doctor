@@ -8,13 +8,16 @@
 > هیچ حساب/Patient ساخته/یابیده/لینک نمی‌شود؛ پاکت یکنواخت صفردسترسی؛ بدون Session و بدون
 > `LOGIN_SUCCESS`. موبایل مشترک هرگز مبنای ownership/access نیست. متن اصلی عمداً دست‌نخورده
 > باقی مانده تا تاریخچهٔ تصمیم حفظ شود (قاعدهٔ «ADR تاریخی Superseded می‌شود، نه پاک»).
-> دور ۱۴ (OD-A F1/F2 — ۲۰۲۶-۱۱-۱۰) اضافه شد: حکم «دسترسی بیمار فقط از مسیر لینکِ
-> صریح staff» فقط برای نصب‌های تازه صادق است — پلاگین هنوز منتشر نشده (INFERENCE —
-> راستی‌آزمایی‌نشده). روی نصبی که زمانی کد OTP-loginِ قدیمی را اجرا کرده باشد، لینک‌ها
-> و Sessionهای ساخته‌شده توسط آن کد ابطال نمی‌شوند و رکوردِ legacy فعال با
-> `identity_id=NULL` صرف‌نظر از منشأ لینک پذیرفته می‌شود (`PatientRepository.php` —
-> `active_linked_patients_for_user()`؛ `clinical_access_identity_predicate()` که
-> `identity_id IS NULL` را صریحاً می‌پذیرد). همچنین: B2 confirm هیچ Patient نمی‌سازد
+> دور ۱۵ (۲۰۲۶-۱۱-۰۹) تصحیح شد: حکم «دسترسی بیمار فقط از مسیر لینکِ صریح staff» به آن
+> صورت درست نیست — این PR هیچ لینک/Sessionِ legacy را ابطال نمی‌کند،
+> لینکِ فعال با `identity_id IS NULL` صرف‌نظر از منشأ پذیرفته می‌شود
+> (`PatientRepository.php` — `active_linked_patients_for_user()`؛
+> `clinical_access_identity_predicate()` که `identity_id IS NULL` را صریحاً می‌پذیرد)،
+> ثبتِ خودِ بیمارِ تأییدشده (`POST /patient/enroll`، C0a) لینکِ مستقلِ بدون staff می‌سازد،
+> و منشأِ لینک‌های قدیمی قابل اثبات نیست (الگوهای bridge-email/login و ردیف‌های link/audit
+> فقط نامزدها را مشخص می‌کنند — INFERENCE)؛ شرطِ «فقط نصب‌های تازه» (INFERENCE —
+> راستی‌آزمایی‌نشده) نیز به همین ریشه محدود است و به‌طور مطلق درست نیست.
+> همچنین: B2 confirm هیچ Patient نمی‌سازد
 > (fail-closed — دور ۱۴ OD-A F1) و ستونِ موضوع روی نصب‌های pre-0022 هر caller را با
 > پاکتِ خنثیِ `503 CLINIC_SERVICE_UNAVAILABLE` fail-closed می‌کند (دور ۱۴ F3).
 > Addendumِ زیر (بازاستفادهٔ هویت؛ مرجع Clinic برای OTP، جست‌وجوی Patient و لینک)
