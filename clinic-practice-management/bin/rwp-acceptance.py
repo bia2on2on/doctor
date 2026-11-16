@@ -1007,7 +1007,7 @@ def public_booking_permalink(browser):
     pub_ctx.close()
 
 
-def patch_otp_code_for_browser_acceptance(mobile, tag):
+def patch_otp_code_for_browser_acceptance(mobile, tag, purpose="login"):
     """Patch only the ephemeral WP test token to a known code; never print the code/pepper."""
     if not WP_DIR:
         check(f"{tag}.otp_test_fixture", False, "WP_DIR is unavailable for the isolated DB-only known-code patch")
@@ -1029,7 +1029,7 @@ def patch_otp_code_for_browser_acceptance(mobile, tag):
             raise RuntimeError("OTP pepper unavailable")
         token_result = wp_cli(
             "db", "query",
-            f"SELECT id FROM {prefix}cpms_otp_tokens WHERE mobile='{mobile}' AND purpose='login' ORDER BY id DESC LIMIT 1",
+            f"SELECT id FROM {prefix}cpms_otp_tokens WHERE mobile='{mobile}' AND purpose='{purpose}' ORDER BY id DESC LIMIT 1",
             "--skip-column-names",
         )
         lines = [line.strip() for line in token_result.stdout.splitlines() if line.strip()]
@@ -1048,7 +1048,52 @@ def patch_otp_code_for_browser_acceptance(mobile, tag):
         return known_code
     except Exception as exc:
         check(f"{tag}.otp_test_fixture", False, f"{type(exc).__name__}: isolated token patch unavailable")
-        return False
+
+
+def auth_cookie_present(cookies):
+    """True when the browser context holds ANY WordPress session cookie.
+
+    Round 15 (Reader-2 G2): a name-prefix scan on ALL cookies of the context —
+    `ctx.cookies(BASE)` can omit admin-path cookies, and the secure-auth scheme
+    issues `wordpress_sec_<hash>` which the previous `wordpress_[0-9a-f]{32}$`
+    pattern and the `wordpress_logged_in`-only check both missed. Flags ANY
+    cookie starting with `wordpress_` (covers `wordpress_<hash>`,
+    `wordpress_sec_<hash>`, `wordpress_logged_in_<hash>` — see pluggable.php)
+    or `wp-settings-` (settings cookies are only set for a session-aware
+    context). Fail-closed: any such cookie here is a failure of the
+    zero-access contract.
+    """
+    for cookie in cookies:
+        name = str(cookie.get("name", ""))
+        if name.startswith("wordpress_") or name.startswith("wp-settings-"):
+            return True
+    return False
+
+
+def wp_scalar(sql, wp_dir):
+    """Run a single COUNT(*)-style scalar query against the isolated test DB; None when unavailable."""
+    if not wp_dir:
+        return None
+    proc = subprocess.run(
+        ["wp", "db", "query", sql, f"--path={wp_dir}", "--allow-root", "--skip-column-names"],
+        check=False, capture_output=True, text=True, timeout=20,
+    )
+    if proc.returncode != 0:
+        return None
+    lines = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return int(lines[-1]) if lines and lines[-1].isdigit() else None
+
+
+def wp_table_prefix():
+    """Return the isolated test DB's real table prefix, or None when unreadable."""
+    if not WP_DIR:
+        return None
+    proc = subprocess.run(
+        ["wp", "db", "prefix", f"--path={WP_DIR}", "--allow-root"],
+        check=False, capture_output=True, text=True, timeout=20,
+    )
+    prefix = proc.stdout.strip()
+    return prefix if re.fullmatch(r"[A-Za-z0-9_]+", prefix or "") else None
 
 
 def resolve_portal_url(page_slug):
@@ -1113,6 +1158,12 @@ def patient_portal_otp_login_surface(browser):
     check(f"{tag}.existing_routes_only",
           config.get("otp_request_path") == "/otp/request" and config.get("otp_verify_path") == "/otp/verify",
           f"configured routes={config.get('otp_request_path')},{config.get('otp_verify_path')}")
+    # Round 15 (Reader-2 G3): before/after DELTA across the OTP request+verify
+    # steps — total {prefix}users and total {prefix}cpms_patient_user_links counts must be UNCHANGED.
+    # Fail-closed when the isolated DB or its table prefix cannot be read.
+    delta_prefix = wp_table_prefix()
+    users_before = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}users", WP_DIR) if delta_prefix else None
+    links_before = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}cpms_patient_user_links", WP_DIR) if delta_prefix else None
     mobile = "0912" + str(int(time.time()))[-7:]
     page.locator('[data-role="patient-otp-mobile"]').fill(mobile)
     request_payloads = []
@@ -1142,42 +1193,149 @@ def patient_portal_otp_login_surface(browser):
         body = {}
     allowed_denial = a2.status == 400 and body.get("code") == "CLINIC_SCOPE_REQUIRED"
     check(f"{tag}.a2_success_or_fail_closed_scope",
-          (a2.status == 200 and page.locator('[data-role="patient-otp-code-step"]').is_visible())
-          or (allowed_denial and not page.locator('[data-role="patient-otp-code-step"]').is_visible()),
-          "single-Clinic request advances to code entry; ambiguous Clinic scope remains fail-closed")
+          a2.status == 200 and page.locator('[data-role="patient-otp-code-step"]').is_visible(),
+          "single-Clinic request advances to code entry (a CLINIC_SCOPE_REQUIRED denial no longer counts as a pass — see the next step)")
+    check(f"{tag}.a2_single_clinic_precondition",
+          not allowed_denial,
+          "A2 returned CLINIC_SCOPE_REQUIRED — the A3 possession-only contract cannot be exercised on this run; this is a FAILURE, not a skip (round 14 F4a)")
     check(f"{tag}.no_session_before_verification",
-          not any(cookie["name"].startswith("wordpress_logged_in") for cookie in ctx.cookies(BASE)),
+          not auth_cookie_present(ctx.cookies()),
           "OTP request alone never authenticates the Patient")
 
     if a2.status == 200:
         known_code = patch_otp_code_for_browser_acceptance(mobile, tag)
         if known_code:
-            verify_responses = []
-
-            def capture_otp_verify(resp):
-                route, _ = wp_route_and_params(resp.url)
-                if resp.request.method == "POST" and route == "/clinic/v1/otp/verify":
-                    verify_responses.append(resp)
-
-            page.on("response", capture_otp_verify)
             page.locator('[data-role="patient-otp-code"]').fill(known_code)
-            page.locator('[data-role="patient-otp-verify"]').click()
+            # Possession-only (Option A, ADR-0006): verify MUST NOT navigate or
+            # issue a session; wait deterministically for the fetch response.
+            with page.expect_response(
+                lambda r: r.request.method == "POST"
+                and wp_route_and_params(r.url)[0] == "/clinic/v1/otp/verify",
+                timeout=25000,
+            ) as a3_info:
+                page.locator('[data-role="patient-otp-verify"]').click()
+            a3 = a3_info.value
+            verify_status = a3.status
             try:
-                page.wait_for_function(
-                    "document.querySelector('#cpms-patient-portal-shell')?.getAttribute('data-shell-user') === 'patient'",
-                    timeout=25000,
-                )
-            except PlaywrightTimeoutError:
-                pass
-            finally:
-                page.remove_listener("response", capture_otp_verify)
-            verify_status = verify_responses[-1].status if verify_responses else 0
-            patient_cookie = any(cookie["name"].startswith("wordpress_logged_in") for cookie in ctx.cookies(BASE))
+                verify_payload = a3.json()
+            except Exception:
+                verify_payload = {}
+            verify_data = verify_payload.get("data") if isinstance(verify_payload, dict) else {}
+            verify_data = verify_data if isinstance(verify_data, dict) else {}
+            cookies_after_login_verify = ctx.cookies()
+            patient_cookie = auth_cookie_present(cookies_after_login_verify)
             check(f"{tag}.a3_existing_route_success", verify_status == 200, f"A3 HTTP {verify_status}")
-            check(f"{tag}.a3_wp_session_and_patient_shell",
-                  patient_cookie and page.locator('#cpms-patient-portal-shell[data-shell-user="patient"]').count() == 1
-                  and page.locator('[data-role="patient-nav"]').count() == 1,
-                  "real OTP verify reloads into the Patient shell with a WordPress session")
+            # Option A (possession-only): a valid code proves possession and
+            # NOTHING else. The COMPLETE zero-access envelope must come back:
+            # user_id=0, patient_links=[], is_new_user=false, session_issued=false;
+            # no auth cookie of any scheme may be set; the shell stays anonymous.
+            check(f"{tag}.a3_complete_zero_access_envelope",
+                  verify_data.get("user_id") == 0
+                  and verify_data.get("patient_links") == []
+                  and verify_data.get("is_new_user") is False
+                  and verify_data.get("session_issued") is False,
+                  f"user_id={verify_data.get('user_id')} patient_links={verify_data.get('patient_links')!r} "
+                  f"is_new_user={verify_data.get('is_new_user')} session_issued={verify_data.get('session_issued')}")
+            check(f"{tag}.a3_possession_only_no_session",
+                  verify_data.get("session_issued") is False
+                  and not patient_cookie
+                  and page.locator('#cpms-patient-portal-shell[data-shell-user="patient"]').count() == 0
+                  and page.locator('#cpms-patient-portal-shell[data-shell-user="anonymous"]').count() == 1,
+                  "verify returns session_issued=false; no WordPress auth/logged-in cookie; shell stays anonymous")
+
+            # Second purpose (OD-A round 14 F4a): purpose="verify_mobile" must
+            # return the same zero-access envelope and set no cookie either.
+            mobile2 = "0913" + str(int(time.time()))[-7:]
+            rest_root = config.get("rest_root", "")
+            otp_request_path = config.get("otp_request_path", "/otp/request")
+            otp_verify_path = config.get("otp_verify_path", "/otp/verify")
+            a2b = page.evaluate(
+                """async ({restRoot, path, mobile}) => {
+                    const res = await fetch(restRoot + path, {
+                        method: 'POST',
+                        credentials: 'same-origin',
+                        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+                        body: JSON.stringify({mobile, purpose: 'verify_mobile'}),
+                    });
+                    let body = null;
+                    try { body = await res.json(); } catch (e) { body = null; }
+                    return { status: res.status, body };
+                }""",
+                {"restRoot": rest_root, "path": otp_request_path, "mobile": mobile2},
+            )
+            a2b_body = (a2b or {}).get("body") or {}
+            a2b_data = a2b_body.get("data") if isinstance(a2b_body, dict) else {}
+            a2b_data = a2b_data if isinstance(a2b_data, dict) else {}
+            a2b_ok = (a2b or {}).get("status") == 200 and a2b_data.get("sms_sent") is True
+            check(f"{tag}.a2b_verify_mobile_request", a2b_ok,
+                  f"verify_mobile A2 HTTP {(a2b or {}).get('status')} sms_sent={a2b_data.get('sms_sent')}")
+            if a2b_ok:
+                known_code2 = patch_otp_code_for_browser_acceptance(mobile2, tag, purpose="verify_mobile")
+                if known_code2:
+                    a3b = page.evaluate(
+                        """async ({restRoot, path, mobile, code}) => {
+                            const res = await fetch(restRoot + path, {
+                                method: 'POST',
+                                credentials: 'same-origin',
+                                headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+                                body: JSON.stringify({mobile, code, purpose: 'verify_mobile'}),
+                            });
+                            let body = null;
+                            try { body = await res.json(); } catch (e) { body = null; }
+                            return { status: res.status, body };
+                        }""",
+                        {"restRoot": rest_root, "path": otp_verify_path, "mobile": mobile2, "code": known_code2},
+                    )
+                    a3b_body = (a3b or {}).get("body") or {}
+                    verify_b = a3b_body.get("data") if isinstance(a3b_body, dict) else {}
+                    verify_b = verify_b if isinstance(verify_b, dict) else {}
+                    cookies_after_vm_verify = ctx.cookies()
+                    patient_cookie2 = auth_cookie_present(cookies_after_vm_verify)
+                    check(f"{tag}.a3_verify_mobile_existing_route_success", (a3b or {}).get("status") == 200,
+                          f"verify_mobile A3 HTTP {(a3b or {}).get('status')}")
+                    check(f"{tag}.a3_verify_mobile_zero_access_envelope",
+                          verify_b.get("user_id") == 0
+                          and verify_b.get("patient_links") == []
+                          and verify_b.get("is_new_user") is False
+                          and verify_b.get("session_issued") is False
+                          and not patient_cookie2,
+                          f"verify_mobile zero-access envelope; auth cookie present={patient_cookie2}")
+
+            # No WP user and no patient-link row may exist for either random mobile
+            # (WP-CLI DB access required; otherwise this is UNKNOWN, see report).
+            if WP_DIR:
+                prefix = subprocess.run(
+                    ["wp", "db", "prefix", f"--path={WP_DIR}", "--allow-root"],
+                    check=False, capture_output=True, text=True, timeout=20,
+                ).stdout.strip()
+                if re.fullmatch(r"[A-Za-z0-9_]+", prefix or ""):
+                    users_n = wp_scalar(
+                        f"SELECT COUNT(*) FROM {prefix}users WHERE user_email IN "
+                        f"('{mobile}@otp.cpms.local','{mobile2}@otp.cpms.local')",
+                        WP_DIR)
+                    links_n = wp_scalar(
+                        f"SELECT COUNT(*) FROM {prefix}cpms_patient_user_links l "
+                        f"JOIN {prefix}cpms_patients p ON p.id = l.patient_id "
+                        f"WHERE p.mobile IN ('{mobile}','{mobile2}')",
+                        WP_DIR)
+                    check(f"{tag}.a3_no_wp_user_created", users_n == 0, f"OTP-derived wp_users rows: {users_n}")
+                    check(f"{tag}.a3_no_patient_link_created", links_n == 0, f"patient_user_links rows for random OTP mobiles: {links_n}")
+                else:
+                    check(f"{tag}.a3_db_absence_assertions", False, "table prefix unavailable — DB absence assertions not executed")
+            else:
+                check(f"{tag}.a3_db_absence_assertions", False, "WP_DIR unavailable — WP-user/link absence UNKNOWN (not executed)")
+    # Round 15 (Reader-2 G3): DELTA vs the baseline captured before the OTP
+    # request — fail-closed when unreadable; executed on every path above.
+    if delta_prefix and users_before is not None and links_before is not None:
+        users_after = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}users", WP_DIR)
+        links_after = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}cpms_patient_user_links", WP_DIR)
+        check(f"{tag}.delta_wp_users_unchanged", users_after == users_before,
+              f"wp_users before={users_before} after={users_after}")
+        check(f"{tag}.delta_patient_links_unchanged", links_after == links_before,
+              f"patient_user_links before={links_before} after={links_after}")
+    else:
+        check(f"{tag}.delta_db_assertions", False,
+              "WP-CLI/DB or table prefix unavailable — wp_users/patient_links DELTA not executed (fail-closed)")
     page.screenshot(path=f"{OUT}/screenshots/{tag}.png", full_page=True)
     ctx.close()
 
@@ -1214,7 +1372,7 @@ def portal_password_sign_in(browser, page_slug, user, password, tag, expected_su
     finally:
         page.remove_listener("response", on_portal_post)
 
-    cookies = ctx.cookies(BASE)
+    cookies = ctx.cookies()
     has_login_cookie = any(cookie["name"].startswith("wordpress_logged_in") for cookie in cookies)
     login_form_remains = page.locator("form.cpms-portal-login__form").count() > 0
     error_visible = page.locator(".cpms-portal-login__error[role='alert']").count() > 0

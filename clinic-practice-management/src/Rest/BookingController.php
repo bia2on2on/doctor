@@ -101,10 +101,11 @@ final class BookingController extends RestBase
                 'args' => [
                     'hold_token' => ['required' => true, 'type' => 'string'],
                     'reason' => ['required' => false, 'type' => 'string'],
-                    // Phase 8 Slice 2 — تصمیم مالک (هویت حداقلی بیمار جدید):
-                    // برای بیمارِ تازه در hold.clinic_id الزامی می‌شوند (تصمیم
-                    // سمت سرور)؛ برای بیمارِ موجود نادیده گرفته می‌شوند (B2
-                    // هرگز route ویرایش پروفایل نیست).
+                    // Phase 8 Slice 2 — B2 never creates a Patient and is not
+                    // a profile-update route. first_name/last_name are accepted
+                    // for REST backwards compatibility and ignored by the
+                    // server; the hold's resolved Patient is the only subject
+                    // (round 14 OD-A F1 fail-closed).
                     'first_name' => ['required' => false, 'type' => 'string'],
                     'last_name' => ['required' => false, 'type' => 'string'],
                 ],
