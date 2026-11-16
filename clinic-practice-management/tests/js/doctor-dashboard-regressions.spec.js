@@ -171,20 +171,22 @@ function testDoctorRendering(shared) {
       created_at_jalali: "1405/01/02 he said \"hi\"", items: [{ generic_name: 'دارو', dose: 'x',
         frequency: 'y', duration_days: 21 }] }],
     presentation: { follow_ups: { '6': { suggested_date_jalali: '1405/02/03 <b>&' } } },
-    follow_ups: [{ id: 6, suggested_date: '2026-04-23', interval_days: 14, reason: 'پیگیری', status: 'open' }],
+    follow_ups: [{ id: 6, suggested_date: '2026-04-23', interval_days: 14, reason: 'پیگیری', status: 'open' },
+      { id: 7, interval_days: 14, reason: 'پیگیری بازه', status: 'open' }],
     files: [{ id: 7, original_filename: 'report-9.pdf', category: 'document',
       file_size: 4096, visibility: 'patient_visible' }],
     past_visits: [
-      { id: 101, visit_date: '2026-03-21',
+      { id: 101, jalali_date: '۱۴۰۵/۰۱/۰۳', visit_date: '2026-03-21',
         status: 'consultation_completed', clinician_name: 'دکتر رضایی' },
-      { id: 102, visit_date: "2026-03-22 it's <b>&</b>", status: 'checked_out' }
+      { id: 102, visit_date: "2026-03-22 it's <b>&</b>", status: 'checked_out' },
+      { id: 103, visit_date: '2026-03-21', status: 'paid' }
     ]
   };
   var recordBefore = JSON.stringify(record);
   env.test.state.record = record;
   env.test.renderVisit();
   var html = env.node('cpms-doc-visit-view').innerHTML;
-  ['نسخه ۳ (۱۲ نسخه)', 'تاریخ: ۱۴۰۵/۰۲/۰۳ &lt;b&gt;&amp;', '۲۱ روز', 'RX-۳۴', 'MR-۱۲', '۳۴ سال', '۴KB']
+  ['نسخه ۳ (۱۲ نسخه)', 'تاریخ: ۱۴۰۵/۰۲/۰۳ &lt;b&gt;&amp;', 'بازه: ۱۴ روز', '۲۱ روز', 'RX-۳۴', 'MR-۱۲', '۳۴ سال', '۴KB']
     .forEach(function (expected) { assert.ok(html.includes(expected), expected); });
   assert.ok(html.includes('placeholder="دوز (مثلاً ۵۰۰mg)"'), 'static dose placeholder uses Persian digits');
   assert.ok(!html.includes('placeholder="دوز (مثلاً 500mg)"'), 'dose placeholder has no ASCII digits');
@@ -212,8 +214,9 @@ function testDoctorRendering(shared) {
   assert.ok(!html.includes('<b>&</b>'), 'past_visit no raw <b>&</b> tag');
   assert.ok(!html.includes("2026-03-22 it's"), 'past_visit no raw digits or quote');
   // Past visits use the shipped Gregorian-to-Jalali helper loaded on cpms-doctor.
-  assert.ok(html.includes('۱۴۰۵/۰۱/۰۱'), 'Gregorian visit_date rendered as Jalali Persian date');
-  assert.ok(html.includes('۲۰۲۶-۰۳-۲۲ it&#39;s &lt;b&gt;&amp;&lt;/b&gt;'), 'invalid date fallback remains escaped');
+  assert.ok(html.includes('<li>۱۴۰۵/۰۱/۰۳ — پایان ویزیت (دکتر رضایی)</li>'), 'server jalali_date is rendered as the exact past-visit row');
+  assert.ok(html.includes('<li>۱۴۰۵/۰۱/۰۱ — پرداخت‌شده</li>'), 'Gregorian fallback converts to the exact expected Jalali row');
+  assert.ok(html.includes('<li>۲۰۲۶-۰۳-۲۲ it&#39;s &lt;b&gt;&amp;&lt;/b&gt; — خارج‌شده</li>'), 'invalid visit date fallback is rendered in the exact row');
   assert.ok(!html.includes('2026-03-21'), 'Gregorian ASCII date is not displayed');
   assert.ok(!html.includes('۲۰۲۶-۰۳-۲۱'), 'Gregorian date is not displayed in Persian digits either');
   assert.ok(!html.includes('2026-03-22'), 'invalid fallback has Persian digits');
