@@ -200,7 +200,7 @@ final class OtpSecurityTest extends WP_UnitTestCase
             remove_action( 'set_logged_in_cookie', $listener, 99 );
         }
 
-        self::assertFalse($result['session_issued'], 'owner decision A: OTP never issues a session.');
+        self::assertFalse($result['session_issued'], 'owner decision A: OTP issues no session here.');
         self::assertSame(0, (int) $result['user_id']);
         self::assertSame(0, get_current_user_id(), 'no account may be authenticated.');
         self::assertSame( [], $cookieCalls, 'owner decision A: verify must not trigger set_auth_cookie/set_logged_in_cookie.' );
@@ -384,7 +384,7 @@ final class OtpSecurityTest extends WP_UnitTestCase
 
         self::assertSame(0, (int) $result['user_id'], 'owner decision A: no mobile-derived account resolution.');
         self::assertFalse($result['is_new_user']);
-        self::assertFalse($result['session_issued'], 'owner decision A: OTP never issues a session.');
+        self::assertFalse($result['session_issued'], 'owner decision A: OTP issues no session here.');
         self::assertSame($before, $this->userCount(), 'owner decision A: no wp_users row may be created.');
     }
 
@@ -510,7 +510,7 @@ final class OtpSecurityTest extends WP_UnitTestCase
         // same uniform zero-access envelope as every other number.
         $result = $this->service()->verify($mobile, '111007', OtpService::PURPOSE_LOGIN);
         self::assertSame(0, (int) $result['user_id']);
-        self::assertFalse($result['session_issued'], 'owner decision A: OTP never authenticates the staff account.');
+        self::assertFalse($result['session_issued'], 'owner decision A: OTP does not authenticate the staff account.');
         self::assertSame([], $result['patient_links']);
 
         self::assertSame($usersBefore, $this->userCount(), 'OTP denial must not create another account.');

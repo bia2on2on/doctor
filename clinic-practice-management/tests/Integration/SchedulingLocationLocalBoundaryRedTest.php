@@ -484,7 +484,7 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         // appointment if its persisted slot later resolves to a repeated time.
         // OD-A round 14 (F1): a zero-link caller can no longer reach the locked
         // DST check at all — the uniform fail-closed 400 fires before the
-        // transaction, with no side effects (the zero-link leg is covered in
+        // transaction, with no side effects (the zero-link leg is exercised in
         // BookingFlowTest / Phase8Slice2OtpHoldConfirmRedTest /
         // Phase8Slice3LinkedPatientBookingSubjectRedTest). The DST-reject
         // compensation is therefore exercised here with a LINKED caller — the

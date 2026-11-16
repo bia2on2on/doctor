@@ -588,7 +588,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
             'last_name' => 'کریمی',
         ], asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
         self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'The fail-closed response has the same HTTP status with and without names.');
-        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'The fail-closed response carries identical decoded response data with and without names — names never open the gate.');
+        self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'The fail-closed response carries equal decoded response data with and without names in this fixture.');
         self::assertSame(0, $this->countPatientsForMobile($this->clinicA, $mobile), 'No Patient must be created even with valid names.');
         self::assertSame(0, $this->countRows('cpms_appointments'), 'No Appointment must exist.');
         self::assertSame(0, $this->countPatientLinksForUser($userId), 'No Patient link must be created.');

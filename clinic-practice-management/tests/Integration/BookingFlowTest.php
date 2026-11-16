@@ -469,7 +469,7 @@ final class BookingFlowTest extends WP_UnitTestCase
         // holds NO linked Patient in the booking Clinic fails closed — no Patient
         // is created, no link, no appointment, no identity activation. Supplied
         // names do not open the gate; the response is the uniform fail-closed
-        // envelope regardless of whether a same-mobile Patient exists anywhere.
+        // envelope; the response equals the other variants in this fixture.
         $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
         try {
             $this->booking()->confirm($hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی');
@@ -480,7 +480,7 @@ final class BookingFlowTest extends WP_UnitTestCase
             $this->assertSame(
                 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)',
                 $exception->getMessage(),
-                'the uniform fail-closed envelope; supplied names never open the gate'
+                'uniform fail-closed message with valid names'
             );
         }
         $this->assertSame(
@@ -634,7 +634,7 @@ final class BookingFlowTest extends WP_UnitTestCase
     public function testBookingConfirmAuditFailureRollsBackAppointmentAndReleasesHoldViaCompensation(): void
     {
         global $wpdb;
-        // Round 14 OD-A (F1/B1): confirm never creates a Patient on this path,
+        // Round 14 OD-A (F1/B1): confirm creates no Patient on this path,
         // so the D6 atomicity contract is pinned on the remaining confirm
         // subject — a linked patient and a live Hold. A failed mandatory
         // APPOINTMENT_CREATED audit rolls the whole confirmation back and the
@@ -730,7 +730,7 @@ final class BookingFlowTest extends WP_UnitTestCase
         global $wpdb;
         // Round 14 (F3): migration 2026_09_20_0022_slot_holds_patient_binding
         // has NOT been applied — cpms_slot_holds.patient_id does not exist, so
-        // a Hold can never persist its booking subject. The service must fail
+        // a Hold cannot persist its booking subject. The service must fail
         // closed with the neutral, existing CLINIC_SERVICE_UNAVAILABLE (503,
         // the RuntimeSchemaGate public contract) for every caller that
         // REACHES resolveBookingPatientForHold() — linked (one or two real
@@ -806,7 +806,7 @@ final class BookingFlowTest extends WP_UnitTestCase
             }
             // Link-resolved caller (one or two real links, per the case) with
             // an explicit requested patient_id must get the same
-            // uniform 503 (never CLINIC_PATIENT_SELECTION_REQUIRED, never success).
+            // uniform 503 (not CLINIC_PATIENT_SELECTION_REQUIRED, not success).
             $linked = App::db()->fetchAll(
                 'SELECT patient_id FROM ' . App::db()->table( 'cpms_patient_user_links' ) . ' WHERE wp_user_id = %d',
                 [ $this->patientUserId ]

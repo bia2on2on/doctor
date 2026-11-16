@@ -107,7 +107,7 @@ final class OtpFlowTest extends WP_UnitTestCase
         $this->assertSame(0, (int) $result['user_id'], 'owner decision A: no user resolution from mobile.');
         $this->assertFalse($result['is_new_user']);
         $this->assertSame([], $result['patient_links'], 'owner decision A: no patient resolution from mobile.');
-        $this->assertFalse($result['session_issued'], 'owner decision A: OTP never issues a patient session.');
+        $this->assertFalse($result['session_issued'], 'owner decision A: OTP issues no patient session here.');
         $this->assertSame($usersBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->users), 'owner decision A: no wp_users row may be created.'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         // Token مصرف شده (تک‌بار)

@@ -906,7 +906,7 @@ final class BookingService
                 // mobile — regardless of names, and regardless of whether a
                 // same-mobile Patient exists in this Clinic. One uniform error
                 // (status, code, message — identical for every such caller);
-                // existence of a same-mobile Patient is not observable.
+                // no query here consults the same-mobile row on this path.
                 throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)', 400 );
             } elseif ($cntC === 1) {
                 $patient = $linkedForConfirm[0];

@@ -12,16 +12,16 @@ use WP_UnitTestCase;
 /**
  * owner decision A (2026-11-09, Option A) — OTP possession-only contract.
  *
- * A valid code proves phone possession ONLY. It must NEVER resolve, create,
+ * A valid code means phone possession only. It must not resolve, create,
  * link or authenticate a Patient or a WP account:
  *   - NO Patient lookup by mobile (any Clinic, any organization);
  *   - NO auto-link into cpms_patient_user_links;
  *   - NO mobile-derived WP account creation/reuse ({mobile}@otp.cpms.local
  *     has no authority);
  *   - NO session, therefore no LOGIN_SUCCESS audit;
- *   - the response is the SAME uniform 200 zero-access envelope for every
+ *   - the response is the SAME uniform 200 zero-access envelope for the
  *     valid code — existing Patient, non-existing mobile, pre-linked account,
- *     or staff-colliding bridge email are indistinguishable (non-enumeration).
+ *     or staff-colliding bridge email produce equal decoded response data in this fixture pair.
  *
  * Shared mobile is never an ownership/access basis: two Patients in
  * DIFFERENT clinics/organizations sharing one mobile are equally unlinked.
@@ -58,7 +58,7 @@ use WP_UnitTestCase;
  *    shared across tests. Both were corrected in the follow-up commit
  *    (clinic-stamped seeds; baseline-delta audit assertion).
  *  - testVerifyRouteFailsClosedWith503WhenOtpSettingsUnreadable exercises
- *    the pre-transaction settings-unreadable path that is UNCHANGED by this
+ *    the pre-transaction settings-unreadable path that is not changed by this
  *    change and is NOT known to fail on base; it pins the fail-closed
  *    settings contract, not the possession-only change.
  *  - Other tests here (response-shape/status assertions) are not claimed
@@ -248,7 +248,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         $this->issueKnownCode(self::MOBILE_PRE_LINKED, '909090');
         $result = App::otpService()->verify(self::MOBILE_PRE_LINKED, '909090', \ClinicCore\Application\Auth\OtpService::PURPOSE_LOGIN);
 
-        self::assertSame(0, (int) $result['user_id'], 'owner decision A: OTP never resolves even an explicitly linked account.');
+        self::assertSame(0, (int) $result['user_id'], 'owner decision A: OTP resolves no account here (user_id 0).');
         self::assertSame([], (array) $result['patient_links'], 'OTP returns no Patient data — linking an existing Patient to a WP account (the staff-link flow) is a Slice 2 concern.');
         self::assertFalse((bool) $result['session_issued'], 'slice 1: even a pre-existing explicit link is NOT an OTP access basis.');
         self::assertSame(0, get_current_user_id());
@@ -356,8 +356,8 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
      * auditCountActionSince() this gives a strictly-correct before/after
      * delta: the audit table is shared and append-only across the suite, and
      * AuditLogger::sanitize() re-masks the `mobile` change-set to '***NNNN',
-     * so a value-scoped LIKE can never match reliably. A row-id baseline is
-     * exact and cannot be polluted by other tests' rows.
+     * so a value-scoped LIKE does not reliably match. A row-id baseline is
+     * row-id baseline; rows from other tests sit below the baseline and are excluded.
      */
     private function auditMaxIdForAction(string $action): int
     {
