@@ -196,12 +196,9 @@
  * POST-GREEN SECURITY REGRESSION GUARD — added after GREEN, passes on the
  * GREEN head and must keep passing (1 method; total suite = 34 tests):
  *
- *   T26 A3 fails closed when the deterministic bridge email
- *       {mobile}@otp.cpms.local is held by a NON-patient WP account: owner
- *       decision A returns the uniform 200 zero-access envelope (equal decoded data for
- *       the numbers exercised here); no session, no patient_links, no user_id in the
- *       payload, no wp_users/Patient/link side effects, no silent role
- *       conversion, and no disclosure of the bridge-email owner.
+ *   T26 A3 fails closed when a NON-patient WP account holds {mobile}@otp.cpms.local —
+ *       asserts envelope fields (user_id=0, patient_links=[], session_issued=false), no
+ *       bridge-email/user-id disclosure, and wp_users/Patient/link counts and roles.
  *
  * "No new REST route" is pinned by the existing T20 census guard of
  * Phase8Slice1PublicBookingBrowseRedTest (anonymous census =
@@ -861,7 +858,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * (a same-mobile Patient exists only in another Clinic). owner decision
      * A: A3 must resolve NOTHING from the mobile — the pre-existing WP user
      * is NOT reused, NOT logged in and NOT linked: uniform 200 zero-access
-     * envelope, wp_users count compared, no Patient link found for the colliding mobile.
+     * envelope, wp_users count compared, no link row for the other-Clinic Patient (count checked).
      */
     public function testA3ResolvesNothingFromTheMobileEvenWhenBridgeEmailUserExists(): void
     {
@@ -923,12 +920,10 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * cpms_secretary role) holds that email, A3 does not attach a session
      * to that account.
      *
-     * owner decision A (2026-11-09) UPDATED EXPECTATIONS: the response is now
-     * the UNIFORM 200 zero-access envelope (`user_id=0`, `patient_links=[]`,
-     * `session_issued=false`) — equal status/code/message/decoded data for the valid-code numbers exercised by this test's
-     * fixture comparisons (equal status/code/message/decoded data, checked at the assertions below):
-     * "valid code / no linkable account" and "valid code / colliding staff account".
-     * Still required and still pinned:
+     * owner decision A (2026-11-09) UPDATED EXPECTATIONS — what T26 asserts:
+     * HTTP 200 envelope with user_id=0, `patient_links=[]`,
+     * `session_issued=false`; no bridge email / user id in the body; wp_users
+     * and Patient/link counts; the colliding account keeps its roles.
      *   - no session/current user, no patient_links exposure, no user_id
      *     different from 0, no disclosure of which account owns the bridge email;
      *   - zero provisioning side effects: no new wp_users row, no Patient
@@ -966,8 +961,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         ]);
         $this->ambientScope(null);
 
-        // owner decision A: uniform 200 zero-access envelope (same shape for
-        // the exercised numbers) — no session, no account disclosure.
+        // owner decision A: uniform 200 zero-access envelope — no session, no account disclosure.
         self::assertSame(
             200,
             $verify->get_status(),
@@ -2595,7 +2589,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
         // Name fields of the pre-existing same-mobile Patient row are checked by field below; the decoy
-        // gains no appointment and no link.
+        // Patient gains no appointment (checked below).
         $sameMobileRow = $this->patientRowByMobile($this->clinicA, self::MOBILE_R5);
         self::assertNotNull($sameMobileRow, 'the pre-existing same-mobile Patient row exists.');
         self::assertSame($sameMobilePatient, (int) $sameMobileRow['id']);
@@ -2617,9 +2611,10 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * Clinic — the booking Clinic holds NO same-mobile row and the caller has
      * zero links there. The response fails closed with the same status/code/message contract as the R5 case:
      * HTTP 400 CLINIC_VALIDATION_FAILED with the exact uniform message. No
-     * Patient row is created in the booking Clinic (count checked below); the other-Clinic
-     * row's name fields are checked by field below; no link/Appointment/WP-user count
-     * change (checked below); the Hold stays
+     * Patient row is created in the booking Clinic (count checked below); the
+     * other-Clinic row's name fields are checked by field below; the WP
+     * user's email, roles, ID, password hash and capabilities are checked
+     * by field; the Hold stays
      * active/retryable with its capacity.
      *
      * What is NOT restorable (stated precisely): the live B1 hold — after the
@@ -2800,7 +2795,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
     private function assertSeededHoldUntouchedAndNothingCreated(int $slotId, string $holdToken, string $mobile, int $userId, int $expectedPatientRows = 0, int $expectedLinks = 0): void
     {
         self::assertSame($expectedPatientRows, $this->countPatientsForMobile($this->clinicA, $mobile), 'Patient row count for the holder mobile compared.');
-        self::assertSame(0, $this->countRows('cpms_appointments'), 'A failed confirm creates no Appointment.');
+        self::assertSame(0, $this->countRows('cpms_appointments'), 'Total Appointment row count is 0.');
         self::assertSame($expectedLinks, $this->countPatientLinksForUser($userId), 'Patient link count for the caller compared.');
 
         $holdRow = $this->holdRowByToken($holdToken);
