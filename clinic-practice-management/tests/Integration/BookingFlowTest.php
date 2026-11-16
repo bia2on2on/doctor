@@ -556,6 +556,17 @@ final class BookingFlowTest extends WP_UnitTestCase
         $identityId = $identityService->create_identity( $organizationId );
         $identityService->link_user( $organizationId, $identityId, $this->otherUserId, '09120000002' );
 
+        // Baseline: create_identity() audits PATIENT_IDENTITY_CREATED at setup;
+        // the assertion below must be relative to THIS point, not absolute zero.
+        $audit = App::db()->table( 'cpms_audit_logs' );
+        $auditBaseline = [];
+        foreach ( [ 'PATIENT_IDENTITY_CREATED', 'PATIENT_IDENTITY_LINKED' ] as $action ) {
+            $auditBaseline[ $action ] = (int) App::db()->fetchValue(
+                "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d",
+                [ $action, $identityId ]
+            );
+        }
+
         $slot = $this->makeSlot( 3, '11:00', 1 );
         // owner decision A (2026-11-09): zero-link OTP identities cannot originate a
         // Hold anymore — seed the persisted (historical, patient_id NULL) Hold so the
@@ -608,15 +619,14 @@ final class BookingFlowTest extends WP_UnitTestCase
             'the pre-verified identity is preserved'
         );
 
-        $audit = App::db()->table( 'cpms_audit_logs' );
         foreach ( [ 'PATIENT_IDENTITY_CREATED', 'PATIENT_IDENTITY_LINKED' ] as $action ) {
             $this->assertSame(
-                0,
+                $auditBaseline[ $action ],
                 (int) App::db()->fetchValue(
                     "SELECT COUNT(*) FROM {$audit} WHERE action = %s AND resource_id = %d",
                     [ $action, $identityId ]
                 ),
-                'no ' . $action . ' evidence may be persisted for the pre-verified identity'
+                'the fail-closed confirm must not add ' . $action . ' evidence for the pre-verified identity'
             );
         }
     }

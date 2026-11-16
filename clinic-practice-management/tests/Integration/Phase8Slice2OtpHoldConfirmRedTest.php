@@ -2666,7 +2666,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
             'hold_token' => $holdToken,
         ] + $hostile, asUserId: $userId, withNonce: true, idempotencyKey: $this->uuid());
         $this->assertConfirmFailClosed($attempt1, $expectedMessage, 'An other-Clinic-only same-mobile Patient opens no gate here.');
-        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R6, $userId);
+        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R6, $userId, 0, 1);
         $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
         // (2) valid names + hostile claims -> the SAME fail-closed envelope
@@ -2679,7 +2679,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $this->assertConfirmFailClosed($attempt2, $expectedMessage, 'Valid names must not open the gate in the booking Clinic.');
         self::assertSame($attempt1->get_status(), $attempt2->get_status(), 'Response status is identical');
         self::assertSame($attempt1->get_data(), $attempt2->get_data(), 'Response body is byte-identical — the booking-Clinic situation (no same-mobile row) is not observable apart from R5');
-        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R6, $userId);
+        $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R6, $userId, 0, 1);
         $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
         // The other-Clinic row is untouched; no appointment/link is produced there.
@@ -2798,11 +2798,11 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * Hold: the Hold stays active/retryable, the held capacity is kept, and
      * nothing is created for the booking mobile.
      */
-    private function assertSeededHoldUntouchedAndNothingCreated(int $slotId, string $holdToken, string $mobile, int $userId, int $expectedPatientRows = 0): void
+    private function assertSeededHoldUntouchedAndNothingCreated(int $slotId, string $holdToken, string $mobile, int $userId, int $expectedPatientRows = 0, int $expectedLinks = 0): void
     {
         self::assertSame($expectedPatientRows, $this->countPatientsForMobile($this->clinicA, $mobile), 'A failed confirm must not change the booking-Clinic Patient rows for the holder mobile.');
         self::assertSame(0, $this->countRows('cpms_appointments'), 'A failed confirm creates no Appointment.');
-        self::assertSame(0, $this->countPatientLinksForUser($userId), 'A failed confirm creates no Patient link.');
+        self::assertSame($expectedLinks, $this->countPatientLinksForUser($userId), 'A failed confirm must not change the Patient links.');
 
         $holdRow = $this->holdRowByToken($holdToken);
         self::assertNotNull($holdRow);
