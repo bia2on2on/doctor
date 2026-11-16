@@ -907,12 +907,12 @@ final class BookingService
                 // same-mobile Patient exists in this Clinic. One uniform error
                 // (status, code, message — identical for every such caller);
                 // existence of a same-mobile Patient is not observable.
-                throw BookingException::of('CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)', 400);
+                throw BookingException::of( 'CLINIC_VALIDATION_FAILED', 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)', 400 );
             } elseif ($cntC === 1) {
                 $patient = $linkedForConfirm[0];
             } else {
                 // >1 without selection: fail closed, do not accept arbitrary B2 patient_id to repair.
-                throw BookingException::of('CLINIC_PATIENT_SELECTION_REQUIRED', 'انتخاب بیمار برای تکمیل رزرو الزامی است', 422);
+                throw BookingException::of( 'CLINIC_PATIENT_SELECTION_REQUIRED', 'انتخاب بیمار برای تکمیل رزرو الزامی است', 422 );
             }
         }
 
@@ -921,8 +921,8 @@ final class BookingService
             return $this->replayOrInFlight($check, $wpUserId);
         }
 
-        $slot_id            = (int) $hold['slot_id'];
-        $hold_id            = (int) $hold['id'];
+        $slot_id = (int) $hold['slot_id'];
+        $hold_id = (int) $hold['id'];
 
         try {
             $confirmation = $this->booking_transaction(
@@ -1070,9 +1070,9 @@ final class BookingService
                     );
 
                     return [
-                        'appointment'         => $this->appointments->find( $appt_id ),
-                        'appointment_id'      => $appt_id,
-                        'patient_id'          => $patient_id,
+                        'appointment'    => $this->appointments->find( $appt_id ),
+                        'appointment_id' => $appt_id,
+                        'patient_id'     => $patient_id,
                     ];
                 }
             );
@@ -1138,10 +1138,10 @@ final class BookingService
             throw $denial;
         }
 
-        $appt                = $confirmation['appointment'];
-        $appt_id             = (int) $confirmation['appointment_id'];
-        $patient_id          = (int) $confirmation['patient_id'];
-        $view                = $this->appointmentView( $appt );
+        $appt       = $confirmation['appointment'];
+        $appt_id    = (int) $confirmation['appointment_id'];
+        $patient_id = (int) $confirmation['patient_id'];
+        $view       = $this->appointmentView( $appt );
         $this->idem->complete($idemKey, self::EP_CONFIRM, $wpUserId, null, 200, $view, $idemClinicId);
 
         // Mandatory PATIENT_CREATED/APPOINTMENT_CREATED audits now commit inside
@@ -3096,7 +3096,7 @@ final class BookingService
     private function resolveBookingPatientForHold(int $wpUserId, int $trustedClinicId, ?int $requestedPatientId): ?int
     {
         if (!$this->holdsHasPatientIdColumn()) {
-            throw BookingException::of('CLINIC_SERVICE_UNAVAILABLE', 'سرویس موقتاً در دسترس نیست.', 503);
+            throw BookingException::of( 'CLINIC_SERVICE_UNAVAILABLE', 'سرویس موقتاً در دسترس نیست.', 503 );
         }
         $linked = $this->linkedActivePatientsForClinic($wpUserId, $trustedClinicId);
         $cnt = count($linked);
