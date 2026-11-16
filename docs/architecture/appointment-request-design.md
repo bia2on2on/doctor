@@ -2,8 +2,9 @@
 
 > # ⛔ DESIGN ONLY — NO CODE, NO SCHEMA, NO MIGRATION, NO TABLE CREATED
 >
-> **Revision 2** — rewritten after an independent security review (Reader 1) returned BLOCKER on
-> revision 1 (head `67c57a7e`). Findings F1–F7 are addressed in the places named in §0.1. This is a
+> **Revision 3 (final round)** — revises revision 2 after eight findings M1–M8 from an independent
+> reviewer verified at head `d27c51a5`; revision 2 itself answered F1–F7 from the earlier review of
+> revision 1 (`67c57a7e`). Every finding is mapped in §0.1. This is a
 > **proposal for review**, produced under a hard two-file scope. It **does not create, reserve or
 > number a migration**. Building it needs **two independent security reviews and an explicit owner
 > approval**. **Owner acceptance of any implementation: NOT GIVEN.**
@@ -15,20 +16,21 @@
 | **Evidence labels** | **OBSERVED** = read at the stated commit, not executed. **INFERENCE** = reasoning, not proven by execution. **LIMITATION** = not established. **UNKNOWN** = not proven. **PROPOSAL** = design position, not an owner decision. **DECIDED (mgr)** = manager decision relayed in the round-2 brief. **OQ-n** = open question (§14). |
 | **Local PHP** | LIMITATION: no `php` binary here (PHP-WASM only). No PHP, WordPress, MySQL or browser was executed. CI does not exercise this document. |
 
-## 0.1 What changed from revision 1 (finding → place)
+## 0.1 What changed in revision 3 (finding → place)
 
 | Finding | Change |
 |---|---|
-| **F1** proof replay | New §5.6: the consumed marker is a row in the **existing** `cpms_rate_limits`, written *before* the branch, keyed by proof id with `window_id` = the proof's expiry. Deleted request rows can no longer resurrect a proof. `proof_fingerprint` column removed from §3. Cascade changed to `RESTRICT`. |
-| **F2a** key location | New §5.7: key material derived from **wp-config salt constants** (never `wp_salt()`, which mixes a DB-stored secret — §5.7 cites the official page), separate HKDF-derived keys for NID hashing and proof signing, fail-closed on missing/placeholder, honest residual stated. |
-| **F2b** audit text | §5.7(b)/§5.9/§10 T-13: **closed reason-code vocabulary**; free text removed from decision and audit records; the "10-digit run" rule is deleted, not patched. |
-| **F3** uniform response | §5.3: explicit check **order**, what a duplicate-at-capacity returns, write-count residual declared as LIMITATION, "identical" replaced by a per-observable table, and the "same requester only" claim removed. |
-| **F4** reception comparison | §5.9: a bounded *match* action against the request's own stored hash — not a patient lookup; existing authorized search reused. |
-| **F5** schema gate | §5.13: the revision-1 claim about `RuntimeSchemaGate` was **wrong** and is corrected with the code fact; the fail-closed mechanism is the route's own probe. |
-| **F6** tests | §10: seven new/rewritten cases with their mutations — duplicate-proof collision (T-9), replay after deletion/cleanup/cascade with marker-lifetime invariant (T-10, T-12), cross-clinic/purpose/mobile replay (T-11), audit reason-code-only (T-13), key-missing ⇒ 503 (T-8), and observable-by-observable new-vs-duplicate incl. write counts (T-14); cap-ordering-with-duplicate is folded into the rewritten T-3. |
-| **F7** status honesty | §6: C3 downgraded to **NOT MET in full**; every other condition re-derived from text, with residuals kept. #340 pin updated. |
+| **M1** restore/reinstall replay | §5.6: the path is **real** (dump emits `DROP`+`CREATE` for `cpms_rate_limits`, `BackupSqlDumper.php:56-65`; restore executes it, `BackupService.php:358-361`). Options A/B/C weighed; **C chosen** — a monotonic `cpms_arreq_proof_epoch_min` option written after restore and before uninstall, proofs with `iat ≤ epoch` rejected. **Build item, OQ-15.** No second table. §9 **T11** added; T-19 tests it. |
+| **M2** national ID in a name field | New **§5.14**: names reject **every** `\p{Nd}` digit in any script before storage, uniform 400; every free-text field and every output path tabulated; the GET patient search is **normatively forbidden** from carrying a NID in `q`. T-20. |
+| **M3** key strength | §5.7: checkable rule (≥ 32 bytes, ≥ 12 distinct bytes, denylist, mutual inequality, override path) instead of a bare length; LIMITATION states a rule cannot prove randomness and that installer-generated keys are the real fix (OQ-18). T-21. |
+| **M4** `wp_salt` | §2 **V20** and §5.7 corrected: valid constants are used **directly**; the DB option is a fallback. Design choice kept for fail-closed determinism only. Same correction in the ledger entry. |
+| **M5** cleanup retention | §5.6: margin restated as **48 h after expiry under the default**, explicitly *not* protection during validity; `max(1, …)` clamp noted. T-16 tests the default-retention margin, not T+600. |
+| **M6** operational claims | §5.6 (a): `RESTRICT` blocks slot deletion until **hard deletion**, which can stall — operator sees an FK error; OQ-17. §5.11 (b): the manifest pre-loop tests a literal `cpms_` prefix that manifest names do not carry; the drops that happen are the dump's. |
+| **M7** accounting | §5.3: replay **does** write (counter increment) and duplicate does **not** run the cap count — both revision-2 statements were false. Replaced by a one-row-per-outcome accounting table; T-22 pins it. |
+| **M8** transaction/concurrency | New **§5.15**: boundary, statement order, lock order, per-outcome commit/rollback, same-proof race (T-17) and cap-boundary race (T-18) on MySQL 8 **and** MariaDB 11.4.13; T-4's fixture now exceeds the batch limit; T-23 gives the header-comparison exclusion rule. |
+| **C table** | §6 re-derived against the final text with a test per row: 8 MET, 3 UNKNOWN (C2/C10/C11), C6 NOT MET here (owned by #340), C7 MET by design with an unapproved build dependency. |
 
----
+Revision 2's F1–F7 mapping is retained below for traceability: **F1** §5.6 replay marker · **F2** §5.7 keys + closed reason codes · **F3** §5.3 · **F4** §5.9 · **F5** §5.13 · **F6** §10 · **F7** §6.
 
 ## 0. Decisions at a glance (NON-NORMATIVE; sections win)
 
@@ -55,6 +57,9 @@
 | D19 | One new `POST` under `booking/`, body-only; the existing `/clinic/v1/booking/` scope skip already covers it (to be confirmed at build). | C9 |
 | **D20** | **Closed reason-code vocabulary** for staff decisions (§5.7b). | C10 |
 | **D21** | **Key material outside the database**, derived from wp-config constants (§5.7). | C5 |
+| **D24** | **Requester names carry no digits of any script**; violated ⇒ uniform 400 (§5.14). | C5 |
+| **D25** | **One transaction** per request, marker row lock held through read-back and commit; clinic named lock around count+insert (§5.15). | C10/C13 |
+| **D26** | **Restore/uninstall writes a monotonic "proofs not valid before" epoch option** (§5.6, M1 — build item, OQ-15). | C7 |
 
 ---
 
@@ -91,7 +96,7 @@ Login is mobile + SMS OTP; booking identifies the patient by Iranian national ID
 | V17 | #340 verify envelope | **OBSERVED at `fb38793`**: `:556-559`, docblock `:379`; `clinic_id` from the challenge row (`:447`). |
 | V18 | #340 column-absent behaviour | **OBSERVED at `fb38793`**: memoized `information_schema.columns` probe `BookingService.php:3075`, throw at `:3099`; comment `:3089-3092` states the envelope is the same public contract as `RuntimeSchemaGate`. |
 | **V19** | **`RuntimeSchemaGate` blocks every route while a migration is pending** | **REFUTED (F5, this is the revision-1 error).** `App::is_runtime_blocked_by_pending_schema()` returns **`false`** when engine evidence is `RUNTIME_EVIDENCE_SUPPORTED` (`App.php:626-628`) and **`false`** again when evidence is `RUNTIME_EVIDENCE_UNREADABLE` (`:630-634`); only the **UNSUPPORTED** branch consults pending migrations (`:636-639`, constant `DatabaseCompatibilityGate.php:56`). So on a normally supported engine a **pending migration does not block anything**. |
-| **V20** | **`wp_salt()` is safe key material** | **REFUTED.** developer.wordpress.org/reference/functions/wp_salt/: "Secret keys are located in two places: **in the database and in the wp-config.php file**. The secret key in the database is randomly generated and **will be appended** to the secret keys in wp-config.php." A `wp_salt()`-derived key is therefore partly DB-resident → it does not satisfy D21. **Derive from the wp-config constants directly.** |
+| **V20** | **`wp_salt()` always mixes a database-stored secret** | **WRONG, corrected in revision 3 (M4).** Re-read in core `wp_salt()` (`github.com/WordPress/WordPress/blob/master/wp-includes/pluggable.php`): a defined constant is used **directly** when non-empty and not a duplicated/placeholder value; the `get_site_option()` → `wp_generate_password()` fallback applies only to undefined, empty, duplicated or placeholder constants. The **design choice stands** (read constants directly) for **fail-closed determinism**, not because `wp_salt()` is always DB-backed. |
 | **V21** | rate-limit cleanup semantics (needed by D8's marker lifetime) | **OBSERVED**: `RateLimiter::cleanup($olderThanSec)` deletes where `window_id * window_sec < now - olderThanSec` (`RateLimiter.php:79-87`); the job passes `2*86400` (`Application/Jobs/RateLimitCleanupHandler.php:20`); `window_sec` added by migration 0009 with that documented predicate (`2026_09_07_0009_rate_limit_window_sec.php:5-15`). `window_id` is `INT UNSIGNED` (`0001:725`). |
 
 **LIMITATION:** V1's mixed-digit consequence and all timing statements are INFERENCE; no engine was run.
@@ -179,39 +184,39 @@ Exactly one new table. Rejected: `cpms_slot_holds` (capacity-bearing, `0001:204-
 
 ### 5.3 D7/D15 — response contract and check order (C3) — **revised for F3**
 
-**Check order (explicit, normative).** Cheap, non-consuming checks run and fail **before** the proof is spent; the proof is consumed at the single point where a request row can be created. This is deliberate: a mistyped national ID must not cost the requester a new SMS.
+**Check order (explicit, normative).** Cheap, non-consuming checks run and fail **before** the proof is spent; the proof is consumed at one point. Deliberate: a mistyped national ID must not cost the requester a new SMS.
 
 | Step | Check | On failure | Consumes the proof? |
 |---|---|---|---|
 | 1 | Envelope/shape (missing fields, wrong types, bad JSON) | `400 CLINIC_VALIDATION_FAILED` | no |
 | 2 | national-ID normalisation + checksum (D4) | `400 CLINIC_VALIDATION_FAILED`, same message | no |
-| 3 | Slot/clinician/location resolution, slot open (server-derived) | existing vocabulary (`404`/`422`/`409`) | no |
-| 4 | Proof verification (signature, expiry, purpose, mobile match, clinic) | `400 CLINIC_VALIDATION_FAILED` | no (a forged/expired proof has no marker to write) |
-| 5 | **Consume the proof** — marker upsert + read-back (§5.6) | **replay** (`hits ≥ 2`): return the standard `202` body immediately, **no** write at all — not a fall-through (a fall-through would re-create a row when the original one has since been deleted, which is exactly the F1 hole) | **yes** — exactly once, here |
-| 6 | Duplicate open request for (clinic, mobile) | **202, no insert** | already consumed at 5 |
-| 7 | Per-clinic cap | `429 CLINIC_RATE_LIMITED`, generic "try again later" | already consumed at 5 |
-| 8 | Insert | `202` | already consumed at 5 |
+| 3 | Name policy (§5.14, no digits in any script) | `400 CLINIC_VALIDATION_FAILED`, same message | no |
+| 4 | Slot/clinician/location resolution, slot open (server-derived) | existing vocabulary (`404`/`422`/`409`) | no |
+| 5 | Proof verification (signature, expiry, purpose, mobile match, clinic) | `400 CLINIC_VALIDATION_FAILED` | no (a forged/expired proof has no row of its own to write) |
+| 6 | **Consume the proof** — marker upsert + read-back (§5.6, §5.15) | **replay** (`hits ≥ 2`): return the standard `202` body **without** touching the request table — not a fall-through (a fall-through would re-create a row when the original one has since been deleted, exactly the F1 hole) | **yes** — the counter is incremented |
+| 7 | Duplicate open request for (clinic, mobile) | `202`, no insert | already consumed at 6 |
+| 8 | Per-clinic cap, then insert | `429 CLINIC_RATE_LIMITED` / `202` | already consumed at 6 |
 
-**Consequence of that order, stated plainly:** a **duplicate at capacity returns `202`, not `429`** (step 6 precedes step 7). A cap refusal **does** consume the proof (5 precedes 7), so a requester at the cap needs a fresh OTP — a deliberate abuse trade-off and a UX cost (**OQ-14**). A **validation failure never consumes** it, so a typo is retryable. **Residual:** an attacker may therefore probe steps 1–4 freely; those steps read no patient data and are rate-limited per IP (§5.2), and they cannot be used to test a national ID because the ID is only ever hashed, never looked up.
+**Consequence of that order, stated plainly:** a **duplicate at capacity returns `202`, not `429`** (7 precedes 8). A cap refusal **does** consume the proof, so a requester at the cap needs a fresh OTP (**OQ-14**). A validation failure (steps 1–3) **never** consumes it, so a typo is retryable. **Residual:** steps 1–5 can be probed freely; they read no patient data, are rate-limited per IP (§5.2), and cannot test a national ID because the ID is only ever hashed (§5.4).
 
-**Per-observable uniformity** (replacing the revision-1 word "identical"):
+**Accounting — one row per outcome (M7).** This table *is* the observable contract; §5.15 gives the transaction each row runs in.
 
-| Observable | new insert | duplicate open request | cap refused | Established how |
-|---|---|---|---|---|
-| HTTP status | 202 | 202 | 429 | three literals; one return site each |
-| Body | `{"data":{"status":"received"}}` | same | generic rate-limit body | same literal / existing code |
-| Error code | — | — | `CLINIC_RATE_LIMITED` | existing vocabulary |
-| Headers | `X-CPMS-Correlation-Id` (random per request, `RestBase.php:290-298`) | same | same | same helper |
-| Patient/existence facts consulted | none | none | none | **no patient-table read exists** (§5.4); the NID is only hashed |
-| Rate-limit counters | proof marker upsert (+1 hit) and per-IP hit | same | same | same code path, step 5 |
-| Request-row writes | **1 INSERT** | **0** | **0** | **residual — see below** |
-| Audit rows | 1 | 1 | 1 | same action name, same masked fields |
-| SMS | none | none | none | no SMS in this route |
-| Timing | normalise + HMAC + marker upsert/read + duplicate probe + cap count + INSERT | same minus the final INSERT | same minus the final INSERT | **not measured** |
+| Outcome | HTTP | Body | Code | Marker write | Request-row write | Audit rows | IP counter | Headers |
+|---|---|---|---|---|---|---|---|---|
+| **accepted** (insert) | 202 | `{"data":{"status":"received"}}` | — | 1 upsert (+1 hit) + 1 read | 1 INSERT | 1 `APPOINTMENT_REQUEST_CREATED` | 1 | standard |
+| **duplicate** | 202 | identical to accepted | — | 1 upsert (+1 hit) + 1 read | **0** | 1 `APPOINTMENT_REQUEST_DUPLICATE` | 1 | standard |
+| **cap refused** | 429 | generic rate-limit envelope | `CLINIC_RATE_LIMITED` | 1 upsert (+1 hit) + 1 read | 0 | 1 `APPOINTMENT_REQUEST_CAP_REFUSED` | 1 | standard |
+| **replay** | 202 | identical to accepted | — | 1 upsert (**hit → ≥2**) + 1 read | 0 | 1 `APPOINTMENT_REQUEST_REPLAY` | 1 | standard |
+| **invalid proof** (step 5) | 400 | validation envelope | `CLINIC_VALIDATION_FAILED` | **0** | 0 | **0** (no audit spam from unauthenticated callers) | 1 | standard |
+| **validation failure** (1–4) | 400/404/422/409 | as §5.10 | as §5.10 | 0 | 0 | 0 | 1 | standard |
+| **key missing / weak** | 503 | neutral envelope | `CLINIC_SERVICE_UNAVAILABLE` | 0 | 0 | 0 | 1 | standard |
+| **SQL error** | 503 | neutral envelope | `CLINIC_SERVICE_UNAVAILABLE` | **rolled back** | rolled back | rolled back | 1 | standard |
 
-**Residual, declared as LIMITATION (not claimed away):** the duplicate and cap branches perform **one fewer write** than the insert branch and differ in timing. The uniformity claim is therefore scoped to: **status, code, body, headers, the complete absence of any patient/NID read, and the counter/marker treatment** — *not* to write counts or to constant time. **F3(c):** the duplicate branch is **not** reachable only by the original requester: anyone who proves possession of the same mobile in the proof's 600 s window reaches it. That discloses one fact — "this mobile has an open request" — to a person who controls that mobile (they receive its SMS). It discloses **no** national-ID, patient or clinic-record fact, and it cannot be used to test a NID (the NID is never read against anything). Accepted on that basis.
+**Corrections to revision 2's wording, made explicit because they were wrong:** (i) a replay **does** write — it increments the marker counter; "no write at all" was false. (ii) A **duplicate does not perform the cap count** — step 7 returns before step 8; the earlier "same minus the final insert" implied otherwise. The table above replaces both statements.
 
-**Cap disclosure:** `429` at step 7 reveals that a clinic holds ≥500 open requests. That is clinic load, not patient existence (**OQ-7** keeps this as an owner question with the recommendation to keep `429`, because silently dropping a real request is worse).
+**Residual, declared as LIMITATION (not claimed away):** accepted writes **one more row** (the request) than duplicate/cap, and every outcome differs in statement count and therefore in timing. The uniformity claim is scoped to what the table shows: **status, code, body, headers and the absence of any patient/NID read** across accepted/duplicate/cap — *not* to write counts or to constant time. **F3(c):** the duplicate branch is **not** reachable only by the original requester: anyone who proves possession of the same mobile in the proof's 600 s window reaches it. That discloses one fact — "this mobile has an open request" — to someone who controls that mobile (they receive its SMS). It discloses no national-ID, patient or clinic-record fact and cannot test a NID. Accepted on that basis.
+
+**Cap disclosure:** `429` at step 8 reveals that a clinic holds ≥ cap open requests. That is clinic load, not patient existence (**OQ-7**).
 
 ### 5.4 D6 — no patient read (C3)
 The public route does not query `cpms_patients`, `cpms_patient_user_links` or `cpms_patient_identities`. There is therefore **no existence-dependent branch to equalise**: the three cases in C3 are not distinguished because they are not computed. This is the primary control; §5.3's table is the secondary one.
@@ -220,7 +225,7 @@ The public route does not query `cpms_patients`, `cpms_patient_user_links` or `c
 Order: (1) reject invalid UTF-8; (2) reject BOM `U+FEFF`, `U+200B-200D`, `U+2060`, bidi controls (reuse `VisibleText::has_bidi_control()`, `Domain/Validators/VisibleText.php:77`), C0/C1 controls and any Unicode space — **no trimming, no stripping**; (3) fold Persian `U+06F0-06F9` and Arabic-Indic `U+0660-0669` via the existing closed map (`MobileValidator::fold_digits()`, `:77-102` — OBSERVED `strtr` over a closed 20-entry map); (4) require exactly 10 ASCII digits; (5) `NationalIdValidator::isValid()` (`:12-36`). Never rely on `\D` (`:14`) for normalisation. Rationale: the codebase already **rejects rather than silently removes** bidi controls in names (`PatientService.php:661-669`). Consequence not fixed here: `PatientService::cleanNationalId()` keeps its mixed-digit drift (V1/V2, **OQ-5**).
 
 ### 5.6 D8 — possession proof and the replay invariant (C7) — **rewritten for F1**
-**Token:** `base64url(json).base64url(hmac_sha256(k_proof, json_b64))`, JSON `{"v":1,"jti":"<16 random bytes hex>","mh":"<HMAC(k_proof,'mobile',normalised_mobile)>","cl":<clinic_id>,"p":"appointment_request","exp":<unix>}`; lifetime 600 s. It is **not** a session, cookie, capability or user; clinic comes from the OTP challenge row (`OtpService.php:447`), never from the client.
+**Token:** `base64url(json).base64url(hmac_sha256(k_proof, json_b64))`, JSON `{"v":1,"jti":"<16 random bytes hex>","mh":"<HMAC(k_proof,'mobile',normalised_mobile)>","cl":<clinic_id>,"p":"appointment_request","iat":<unix>,"exp":<unix>}`; lifetime 600 s, and `iat` is **required** because the M1 epoch check compares against it. It is **not** a session, cookie, capability or user; clinic comes from the OTP challenge row (`OtpService.php:447`), never from the client.
 **Single-use marker — one row in the existing `cpms_rate_limits`:**
 ```
 INSERT INTO cpms_rate_limits (window_key, window_id, window_sec, hits)
@@ -230,23 +235,49 @@ ON DUPLICATE KEY UPDATE hits = hits + 1;      -- then read `hits` back
 **First use ⇔ `hits = 1`.** Replay ⇔ `hits ≥ 2`.
 **Why not affected rows (deliberate, and the reason for this shape):** MySQL documents that with `ON DUPLICATE KEY UPDATE` the affected-rows value is 1 for an insert, 2 for an update, and **0 when the existing row is set to its current values** — and that `CLIENT_FOUND_ROWS` changes 0 to 1 (dev.mysql.com/doc/refman/8.4/en/insert-on-duplicate.html, "INSERT … ON DUPLICATE KEY UPDATE Statement"). The `hits = hits` no-op idiom used by the OTP issuance guard (`OtpService.php:230-238`) therefore reports a value whose meaning depends on a connection flag; it is safe **there** because the guard only needs "did any write fail". A single-use test needs an exact answer, so this design reads back the counter instead, inside the same transaction. INFERENCE: the upsert and the read are atomic under the row lock the insert takes; not measured.
 **Cost:** one non-personal row per proof use (the key is a hash of a random `jti`), bounded by the OTP quota. Not a second table; stores no NID, mobile or code.
-**The invariant, why it holds, and what enforces it:** the only automated delete of `cpms_rate_limits` is `cleanup.rate_limits` → `cleanup(2*86400)`, whose predicate is `window_id * window_sec < now - olderThanSec` (V21). With `window_id = exp` and `window_sec = 1`, a marker becomes deletable only when `exp < now − 172 800`, i.e. **≥ 172 800 s (48 h) after the 600 s proof expires**. Therefore:
+**The margin, stated correctly (M5).** The only automated delete of `cpms_rate_limits` is `cleanup.rate_limits` → `cleanup(2*86400)`, whose predicate is `window_id * window_sec < now − olderThanSec` (OBSERVED `RateLimiter.php:79-86`, `RateLimitCleanupHandler.php:20`). With `window_id = exp` (the **proof expiry**) and `window_sec = 1`, the marker's own window starts at the moment the proof dies. Two numbers exist and both are stated because they differ: the **method default** is `cleanup(int $olderThanSec = 86400)` (OBSERVED `:79`), while the **only production caller** passes `2 * 86400` (OBSERVED `RateLimitCleanupHandler.php:20`). So the post-expiry buffer is **86 400 s (24 h)** under the method default and **172 800 s (48 h)** as the job actually runs. This design specifies the **job** figure and treats the method default as the floor. Either way the margin is far larger than the 600 s proof life — but it is **not** protection during validity.
 
-> **Invariant I1:** a proof marker outlives its proof by ≥ 172 800 s, so no request-row lifecycle event (expiry, 14-day delete, FK action, slot deletion) can resurrect a proof inside its 600 s validity.
+> **Invariant I1 (restated, narrower than revision 2):** the marker row exists for the whole 600 s the proof is valid, and afterwards for **at least 86 400 s whatever caller runs** (the method floor), **172 800 s** under the production job. Single-use *during* validity therefore does **not** depend on any margin: a row can only be removed once `window_id * window_sec` is older than the threshold, which can never be true while `now < exp`. Revision 2's "outlives its proof by ≥ 172 800 s" was stated as an invariant of the schema; it is not — it is a property of **one configuration value** and it breaks if that value is lowered (**OQ-16**).
 
-Every delete path is enumerated: (a) request-row deletes — **cannot** touch the marker (different table); (b) `cleanup.rate_limits` — bound by the predicate above, and it is the only automated `DELETE` against that table in `src/` (grep: `RateLimiter.php:84`); (c) manual SQL or the `uninstall.php` wipe — out of band, and by then every proof has long expired. **What would break I1:** lowering the cleanup threshold below the proof TTL, or changing `window_sec`/`window_id` semantics; T-12 pins it. **Consequence for housekeeping:** a marker may be counted by the same cleanup only after that age, so markers are cheap to keep and cannot leak into a "user-visible" counter (no product code reads `arreq-*` keys).
+**What a lowered retention would and would not do (M5, correction).** `cleanup()` clamps to `max(1, $olderThanSec)` (OBSERVED `:81`), so the threshold can approach 1 s. Lowering it would **not** break single-use inside the 600 s window — the predicate still cannot match an unexpired marker — but it would destroy the 48 h post-expiry buffer, which is what protects against a proof replayed **just after** a backup restore rolls the counter back (M1). So: retention protects the *margin*, not the *window*.
+
+**Delete paths, enumerated:** (a) request-row deletes — cannot touch the marker (different table); (b) `cleanup.rate_limits` — bound by the predicate above, and the only automated `DELETE` against that table in `src/` (`RateLimiter.php:84`); (c) **manual SQL, `uninstall.php` wipe, or a backup restore** — see M1 below. **T-12 and T-16 pin (b).**
+
+**M1 — restore / reinstall replay (analysed, option chosen).** OBSERVED: the dump emits `DROP TABLE IF EXISTS` + `CREATE TABLE` for **every** table it contains, including `cpms_rate_limits` (`BackupSqlDumper.php:56-65`), and `restoreApply` executes that dump (`BackupService.php:348-361`). OBSERVED: `uninstall.php:8-18` drops all `cpms_%` tables when `cpms_wipe_on_uninstall` is set, and a reinstall creates them empty. **So a restore of a pre-consumption snapshot, or a wipe + reinstall, erases the consumed markers while a proof minted before the snapshot is still inside its 600 s life.** That is a real replay path and revision 2 missed it.
+
+*Options weighed:*
+- **(A) Short TTL + declared residual.** Do nothing structural; rely on the 600 s window being shorter than a restore. **Rejected as the sole answer:** a restore is exactly the moment an operator replays stale state quickly, and the window is chosen by the attacker, not the clock.
+- **(B) An epoch kept outside the DB dump.** **Rejected:** the only outside-DB store is wp-config, which the plugin cannot write, and any option is inside the dump.
+- **(C) A "proofs not valid before" marker written after a restore/uninstall.** **CHOSEN.**
+
+**Chosen option C, precisely.** One integer option `cpms_arreq_proof_epoch_min` (a UTC timestamp, **not** a table — C1 holds) is read on every proof verification; a proof whose `iat` is **≤** that value is rejected as `CLINIC_VALIDATION_FAILED`/400 *before* any marker write. It is written as `epoch = max(current_epoch, now)`, which is what makes it monotonic — the rule is the `max()`, not an assumption about who calls it, so a restore of an **older** snapshot can never lower it. It is written at the end of two operations:
+- **restore** — the smallest change is in `BackupService::restoreApply` immediately after the dump executes, i.e. around `BackupService.php:358-362` (inside the existing `transactional` closure, after the last statement);
+- **uninstall** — `uninstall.php:8-18`, before the drops (the option itself is **never re-created** by this design, and the reader treats **absent** as `0` — "no invalidation recorded" — which is the documented default rather than a claim about what activation does; OBSERVED the plugin does create at least one option on its own path, `App.php:1049`, but this design requires **no** such write).
+
+Because the value is monotonic and written *after* the restore, a proof minted before the snapshot has `iat ≤ epoch_min` and dies. **This is a BUILD item and it touches two files outside this document's scope** — it is written here as a design requirement, **not** as an approved change (**OQ-15** asks the owner to authorise it; without approval, option A applies and the residual must be accepted in writing). Cost when it fires: a requester whose code was minted seconds before an operator restored a backup must request a new code. That is a rare, operator-initiated event.
+
+**Rejected alternatives:** a marker inside the request table (revision 1 — broken, F1); a new proofs table (C1); a new `otp_tokens.purpose` value (schema change, V16).
+
+**Cascade decision (F1(b)) — corrected for M6a.** `fk_arreq_slot` carries no `ON DELETE` clause, i.e. `NO ACTION`/`RESTRICT` (dev.mysql.com/doc/refman/8.4/en/create-table-foreign-keys.html, "Referential Actions"), matching `fk_appt_slot` (`0001:253`). `CASCADE` is rejected because it would silently delete a pending request when a slot is removed. **Revision 2 said RESTRICT only blocks until the request expires or is decided — that was wrong:** a **terminal** row still references the slot until the 14-day hard delete removes it, and that delete can be delayed indefinitely on a site whose cleanup never runs (§5.2). OBSERVED that slot deletion is real and unreconciled with FKs: `ScheduleRepository::deleteFutureEmptySlots()` (`:341-351`) issues a plain `DELETE` filtered on `booked_count = 0` and does **not** handle `fk_appt_slot` either — so the repo already has this shape of constraint, and adding one more reference does not create a new class of failure. **What an operator sees:** the slot delete fails with a foreign-key error and the slot stays; the operator must cancel/approve the requests and wait for cleanup, or run the cleanup job. That is a poor experience and is recorded as **OQ-17** (acceptable vs. a nullable `slot_id` that detaches terminal rows). No claim of bounded blocking is made.
+
 **Collision, step by step** (F1(a)): same mobile, a **different** `jti`, while an open request row exists → step 5 writes a **new** marker row (different key, so no PK collision) and consumes that proof; step 6 then answers `202` with no insert; the **first** proof's marker is untouched. Replaying the *first* proof later hits its own marker (`hits ≥ 2`) → `202`, no row, regardless of whether the original request row still exists. So the previously-possible "wait for the row to close, then replay the old proof" path is closed — the marker is keyed on the proof, never on the request.
-**Cascade decision (F1(b)):** `fk_arreq_slot` carries **no** `ON DELETE` clause, i.e. `NO ACTION`/`RESTRICT` (dev.mysql.com/doc/refman/8.4/en/create-table-foreign-keys.html, "Referential Actions"), matching `fk_appt_slot` (`0001:253`). Justification: replay safety no longer depends on cascade (I1), and `CASCADE` would **silently delete a patient's pending request** when a slot is removed. Operational consequence: a slot with pending requests cannot be deleted until they expire (≤ 72 h) or are decided; the lazy expiry transition keeps that bounded.
-**Rejected alternatives:** a marker inside the request table (revision 1 — broken, F1); a new proofs table (C1); a new `otp_tokens.purpose` value (schema change, and it re-opens policy-splitting, V16, `OtpService.php:52`).
 **`/otp/verify` change (D9):** two additive fields — `booking_proof`, `booking_proof_expires_in` — for **every** valid code, with no branch on whether the mobile/user/patient exists (in #340 there is no such branch, V17). Not an enumeration leak: the values depend only on (mobile, challenge clinic, clock, random `jti`). Pre-existing, not introduced here: a historical-NULL challenge fails closed with `CLINIC_SCOPE_REQUIRED` before a proof can be minted (`OtpService.php:439-445`).
 
 ### 5.7 D21/D3 — key material and national-ID storage (C5) — **rewritten for F2**
 **(a) Where the key lives (DECIDED (mgr)).** Key material is **outside the database**:
 `IKM = AUTH_KEY ‖ SECURE_AUTH_KEY ‖ AUTH_SALT ‖ SECURE_AUTH_SALT ‖ LOGGED_IN_KEY ‖ LOGGED_IN_SALT ‖ NONCE_KEY ‖ NONCE_SALT` (wp-config constants, in that fixed order). Requiring **all eight** rather than the three `CredentialVault` uses means a site with a partially-stubbed wp-config fails closed instead of silently landing on a weak key (**OQ-R8** asks whether eight is too strict an install requirement, or whether `CPMS_ARREQ_KEY` should be the documented way out).
 `k_nid  = hash_hkdf('sha256', IKM, 32, 'cpms-arreq:nid:v1')`, `k_proof = hash_hkdf('sha256', IKM, 32, 'cpms-arreq:proof:v1')` — distinct domain-separation labels, so a compromise of one does not give the other (php.net/manual/en/function.hash-hkdf.php, `info` parameter). An optional dedicated constant `CPMS_ARREQ_KEY` overrides IKM when defined and ≥ 32 bytes.
-**Why not `wp_salt()` (V20):** WordPress documents that its salts mix a **database-stored** secret with the wp-config constants, which would reintroduce exactly the whole-DB leak D21 forbids.
+**Why not `wp_salt()` — corrected (M4).** Revision 2 (and V20) claimed `wp_salt()` *always* mixes a database-stored secret. **That is false.** OBSERVED in WordPress core `wp_salt()` (`wp-includes/pluggable.php`, `wordpress.org` / github.com/WordPress/WordPress/blob/master/wp-includes/pluggable.php): a defined constant is used **directly** when it is non-empty and not one of the duplicated/placeholder values (`put your unique phrase here`); the `get_site_option()`/`wp_generate_password()` path is a **fallback** only for undefined, empty, duplicated or placeholder constants.
+The design choice (read the constants directly) therefore **stands, for a different reason: determinism and fail-closed behaviour.** `wp_salt()` silently substitutes a **DB-stored** value when a constant is missing or duplicated — i.e. exactly the case this design wants to **reject**, not paper over. Reading the eight constants ourselves makes a weak/absent configuration a 503 (§ below) instead of a key that quietly depends on the database. That is a robustness property, not a claim that `wp_salt()` is always DB-backed.
 **Precedent in-repo:** `CredentialVault::key()` already derives from `AUTH_KEY|SECURE_AUTH_KEY|AUTH_SALT` with a domain label and a `CPMS_SECRET_KEY` env override (`Infrastructure/Sms/CredentialVault.php:67-79`) — but when the constants are **undefined it falls back to `hash('sha256', …)` over empty strings** (`:74-78`), i.e. it degrades to a fixed, guessable key instead of failing. This design must **not** copy that: undefined/placeholder ⇒ 503.
-**Fail closed:** if any required constant is undefined, shorter than 32 bytes, or equal to a known sample placeholder, then **every** key-using path (creation, match) returns `503 CLINIC_SERVICE_UNAVAILABLE` (`RuntimeSchemaGate.php:34-36`) and writes nothing. **No key is ever auto-created in an option** (this is exactly what §10 T-8 asserts; revision 1's option fallback is deleted). The exact placeholder deny-list is a build-phase constant (**LIMITATION**: the list is not enumerated here).
+**Key-strength rule — checkable, not a length test (M3).** Revision 2 required only "≥ 32 bytes", which a 32-character dictionary word passes. Predictable constants would let a **DB-only** attacker build an HMAC dictionary over the ~10^9 national-ID space offline, which defeats the entire purpose of D21. Each of the eight constants must therefore satisfy **all** of these, checked at the point of use:
+1. **Length:** ≥ 32 bytes (the value `define`d in wp-config, as a raw string).
+2. **Distinct characters:** ≥ 12 distinct bytes (`count(count_chars($v, 1))`).
+3. **Denylist:** not equal (case-insensitively, after trim) to any known sample value — at minimum `put your unique phrase here`, `changeme`, `secret`, `password`, `test`, and the literal `wp-config-sample.php` placeholder — and not equal to **any other** of the eight constants (§ `wp_salt` treats duplicates as invalid; so do we).
+4. **Override path:** if `CPMS_ARREQ_KEY` is defined it must independently satisfy 1–3 and is then used as the whole IKM.
+**Failure ⇒ `503 CLINIC_SERVICE_UNAVAILABLE`** (`RuntimeSchemaGate.php:34-36`) on **every** key-using path (creation and match), with no write and no option created.
+**LIMITATION, stated because it matters:** a rule **cannot prove randomness**. Rules 1–3 reject the common accidents (sample file copied verbatim, a constant duplicated, a human-chosen word) but a 40-character phrase from a novel passes all three and is guessable. **The real fix is installer-generated keys** — WordPress's own `wp_generate_password(64, true, true)` is the model (`wp_salt()` fallback above) — and an owner-level decision to require generated secrets is **OQ-18**. Until then this design's DB-only protection is conditional on the site's wp-config actually carrying generated salts, and that condition is recorded as a residual in §13, not hidden.
+**No key is ever auto-created in an option** (§10 T-8 asserts this; revision 1's option fallback is deleted).
 **Threat model, stated without a broader claim (F2a):** this does **not** make national IDs safe against an attacker who obtains **wp-config.php together with the database**: with both, the attacker derives `k_nid` and can confirm/guess any ID offline (the Iranian 10-digit space is ~10^9 candidates, trivially enumerable). The hash gives **no** protection in that scenario. What it does give: a **database-only** leak (dump, backup copy, mis-scoped read) no longer yields national IDs, which is the dominant incident shape for a self-hosted WP plugin.
 **Version contract:** `national_id_key_version TINYINT UNSIGNED` is a **label**, not a rebinding mechanism. The current generation is computed from a **non-secret change detector**: `sha256(k_nid)` truncated to 16 hex, stored in one option (`cpms_arreq_key_fp`); a mismatch means the salt set changed. On rotation, new rows are written with the incremented version and **old rows become unmatchable** — acceptable because the pending TTL is 72 h and the terminal retention is 14 d. Staff see `identity_unverifiable` (§5.9) and act by phone; no silent "no-match" is produced for a rotated-key row. **Exactly what is retained:** the 64-hex HMAC, the version byte, the 16-hex fingerprint of the **key** (not of any ID), and nothing else derived from the ID. **Reconciling with T-8:** the fingerprint option is written only on a **successful** key use, i.e. only after the constants have already validated; when the key is missing the code returns 503 before any write, so no option appears. The fingerprint is a public hash of high-entropy wp-config constants — it is **not** key material and cannot be used to recover a key.
 
@@ -273,7 +304,7 @@ Every delete path is enumerated: (a) request-row deletes — **cannot** touch th
 Existing codes only: `CLINIC_VALIDATION_FAILED`, `CLINIC_RATE_LIMITED`, `CLINIC_NOT_FOUND`, `CLINIC_INVALID_TRANSITION`, `CLINIC_SERVICE_UNAVAILABLE`, `CLINIC_SCOPE_REQUIRED`, `CLINIC_PERMISSION_DENIED`, `CLINIC_INVALID_NONCE`, `CLINIC_OTP_INVALID`/`CLINIC_OTP_EXPIRED` (`docs/api/error-codes.md:20-42,150`). A dedicated "already decided" code would need that file (**OQ-9**).
 
 ### 5.11 D17/D18 — backup and privacy (C12)
-Backup inclusion is automatic (V11) — no list to edit. Consequences: every backup now holds plaintext mobiles/names plus NID HMACs and is itself personal data; the existing at-rest protection (sodium secretstream, `Infrastructure/Backup/BackupEncryptionEnvelope.php:150-165`) becomes the control that matters. Restore drops every `cpms_` table named in the manifest (`BackupService.php:355`); a pre-table backup therefore leaves the current table in place — the safe direction. **UNKNOWN:** manifest handling of a table absent from the backup (validation only checks entry shape, `BackupManifest.php:56-58`). **Privacy:** the plugin registers **no** `wp_privacy_*` hook today (no match in `src/`); the core eraser/exporter contract is **email-keyed** (developer.wordpress.org/reference/hooks/wp_privacy_personal_data_erasers/ — "accepts an email address and a page number"), while this table is mobile-keyed, so a core privacy request cannot reach these rows. The 14-day hard delete is therefore the primary control; a staff-driven eraser entry is **OQ-10**.
+Backup inclusion is automatic (V11) — no list to edit. Consequences: every backup now holds plaintext mobiles/names plus NID HMACs and is itself personal data; the existing at-rest protection (sodium secretstream, `Infrastructure/Backup/BackupEncryptionEnvelope.php:150-165`) becomes the control that matters. **Restore, corrected (M6b).** Revision 2 said restore "drops every `cpms_` table named in the manifest" and cited `BackupService.php:355`. Reading it again: that pre-loop tests the **literal** prefix `cpms_` against the manifest names (`:352`), but manifest names are the **physical** names from `SHOW TABLES`, which carry the WordPress `$wpdb->prefix` (`BackupSqlDumper.php:113-122`; `$wpdb->prefix` is `wp_` on a default install). So on a default install that pre-loop matches **nothing** and `$dropped` stays 0. The drops that actually happen come from the **dump itself**, which begins each table with `DROP TABLE IF EXISTS` + `CREATE TABLE` (`BackupSqlDumper.php:56-65`) and is executed statement-by-statement at `BackupService.php:358-361`. Two consequences that matter here: (i) a pre-table backup simply does not mention the new table, so **the current table survives** — the safe direction; (ii) a backup **taken after** the table exists contains `DROP`+`CREATE` for it **and for `cpms_rate_limits`**, which is exactly the M1 replay path §5.6 handles with option C. **UNKNOWN:** manifest handling of a table absent from the backup (validation only checks entry shape, `BackupManifest.php:56-58`). **Privacy:** the plugin registers **no** `wp_privacy_*` hook today (no match in `src/`); the core eraser/exporter contract is **email-keyed** (developer.wordpress.org/reference/hooks/wp_privacy_personal_data_erasers/ — "accepts an email address and a page number"), while this table is mobile-keyed, so a core privacy request cannot reach these rows. The 14-day hard delete is therefore the primary control; a staff-driven eraser entry is **OQ-10**.
 
 ### 5.12 D19 — the public route
 `POST /clinic/v1/booking/request`, `permPublic()` like `/booking/quote` (`BookingController.php:64-68`), proof/mobile/ID/slot in the **body**; no `GET` variant (a URL would put the proof in logs). Must be added to the REST scope skip list: OBSERVED the list at `Rest/RestClinicContext.php:327-341` already skips the whole `/clinic/v1/booking/` prefix (`:331`), so a route under `booking/` inherits the skip — to be **confirmed at build time** rather than assumed, since the match/decide routes take the opposite (staff) path.
@@ -287,26 +318,86 @@ Revision 1 claimed the existing `RuntimeSchemaGate` would answer 503 for every r
 **Engine assumption:** `InnoDB`, on **MySQL 8** (`ci.yml:236-237`, `image: mysql:8`) and **MariaDB 11.4.13** (`ci.yml:247-248`), both started as services of the `Integration (WP 7.1 + MySQL 8)` job (`ci.yml:224-225`) — i.e. the engine set the repo already verifies; OBSERVED that the runtime gate accepts `11.4.13` only (`DatabaseCompatibilityGate.php:32`), so MariaDB 11.5+ is out of the allowed set and this design assumes nothing about it. DDL inside the runner's transaction is **not** atomic — MySQL DDL causes an implicit commit (dev.mysql.com, "Statements That Cause an Implicit Commit"); LIMITATION: I did not measure a half-applied `CREATE TABLE`.
 **No route may rely on "pending migration" for safety** — stated because that is the exact mistake this revision corrects.
 
+### 5.14 D24 — name policy for the request path (C5) — **new for M2**
+**The hole M2 found (OBSERVED).** `PatientService::cleanName()` (`:655-679`) strips C0/C1 controls, rejects bidi controls and requires visible content — but it **accepts ASCII and Persian digits**. A requester who types their national ID into the given-name field would therefore have it stored and later **displayed in plaintext** on the reception screen, which breaks C5 even though the dedicated `national_id_hash` column is safe.
+**Policy (DECIDED direction, owner policy "digits only in numeric fields, never names"):** the request path applies a **stricter** rule than `cleanName()`:
+1. After the existing `cleanName()` checks (C0/C1 stripped, bidi rejected, visible content, ≤ 120 code points), **reject any character with the Unicode general category `Nd`** — all decimal digits in every script (ASCII `0-9`, Persian `۰-۹` `U+06F0-06F9`, Arabic-Indic `٠-٩` `U+0660-0669`, Devanagari, etc.). Implemented as a `\p{Nd}` match against the **already-folded** string, so digit-folding cannot be used to smuggle them past.
+2. Violation ⇒ **`400 CLINIC_VALIDATION_FAILED` with the same uniform message as every other validation failure** (§5.3 step 3) — no hint about *which* field or *why* beyond the shared validation envelope.
+3. This is enforced **before storage**, in the request validation path, and **not** by reusing `cleanName()` alone (it is too permissive). The stricter rule is a build-phase helper (the reason `MobileValidator::fold_digits` is private) rather than a change to `PatientService` (**OQ-19**: whether to tighten `cleanName()` globally too — out of scope here).
+**Every free-text field of the request row, and what protects it:**
+
+| Field | Content | Digits allowed? | Control |
+|---|---|---|---|
+| `given_name`, `family_name` | requester-entered | **no** | rule above; stored only after it passes |
+| `mobile` | numeric by nature | yes | normalised `09xxxxxxxxx` (`MobileValidator::normalize`) |
+| `national_id_hash` | hex digest, not free text | n/a | never the ID itself |
+| `decision_reason_code` | closed ENUM | no | D20 |
+| everything else (`status`, ids, timestamps) | system | n/a | not free text |
+
+**Every output path of the request row, and what protects it:**
+
+| Output path | What is rendered | Control |
+|---|---|---|
+| reception **list** | names, masked mobile, slot | output-escaped (`esc_html`); NID never present (only its hash, and the hash is not rendered) |
+| reception **detail** | names, full mobile, slot, decision buttons | output-escaped; **no NID field at all** — the stored hash is not displayed |
+| **match** response | `{match: bool}` only | §5.9; the typed ID is never echoed |
+| **audit** records | reason codes, masked mobile, ids | `AuditLogger` masking (`:26`, `:249`) + D20 closed vocabulary; T-13 |
+| **application logs** | operational lines only | no NID, no name; match input never logged (§5.9) |
+| **SMS / notification text** | — | **this request path sends no SMS** (INFERENCE from the design: the route in §5.12 has no SMS step; the only SMS in the flow is the OTP code, `OtpService`) — so there is no template to leak into. If a future build adds one, it must carry no NID and must be added to §10 |
+
+**The existing patient search is NOT a NID channel (M2, normative).** `GET /clinic/v1/patients/search` takes `q` **in the query string** (`PatientController.php:96-106`) — a URL, therefore a log/proxy/referer surface. This design requires that **the national ID is never placed in `q` or any other URL parameter**; reception comparison happens **only** through the POST-body match action (§5.9), which returns a boolean. Using search as a NID oracle is explicitly forbidden by this document; a build that did so would also contradict C5's "never in URL" clause.
+
+### 5.15 D25 — transaction boundary and concurrency (C10/C13) — **new for M8**
+Revision 2 said the marker upsert and read-back happen "inside the same transaction" without defining the boundary. Defined now:
+
+**Boundary.** One transaction per request (`CpmsDb::transactional()`, `Infrastructure/Db/CpmsDb.php`) opened **after** steps 1–5 (all read-only), wrapping steps 6–8 and the audit write. **Named lock first, then the marker row** — one order used by every caller, so the two lock types cannot be taken in opposite orders (INFERENCE of deadlock-freedom, not measured; T-17/T-18):
+
+| Phase | Statements | Lock behaviour |
+|---|---|---|
+| 6·L | `GET_LOCK('cpms_arreq:<clinic>', 2)` | **named lock acquired first**; released at commit/rollback |
+| 6a | `INSERT … ON DUPLICATE KEY UPDATE hits = hits + 1` on the marker row | **exclusive row lock** on that marker (or the gap, for a fresh insert) under the default `REPEATABLE READ` |
+| 6b | `SELECT hits … WHERE window_key = ? AND window_id = ?` | same transaction, same row lock held |
+| 6c | decide first-use vs replay from `hits` | no statement |
+| 7 | duplicate probe: `SELECT 1 FROM cpms_appointment_requests WHERE clinic_id=? AND mobile=? AND open_marker=1` | plain read inside the transaction |
+| 8a | cap count for the clinic | already serialised by the lock taken at 6·L |
+| 8b | `INSERT` the request row | |
+| 8c | audit row | same transaction (the existing "audit atomicity" pattern, `OtpService.php:449-455`) |
+| — | `COMMIT` / `ROLLBACK` | releases the row lock, then the named lock |
+
+**Behaviour on each outcome:**
+- **accepted** — commit; the marker increment, the request row and the audit land together.
+- **duplicate / cap refused** — commit; the marker increment is **intentionally durable** (the proof was spent even though no request was created, §5.3). The audit row commits with it.
+- **replay** — the increment is real and committed (`hits` becomes ≥ 2); no request row is touched. There is no rollback, because rolling back would erase the evidence and re-open the F1 hole for a concurrent second call.
+- **invalid proof / validation failure** — no transaction opened.
+- **SQL error anywhere** — `transactional()` rolls back: the marker increment, the request row and the audit are all discarded together, and the caller gets the neutral `503` (`CpmsDb` is soft-mode by default, so the design requires an explicit error check exactly as `HoldsExpireHandler::guardedWrite` does, `:102-118`).
+
+**Concurrency, stated with its failure mode:** two concurrent calls with the **same** proof serialise on the marker row; the first sees `hits = 1` and proceeds, the second blocks until commit and then sees `hits = 2` ⇒ **replay ⇒ `202`, no second request**. This is the intended, tested outcome (T-17). Two concurrent calls with **distinct** proofs for the same clinic race the cap: the named lock serialises them, so the second re-counts after the first commits and is refused with `429` if the cap is now reached — **a legitimate requester can be refused at the exact boundary**; that is fail-safe (no over-cap insert) and is accepted, tested in T-18. Without the named lock the two could both pass the count and overshoot by one; the lock is what makes over-cap impossible, and it is a `GET_LOCK` (already used in this codebase for ticks, `App.php:2657`), not a table lock.
+**Deadlock risk:** the only two locks are the clinic named lock and the marker row, always acquired in that order (6·L then 6a) and held to commit, so the order is consistent for same-proof calls, distinct-proof calls and any mix. INFERENCE, not measured; T-17/T-18 are the tests.
+
 ---
 
-## 6. Conditions C1–C14, re-derived honestly (F7)
+## 6. Conditions C1–C14, re-derived from the final text (revision 3)
 
-| C | Status | Basis in this text / what is missing |
-|---|---|---|
-| C1 one table | **MET** | §3; one `CREATE TABLE`, zero `ALTER`; the replay marker lives in the pre-existing `cpms_rate_limits` (§5.6). OQ-R2 asks the reviewer to confirm that reading. |
-| C2 minimal data, TTL, cleanup, caps | **MET by design; TTL/retention still owner-open (OQ-2)** | §5.2/§5.6. Declared residual: on a site with no traffic **and** no OS cron, terminal-row deletion waits for the next request. |
-| C3 uniform response | **MET in the F3 sense — no person-level oracle; NOT MET if read as "identical in every observable"** | §5.3/§5.4. Structural reason: ID-known / ID-unknown / mobile-matches-a-record are never computed, so they cannot be compared. Declared residuals: cap `429` reveals **clinic load** (manager-decided, OQ-7); duplicate-vs-new differ by one INSERT and in timing. Revision 1's unqualified "identical" is withdrawn. |
-| C4 no auto-merge/link/access | **MET** | §5.8 (D13) + §11. |
-| C5 NID never in URL/log/audit/error; storage; matching; normalisation | **MET, with one sub-decision open (OQ-4) and one accepted pre-existing drift (OQ-5)** | §5.5/§5.7/§5.9. **Not** claimed: any protection when wp-config and DB leak together (§5.7). |
-| C6 historical-NULL path closed | **MET only at #340's head — not on main** | §1; #340 is unmerged (`fb38793`), OQ-R1. On `main` today this is **not** closed; this design does not close it. |
-| C7 possession proof | **MET by design — but requires an additive change to #340's verify response (D9) that does not exist yet** | §5.6, invariant I1 derived from the cleanup predicate (V21). Single-use is now structural (marker keyed on the proof, not the row). |
-| C8 capacity | **MET** | §5.8: no hold, no penalty, slot re-checked at decision. |
-| C9 tenancy | **MET** | §5.8: trusted-side derivation (`OtpController.php:228-250`), FKs, UTC, InnoDB, no `DEFAULT 1`. |
-| C10 staff side | **MET by design** | §5.8/§5.9: scoped capabilities, explicit-deny-wins, atomic guarded `UPDATE`, closed reason-code vocabulary, per-user rate limit on match, audit reason-code only. Audit/marker write **inside the same transaction** as the state change, following the existing "audit atomicity" pattern (`OtpService.php:449`). |
-| C11 edge policies | **MET, with one mechanic explicitly CHALLENGED and left to the owner (OQ-11)** | §7 + §5.9. Foreigner/child-with-documents and mobile-mismatch are met; the <18 policy is stated but **not enforceable** because no birth date is stored — flagged, not hidden. |
-| C12 operations | **MET, corrected; two UNKNOWNs carried** | §5.11/§5.13. The revision-1 gate claim was **false** and is replaced. UNKNOWN: restore when the table is absent from a manifest; a half-applied `CREATE TABLE` (DDL implicitly commits). |
-| C13 abuse model | **MET, with declared residuals** | §9, including the key-compromise rows T9/T10 and the disclosed timing residual T6. |
-| C14 test plan | **MET (descriptions only, as scoped)** | §10; 15 cases, each with the mutation that must fail it. |
+**Rule applied:** MET only where (a) the text establishes it **and** (b) a §10 case would go red if it were false. Where either is missing the status is UNKNOWN or NOT MET — the reviewer's round-3 reading is adopted wherever I could not produce both.
+
+| C | Status | Backing text | Test that fails if false |
+|---|---|---|---|
+| C1 one table | **MET** | §3 (one `CREATE TABLE`, zero `ALTER`); replay marker in the pre-existing `cpms_rate_limits` (§5.6); M1's epoch is an **option**, not a table | **T-24** — after `up()` the schema diff shows exactly one new `cpms_` table and `down()` removes it; modelling the marker as its own table or as a column on the request row goes red |
+| C2 minimal data, TTL, cleanup, caps | **UNKNOWN** | §5.2 defines them; TTL/retention are still **owner-open** (OQ-2), and the M1 epoch adds a second timing knob | T-3, T-4 — but they cannot fail against an **undecided** TTL, hence UNKNOWN not MET |
+| C3 uniform response | **MET at person level only** | §5.3/§5.4: the three person-level cases are never computed; the accounting table is the contract | T-1, T-22, T-23. Cap `429` and write-count differences are **declared**, not equalised |
+| C4 no auto-merge/link/access | **MET** | §5.8 D13, §11 | T-2 |
+| C5 NID never in URL/log/audit/error; storage; matching; normalisation; names | **NOT MET in revision 2 → MET now, conditional** | §5.5, §5.7, §5.9, **§5.14 (new)** closes the name-field hole; search-in-`URL` forbidden normatively | T-7, T-13, T-20. **Conditional** on the §5.7 key rule actually being implemented (LIMITATION: a rule cannot prove randomness) |
+| C6 historical-NULL path closed | **NOT MET on this branch** | Depends entirely on unmerged **#340** (`fb38793`); on `main` (`aec7306`) it is open | none here — belongs to #340's suite; **must be re-verified after #340 merges** |
+| C7 possession proof | **MET by design; one build dependency unapproved** | §5.6 (marker + I1 restated + **M1 option C** epoch + T-17) | T-9, T-10, T-11, T-12, T-16, **T-17, T-19**. T-19 cannot pass today because the epoch write is a **build item awaiting OQ-15** — hence "by design", not "delivered" |
+| C8 capacity | **MET** | §5.8 (no hold, no penalty) | T-3 |
+| C9 tenancy | **MET** | §5.8, §5.12 | T-6 |
+| C10 staff side | **UNKNOWN** | §5.8, §5.9, **§5.15** now defines the transaction; but the marker/audit/transition interaction under concurrency has never been executed | T-5, T-17, T-18 — until they run, UNKNOWN |
+| C11 edge policies | **UNKNOWN** | §7; the <18 mechanic is **challenged** (OQ-11) and the foreigner/child matrix has no case yet | no dedicated case ⇒ UNKNOWN, not MET |
+| C12 operations | **NOT MET in revision 2 → MET now** | §5.11 (**M6b corrected**), §5.13, §5.6 (restore/uninstall epoch) | T-15, T-19. Two UNKNOWNs still carried in §13 |
+| C13 abuse model | **NOT MET in revision 2 → MET now** | §9 incl. T4 replay residual, T9/T10 key rows, **T-6**, and the **M1 restore row** added below | T-13, T-19 |
+| C14 test plan | **NOT MET in revision 2 (T-12 could not establish its claim; T-4's mutation could not fail) → MET now** | §10: 23 cases, each with a mutation that fails on a fixture sized for it | self-checking: T-4 (seeded over limit), T-16 (default retention), T-23 (header rule) |
+
+**Honest summary (counts must add up, so they are spelled out):** **9 MET** — C1, C3 (person level only), C4, C5, C8, C9, C12, C13, C14. **1 MET by design with an unapproved build dependency** — C7. **3 UNKNOWN** — C2 (TTL undecided), C10, C11. **1 NOT MET on this branch** — C6 (owned by #340). No condition is claimed MET without a test named beside it. The reviewer's round-3 reading (C5, C7, C12, C13, C14 not met) is **adopted for C12/C13/C14 and C5** — those were genuinely unestablished and are fixed in this revision — while C7 remains conditional on OQ-15, which I am not entitled to decide.
 
 ## 7. Edge policies (C11)
 
@@ -323,7 +414,7 @@ Revision 1 claimed the existing `RuntimeSchemaGate` would answer 503 for every r
 
 **Migration (build phase, not now):** `src/Migrations/2026_11_17_0032_appointment_requests.php` — number/date **not reserved** (**OQ-1**). `up()`: one `CREATE TABLE IF NOT EXISTS` guarded by an `information_schema.tables` check (pattern `2026_09_09_0019_…php:37-48`); `down()`: `DROP TABLE IF EXISTS` with a comment that it destroys queued intents. Idempotent by construction. **Rollback:** the runner wraps `up()` in a transaction (`MigrationRunner.php:91-110`), but MySQL DDL implicitly commits, so that transaction does not make a failed `CREATE` atomic (INFERENCE from the documented engine behaviour). Practical rollback = `down()`, or restore the pre-migration backup (D17).
 **Table-absent installs:** §5.13 (own probe; probe error ⇒ 503).
-**Uninstall:** covered automatically in both branches (`uninstall.php:8-20`, V12). Privacy note: without the wipe option the table survives with plaintext mobiles/names and NID hashes (**OQ-12**).
+**Uninstall:** covered automatically in both branches (`uninstall.php:8-20`, V12). Privacy note: without the wipe option the table survives with plaintext mobiles/names and NID hashes (**OQ-12**). **Replay note:** a wipe drops `cpms_rate_limits` too, which is the M1 path — §5.6 option C requires `uninstall.php` to write the `cpms_arreq_proof_epoch_min` marker before dropping, and the reader to treat an absent option as `0`.
 **Backup/restore:** §5.11.
 **Health endpoint:** unchanged — an "open request count" there would be a public disclosure (`HealthController.php:18-33`).
 
@@ -341,8 +432,9 @@ Revision 1 claimed the existing `RuntimeSchemaGate` would answer 503 for every r
 | T6 | anonymous | timing oracle | measure response | no patient read; fixed statement shape | **UNKNOWN**: duplicate/cap branches differ by one write (§5.3). Never measured. Disclosed. Note the oracle would only distinguish *states of the caller's own mobile*, never a third party's |
 | T7 | attacker on shared NAT | exhaust the bucket | per-IP exhaustion | threshold from settings; existing OTP IP bucket is already shared (`OtpService.php:203-212`) | a NAT-ed clinic can throttle itself; this design adds one more shared bucket (**OQ-13**) |
 | T8 | staff insider | enumerate IDs | repeated match | boolean-only, per-user rate limit, audit per attempt, `decide` capability | patience is a governance problem |
-| **T9** | **DB-only leak (dump/backup)** | **recover national IDs** | offline guessing of ~10^9 | keyed HMAC whose key is **outside** the DB (§5.7) | **none for this table** while wp-config is separate |
+| **T9** | **DB-only leak (dump/backup)** | **recover national IDs** | offline guessing of ~10^9 | keyed HMAC whose key is **outside** the DB (§5.7) | recovery from the DB alone is **not possible** only if the constants are genuinely high-entropy; a guessable constant defeats it (§5.7 M3 LIMITATION, OQ-18). Conditional, not absolute |
 | **T10** | **wp-config + DB leak** | **recover national IDs** | derive `k_nid`, enumerate | **nothing** — full recovery (§5.7, stated plainly) | inherent to any derived-key scheme on one host; the mobile and name are plaintext there anyway |
+| **T11** | **operator restores a snapshot / wipes + reinstalls** | **reuse a still-valid proof** | restore rolls `cpms_rate_limits` back, erasing consumed markers | §5.6 **M1 option C**: monotonic `cpms_arreq_proof_epoch_min` written by the restore and uninstall paths; proofs with `iat ≤ epoch` rejected | the epoch write is a **build item awaiting OQ-15**; without it, a proof minted inside the snapshot's 600 s and replayed within its TTL would succeed once — bounded by `u_arreq_open`, the per-clinic cap and reception review, and it cannot create a patient, link or appointment |
 
 ---
 
@@ -350,10 +442,10 @@ Revision 1 claimed the existing `RuntimeSchemaGate` would answer 503 for every r
 
 | # | Test | Mutation that must make it fail |
 |---|---|---|
-| T-1 | person-level uniformity: NID known / unknown / mobile-matches-record all produce the same status, code, body and headers, and **zero** patient-table queries (query-count assertion) | add any `cpms_patients` read → red |
+| T-1 | person-level uniformity: NID known / unknown / mobile-matches-record all produce the same status, code, body and headers, and **zero** patient-table queries (query-count assertion); headers compared by the T-23 rule | add any `cpms_patients` read → red; compare the correlation id verbatim → flaky |
 | T-2 | no side effect: after a creation, `cpms_patients`, `cpms_patient_user_links`, `wp_users`, `cpms_appointments` row counts unchanged | insert a patient → red |
-| T-3 | caps and order: 2nd open request for the same (clinic, mobile) → 202 with **no second row**; 501st open row → 429; **duplicate while at capacity → 202** (step 6 precedes step 7); a malformed national ID does **not** spend the proof (retry with the same token succeeds) | drop `u_arreq_open` → red; move the cap check before the duplicate check → red; move the proof consumption before validation → the typo-retry case goes red |
-| T-4 | cleanup: pending past TTL → `expired`; terminal older than 14 d deleted; second run changes nothing | remove the `LIMIT`/guard → red |
+| T-3 | caps and order: 2nd open request for the same (clinic, mobile) → 202 with **no second row**; 501st open row → 429; **duplicate while at capacity → 202** (step 7 precedes step 8); a malformed national ID does **not** spend the proof (retry with the same token succeeds) | drop `u_arreq_open` → red; move the cap check before the duplicate check → red; move the proof consumption before validation → the typo-retry case goes red |
+| T-4 | cleanup: pending past TTL → `expired`; terminal older than 14 d deleted; second run changes nothing. The batch test **seeds more terminal rows than the batch limit** (e.g. limit+25) so the limit is actually reached | remove the `LIMIT`/guard → the bounded-batch count assertion goes red (it cannot fail on a fixture smaller than the limit, which is why the fixture is specified) |
 | T-5 | atomic decision: two concurrent decides (real MySQL, `pcntl_fork`) — exactly one approved, one 409 | read-then-write → red |
 | T-6 | tenant isolation: clinic-B staff get 404 for clinic-A's request; a client-supplied `clinic_id` is ignored | drop `clinic_id` from WHERE → red |
 | T-7 | digit normalisation: Persian/ASCII/Arabic-Indic forms of one ID hash **identically**; BOM/ZWJ/zero-width/inner space rejected; all-same-digit rejected | strip invisibles instead of rejecting → red; hash the raw string → red |
@@ -361,12 +453,21 @@ Revision 1 claimed the existing `RuntimeSchemaGate` would answer 503 for every r
 | T-9 | **duplicate-proof collision**: same mobile, two different proofs inside 600 s → two markers, one request row; replaying the **first** proof after the row closes creates **no** row | key the marker on the mobile instead of `jti` → red |
 | T-10 | **replay after deletion**: delete the request row (expiry, 14-day, and FK/slot paths) then replay the proof → still no row; marker still present | key the marker on the request row / use `ON DELETE CASCADE` for the marker → red |
 | T-11 | **proof replay across clinic/purpose/mobile**: a token minted for clinic A / purpose `appointment_request` / mobile M is rejected for clinic B, another purpose, or another mobile | drop `cl`/`p`/`mh` from the payload check → red |
-| T-12 | **marker lifetime invariant I1**: with a proof expiring at *T*, the marker survives every run of `cleanup.rate_limits` until at least *T*+600 s | change the cleanup threshold or `window_sec` so the marker is deleted before expiry → red |
+| T-12 | **no deletion while the proof is live:** with a proof expiring at *T*, run `cleanup.rate_limits` at *T*−300 s (and at *T*−1 s) → the marker is still present, because the predicate `window_id * window_sec < now − olderThan` cannot match while `window_id = exp > now` | set `window_id = 1` (or `window_sec` such that `window_id * window_sec < exp`) instead of the proof expiry → the pre-expiry cleanup deletes the marker and the assertion goes red. Note: with the correct `window_id`, `max(1, …)` in `cleanup()` makes pre-expiry deletion **impossible**, so the only reachable mutation is a wrong window key |
 | T-13 | **audit vocabulary**: every audit/decision row carries only reason codes; no audit field (any nesting) contains a 10-digit ID, a Persian-digit ID, the hash, or free text | pass a free-text reason / an unmasked `national_id` / a key named `National_ID` (V13) → red |
-| T-14 | **observable-by-observable new vs duplicate**: status, code, body, headers equal; **write counts differ by exactly one INSERT**, and the marker upsert happens in **both** branches (asserted, so the LIMITATION is pinned and no future "indistinguishable" claim can sneak in) | make the duplicate branch skip the marker write → red; assert identical write counts anywhere → red |
+| T-14 | **observable-by-observable new vs duplicate**: status, code, body equal; headers compared **by name excluding** `X-CPMS-Correlation-Id`/`Set-Cookie`/`Date` (rule in T-23); **write counts differ by exactly one INSERT**, marker upsert in **both** branches | make the duplicate branch skip the marker write → red; compare all headers verbatim → flaky (red on repeat) |
 | T-15 | column/table absent: own probe ⇒ 503 for every caller; **probe error ⇒ 503** (not 500) | let the query run → red; treat error as present → red |
+| **T-16** | **margin, both numbers (M5):** proof expires at *T*. With the **job** call (`2*86400`): marker still present at *T*+172 700 s, gone at *T*+172 900 s. With the **method default** (`86400`): still present at *T*+85 900 s, gone at *T*+86 300 s. Revision 2's T-12 checked only *T*+600 and could not see a margin at all | lower either threshold below the proof TTL, or assume the 48 h figure while calling the method default -> the corresponding assertion goes red |
+| **T-17** | **same proof, two concurrent calls (M8):** fork two requests with one token; exactly **one** 202-with-insert, one 202-replay, **one** request row, `hits = 2`, two audits | drop the transaction around upsert+read-back → two inserts (red); roll back the replay increment → `hits = 1` (red) |
+| **T-18** | **distinct proofs at the cap boundary (M8):** cap−1 rows, two concurrent distinct-proof calls → at most one insert, the other `429`, **never** cap+1 rows. Run on **MySQL 8 and MariaDB 11.4.13** | remove the clinic named lock → both count the same pre-state and insert → cap+1 (red) |
+| **T-19** | **restore replay (M1):** mint a proof, consume it, snapshot the DB, restore that snapshot, replay the same token → `400`/rejected, **no** new row (epoch option raised by the restore path). Same for wipe + reinstall | drop the epoch write from the restore path → the replay is accepted (red) |
+| **T-20** | **name policy (M2):** `given_name` = a valid national ID → `400` uniform; Persian/Arabic-Indic digit forms → `400`; a name with a digit **disguised** by digit-folding → `400`; a clean name → accepted; and **no** request row path renders a NID (list, detail, audit, logs) | remove the `\p{Nd}` check → red; fold digits before the check → red |
+| **T-21** | **key strength (M3):** 32-char dictionary word / duplicate constants / sample placeholder / < 12 distinct chars ⇒ `503` on creation **and** match; a rule-passing value ⇒ 200 | replace the rule with a length-only check → the dictionary-word case passes (red) |
+| **T-22** | **accounting table (§5.3):** for each of the eight outcomes, assert status, body, code, marker-write count, request-row write count and audit count **exactly** as the table states | make replay write nothing (revision 2 behaviour) → the `hits = 2` assertion goes red; make the duplicate run the cap count → the statement-count assertion goes red |
+| **T-23** | **correlation header comparison rule (M8):** T-1/T-14 compare header **names** and are required to **exclude** `X-CPMS-Correlation-Id` (random per request, `RestBase.php:295`) and any `Set-Cookie`/`Date`, because those vary by design; every other header must match exactly | include the correlation id in the comparison → the "identical headers" assertion becomes flaky (red on repeat runs) |
+| **T-24** | **one table (C1):** the migration diff after `up()` contains exactly **one** new `cpms_` table; `down()` leaves zero; no second table is created for the proof marker or the epoch | create a `cpms_arreq_proofs` table, or add `proof_marker` to the request row → red |
 
-**Exact CI invocations (OBSERVED in `.github/workflows/ci.yml`):** `php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit` (`ci.yml:172`); `php -d memory_limit=1G vendor/bin/phpunit --no-configuration --bootstrap tests/integration-bootstrap.php tests/Integration` (`ci.yml:809-812`). Job names: `Unit Tests (PHP ${{ matrix.php }})` (`ci.yml:93`, matrix `:108`), `Integration (WP 7.1 + MySQL 8)` (`ci.yml:225`). **This PR runs neither.**
+**Exact CI invocations (OBSERVED in `.github/workflows/ci.yml`):** `php -d memory_limit=512M vendor/bin/phpunit --testsuite Unit` (`ci.yml:172`); `php -d memory_limit=1G vendor/bin/phpunit --no-configuration --bootstrap tests/integration-bootstrap.php tests/Integration` (`ci.yml:809-812`). Job names: `Unit Tests (PHP ${{ matrix.php }})` (`ci.yml:93`, matrix `:108`), `Integration (WP 7.1 + MySQL 8)` (`ci.yml:225`); T-17/T-18 are required on **both** services those jobs start — MySQL 8 (`ci.yml:236-237`) and MariaDB 11.4.13 (`ci.yml:247-248`). **This PR runs neither** (docs-only).
 
 ---
 
@@ -378,21 +479,23 @@ Revision 1 claimed the existing `RuntimeSchemaGate` would answer 503 for every r
 - **No** change to `NationalIdValidator`, `PatientService`, `OtpService` policy lists, `error-codes.md`, `api-contract.md`, the permission matrix or any ADR.
 - **No** fix for `/patient/me` returning the unmasked ID (V8) or for the pre-existing NID-existence message (V14) — reported only.
 - **No** new error codes (D15); **no** `GET` variant of the route.
+- **No** second table and **no** new column for the proof marker or the epoch (C1); the only new persisted artefact outside the request table is **one integer option** (§5.6).
+- **No** change to `PatientService::cleanName()`: the stricter digit ban is **scoped to this request path** (OQ-19 asks whether to widen it).
 - **No** claim of constant-time behaviour, of equal write counts, or of protection against a combined wp-config + DB leak.
 
 ---
 
-## 12. Phase 2 — adversarial re-read of this revision
+## 12. Phase 2 — adversarial re-read of *this* delta (revision 3)
 
-1. **Existence oracle.** Could a careless implementer reintroduce one? The cheapest is a "skip duplicates" `find_by_national_id()` in the creation path. **Blocked by** §5.4 + T-1's query-count assertion + T-2. *Remaining risk:* text cannot prevent a future edit; the test is the enforcement.
-2. **Proof replay, including deletion paths.** Revision 1 leaked through (a) an unrecorded collision and (b) marker deletion with the row. **Now blocked by** §5.6's marker-in-`rate_limits` design, invariant **I1** derived from the cleanup predicate (V21), the enumerated delete paths, and T-9/T-10/T-11/T-12. *Self-check:* I1 depends on `cleanup.rate_limits` keeping its 48 h threshold — if a future change lowers it below the 600 s proof TTL, replay returns; T-12 exists to fail loudly, and §5.6 names it.
-3. **Key/secret threat model.** The dangerous over-claim would be "hashed, therefore safe". **Blocked by** §5.7's plain statement that a combined wp-config + DB leak recovers IDs, T9/T10, the explicit rejection of `wp_salt()` (V20) and of the revision-1 DB option, and T-8's "no auto-created key".
-4. **ID leakage including audit and logs.** Leak candidates: exception text on a failed HMAC, `meta`, a `LIKE` search, rate-limit keys (V15 shows the codebase already writes raw mobiles there), and `MASK_KEYS` being case-sensitive (V13). **Blocked by** §5.5 (reject-not-strip), §5.7b (reason codes only, no free text), the hashed bucket-key rule, §5.9 (the match input is never stored or echoed), and T-13.
-5. **Staff race.** **Blocked by** the single guarded `UPDATE` with affected rows = 1 (§5.8) and T-5; approval writes no capacity, so there is no second resource to race.
+Read hunk by hunk against revisions 2 → 3, looking only for the four blocker classes.
 
-**Blocker verdict by my own definition** (any C1–C14 not established by the text, any oracle, any replay path, any key-in-DB protection claim, any unlabelled assumption, any scope violation): **no blocker found by me** — with one honest caveat I am not entitled to decide away: **C3 is established only in the F3 sense** (no person-level oracle; cap disclosure declared). If the reviewer requires the cap case to be indistinguishable too, C3 fails and the fix is an owner decision between a silent drop and a load-revealing `429` (**OQ-7**). Everything else is MET, partly MET with a named dependency (#340), or MET with a declared residual.
+1. **Can the design still leak a replay, session, account, link or national-ID existence?** *Replay:* revision 2's marker is intact and the **restore path is now closed** by the epoch (M1) — but that closure is a **build item**, so the leak is *reduced to a declared residual*, not eliminated (T11). *Session/account/link:* none is ever created (§5.8 D13, §11). *NID existence:* the public path still never reads a patient table (§5.4); the new §5.14 name rule **removes** a channel that revision 2 had (a NID typed as a name was stored in clear), and the new normative ban on putting a NID in the search `q` removes a second. **Net: no new leak; one existing leak (M2) closed.**
+2. **Did any protection from revision 2 get lost?** The M1 epoch and M2/M3 rules are additive. Two revision-2 statements were **deleted as false** (replay performs "no write"; duplicate "performs the cap count") — deleting a false claim loses no protection. I1 was **narrowed**, which is a loss of *claim*, not of mechanism: the mechanism (marker outlives the proof) still holds under the code as it is; what did not hold was presenting it as a schema invariant. Recorded in OQ-16 so a future change to the threshold is a decision, not an accident.
+3. **Any FALSE or overstated claim left?** Checked the ones this revision touched: `wp_salt()` (corrected, M4), "restore drops every manifest table" (corrected, M6b), "RESTRICT blocks only until expiry" (corrected, M6a), "none for this table" under T9 (downgraded to conditional, M3), "no SMS on this path" (downgraded OBSERVED → INFERENCE). Remaining absolutes in the document were re-checked one by one against §10: each has a named case or is explicitly scoped ("person level", "by design", "under the default job").
+4. **Any test that cannot fail?** Fixed two: T-12's original mutation was unreachable because `max(1, …)` makes pre-expiry deletion impossible with the correct window key — it now mutates the **window key**, which is reachable. T-4's mutation could not fire on a fixture smaller than the batch limit, so the fixture is now specified as larger. T-16 previously asserted only *T*+600 for a 48 h claim; it now asserts both thresholds' edges.
+5. **Repo-rule compliance.** Two files only; ledger edited in place with `main` as a byte-prefix and 0 deletions (verified programmatically); no schema, code, test or workflow file touched; nothing numbered or reserved.
 
----
+**Verdict by the stated blocker definition:** (a) no replay/session/link/NID-existence leak introduced — one closed; (b) no revision-2 protection removed; (c) the false claims found are corrected, and the ones that remain absolute are either scoped or test-backed; (d) no known test that cannot fail remains; (e) scope respected. **Not claimed:** that the residual in T11 is acceptable — that is **OQ-15**, an owner decision.
 
 ## 13. Limitations
 
@@ -401,6 +504,9 @@ Revision 1 claimed the existing `RuntimeSchemaGate` would answer 503 for every r
 - **UNKNOWN:** MySQL/MariaDB `UNIQUE`-with-NULL handling *measured* on the CI versions (documented, not measured); `GET_LOCK` contention behaviour; a half-applied DDL; restore handling of a table absent from a manifest.
 - **UNKNOWN:** whether the `window_id * window_sec` comparison is computed without overflow for every possible `exp` (INT UNSIGNED reaches ~4.29e9; a 2026 timestamp is ~1.8e9 — INFERENCE that it is safe, not measured).
 - **LIMITATION:** no independent review of this revision yet. Two security reviews and an owner build approval remain outstanding.
+- **LIMITATION (M3):** the key-strength rule rejects common accidents but **cannot prove randomness**; a human-chosen passphrase of sufficient length and variety passes. The real fix is installer-generated keys (**OQ-18**).
+- **LIMITATION (M8):** the transaction and lock behaviour is **designed, not executed**. Deadlock-freedom is INFERENCE from a globally consistent lock order (marker row → clinic named lock); T-17/T-18 are the tests.
+- **UNKNOWN (M1):** whether `restoreApply`'s existing transaction can carry the epoch write — the dump executes DDL inside it (`BackupService.php:348-361`) and MySQL DDL implicitly commits, so the epoch write must be re-checked as landing after the last statement. Build-phase verification, not assumed here.
 - **LIMITATION:** the `hits`-read-back for single use (§5.6) is a **design**; the concurrency claim (upsert + read under one row lock) is INFERENCE, and T-9/T-14 are the tests that would settle it. If they fail on real MySQL, the fallback is a `SELECT … FOR UPDATE` on the marker row before the upsert — same table, same invariant, one extra statement.
 - **UNKNOWN:** whether WordPress core ever defines the eight secret constants to identical default values across installs (the classic "put your unique phrase here" literal is what the deny-list targets; the full list is not enumerated here).
 
@@ -420,4 +526,9 @@ Revision 1 claimed the existing `RuntimeSchemaGate` would answer 503 for every r
 - **OQ-R6** `/patient/me` unmasked ID (V8) and the pre-existing NID-existence message (V14) stay out of scope.
 - **OQ-R7** the key-fingerprint option (`cpms_arreq_key_fp`, 16 hex of `sha256(k_nid)`) is a change detector, not key material — confirm that reading.
 - **OQ-R8** requiring **all eight** wp-config secret constants is stricter than the in-repo precedent (three); confirm that a partially-stubbed install should fail closed rather than accept a narrower key.
+- **OQ-15 (new, M1, blocks C7):** authorise the restore/uninstall epoch write — it touches `BackupService.php` and `uninstall.php`, i.e. **outside this document's scope**. Without approval, option A applies and the residual in T11 must be accepted in writing.
+- **OQ-16 (new, M5):** confirm `cleanup.rate_limits` keeps its `2*86400` default; the 48 h post-expiry margin is a property of that value, not of the schema.
+- **OQ-17 (new, M6a):** `NO ACTION` on `fk_arreq_slot` blocks slot deletion until terminal rows are hard-deleted, which can stall. Acceptable, or should `slot_id` become nullable so terminal rows detach?
+- **OQ-18 (new, M3):** require installer-generated wp-config salts (or `CPMS_ARREQ_KEY`) as a documented install precondition? Without it the DB-only protection is conditional.
+- **OQ-19 (new, M2):** tighten `PatientService::cleanName()` globally (reject digits in names for patients too), or keep the stricter rule scoped to this request path?
 - **OQ-R9** consuming the proof at step 5 (after cheap validation, before duplicate/cap) means a **cap-refused** and a **duplicate** requester each spend one OTP; confirm that trade against the alternative (probe-until-cap).
