@@ -50,7 +50,8 @@ assert(!sandbox.validateRefundAmount('\uFEFF300000').ok, 'refund BOM input must 
 for (const s of ['1','300000','9999999999','007','300.0','300.00','۳۰۰۰۰۰','١٢٣',' 300 \t']) assert(money(s).ok, 'money should accept ' + JSON.stringify(s));
 for (const s of ['', '300,000','300.5','.5','.01','00.5','1e2','-1','+1','10000000000','３００','\uFEFF300','300\uFEFF','\uFEFF','\u00a0300','300\u2009','3\u200b00','3\u200c00','3\u200d00','3\u061c00','3\u00ad00','3\u180e00','3\u202e00']) assert(!money(s).ok, 'money should reject ' + JSON.stringify(s));
 for (const s of ['0.01','.01','.5','00.5','1.','1','1.2','1.20','100',' ۱٫']) { if (s === ' ۱٫') continue; assert(qty(s).ok, 'quantity should accept ' + JSON.stringify(s)); }
-for (const s of ['0','100.01','1e2','1.234','1.200','100.000','1.005','1000','\uFEFF1','1\u200b']) assert(!qty(s).ok, 'quantity should reject ' + JSON.stringify(s));
+assert(qty('999999.99').ok, 'quantity should accept the DECIMAL(8,2) maximum');
+for (const s of ['0','1000000','1e2','1.234','1.200','100.000','1.005','\uFEFF1','1\u200b']) assert(!qty(s).ok, 'quantity should reject ' + JSON.stringify(s));
 assert(money('0', {required:true,min:0,max:9999999999}).ok, 'zero allowed for zero-min field');
 assert(!money(' ', {required:true,min:1}).ok, 'blank rejected');
 assert(money(' ', {required:false,min:0}).blank, 'optional blank accepted');
@@ -162,7 +163,7 @@ async function runIssue(changes) {
  Object.assign(values,changes.values||{});Object.assign(bad,changes.bad||{});
  const els={qtyEl:{value:values.qty,validity:{badInput:bad.qty}},discEl:{value:values.disc,validity:{badInput:bad.disc}},priceEl:{value:values.price,validity:{badInput:bad.price}},invDiscEl:{value:values.invDisc,validity:{badInput:bad.invDisc}},invTaxEl:{value:values.invTax,validity:{badInput:bad.invTax}},submit:{disabled:false}};
  const row={querySelector(sel){return {'.cpms-fin-i-svc':null,'.cpms-fin-i-desc':{value:'Manual item'},'.cpms-fin-i-qty':els.qtyEl,'.cpms-fin-i-disc':els.discEl,'.cpms-fin-i-price':els.priceEl}[sel]||null;}};
- const ctx={Number,String,parseInt,parseFloat,Promise,MAX_MONEY:9999999999,MAX_QUANTITY_HUNDREDTHS:10000,MAX_INPUT_LEN:40,
+ const ctx={Number,String,parseInt,parseFloat,Promise,MAX_MONEY:9999999999,MAX_QUANTITY_HUNDREDTHS:99999999,MAX_INPUT_LEN:40,
   document:{querySelectorAll:()=>[row],getElementById:id=>id==='cpms-fin-inv-discount'?els.invDiscEl:id==='cpms-fin-inv-tax'?els.invTaxEl:id==='cpms-fin-issue-submit'?els.submit:{value:''}},
   state:{issueVisit:71},lastNotice:null,request:null,notice:(m,t)=>{ctx.lastNotice={message:m,type:t};},api:(m,u,b)=>{ctx.request={method:m,url:u,body:b};return Promise.resolve({__status:201,body:{data:{invoice_number:'INV-TEST',id:9}}});},closeDrawers(){},refreshAll(){},openInvoice(){},errMessage:r=>r.message||'error'};
  vm.createContext(ctx);vm.runInContext(source.slice(helperStart,helperEnd)+';'+submitIssueFn+'; submitIssue();',ctx);await new Promise(r=>setImmediate(r));return ctx;
@@ -180,6 +181,13 @@ for(const [label,key,valid,bodyCheck] of issueFields){
  for(const item of invalids){const ctx=await runIssue({values:{[key]:item.value},bad:{[key]:item.bad}});assert(!ctx.request,label+' invalid '+JSON.stringify(item.value)+' sent request');assert(ctx.lastNotice&&/[\u0600-\u06FF]/.test(ctx.lastNotice.message),label+' invalid must show Persian error');}
  const ctx=await runIssue({values:{[key]:valid}});assert(ctx.request&&bodyCheck(ctx),label+' valid Persian digits not normalized in payload');
 }
+for(const value of ['999999.99','100.01','1000']){
+ const ctx=await runIssue({values:{qty:value}});const sent=ctx.request&&ctx.request.body.items[0].quantity;
+ assert(ctx.request&&sent===Number(value)&&String(sent)===value,'quantity '+value+' must be sent exactly as typed');
+}
+const overQuantity=await runIssue({values:{qty:'1000000'}});
+assert(!overQuantity.request,'quantity above DECIMAL(8,2) maximum must not request');
+assert(overQuantity.lastNotice&&overQuantity.lastNotice.message.includes('تعداد باید بین ۰٫۰۱ تا ۹۹۹۹۹۹٫۹۹ باشد.'),'quantity above maximum must show the Persian bound error');
 
 const pactAt=source.indexOf("body.querySelectorAll('button[data-pact]')");
 const pactCallback=eventFunction("btn.addEventListener('click'");

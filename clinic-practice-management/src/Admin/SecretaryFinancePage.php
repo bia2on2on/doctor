@@ -278,12 +278,12 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
 
     // Client-side money and quantity validation (strict subset of server rules):
     // - Money storage DECIMAL(12,2), integer Rial only: max 9999999999.
-    // - Quantity storage DECIMAL(8,2), MoneyInput::MAX_QUANTITY = 100.0, max 2 decimals.
+    // - Invoice-item quantity accepts positive values through DECIMAL(8,2)'s 999999.99 maximum; max 2 decimals.
     // - Rejects browser validity.badInput, invisible/control/bidi/BOM characters on raw
     //   input before ASCII whitespace trim, separators, exponents, signs, and fullwidth digits.
     // - Normalizes Persian (U+06F0-U+06F9) and Arabic-Indic (U+0660-U+0669) digits to ASCII.
     var MAX_MONEY = 9999999999;
-    var MAX_QUANTITY_HUNDREDTHS = 10000;
+    var MAX_QUANTITY_HUNDREDTHS = 99999999;
     var MAX_INPUT_LEN = 40;
     var INVISIBLE_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u034F\u061C\u180E\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFB]/;
 
@@ -379,7 +379,7 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         var fracPadded = (match[2] || '') + '00';
         var hundredths = Number(intDigits) * 100 + parseInt(fracPadded.slice(0, 2), 10);
         if (!Number.isSafeInteger(hundredths) || hundredths < 1 || hundredths > MAX_QUANTITY_HUNDREDTHS) {
-            return { ok: false, error: 'تعداد باید بین ۰٫۰۱ تا ۱۰۰ باشد.' };
+            return { ok: false, error: 'تعداد باید بین ۰٫۰۱ تا ۹۹۹۹۹۹٫۹۹ باشد.' };
         }
         return { ok: true, value: hundredths / 100 };
     }
