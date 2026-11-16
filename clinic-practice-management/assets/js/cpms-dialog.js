@@ -11,7 +11,7 @@
  *   window.CpmsDialog.prompt(message, options?)  -> Promise<string|null>
  *
  * options (both): { title, confirmLabel, cancelLabel }
- * options (prompt): { value, multiline, inputMode, required, maxLength }
+ * options (prompt): { value, multiline, inputMode, required, maxLength, raw }
  *
  * This is UX only, never authorization: every action behind a confirmation is
  * still re-authorized server-side (nonce + capability + scope).
@@ -195,8 +195,9 @@
                     finish(true);
                     return;
                 }
-                var value = String(input.value || '').trim();
-                if (settings.required === true && value === '') {
+                var rawValue = input.value == null ? '' : String(input.value);
+                var value = settings.raw === true ? rawValue : rawValue.trim();
+                if (settings.required === true && rawValue.trim() === '') {
                     error.textContent = settings.requiredMessage || 'این مقدار الزامی است.';
                     error.hidden = false;
                     input.focus();
