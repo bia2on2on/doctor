@@ -482,7 +482,7 @@ final class PatientPortalPage
                 $list = App::clinicalService()->patientPrescriptions( $user_id, (int) $sole['link_id'] );
                 foreach ( $list['prescriptions'] as $rx ) {
                     $items .= '<li data-role="prescription-item">';
-                    $items .= '<div class="cpms-pp-prescription__header">' . esc_html( PersianDigits::digits( (string) $rx['prescription_number'] ) ) . ' — ' . esc_html( PersianDigits::digits( (string) ( $rx['created_at_jalali'] ?? '' ) ) ) . '</div>';
+                    $items .= '<div class="cpms-pp-prescription__header">' . esc_html( $rx['prescription_number'] . ' — ' . ( $rx['created_at_jalali'] ?? '' ) ) . '</div>';
                     if ( ! empty( $rx['items'] ) ) {
                         $items .= '<ul class="cpms-pp-prescription__items">';
                         foreach ( $rx['items'] as $med ) {

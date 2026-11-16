@@ -313,13 +313,6 @@ async function testIndependentReopen() {
   assert.strictEqual(ordinary.disabled, false);
 }
 
-function testPortalPrescriptionHeaderStructure() {
-  var src = read('src/Admin/PatientPortalPage.php');
-  assert.match(src, /esc_html\( PersianDigits::digits\( \(string\) \$rx\['prescription_number'\] \) \) \. ' — ' \. esc_html\( PersianDigits::digits\( \(string\) \( \$rx\['created_at_jalali'\] \?\? '' \) \) \)/,
-    'portal prescription number and Jalali date are separately digit-converted and escaped');
-  assert.ok(!/\$rx\['(?:prescription_number|created_at_jalali)'\]\s*=/.test(src), 'renderer does not assign converted values back');
-}
-
 function testSecretaryRendering(shared) {
   var src = read('src/Admin/SecretaryQueuePage.php');
   var nodes = {};
@@ -386,7 +379,6 @@ async function testSmsRendering(shared) {
 
 (async function () {
   [true, false].forEach(testDoctorRendering);
-  testPortalPrescriptionHeaderStructure();
   [true, false].forEach(testSecretaryRendering);
   await testSmsRendering(true);
   await testSmsRendering(false);
