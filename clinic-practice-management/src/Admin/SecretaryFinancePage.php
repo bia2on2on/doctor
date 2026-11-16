@@ -276,6 +276,105 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         return d.message || d.code || 'خطا';
     }
 
+    // Client-side money and quantity validation (strict subset of server rules):
+    // - Money storage DECIMAL(12,2), integer Rial only: max 9999999999.
+    // - Quantity storage DECIMAL(8,2), MoneyInput::MAX_QUANTITY = 100.0, max 2 decimals.
+    // - Rejects browser validity.badInput, invisible/control/bidi/BOM characters on raw
+    //   input before ASCII whitespace trim, separators, exponents, signs, and fullwidth digits.
+    // - Normalizes Persian (U+06F0-U+06F9) and Arabic-Indic (U+0660-U+0669) digits to ASCII.
+    var MAX_MONEY = 9999999999;
+    var MAX_QUANTITY_HUNDREDTHS = 10000;
+    var MAX_INPUT_LEN = 40;
+    var INVISIBLE_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F-\u009F\u00AD\u034F\u061C\u180E\u200B-\u200F\u2028-\u202E\u2060-\u206F\u3164\uFE00-\uFE0F\uFEFF\uFFA0\uFFF9-\uFFFB]/;
+
+    function hasBadInput(el) {
+        return Boolean(el && el.validity && el.validity.badInput === true);
+    }
+
+    function trimAsciiWhitespace(raw) {
+        return raw.replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, '');
+    }
+
+    function normalizeDigits(str) {
+        return str.replace(/[\u06F0-\u06F9]/g, function (ch) {
+            return String.fromCharCode(ch.charCodeAt(0) - 0x06F0 + 0x30);
+        }).replace(/[\u0660-\u0669]/g, function (ch) {
+            return String.fromCharCode(ch.charCodeAt(0) - 0x0660 + 0x30);
+        });
+    }
+
+    function validateMoneyAmount(input, options) {
+        var opts = options || {};
+        var required = opts.required !== false;
+        var allowZero = opts.allowZero === true;
+        var min = (opts.min !== undefined && opts.min !== null) ? opts.min : (allowZero ? 0 : 1);
+        var max = (opts.max !== undefined && opts.max !== null) ? opts.max : MAX_MONEY;
+        if (typeof input !== 'string') {
+            return { ok: false, error: 'مبلغ نامعتبر است.' };
+        }
+        if (INVISIBLE_RE.test(input)) {
+            return { ok: false, error: 'مبلغ نامعتبر است. کاراکترهای نامرئی یا کنترلی مجاز نیستند.' };
+        }
+        var str = trimAsciiWhitespace(input);
+        if (str === '') {
+            return required
+                ? { ok: false, error: opts.blankError || 'این مقدار الزامی است.' }
+                : { ok: true, blank: true };
+        }
+        if (str.length > MAX_INPUT_LEN) {
+            return { ok: false, error: 'مبلغ نامعتبر است. طول ورودی بیش از حد مجاز است.' };
+        }
+        var normalized = normalizeDigits(str);
+        var match = /^([0-9]+)(?:\.0+)?$/.exec(normalized);
+        if (!match) {
+            return { ok: false, error: 'مبلغ نامعتبر است. فقط عدد صحیح به ریال بدون جداکننده یا اعشار مجاز است.' };
+        }
+        var intDigits = match[1].replace(/^0+(?=[0-9])/, '');
+        var value = Number(intDigits);
+        if (!Number.isSafeInteger(value) || value < min || value > max) {
+            return { ok: false, error: 'مبلغ خارج از محدوده مجاز است.' };
+        }
+        return { ok: true, value: value };
+    }
+
+    function validateRefundAmount(input) {
+        return validateMoneyAmount(input, {
+            required: true,
+            allowZero: false,
+            min: 1,
+            max: MAX_MONEY,
+            blankError: 'مبلغ بازپرداخت الزامی است.'
+        });
+    }
+
+    function validateQuantity(input) {
+        if (typeof input !== 'string') {
+            return { ok: false, error: 'تعداد نامعتبر است.' };
+        }
+        if (INVISIBLE_RE.test(input)) {
+            return { ok: false, error: 'تعداد نامعتبر است. کاراکترهای نامرئی یا کنترلی مجاز نیستند.' };
+        }
+        var str = trimAsciiWhitespace(input);
+        if (str === '') {
+            return { ok: true, value: 1 };
+        }
+        if (str.length > MAX_INPUT_LEN) {
+            return { ok: false, error: 'تعداد نامعتبر است. طول ورودی بیش از حد مجاز است.' };
+        }
+        var normalized = normalizeDigits(str);
+        var match = /^([0-9]+)(?:\.([0-9]{1,2})0*)?$/.exec(normalized);
+        if (!match) {
+            return { ok: false, error: 'تعداد نامعتبر است. حداکثر دو رقم اعشار بدون جداکننده یا نماد علمی مجاز است.' };
+        }
+        var intDigits = match[1].replace(/^0+(?=[0-9])/, '');
+        var fracPadded = (match[2] || '') + '00';
+        var hundredths = Number(intDigits) * 100 + parseInt(fracPadded.slice(0, 2), 10);
+        if (!Number.isSafeInteger(hundredths) || hundredths < 1 || hundredths > MAX_QUANTITY_HUNDREDTHS) {
+            return { ok: false, error: 'تعداد باید بین ۰٫۰۱ تا ۱۰۰ باشد.' };
+        }
+        return { ok: true, value: hundredths / 100 };
+    }
+
     function esc(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -485,13 +584,25 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
     var svcSave = document.getElementById('cpms-fin-svc-save');
     if (svcSave) {
         svcSave.addEventListener('click', function () {
+            var svcPriceEl = document.getElementById('cpms-fin-svc-price');
+            if (hasBadInput(svcPriceEl)) {
+                notice('قیمت تعرفه نامعتبر است. عدد صحیح وارد کنید.', 'warning');
+                return;
+            }
+            var svcPriceRes = validateMoneyAmount(svcPriceEl.value, {
+                required: true, allowZero: true, min: 0, max: MAX_MONEY
+            });
+            if (!svcPriceRes.ok) {
+                notice('قیمت تعرفه: ' + svcPriceRes.error, 'warning');
+                return;
+            }
             var id = document.getElementById('cpms-fin-svc-id').value;
             var body = {
                 code: document.getElementById('cpms-fin-svc-code').value.trim(),
                 name: document.getElementById('cpms-fin-svc-name').value.trim(),
-                price: parseInt(document.getElementById('cpms-fin-svc-price').value, 10)
+                price: svcPriceRes.value
             };
-            if (!body.code || !body.name || isNaN(body.price) || body.price < 0) {
+            if (!body.code || !body.name) {
                 notice('کد، نام و قیمت صحیح وارد کنید', 'warning');
                 return;
             }
@@ -568,14 +679,46 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
     function submitIssue() {
         var items = [];
         var ok = true;
+        var notified = false;
         document.querySelectorAll('#cpms-fin-items .cpms-fin-item').forEach(function (row) {
             if (!ok) { return; }
             var svc = row.querySelector('.cpms-fin-i-svc');
             var desc = row.querySelector('.cpms-fin-i-desc');
-            var qty = parseFloat(row.querySelector('.cpms-fin-i-qty').value);
-            var price = row.querySelector('.cpms-fin-i-price').value;
-            var disc = parseInt(row.querySelector('.cpms-fin-i-disc').value || '0', 10);
-            var item = { quantity: isNaN(qty) ? 1 : qty, discount: isNaN(disc) ? 0 : disc };
+            var qtyEl = row.querySelector('.cpms-fin-i-qty');
+            var priceEl = row.querySelector('.cpms-fin-i-price');
+            var discEl = row.querySelector('.cpms-fin-i-disc');
+            if (hasBadInput(qtyEl)) {
+                notice('تعداد قلم نامعتبر است.', 'warning');
+                notified = true; ok = false; return;
+            }
+            var qtyRes = validateQuantity(qtyEl.value);
+            if (!qtyRes.ok) {
+                notice('تعداد قلم: ' + qtyRes.error, 'warning');
+                notified = true; ok = false; return;
+            }
+            if (hasBadInput(discEl)) {
+                notice('تخفیف قلم نامعتبر است.', 'warning');
+                notified = true; ok = false; return;
+            }
+            var itemDiscRes = validateMoneyAmount(discEl.value, {
+                required: false, allowZero: true, min: 0, max: MAX_MONEY
+            });
+            if (!itemDiscRes.ok) {
+                notice('تخفیف قلم: ' + itemDiscRes.error, 'warning');
+                notified = true; ok = false; return;
+            }
+            if (hasBadInput(priceEl)) {
+                notice('قیمت واحد نامعتبر است.', 'warning');
+                notified = true; ok = false; return;
+            }
+            var itemPriceRes = validateMoneyAmount(priceEl.value, {
+                required: !svc, allowZero: true, min: 0, max: MAX_MONEY
+            });
+            if (!itemPriceRes.ok) {
+                notice('قیمت واحد: ' + itemPriceRes.error, 'warning');
+                notified = true; ok = false; return;
+            }
+            var item = { quantity: qtyRes.value, discount: itemDiscRes.blank ? 0 : itemDiscRes.value };
             if (svc) {
                 item.service_id = parseInt(svc.value, 10);
                 if (!item.service_id) { ok = false; return; }
@@ -583,15 +726,42 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
                 item.description = desc.value.trim();
                 if (!item.description) { ok = false; return; }
             }
-            if (price !== '') { item.unit_price = parseInt(price, 10); }
+            if (!itemPriceRes.blank) { item.unit_price = itemPriceRes.value; }
             items.push(item);
         });
-        if (!ok || items.length === 0) { notice('هر قلم باید شرح/تعرفه و مقادیر معتبر داشته باشد', 'warning'); return; }
+        if (!ok || items.length === 0) {
+            if (!notified) { notice('هر قلم باید شرح/تعرفه و مقادیر معتبر داشته باشد', 'warning'); }
+            return;
+        }
+        var invDiscEl = document.getElementById('cpms-fin-inv-discount');
+        if (hasBadInput(invDiscEl)) {
+            notice('تخفیف فاکتور نامعتبر است.', 'warning');
+            return;
+        }
+        var invDiscRes = validateMoneyAmount(invDiscEl.value, {
+            required: false, allowZero: true, min: 0, max: MAX_MONEY
+        });
+        if (!invDiscRes.ok) {
+            notice('تخفیف فاکتور: ' + invDiscRes.error, 'warning');
+            return;
+        }
+        var invTaxEl = document.getElementById('cpms-fin-inv-tax');
+        if (hasBadInput(invTaxEl)) {
+            notice('مالیات فاکتور نامعتبر است.', 'warning');
+            return;
+        }
+        var invTaxRes = validateMoneyAmount(invTaxEl.value, {
+            required: false, allowZero: true, min: 0, max: MAX_MONEY
+        });
+        if (!invTaxRes.ok) {
+            notice('مالیات فاکتور: ' + invTaxRes.error, 'warning');
+            return;
+        }
         var body = {
             visit_id: state.issueVisit,
             items: items,
-            discount: parseInt(document.getElementById('cpms-fin-inv-discount').value || '0', 10),
-            tax: parseInt(document.getElementById('cpms-fin-inv-tax').value || '0', 10)
+            discount: invDiscRes.blank ? 0 : invDiscRes.value,
+            tax: invTaxRes.blank ? 0 : invTaxRes.value
         };
         // Busy-lock (double-submit window): the issue button stays disabled until
         // the POST settles, then re-enables. Body and messages are unchanged.
@@ -700,11 +870,21 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         var payBtn = document.getElementById('cpms-fin-pay-submit');
         if (payBtn) {
             payBtn.addEventListener('click', function () {
-                var amount = parseInt(document.getElementById('cpms-fin-pay-amount').value, 10);
-                if (isNaN(amount) || amount <= 0) { notice('مبلغ نامعتبر است', 'warning'); return; }
+                var payAmountEl = document.getElementById('cpms-fin-pay-amount');
+                if (hasBadInput(payAmountEl)) {
+                    notice('مبلغ پرداخت نامعتبر است.', 'warning');
+                    return;
+                }
+                var payAmountRes = validateMoneyAmount(payAmountEl.value, {
+                    required: true, allowZero: false, min: 1, max: MAX_MONEY
+                });
+                if (!payAmountRes.ok) {
+                    notice('مبلغ پرداخت: ' + payAmountRes.error, 'warning');
+                    return;
+                }
                 var headers = { 'Idempotency-Key': (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : uidFallback() };
                 api('POST', 'invoices/' + inv.id + '/payments', {
-                    amount: amount,
+                    amount: payAmountRes.value,
                     method: document.getElementById('cpms-fin-pay-method').value,
                     transaction_ref: document.getElementById('cpms-fin-pay-ref').value || null
                 }, headers).then(function (r) {
@@ -719,12 +899,23 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         var adjBtn = document.getElementById('cpms-fin-adj-submit');
         if (adjBtn) {
             adjBtn.addEventListener('click', function () {
-                var amount = parseInt(document.getElementById('cpms-fin-adj-amount').value, 10);
+                var adjAmountEl = document.getElementById('cpms-fin-adj-amount');
+                if (hasBadInput(adjAmountEl)) {
+                    notice('مبلغ اصلاح نامعتبر است.', 'warning');
+                    return;
+                }
+                var adjAmountRes = validateMoneyAmount(adjAmountEl.value, {
+                    required: true, allowZero: false, min: 1, max: MAX_MONEY
+                });
+                if (!adjAmountRes.ok) {
+                    notice('مبلغ اصلاح: ' + adjAmountRes.error, 'warning');
+                    return;
+                }
                 var reason = document.getElementById('cpms-fin-adj-reason').value.trim();
-                if (isNaN(amount) || amount <= 0 || !reason) { notice('مبلغ و دلیل اصلاح الزامی است', 'warning'); return; }
+                if (!reason) { notice('مبلغ و دلیل اصلاح الزامی است', 'warning'); return; }
                 api('POST', 'invoices/' + inv.id + '/adjustments', {
                     type: document.getElementById('cpms-fin-adj-type').value,
-                    amount: amount,
+                    amount: adjAmountRes.value,
                     reason: reason
                 }).then(function (r) {
                     if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
@@ -756,15 +947,16 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
                         requiredMessage: 'دلیل بازپرداخت الزامی است.'
                     }).then(function (rr) {
                         if (rr === null) { return; }
-                        // مبلغ اختیاری: خالی = کل مبلغ باقیمانده؛ لغو = انصرافِ کامل.
-                        var amtMsg = 'مبلغ بازپرداخت به ریال'
-                            + ' (خالی = کل مبلغ باقیمانده قابل بازگردانی):';
-                        return askPrompt(amtMsg, { inputMode: 'numeric' }).then(function (amt) {
+                        // مبلغ بازپرداخت الزامی است؛ خالی یا نامعتبر خطا می‌دهد؛ لغو = انصرافِ کامل.
+                        var amtMsg = 'مبلغ بازپرداخت به ریال (الزامی):';
+                        return askPrompt(amtMsg, { inputMode: 'numeric', raw: true }).then(function (amt) {
                             if (amt === null) { return; }
-                            var body2 = { reason: rr };
-                            if (amt !== '' && !isNaN(parseInt(amt, 10))) {
-                                body2.amount = parseInt(amt, 10);
+                            var refundRes = validateRefundAmount(amt);
+                            if (!refundRes.ok) {
+                                notice(refundRes.error, 'error');
+                                return;
                             }
+                            var body2 = { reason: rr, amount: refundRes.value };
                             api('POST', 'payments/' + id + '/refund', body2).then(function (r) {
                                 if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
                                 notice('بازپرداخت ثبت شد', 'success');
