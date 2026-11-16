@@ -482,13 +482,43 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
 
         // A hold that pre-dates this policy must not be converted into an
         // appointment if its persisted slot later resolves to a repeated time.
-        // This OTP-shaped identity deliberately has no Patient or Patient/User
-        // link. Confirm would create both on a valid slot, so it exposes whether
-        // the final locked DST check happens before every identity side effect.
-        [$patientUserId, $mobile] = $this->makeUnlinkedOtpUser();
+        // OD-A round 14 (F1): a zero-link caller can no longer reach the locked
+        // DST check at all — the uniform fail-closed 400 fires before the
+        // transaction, with no side effects (the zero-link leg is exercised in
+        // BookingFlowTest / Phase8Slice2OtpHoldConfirmRedTest /
+        // Phase8Slice3LinkedPatientBookingSubjectRedTest). The DST-reject
+        // compensation is therefore exercised here with a LINKED caller — the
+        // only caller type that can still reach it. The legacy Hold is still a
+        // PERSISTED row of the historical shape (patient_id NULL, held_count
+        // claimed), seeded directly. Confirm must still reject at the locked
+        // DST check: no NEW Patient, no link change, no appointment, no audit
+        // or idempotency residue — and the Hold is released
+        // (status='released'), the established compensation.
+        $patientUserId = $this->makePatientUser();
+        $mobile = (string) $wpdb->get_var(
+            $wpdb->prepare(
+                'SELECT p.mobile FROM ' . App::db()->table( 'cpms_patients' ) . ' p
+                 JOIN ' . App::db()->table( 'cpms_patient_user_links' ) . ' l ON l.patient_id = p.id
+                 WHERE l.wp_user_id = %d LIMIT 1',
+                $patientUserId
+            )
+        ); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
         $legacyClinicianId = $this->insertClinician('Dr Legacy Hold');
         $legacySlotId = $this->insertSlot($legacyClinicianId, $this->locNewYork, $date, '03:00:00');
-        $hold = $svc->hold($patientUserId, $legacyClinicianId, $date, '03:00:00', $legacySlotId);
+        $legacyHoldToken = bin2hex(random_bytes(18)); // u_hold_token CHAR(36)
+        App::db()->insert('cpms_slot_holds', [
+            'clinic_id' => $this->clinicId,
+            'slot_id' => $legacySlotId,
+            'holder_wp_user_id' => $patientUserId,
+            'holder_mobile' => $mobile,
+            'token' => $legacyHoldToken,
+            'expires_at' => gmdate('Y-m-d H:i:s.000', time() + 600),
+            'status' => 'active',
+            'created_at' => App::db()->nowUtcSql(),
+            'patient_id' => null,
+        ]);
+        App::db()->update('cpms_schedule_slots', ['held_count' => 1], ['id' => $legacySlotId]);
+        $hold = ['hold_token' => $legacyHoldToken];
         self::assertNotEmpty($hold['hold_token']);
         $wpdb->query($wpdb->prepare(
             'UPDATE ' . App::db()->table('cpms_schedule_slots') . ' SET slot_time = %s WHERE id = %d',
@@ -505,6 +535,11 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
         $linksBefore = (int) $wpdb->get_var($wpdb->prepare(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patient_user_links') . ' WHERE wp_user_id = %d',
             $patientUserId
+        ));
+        $patientsForMobileBefore = (int) $wpdb->get_var($wpdb->prepare(
+            'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d AND mobile = %s',
+            $this->clinicId,
+            $mobile
         ));
         $auditsBefore = (int) $wpdb->get_var($wpdb->prepare(
             'SELECT COUNT(*) FROM ' . App::db()->table('cpms_audit_logs') . ' WHERE clinic_id = %d',
@@ -536,13 +571,13 @@ final class SchedulingLocationLocalBoundaryRedTest extends WP_UnitTestCase
             'Rejected confirm must leave existing unrelated Patients unchanged.'
         );
         self::assertSame(
-            0,
+            $patientsForMobileBefore,
             (int) $wpdb->get_var($wpdb->prepare(
                 'SELECT COUNT(*) FROM ' . App::db()->table('cpms_patients') . ' WHERE clinic_id = %d AND mobile = %s',
                 $this->clinicId,
                 $mobile
             )),
-            'Rejected confirm must not create the previously unlinked Patient.'
+            'Rejected confirm must not create an additional Patient for the holder mobile.'
         );
         self::assertSame(
             $linksBefore,
