@@ -60,9 +60,7 @@ final class Day2OperationalWorkflowsTest extends WP_UnitTestCase
     public function testDay2PortalJsAndTemplateSpecSuitePasses(): void
     {
         $node = trim((string) shell_exec('command -v node 2>/dev/null'));
-        if ($node === '') {
-            self::markTestSkipped('node is not available in this environment.');
-        }
+        self::assertNotSame('', $node, 'Node is required, not an optional skip.');
 
         $script = \dirname(__DIR__) . '/js/day2-portal-workflows.spec.js';
         self::assertFileExists($script);
