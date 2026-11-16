@@ -28,11 +28,18 @@ use WP_UnitTestCase;
  * (Two Patients in ONE clinic cannot share a mobile at all — schema key
  * u_pat_mobile (clinic_id, mobile) enforces it.)
  *
- * Patient access happens ONLY through a WP account explicitly linked to a
- * Patient by clinic staff — that staff-link flow is Slice 2 and is out of
- * scope here. A pre-existing link established by other means grants NOTHING
- * to OTP (see testVerifyWithExplicitPreExistingLinkStillIssuesNoAccess);
- * it documents the deliberate slice-1 gap.
+ * Patient access in this slice still requires a persisted Patient<->User
+ * link plus the clinic scope gates — but NOT a staff-created one: verified
+ * self-enrollment (POST /patient/enroll, C0a; PatientService
+ * enroll_current_patient) is an independent, staff-free path that creates
+ * its own row and link; legacy links with identity_id IS NULL are accepted
+ * regardless of origin; legacy links/sessions are NOT revoked by this PR;
+ * and the provenance of old links is unprovable. The explicit staff-side
+ * link flow (staff capability to link an existing Patient to a WP account)
+ * is Slice 2 and is out of scope here. A pre-existing link established by
+ * other means grants NOTHING to OTP (see
+ * testVerifyWithExplicitPreExistingLinkStillIssuesNoAccess); it documents
+ * the deliberate slice-1 gap.
  *
  * NON-VACUITY (owner decision A) — corrected round 14 (F4b): NOT every
  * test in this class is known to fail on base. What was explicitly
@@ -242,7 +249,7 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         $result = App::otpService()->verify(self::MOBILE_PRE_LINKED, '909090', \ClinicCore\Application\Auth\OtpService::PURPOSE_LOGIN);
 
         self::assertSame(0, (int) $result['user_id'], 'owner decision A: OTP never resolves even an explicitly linked account.');
-        self::assertSame([], (array) $result['patient_links'], 'OTP returns no Patient data — staff-linked access is a Slice 2 concern.');
+        self::assertSame([], (array) $result['patient_links'], 'OTP returns no Patient data — linking an existing Patient to a WP account (the staff-link flow) is a Slice 2 concern.');
         self::assertFalse((bool) $result['session_issued'], 'slice 1: even a pre-existing explicit link is NOT an OTP access basis.');
         self::assertSame(0, get_current_user_id());
         self::assertSame($linksBefore, $this->linkCount(), 'the pre-existing link must remain untouched.');

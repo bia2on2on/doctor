@@ -18,8 +18,10 @@
 > فقط نامزدها را مشخص می‌کنند — INFERENCE)؛ شرطِ «فقط نصب‌های تازه» (INFERENCE —
 > راستی‌آزمایی‌نشده) نیز به همین ریشه محدود است و به‌طور مطلق درست نیست.
 > همچنین: B2 confirm هیچ Patient نمی‌سازد
-> (fail-closed — دور ۱۴ OD-A F1) و ستونِ موضوع روی نصب‌های pre-0022 هر caller را با
-> پاکتِ خنثیِ `503 CLINIC_SERVICE_UNAVAILABLE` fail-closed می‌کند (دور ۱۴ F3).
+> (fail-closed — دور ۱۴ OD-A F1) و ستونِ موضوع روی نصب‌های pre-0022 هر caller که به
+> `resolveBookingPatientForHold()` برسد را با پاکتِ خنثیِ `503 CLINIC_SERVICE_UNAVAILABLE`
+> fail-closed می‌کند — گیت‌های زودتر (license، clinician، slot، patient-session/clinic scope)
+> پیش از آن با پاکت‌های خودشان رد می‌کنند (دور ۱۴ F3؛ تصحیح دور ۱۷).
 > Addendumِ زیر (بازاستفادهٔ هویت؛ مرجع Clinic برای OTP، جست‌وجوی Patient و لینک)
 > فقط تاریخچه است.
 >

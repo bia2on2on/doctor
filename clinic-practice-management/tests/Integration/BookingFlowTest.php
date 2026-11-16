@@ -705,7 +705,27 @@ final class BookingFlowTest extends WP_UnitTestCase
         );
     }
 
-    public function testHoldFailsClosedWhenSubjectBindingColumnIsAbsent(): void
+    public function testHoldFailsClosedOneLinkWhenSubjectBindingColumnIsAbsent(): void
+    {
+        $this->assertHoldFailsClosedWhenSubjectBindingColumnIsAbsent( false );
+    }
+
+    public function testHoldFailsClosedTwoLinksWhenSubjectBindingColumnIsAbsent(): void
+    {
+        $this->assertHoldFailsClosedWhenSubjectBindingColumnIsAbsent( true );
+    }
+
+    /**
+     * Shared body for the OneLink / TwoLinks absent-column fail-closed cases.
+     *
+     * Round 17 (Reader-2 BLOCKER 1): the second link is seeded ONLY when
+     * $seedSecondLink is true, so the one-linked absent-column path — lost
+     * when round 15 made this fixture always seed two links — is exercised
+     * again as its own case. Both cases assert the same fail-closed contract;
+     * TwoLinks keeps the assertCount( 2, ... ) fixture proof that two real
+     * links were seeded.
+     */
+    private function assertHoldFailsClosedWhenSubjectBindingColumnIsAbsent( bool $seedSecondLink ): void
     {
         global $wpdb;
         // Round 14 (F3): migration 2026_09_20_0022_slot_holds_patient_binding
@@ -713,12 +733,11 @@ final class BookingFlowTest extends WP_UnitTestCase
         // a Hold can never persist its booking subject. The service must fail
         // closed with the neutral, existing CLINIC_SERVICE_UNAVAILABLE (503,
         // the RuntimeSchemaGate public contract) for every caller that
-        // REACHES resolveBookingPatientForHold() — linked,
-        // zero-link, N-linked (two REAL links are seeded below), or with a
-        // requested patient_id (earlier gates — license/clinician/slot/session
-        // scope — may reject before it with their own envelopes; those
-        // rejections persist nothing either) — and must
-        // persist NOTHING (no Hold row, no capacity movement).
+        // REACHES resolveBookingPatientForHold() — linked (one or two real
+        // links), zero-link, or with a requested patient_id (earlier gates —
+        // license/clinician/slot/session scope — may reject before it with
+        // their own envelopes; those rejections persist nothing either) — and
+        // must persist NOTHING (no Hold row, no capacity movement).
         //
         // The column's absence is simulated through the service's private
         // schema cache (set to false, restored afterwards); the information_schema
@@ -727,36 +746,39 @@ final class BookingFlowTest extends WP_UnitTestCase
         // path (honest label: the real absent-column shape is not separately
         // executed on a live unmigrated install).
         $slot = $this->makeSlot(4, '10:30', 1);
-        // Reader-2 G4(c) round 15: seed a SECOND active Patient + link for the
-        // linked caller so the "N-linked" branch below really exercises N=2
-        // (previously the fixture held exactly one link and the label lied).
-        $secondMobile = '09120000009';
-        $secondNow    = gmdate( 'Y-m-d H:i:s' );
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
-                     (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
-                 VALUES (%d, %s, "Test", "PatientTwo", %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $this->clinicId,
-                'MR-TEST-0002',
-                $secondMobile,
-                $secondNow,
-                $secondNow
-            )
-        );
-        $secondPatientId = (int) $wpdb->insert_id;
-        $wpdb->query(
-            $wpdb->prepare(
-                'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
-                     (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
-                 VALUES (%d, %d, %d, %s, 0, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
-                $this->clinicId,
-                $secondPatientId,
-                $this->patientUserId,
-                $secondMobile,
-                $secondNow
-            )
-        );
+        $expectedLinks = 1;
+        if ( $seedSecondLink ) {
+            // Reader-2 G4(c) round 15: seed a SECOND active Patient + link for
+            // the linked caller so the TwoLinks case really exercises N=2.
+            $secondMobile = '09120000009';
+            $secondNow    = gmdate( 'Y-m-d H:i:s' );
+            $wpdb->query(
+                $wpdb->prepare(
+                    'INSERT INTO ' . $wpdb->prefix . 'cpms_patients
+                         (clinic_id, mrn, first_name, last_name, mobile, status, created_at, updated_at)
+                     VALUES (%d, %s, "Test", "PatientTwo", %s, "active", %s, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $this->clinicId,
+                    'MR-TEST-0002',
+                    $secondMobile,
+                    $secondNow,
+                    $secondNow
+                )
+            );
+            $secondPatientId = (int) $wpdb->insert_id;
+            $wpdb->query(
+                $wpdb->prepare(
+                    'INSERT INTO ' . $wpdb->prefix . 'cpms_patient_user_links
+                         (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)
+                     VALUES (%d, %d, %d, %s, 0, %s)', // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+                    $this->clinicId,
+                    $secondPatientId,
+                    $this->patientUserId,
+                    $secondMobile,
+                    $secondNow
+                )
+            );
+            $expectedLinks = 2;
+        }
         $service = $this->booking();
         // phpcs:ignore WordPress.NamingConventions.ValidVariableName.VariableNotSnakeCase
         $prop = new \ReflectionProperty(\ClinicCore\Application\Booking\BookingService::class, 'holdsPatientIdColCache');
@@ -782,14 +804,20 @@ final class BookingFlowTest extends WP_UnitTestCase
                     $this->assertSame( 'سرویس موقتاً در دسترس نیست.', $exception->getMessage(), $kind . ' caller — neutral message' );
                 }
             }
-            // N-linked caller (N=2 real links seeded above) with an explicit
-            // requested patient_id must get the same
+            // Link-resolved caller (one or two real links, per the case) with
+            // an explicit requested patient_id must get the same
             // uniform 503 (never CLINIC_PATIENT_SELECTION_REQUIRED, never success).
             $linked = App::db()->fetchAll(
                 'SELECT patient_id FROM ' . App::db()->table( 'cpms_patient_user_links' ) . ' WHERE wp_user_id = %d',
                 [ $this->patientUserId ]
             );
-            $this->assertCount( 2, $linked, 'fixture: the linked caller really has TWO linked Patients' );
+            $this->assertCount(
+                $expectedLinks,
+                $linked,
+                $seedSecondLink
+                    ? 'fixture: the linked caller really has TWO linked Patients'
+                    : 'fixture: the linked caller really has exactly ONE linked Patient'
+            );
             try {
                 $service->hold( $this->patientUserId, $this->clinicianId, $slot['date'], $slot['time'], null, (int) $linked[0]['patient_id'] );
                 $this->fail( 'a requested patient_id must not be admitted when subject binding cannot be persisted' );
