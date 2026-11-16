@@ -418,7 +418,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
                 (n.visibility === 'doctor_private' ? ' <span class="cpms-doc-badge express">🔒 خصوصی</span>' : '') +
                 ' <span class="meta">نسخه ' + esc(displayDigits(n.version)) +
                 (n.versions > 1 ? ' (' + esc(displayDigits(n.versions)) + ' نسخه)' : '') +
-                ' — ' + esc(n.created_at_jalali || n.created_at) + '</span></div>' +
+                ' — ' + esc(displayDigits(n.created_at_jalali || n.created_at)) + '</span></div>' +
                 '<div class="content">' + esc(n.content_text) + '</div>' +
                 '<div class="cpms-doc-row"><button class="button button-small" data-act="edit-note" data-id="' + n.id + '">✎ اصلاح (نسخه جدید)</button></div>' +
                 '<div class="edit-form" style="display:none"></div></div>';
@@ -440,7 +440,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
                 : '';
             return '<div class="cpms-doc-note"><div><b>نسخه ' +
                 esc(displayDigits(rx.prescription_number)) + '</b> ' + fin + printBtn +
-                ' <span class="meta">' + esc(rx.created_at_jalali || rx.created_at) + '</span></div><ul class="cpms-doc-itemlist">' + items + '</ul></div>';
+                ' <span class="meta">' + esc(displayDigits(rx.created_at_jalali || rx.created_at)) + '</span></div><ul class="cpms-doc-itemlist">' + items + '</ul></div>';
         }).join('') || '<p class="cpms-doc-muted">نسخه‌ای ثبت نشده است.</p>';
 
         var recHtml = (d.recommendations || []).map(function (rc) {
@@ -464,7 +464,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         }).join('') || '<p class="cpms-doc-muted">فایلی پیوست نشده است.</p>';
 
         var pastHtml = (d.past_visits || []).map(function (pv) {
-            return '<li>' + esc(pv.jalali_date || pv.visit_date) + ' — ' + (STATUS_LABELS[pv.status] || esc(pv.status)) +
+            return '<li>' + esc(displayDigits(pv.jalali_date || pv.visit_date)) + ' — ' + (STATUS_LABELS[pv.status] || esc(pv.status)) +
                 (pv.clinician_name ? ' (' + esc(pv.clinician_name) + ')' : '') + '</li>';
         }).join('') || '<p class="cpms-doc-muted">سابقه‌ای نیست.</p>';
 
