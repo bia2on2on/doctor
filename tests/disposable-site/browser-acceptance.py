@@ -3,7 +3,8 @@
 
 Passwords and the OTP code are read only from protected local 0600 files. They
 are never printed, written to results, or captured in screenshots. WP-CLI is
-used only for the explicit OTP hash fixture and non-secret database assertions;
+used only for the explicit OTP hash fixture, linking the patient-only account
+after possession-only OTP verification, and non-secret database assertions;
 all user journeys execute the delivered shortcode, portals, and production REST
 routes in fresh per-persona BrowserContexts.
 """
@@ -484,68 +485,363 @@ def capture_finance_diagnostics(page, data, probe=None):
         print("DISPOSABLE_FINANCE_DIAG=" + json.dumps(fallback), flush=True)
 
 
-def public_booking(browser, links, fixture):
-    stage("public booking normal OTP hold confirm")
+def auth_cookie_names(context):
+    names = []
+    for cookie in context.cookies():
+        name = str(cookie.get("name", ""))
+        if name.startswith("wordpress_") or name.startswith("wp-settings-"):
+            names.append(name)
+    return sorted(names)
+
+
+def response_sets_auth_cookie(response):
+    for header in response.headers_array():
+        if str(header.get("name", "")).lower() != "set-cookie":
+            continue
+        cookie_name = str(header.get("value", "")).split("=", 1)[0].strip()
+        if cookie_name.startswith("wordpress_") or cookie_name.startswith("wp-settings-"):
+            return True
+    return False
+
+
+def is_zero_access_otp_envelope(data):
+    if not isinstance(data, dict):
+        return False
+    user_id = data.get("user_id")
+    links = data.get("patient_links")
+    return (
+        set(data.keys()) == {"user_id", "patient_links", "is_new_user", "session_issued"}
+        and type(user_id) is int
+        and user_id == 0
+        and isinstance(links, list)
+        and len(links) == 0
+        and data.get("is_new_user") is False
+        and data.get("session_issued") is False
+    )
+
+
+def matches_rest_path(url, path):
+    parsed = urlparse(url)
+    route = parse_qs(parsed.query).get("rest_route", [""])[0]
+    return parsed.path.endswith("/wp-json/clinic/v1" + path) or route == "/clinic/v1" + path
+
+
+def disposable_otp_snapshot(clinic_id, mobile):
+    output = wp_eval(r'''
+$db = \ClinicCore\Bootstrap\App::db();
+$wpdb = $db->wpdb();
+$cid = (int) getenv("FIXTURE_CLINIC_ID");
+$mob = (string) getenv("FIXTURE_MOBILE");
+$tok = $db->fetchRow(
+    "SELECT attempts, consumed_at FROM " . $db->table("cpms_otp_tokens")
+    . " WHERE clinic_id = %d AND mobile = %s ORDER BY id DESC LIMIT 1",
+    [$cid, $mob]
+);
+$last_ok = $db->fetchRow(
+    "SELECT actor_wp_user_id FROM " . $db->table("cpms_audit_logs")
+    . " WHERE clinic_id = %d AND action = %s ORDER BY id DESC LIMIT 1",
+    [$cid, "OTP_VERIFY_OK"]
+);
+$last_actor = ($last_ok !== null && array_key_exists("actor_wp_user_id", $last_ok) && $last_ok["actor_wp_user_id"] !== null)
+    ? (int) $last_ok["actor_wp_user_id"]
+    : null;
+echo "FIXTURE_OTP_COUNTS=" . wp_json_encode([
+    "users" => (int) $db->fetchValue("SELECT COUNT(*) FROM {$wpdb->users}"),
+    "links" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patient_user_links")),
+    "clinic_links" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patient_user_links") . " WHERE clinic_id = %d", [$cid]),
+    "patients" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patients")),
+    "tokens" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_otp_tokens") . " WHERE clinic_id = %d AND mobile = %s", [$cid, $mob]),
+    "unconsumed" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_otp_tokens") . " WHERE clinic_id = %d AND mobile = %s AND consumed_at IS NULL", [$cid, $mob]),
+    "attempts" => $tok === null ? -1 : (int) $tok["attempts"],
+    "verify_ok" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_audit_logs") . " WHERE clinic_id = %d AND action = %s", [$cid, "OTP_VERIFY_OK"]),
+    "last_verify_actor" => $last_actor,
+    "login_success" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_audit_logs") . " WHERE action = %s", ["LOGIN_SUCCESS"]),
+    "holds" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_slot_holds") . " WHERE clinic_id = %d", [$cid]),
+    "appointments" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_appointments") . " WHERE clinic_id = %d", [$cid]),
+]) . PHP_EOL;
+''', {"FIXTURE_CLINIC_ID": str(clinic_id), "FIXTURE_MOBILE": str(mobile)})
+    marker = next((line for line in output.splitlines() if line.startswith("FIXTURE_OTP_COUNTS=")), "")
+    if not marker:
+        raise RuntimeError("FIXTURE_OTP_COUNTS marker missing")
+    return json.loads(marker.split("=", 1)[1])
+
+
+def link_disposable_patient(clinic_id, patient_id, wp_user_id, mobile):
+    output = wp_eval(r'''
+$db = \ClinicCore\Bootstrap\App::db();
+$cid = (int) getenv("FIXTURE_CLINIC_ID");
+$pid = (int) getenv("FIXTURE_PATIENT_ID");
+$uid = (int) getenv("FIXTURE_PATIENT_UID");
+$mob = (string) getenv("FIXTURE_MOBILE");
+$user = get_userdata($uid);
+if (!$user) {
+    throw new RuntimeException("provisioned patient WP account missing");
+}
+$roles = array_values((array) $user->roles);
+$clinic_mem = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinic_memberships") . " WHERE wp_user_id = %d", [$uid]);
+$org_mem = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_organization_memberships") . " WHERE wp_user_id = %d", [$uid]);
+$is_admin = user_can($uid, "manage_options");
+if ($roles !== [\ClinicCore\Auth\RolesAndCapabilities::ROLE_PATIENT] || $clinic_mem !== 0 || $org_mem !== 0 || $is_admin) {
+    throw new RuntimeException("provisioned patient account is not patient-only");
+}
+$pat = $db->fetchRow("SELECT id, status FROM " . $db->table("cpms_patients") . " WHERE id = %d AND clinic_id = %d LIMIT 1", [$pid, $cid]);
+if ($pat === null || (string) ($pat["status"] ?? "") !== "active") {
+    throw new RuntimeException("provisioned synthetic patient missing or inactive");
+}
+$ok = $db->insert("cpms_patient_user_links", [
+    "clinic_id" => $cid,
+    "patient_id" => $pid,
+    "wp_user_id" => $uid,
+    "mobile_at_link" => $mob,
+    "is_primary" => 1,
+    "linked_at" => $db->nowUtcSql(),
+]);
+$link_id = $db->wpdb_last_insert_id();
+if (!$ok || $link_id <= 0) {
+    throw new RuntimeException("patient link insert failed");
+}
+echo "FIXTURE_PATIENT_LINK=" . wp_json_encode([
+    "link_id" => $link_id,
+    "roles" => $roles,
+    "clinic_memberships" => $clinic_mem,
+    "org_memberships" => $org_mem,
+    "is_admin" => $is_admin,
+]) . PHP_EOL;
+''', {
+        "FIXTURE_CLINIC_ID": str(clinic_id),
+        "FIXTURE_PATIENT_ID": str(patient_id),
+        "FIXTURE_PATIENT_UID": str(wp_user_id),
+        "FIXTURE_MOBILE": str(mobile),
+    })
+    marker = next((line for line in output.splitlines() if line.startswith("FIXTURE_PATIENT_LINK=")), "")
+    if not marker:
+        raise RuntimeError("FIXTURE_PATIENT_LINK marker missing")
+    return json.loads(marker.split("=", 1)[1])
+
+
+def public_booking(browser, credentials, links, fixture):
+    stage("public booking possession-only OTP and linked patient hold confirm")
+    clinic_id = int(fixture["clinic_id"])
+    patient_id = int(fixture["patient_id"])
+    patient_uid = int(fixture["accounts"]["patient"]["id"])
+    patient_mobile = str(fixture["patient_mobile"])
+    before_otp = disposable_otp_snapshot(clinic_id, patient_mobile)
+
+    # 1. Anonymous mobile visitor proves public browse + possession-only OTP.
+    anon_context = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
+    try:
+        check("fresh cookie jar: anonymous booking",
+              len(anon_context.cookies()) == 0 and auth_cookie_names(anon_context) == [])
+        anon_page = anon_context.new_page()
+        anon_page.set_default_timeout(25000)
+        anon_responses = []
+        anon_page.on("response", lambda response: anon_responses.append(response))
+        anon_page.goto(links["booking"], wait_until="domcontentloaded")
+        root = anon_page.locator(".cpms-public-booking")
+        root.wait_for()
+        check("public shortcode rendered", root.count() == 1)
+        check("public booking RTL", root.evaluate("el => getComputedStyle(el).direction") == "rtl")
+
+        # PublicBookingShortcode::renderBrowse() server-renders the actual doctor
+        # listing; there is no standalone cpms_doctor_list shortcode in this
+        # production tree. Assert the delivered list, exact clinician identity and
+        # accessible button behavior before continuing the existing booking flow.
+        doctor_list = root.locator('.cpms-public-booking__clinician-list[data-role="clinicians"]')
+        check("public doctor list rendered with actual list contract",
+              root.get_attribute("data-state") == "bookable"
+              and doctor_list.count() == 1
+              and doctor_list.get_attribute("role") == "list")
+        clinician = doctor_list.locator('button.cpms-public-booking__clinician[data-clinician-id]')
+        clinician.wait_for()
+        check("public doctor list contains exact active synthetic doctor",
+              clinician.count() == 1
+              and clinician.first.get_attribute("data-clinician-id") == str(fixture["clinician_id"])
+              and clinician.first.locator(".cpms-public-booking__clinician-name").inner_text().strip() == fixture["clinician_name"]
+              and clinician.first.is_enabled())
+        clinician.first.click()
+        check("public doctor list selection updates aria-pressed",
+              clinician.first.get_attribute("aria-pressed") == "true")
+        slot = root.locator(".cpms-public-booking__slot:not([disabled])").first
+        slot.wait_for(state="visible", timeout=30000)
+        slot.click()
+        quoted = root.locator('[data-role="panel"][data-state="bookable"][aria-busy="false"]')
+        quoted.wait_for(state="visible", timeout=30000)
+        check("public quote completed before OTP", quoted.count() == 1)
+        continue_button = root.locator('[data-role="continue-auth"]')
+        continue_button.wait_for(state="visible")
+        continue_button.click()
+        mobile_input = root.locator('[data-role="otp-mobile"]')
+        mobile_input.wait_for(state="visible")
+        mobile_input.fill(patient_mobile)
+        with anon_page.expect_response(
+            lambda r: r.request.method == "POST" and matches_rest_path(r.url, "/otp/request"),
+            timeout=25000,
+        ) as otp_req_info:
+            root.locator('[data-auth-action="otp-request"]').click()
+        root.locator('[data-role="otp-code"]').wait_for(state="visible")
+        otp_response = otp_req_info.value
+        check("normal OTP request route succeeded",
+              otp_response.status == 200
+              and auth_cookie_names(anon_context) == []
+              and not response_sets_auth_cookie(otp_response))
+
+        before_verify = disposable_otp_snapshot(clinic_id, patient_mobile)
+        check("OTP request persisted one unconsumed token with zero identity writes",
+              before_verify["tokens"] == before_otp["tokens"] + 1
+              and before_verify["unconsumed"] == 1
+              and before_verify["users"] == before_otp["users"]
+              and before_verify["links"] == before_otp["links"]
+              and before_verify["clinic_links"] == 0
+              and before_verify["patients"] == before_otp["patients"])
+
+        otp = make_otp_fixture()
+        check("protected OTP fixture retrieved without output", not os.path.exists(OTP_FILE) and len(otp) == 6)
+
+        wrong_code = "000000" if otp != "000000" else "111111"
+        root.locator('[data-role="otp-code"]').fill(wrong_code)
+        with anon_page.expect_response(
+            lambda r: r.request.method == "POST" and matches_rest_path(r.url, "/otp/verify"),
+            timeout=25000,
+        ) as wrong_info:
+            root.locator('[data-auth-action="otp-verify"]').click()
+        root.locator('[data-role="panel"][aria-busy="false"]').wait_for(state="attached")
+        wrong_response = wrong_info.value
+        try:
+            wrong_body = wrong_response.json()
+        except Exception:
+            wrong_body = {}
+        after_wrong = disposable_otp_snapshot(clinic_id, patient_mobile)
+        check("wrong OTP code refused without cookie or identity write",
+              wrong_response.status in (400, 401, 422)
+              and isinstance(wrong_body, dict)
+              and wrong_body.get("code") == "CLINIC_OTP_INVALID"
+              and auth_cookie_names(anon_context) == []
+              and not response_sets_auth_cookie(wrong_response)
+              and after_wrong["unconsumed"] == 1
+              and after_wrong["attempts"] == before_verify["attempts"] + 1
+              and after_wrong["users"] == before_verify["users"]
+              and after_wrong["links"] == before_verify["links"]
+              and after_wrong["patients"] == before_verify["patients"]
+              and after_wrong["verify_ok"] == before_verify["verify_ok"])
+
+        root.locator('[data-role="otp-code"]').fill(otp)
+        otp = ""
+        with anon_page.expect_response(
+            lambda r: r.request.method == "POST" and matches_rest_path(r.url, "/otp/verify"),
+            timeout=25000,
+        ) as verify_info:
+            root.locator('[data-auth-action="otp-verify"]').click()
+        root.locator('[data-role="panel"][aria-busy="false"]').wait_for(state="attached")
+        verify_response = verify_info.value
+        try:
+            verify_body = verify_response.json()
+        except Exception:
+            verify_body = {}
+        verify_data = verify_body.get("data") if isinstance(verify_body, dict) else None
+        check("normal OTP verify returns HTTP 200 zero-access envelope",
+              verify_response.status == 200 and is_zero_access_otp_envelope(verify_data))
+        check("normal OTP verify sets no WordPress auth or settings cookie",
+              auth_cookie_names(anon_context) == [] and not response_sets_auth_cookie(verify_response))
+
+        auth_status = root.locator('[data-role="auth-status"]')
+        auth_status.wait_for(state="visible")
+        check("public booking remains anonymous after possession-only OTP verify",
+              root.locator('[data-role="otp-code"]').get_attribute("aria-invalid") == "true"
+              and "ورود با کد یک‌بارمصرف در حال حاضر فعال نیست" in auth_status.inner_text()
+              and rest_response(anon_responses, "/booking/hold") is None
+              and root.locator('[data-role="hold-countdown"]:visible').count() == 0
+              and root.locator('[data-role="confirm-btn"]:visible').count() == 0
+              and root.locator('[data-role="receipt"]:visible').count() == 0)
+
+        after_verify = disposable_otp_snapshot(clinic_id, patient_mobile)
+        check("normal OTP verify creates no wp_users, patient link, patient, hold or appointment row",
+              after_verify["users"] == after_wrong["users"]
+              and after_verify["links"] == after_wrong["links"]
+              and after_verify["clinic_links"] == 0
+              and after_verify["patients"] == after_wrong["patients"]
+              and after_verify["holds"] == after_wrong["holds"]
+              and after_verify["appointments"] == after_wrong["appointments"])
+        check("normal OTP verify consumes challenge and audits possession without LOGIN_SUCCESS",
+              after_verify["tokens"] == after_wrong["tokens"]
+              and after_verify["unconsumed"] == 0
+              and after_verify["verify_ok"] == after_wrong["verify_ok"] + 1
+              and type(after_verify["last_verify_actor"]) is int
+              and after_verify["last_verify_actor"] == 0
+              and after_verify["login_success"] == after_wrong["login_success"])
+
+        with anon_page.expect_response(
+            lambda r: r.request.method == "POST" and matches_rest_path(r.url, "/otp/verify"),
+            timeout=25000,
+        ) as replay_info:
+            root.locator('[data-auth-action="otp-verify"]').click()
+        root.locator('[data-role="panel"][aria-busy="false"]').wait_for(state="attached")
+        replay_response = replay_info.value
+        try:
+            replay_body = replay_response.json()
+        except Exception:
+            replay_body = {}
+        after_replay = disposable_otp_snapshot(clinic_id, patient_mobile)
+        check("replaying consumed OTP code is refused with no cookies or DB writes",
+              replay_response.status in (400, 401, 422)
+              and isinstance(replay_body, dict)
+              and replay_body.get("code") == "CLINIC_OTP_INVALID"
+              and auth_cookie_names(anon_context) == []
+              and not response_sets_auth_cookie(replay_response)
+              and after_replay["users"] == after_verify["users"]
+              and after_replay["links"] == after_verify["links"]
+              and after_replay["patients"] == after_verify["patients"]
+              and after_replay["verify_ok"] == after_verify["verify_ok"]
+              and after_replay["login_success"] == after_verify["login_success"])
+
+        anon_page.goto(links["patient"], wait_until="domcontentloaded")
+        anon_page.wait_for_timeout(600)
+        check("patient portal stays anonymous after possession-only OTP verify",
+              anon_page.locator('#cpms-patient-portal-shell[data-shell-user="anonymous"]').count() == 1
+              and anon_page.locator('#cpms-patient-portal-shell[data-shell-user="patient"]').count() == 0
+              and auth_cookie_names(anon_context) == [])
+    finally:
+        anon_context.close()
+
+    # 2. Explicitly link the patient-only WP account and sign in by password.
+    linked = link_disposable_patient(clinic_id, patient_id, patient_uid, patient_mobile)
+    after_link = disposable_otp_snapshot(clinic_id, patient_mobile)
+    check("provisioned patient-only account explicitly linked without adding users or patients",
+          int(linked.get("link_id") or 0) > 0
+          and linked.get("roles") == ["cpms_patient"]
+          and linked.get("clinic_memberships") == 0
+          and linked.get("org_memberships") == 0
+          and linked.get("is_admin") is False
+          and after_link["users"] == after_replay["users"]
+          and after_link["links"] == after_replay["links"] + 1
+          and after_link["clinic_links"] == 1
+          and after_link["patients"] == after_replay["patients"])
+
     context = browser.new_context(viewport={"width": 390, "height": 844}, locale="fa-IR")
+    check("fresh cookie jar: linked patient mobile", len(context.cookies()) == 0)
     page = context.new_page()
     page.set_default_timeout(25000)
+    if not login(page, credentials["patient"]["username"], credentials["patient"]["password"]):
+        context.close()
+        raise RuntimeError("Generated linked patient login failed")
+    check("linked patient password login set WordPress session cookie",
+          any(name.startswith("wordpress_logged_in_") for name in auth_cookie_names(context)))
+
     responses = []
     page.on("response", lambda response: responses.append(response))
     page.goto(links["booking"], wait_until="domcontentloaded")
     root = page.locator(".cpms-public-booking")
     root.wait_for()
-    check("public shortcode rendered", root.count() == 1)
-    check("public booking RTL", root.evaluate("el => getComputedStyle(el).direction") == "rtl")
-
-    # PublicBookingShortcode::renderBrowse() server-renders the actual doctor
-    # listing; there is no standalone cpms_doctor_list shortcode in this
-    # production tree. Assert the delivered list, exact clinician identity and
-    # accessible button behavior before continuing the existing booking flow.
-    doctor_list = root.locator('.cpms-public-booking__clinician-list[data-role="clinicians"]')
-    check("public doctor list rendered with actual list contract",
-          root.get_attribute("data-state") == "bookable"
-          and doctor_list.count() == 1
-          and doctor_list.get_attribute("role") == "list")
-    clinician = doctor_list.locator('button.cpms-public-booking__clinician[data-clinician-id]')
+    check("linked patient booking RTL", root.evaluate("el => getComputedStyle(el).direction") == "rtl")
+    clinician = root.locator('.cpms-public-booking__clinician-list[data-role="clinicians"] button.cpms-public-booking__clinician[data-clinician-id]')
     clinician.wait_for()
-    check("public doctor list contains exact active synthetic doctor",
-          clinician.count() == 1
-          and clinician.first.get_attribute("data-clinician-id") == str(fixture["clinician_id"])
-          and clinician.first.locator(".cpms-public-booking__clinician-name").inner_text().strip() == fixture["clinician_name"]
-          and clinician.first.is_enabled())
     clinician.first.click()
-    check("public doctor list selection updates aria-pressed",
-          clinician.first.get_attribute("aria-pressed") == "true")
     slot = root.locator(".cpms-public-booking__slot:not([disabled])").first
     slot.wait_for(state="visible", timeout=30000)
     slot.click()
-    quoted = root.locator('[data-role="panel"][data-state="bookable"][aria-busy="false"]')
-    quoted.wait_for(state="visible", timeout=30000)
-    check("public quote completed before OTP", quoted.count() == 1)
-    continue_button = root.locator('[data-role="continue-auth"]')
-    continue_button.wait_for(state="visible")
-    continue_button.click()
-    mobile_input = root.locator('[data-role="otp-mobile"]')
-    mobile_input.wait_for(state="visible")
-    mobile_input.fill(str(fixture["patient_mobile"]))
-    root.locator('[data-auth-action="otp-request"]').click()
-    root.locator('[data-role="otp-code"]').wait_for(state="visible")
-    otp_response = rest_response(responses, "/otp/request")
-    check("normal OTP request route succeeded", otp_response is not None and otp_response.status == 200)
-
-    otp = make_otp_fixture()
-    check("protected OTP fixture retrieved without output", not os.path.exists(OTP_FILE) and len(otp) == 6)
-    root.locator('[data-role="otp-code"]').fill(otp)
-    otp = ""
-    root.locator('[data-auth-action="otp-verify"]').click()
-    page.wait_for_load_state("domcontentloaded", timeout=30000)
-    root = page.locator(".cpms-public-booking")
     confirm = root.locator('[data-role="confirm-btn"]')
     confirm.wait_for(state="visible", timeout=35000)
-    verify_response = rest_response(responses, "/otp/verify")
     hold_response = rest_response(responses, "/booking/hold")
-    check("normal OTP verify route succeeded", verify_response is not None and verify_response.status == 200)
-    check("OTP restored quote and automatic hold",
+    check("linked patient quote and automatic hold succeeded",
           root.locator('[data-role="hold-countdown"]').is_visible()
           and hold_response is not None and hold_response.status == 200)
     confirm.click()
@@ -553,14 +849,21 @@ def public_booking(browser, links, fixture):
     receipt.wait_for(state="visible", timeout=30000)
     reference = receipt.locator('[data-role="reference-code"]').inner_text().strip()
     confirm_response = rest_response(responses, "/booking/confirm")
-    check("public booking confirmed with receipt",
-          bool(reference) and confirm_response is not None and confirm_response.status == 200)
+    after_confirm = disposable_otp_snapshot(clinic_id, patient_mobile)
+    check("public booking confirmed with receipt and zero extra users or patients",
+          bool(reference)
+          and confirm_response is not None and confirm_response.status == 200
+          and after_confirm["appointments"] == after_link["appointments"] + 1
+          and after_confirm["patients"] == after_link["patients"]
+          and after_confirm["users"] == after_link["users"]
+          and after_confirm["links"] == after_link["links"])
     assert_no_horizontal_overflow(page, "public booking mobile has no horizontal overflow")
     page.screenshot(path=f"{OUT}/screenshots/disposable-booking-receipt.png", full_page=True)
 
     page.goto(links["patient"], wait_until="domcontentloaded")
     page.wait_for_timeout(1200)
-    check("patient dashboard after OTP", page.locator("#cpms-patient-portal-shell").get_attribute("data-shell-user") == "patient")
+    check("patient dashboard for linked patient",
+          page.locator("#cpms-patient-portal-shell").get_attribute("data-shell-user") == "patient")
     assert_no_horizontal_overflow(page, "patient portal mobile has no horizontal overflow")
     page.screenshot(path=f"{OUT}/screenshots/disposable-patient-mobile.png", full_page=True)
     return context, page, reference
@@ -1042,7 +1345,7 @@ def main():
                 context.close()
                 contexts.remove(context)
 
-            patient_context, patient_page, booking_reference = public_booking(browser, links, fixture)
+            patient_context, patient_page, booking_reference = public_booking(browser, credentials, links, fixture)
             contexts.append(patient_context)
             arrival_context, arrival_page, live_visit_id = reception_arrival(
                 browser, credentials, links["staff"], fixture["clinic_id"], fixture["location_id"], booking_reference
