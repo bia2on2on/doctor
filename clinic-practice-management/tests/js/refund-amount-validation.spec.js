@@ -48,12 +48,17 @@ assert(!sandbox.validateRefundAmount('   ').ok, 'whitespace-only refund must fai
 assert(sandbox.validateRefundAmount('۳۰۰۰۰۰').value === 300000, 'refund Persian digits normalize');
 assert(!sandbox.validateRefundAmount('\uFEFF300000').ok, 'refund BOM input must fail');
 for (const s of ['1','300000','9999999999','007','300.0','300.00','۳۰۰۰۰۰','١٢٣',' 300 \t']) assert(money(s).ok, 'money should accept ' + JSON.stringify(s));
-for (const s of ['', '300,000','300.5','1e2','-1','+1','10000000000','３００','\uFEFF300','300\uFEFF','\uFEFF','\u00a0300','300\u2009','3\u200b00','3\u200c00','3\u200d00','3\u061c00','3\u00ad00','3\u180e00','3\u202e00']) assert(!money(s).ok, 'money should reject ' + JSON.stringify(s));
-for (const s of ['0.01','1','1.2','1.20','100',' ۱٫']) { if (s === ' ۱٫') continue; assert(qty(s).ok, 'quantity should accept ' + JSON.stringify(s)); }
+for (const s of ['', '300,000','300.5','.5','.01','00.5','1e2','-1','+1','10000000000','３００','\uFEFF300','300\uFEFF','\uFEFF','\u00a0300','300\u2009','3\u200b00','3\u200c00','3\u200d00','3\u061c00','3\u00ad00','3\u180e00','3\u202e00']) assert(!money(s).ok, 'money should reject ' + JSON.stringify(s));
+for (const s of ['0.01','.01','.5','00.5','1.','1','1.2','1.20','100',' ۱٫']) { if (s === ' ۱٫') continue; assert(qty(s).ok, 'quantity should accept ' + JSON.stringify(s)); }
 for (const s of ['0','100.01','1e2','1.234','1.200','100.000','1.005','1000','\uFEFF1','1\u200b']) assert(!qty(s).ok, 'quantity should reject ' + JSON.stringify(s));
 assert(money('0', {required:true,min:0,max:9999999999}).ok, 'zero allowed for zero-min field');
 assert(!money(' ', {required:true,min:1}).ok, 'blank rejected');
 assert(money(' ', {required:false,min:0}).blank, 'optional blank accepted');
+for (const s of ['.0','.00','0','0.0','1.']) assert(money(s,{required:true,min:0,max:9999999999}).ok,'zero/integer form must be accepted where zero is allowed: '+s);
+for (const s of ['.5','.01','00.5']) assert(!money(s,{required:true,min:0,max:9999999999}).ok,'fractional money must be rejected: '+s);
+for (const s of ['.5','.01','1.','00.5']) assert(qty(s).ok,'server-accepted quantity form must pass: '+s);
+for (const s of ['.0','.00','0','0.0']) assert(!sandbox.validateRefundAmount(s).ok,'zero refund form must stay rejected: '+s);
+assert(sandbox.validateRefundAmount('1.').value===1,'refund trailing-dot integer must be preserved as integer 1');
 
 // STRUCTURAL: each handler's brace-matched body has executable guards after comments are removed.
 function blockAt(marker) { const i = source.indexOf(marker); assert(i >= 0, 'handler marker missing: '+marker); return stripComments(balanced(source, i)); }
@@ -192,6 +197,45 @@ for(const [amount,expected] of [['',false],['\uFEFF300000',false],['۳۰۰۰۰۰
  assert(ctx.promptOptions.length===2,'refund click must request reason and amount');
  if(ctx.promptOptions.length===2)assert(ctx.promptOptions[1].raw===true,'refund amount prompt must preserve raw value');
 }
+// N1: preserve formats accepted by this field's server path and previous parse path.
+for(const form of ['.5','.01','1.','00.5']){
+ const expected=form==='1.'?1:form==='.01'?.01:.5;
+ const ctx=await runIssue({values:{qty:form}});assert(ctx.request&&ctx.request.body.items[0].quantity===expected,'quantity form '+form+' must be sent as '+expected);
+}
+for(const [label,key,bodyKey] of [['discount','disc','discount'],['unit price','price','unit_price'],['invoice discount','invDisc','discount'],['invoice tax','invTax','tax']]){
+ for(const form of ['.0','.00','0','0.0','1.']){
+  const expected=form==='1.'?1:0;const ctx=await runIssue({values:{[key]:form}});
+  const actual=key==='disc'||key==='price'?ctx.request.body.items[0][bodyKey]:ctx.request.body[bodyKey];
+  assert(ctx.request&&actual===expected,label+' money form '+form+' must send '+expected);
+ }
+ for(const form of ['.5','.01','00.5']){const ctx=await runIssue({values:{[key]:form}});assert(!ctx.request,label+' must reject fractional money '+form);}
+}
+for(const form of ['.0','.00','0','0.0','1.']){
+ const ctx=await runHandler(eventFunction("svcSave.addEventListener('click'"),{elements:{'cpms-fin-svc-price':{value:form,validity:{badInput:false}}}});
+ assert(ctx.request&&ctx.request.body.price===(form==='1.'?1:0),'service price form '+form+' payload');
+}
+for(const form of ['.5','.01','00.5']){const ctx=await runHandler(eventFunction("svcSave.addEventListener('click'"),{elements:{'cpms-fin-svc-price':{value:form,validity:{badInput:false}}}});assert(!ctx.request,'service price fractional money must reject '+form);}
+for(const label of ['payment amount','adjustment amount']){
+ const marker=label==='payment amount'?"payBtn.addEventListener('click'":"adjBtn.addEventListener('click'";
+ const inputId=label==='payment amount'?'cpms-fin-pay-amount':'cpms-fin-adj-amount';
+ const ctx=await runHandler(eventFunction(marker),{elements:{[inputId]:{value:'1.',validity:{badInput:false}}}});
+ assert(ctx.request&&ctx.request.body.amount===1,label+' trailing-dot integer payload');
+}
+for(const label of ['payment amount','adjustment amount']){const marker=label==='payment amount'?"payBtn.addEventListener('click'":"adjBtn.addEventListener('click'";const inputId=label==='payment amount'?'cpms-fin-pay-amount':'cpms-fin-adj-amount';for(const form of ['.5','.01','00.5','.0','.00','0','0.0']){const ctx=await runHandler(eventFunction(marker),{elements:{[inputId]:{value:form,validity:{badInput:false}}}});assert(!ctx.request,label+' server-rejected money form '+form);}}
+const refundTrailing=await runRefundClick('1.');assert(refundTrailing.request&&refundTrailing.request.body.amount===1,'refund trailing-dot integer payload');
+for(const form of ['.5','.01','00.5','.0','.00','0','0.0']){const ctx=await runRefundClick(form);assert(!ctx.request,'refund server-rejected amount '+form+' must not request');}
+
+// N2: an empty value accompanied by browser badInput must stop before optional/default parsing.
+const issueBadCases=[['qty','تعداد قلم نامعتبر است.'],['disc','تخفیف قلم نامعتبر است.'],['price','قیمت واحد نامعتبر است.'],['invDisc','تخفیف فاکتور نامعتبر است.'],['invTax','مالیات فاکتور نامعتبر است.']];
+for(const [key,message] of issueBadCases){const ctx=await runIssue({values:{[key]:''},bad:{[key]:true}});assert(!ctx.request,'badInput empty '+key+' must not request');assert(ctx.lastNotice&&ctx.lastNotice.message===message,'badInput empty '+key+' must show its Persian guard message');}
+const emptyQtyControl=await runIssue({values:{qty:''}});assert(emptyQtyControl.request&&emptyQtyControl.request.body.items[0].quantity===1,'empty quantity without badInput retains optional default 1');
+for(const [label,marker,inputId,guardMessage] of [
+ ['service price',"svcSave.addEventListener('click'",'cpms-fin-svc-price','قیمت تعرفه نامعتبر است. عدد صحیح وارد کنید.'],
+ ['payment amount',"payBtn.addEventListener('click'",'cpms-fin-pay-amount','مبلغ پرداخت نامعتبر است.'],
+ ['adjustment amount',"adjBtn.addEventListener('click'",'cpms-fin-adj-amount','مبلغ اصلاح نامعتبر است.']
+]){const ctx=await runHandler(eventFunction(marker),{elements:{[inputId]:{value:'',validity:{badInput:true}}}});assert(!ctx.request,label+' empty badInput must not request');assert(ctx.lastNotice&&ctx.lastNotice.message===guardMessage,label+' empty badInput guard message');}
+
+
 // BEHAVIORAL: execute shipped CpmsDialog.prompt against a small DOM stub.
 function fakeNode(tag){return {tagName:tag.toUpperCase(),children:[],listeners:{},attributes:{},style:{},className:'',value:'',hidden:false,parentNode:null,setAttribute(k,v){this.attributes[k]=v;},getAttribute(k){return this.attributes[k];},appendChild(n){n.parentNode=this;this.children.push(n);},removeChild(n){this.children=this.children.filter(x=>x!==n);n.parentNode=null;},addEventListener(k,f){(this.listeners[k]||(this.listeners[k]=[])).push(f);},removeEventListener(){},focus(){fakeDoc.activeElement=this;},select(){}};}
 const fakeDoc={head:fakeNode('head'),body:fakeNode('body'),documentElement:fakeNode('html'),activeElement:{focus(){}},listeners:{},createElement:fakeNode,getElementById(){return null;},addEventListener(k,f){(this.listeners[k]||(this.listeners[k]=[])).push(f);},removeEventListener(){}};

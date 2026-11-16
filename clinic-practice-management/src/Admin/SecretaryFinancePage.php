@@ -325,7 +325,13 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
             return { ok: false, error: 'مبلغ نامعتبر است. طول ورودی بیش از حد مجاز است.' };
         }
         var normalized = normalizeDigits(str);
-        var match = /^([0-9]+)(?:\.0+)?$/.exec(normalized);
+        if (normalized.charAt(0) === '.') {
+            if (!/^\.0+$/.test(normalized)) {
+                return { ok: false, error: 'مبلغ نامعتبر است. فقط عدد صحیح به ریال مجاز است.' };
+            }
+            normalized = '0' + normalized;
+        }
+        var match = /^([0-9]+)(?:\.0*)?$/.exec(normalized);
         if (!match) {
             return { ok: false, error: 'مبلغ نامعتبر است. فقط عدد صحیح به ریال بدون جداکننده یا اعشار مجاز است.' };
         }
@@ -362,7 +368,10 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
             return { ok: false, error: 'تعداد نامعتبر است. طول ورودی بیش از حد مجاز است.' };
         }
         var normalized = normalizeDigits(str);
-        var match = /^([0-9]+)(?:\.([0-9]{1,2}))?$/.exec(normalized);
+        if (normalized.charAt(0) === '.') {
+            normalized = '0' + normalized;
+        }
+        var match = /^([0-9]+)(?:\.([0-9]{0,2}))?$/.exec(normalized);
         if (!match) {
             return { ok: false, error: 'تعداد نامعتبر است. حداکثر دو رقم اعشار بدون جداکننده یا نماد علمی مجاز است.' };
         }
