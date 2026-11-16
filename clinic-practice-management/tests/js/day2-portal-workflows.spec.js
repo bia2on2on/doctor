@@ -1377,7 +1377,7 @@ function testClinicalDatePresentationRenderers() {
   });
   var data = {
     recommendations: [{ id: 31, type: 'rest', text: 'ok', created_at: '2026-03-20 00:30:00' }],
-    follow_ups: [{ id: 32, suggested_date: '2026-03-20', reason: 'review' }],
+    follow_ups: [{ id: 32, suggested_date: '2026-03-20', reason: 'review', status: 'open' }],
     files: [{ id: 33, original_filename: 'x.pdf', category: 'document', visibility: 'patient_visible', file_size: 1, mime_type: 'application/pdf', created_at: '2026-03-20 00:30:00' }],
     presentation: { recommendations: { 31: { created_at_jalali: '1404/12/29' } }, follow_ups: { 32: { suggested_date_jalali: '1405/01/01' } }, files: { 33: { created_at_jalali: '1404/12/29' } } }
   };
@@ -1398,13 +1398,19 @@ function testClinicalDatePresentationRenderers() {
   var admin = { state: { record: { patient: { allergies: {} }, visit: {}, follow_ups: data.follow_ups, presentation: { follow_ups: { 32: { suggested_date_jalali: '1405/01/01' } } } } },
     document: { getElementById: function (id) { return elements[id]; } }, window: {}, CFG: {},
     esc: function (v) { return String(v == null ? '' : v); }, STATUS_LABELS: {}, NOTE_CATS: {}, REC_TYPES: {}, FILE_CATS: {} };
+  var displayDigitsSource = sourceFunction(dashboard, 'displayDigits', '    ');
   vm.createContext(admin);
+  vm.runInContext(displayDigitsSource, admin);
   vm.runInContext(sourceFunction(dashboard, 'renderVisit', '    '), admin);
+  var recordBeforeDashboardRender = JSON.stringify(admin.state.record);
   admin.renderVisit();
-  assert.ok(elements['cpms-doc-visit-view'].innerHTML.includes('1405/01/01'));
+  var dashboardHtml = elements['cpms-doc-visit-view'].innerHTML;
+  assert.ok(dashboardHtml.includes('<li>تاریخ: ۱۴۰۵/۰۱/۰۱ — review <span class="cpms-doc-badge status-open">open</span></li>'), 'D1 exact Jalali/Persian follow-up row');
+  assert.strictEqual(JSON.stringify(admin.state.record), recordBeforeDashboardRender, 'dashboard display leaves the canonical follow-up payload unchanged');
   delete admin.state.record.presentation;
   admin.renderVisit();
-  assert.ok(elements['cpms-doc-visit-view'].innerHTML.includes('2026-03-20'));
+  dashboardHtml = elements['cpms-doc-visit-view'].innerHTML;
+  assert.ok(dashboardHtml.includes('<li>تاریخ: ۲۰۲۶-۰۳-۲۰ — review <span class="cpms-doc-badge status-open">open</span></li>'), 'D1 exact Persian-digit Gregorian fallback row');
 
   var reception = readPluginFile('templates/staff-reception.php');
   var dateNode = { textContent: '' };
