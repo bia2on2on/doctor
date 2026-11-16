@@ -10,6 +10,10 @@ var path = require('path');
 var vm = require('vm');
 var root = path.resolve(__dirname, '..', '..');
 var text = require(path.join(root, 'assets/js/cpms-ui-text.js'));
+var jalaliContext = { window: {}, document: { readyState: 'loading', addEventListener: function () {} } };
+vm.createContext(jalaliContext);
+vm.runInContext(read('assets/js/cpms-jalali-date.js'), jalaliContext, { filename: 'cpms-jalali-date.js' });
+var shippedJalali = jalaliContext.window.CpmsJalali;
 
 function read(relative) {
   return fs.readFileSync(path.join(root, relative), 'utf8');
@@ -66,7 +70,7 @@ function makeDashboard(useSharedText) {
   var prompts = [];
   var requests = [];
   function node(id) {
-    if (!nodes[id]) { nodes[id] = { style: {}, textContent: '', innerHTML: '' }; }
+    if (!nodes[id]) { nodes[id] = { style: {}, textContent: '', innerHTML: '', querySelectorAll: function () { return []; } }; }
     return nodes[id];
   }
   var win = {
@@ -76,6 +80,7 @@ function makeDashboard(useSharedText) {
       print_url: '/print', can_call: true, can_start: true, can_upload: true
     },
     scrollTo: function () {},
+    CpmsJalali: shippedJalali,
     CpmsDialog: { prompt: function (message, options) {
       var pending = deferred();
       prompts.push({ message: message, options: options, pending: pending });
@@ -87,7 +92,8 @@ function makeDashboard(useSharedText) {
     readyState: 'loading', hidden: false,
     getElementById: node,
     addEventListener: function (event, callback) { listeners[event] = callback; },
-    querySelector: function () { return null; }
+    querySelector: function () { return null; },
+    querySelectorAll: function () { return []; }
   };
   var context = {
     window: win, document: document, Date: FixedDate, Promise: Promise,
@@ -164,21 +170,26 @@ function testDoctorRendering(shared) {
     prescriptions: [{ id: 5, prescription_number: 'RX-34', status: 'finalized',
       created_at_jalali: "1405/01/02 he said \"hi\"", items: [{ generic_name: 'دارو', dose: 'x',
         frequency: 'y', duration_days: 21 }] }],
-    follow_ups: [{ id: 6, interval_days: 14, reason: 'پیگیری', status: 'open' }],
+    presentation: { follow_ups: { '6': { suggested_date_jalali: '1405/02/03 <b>&' } } },
+    follow_ups: [{ id: 6, suggested_date: '2026-04-23', interval_days: 14, reason: 'پیگیری', status: 'open' },
+      { id: 7, interval_days: 14, reason: 'پیگیری بازه', status: 'open' }],
     files: [{ id: 7, original_filename: 'report-9.pdf', category: 'document',
       file_size: 4096, visibility: 'patient_visible' }],
     past_visits: [
       { id: 101, jalali_date: '۱۴۰۵/۰۱/۰۳', visit_date: '2026-03-21',
         status: 'consultation_completed', clinician_name: 'دکتر رضایی' },
-      { id: 102, visit_date: "2026-03-22 it's <b>&</b>", status: 'checked_out' }
+      { id: 102, visit_date: "2026-03-22 it's <b>&</b>", status: 'checked_out' },
+      { id: 103, visit_date: '2026-03-21', status: 'paid' }
     ]
   };
   var recordBefore = JSON.stringify(record);
   env.test.state.record = record;
   env.test.renderVisit();
   var html = env.node('cpms-doc-visit-view').innerHTML;
-  ['نسخه ۳ (۱۲ نسخه)', 'بازه: ۱۴ روز', '۲۱ روز', 'RX-۳۴', 'MR-۱۲', '۳۴ سال', '۴KB']
+  ['نسخه ۳ (۱۲ نسخه)', 'تاریخ: ۱۴۰۵/۰۲/۰۳ &lt;b&gt;&amp;', 'بازه: ۱۴ روز', '۲۱ روز', 'RX-۳۴', 'MR-۱۲', '۳۴ سال', '۴KB']
     .forEach(function (expected) { assert.ok(html.includes(expected), expected); });
+  assert.ok(html.includes('placeholder="دوز (مثلاً ۵۰۰mg)"'), 'static dose placeholder uses Persian digits');
+  assert.ok(!html.includes('placeholder="دوز (مثلاً 500mg)"'), 'dose placeholder has no ASCII digits');
   assert.ok(html.includes('report-9.pdf'), 'file names remain unchanged');
   assert.ok(html.includes('data-id="4"'), 'machine ids remain ASCII');
   // Item A: notes/prescriptions created_at_jalali is ASCII Jalali from the PHP
@@ -202,14 +213,13 @@ function testDoctorRendering(shared) {
   assert.ok(html.includes('۲۰۲۶-۰۳-۲۲ it&#39;s &lt;b&gt;&amp;&lt;/b&gt;'), 'past_visit fallback escaped');
   assert.ok(!html.includes('<b>&</b>'), 'past_visit no raw <b>&</b> tag');
   assert.ok(!html.includes("2026-03-22 it's"), 'past_visit no raw digits or quote');
-  // past_visits: Item B (server jalali_date) was dropped — the server does not
-  // supply jalali_date yet; this covers the client fallback branch of the
-  // renderer: an already-Persian jalali_date passes through untouched,
-  // otherwise visit_date falls back and is rendered in Persian digits.
-  assert.ok(html.includes('۱۴۰۵/۰۱/۰۳'), 'already-Persian jalali_date passes through untouched (client fallback branch)');
-  assert.ok(html.includes('۲۰۲۶-۰۳-۲۲'), 'gregorian visit_date fallback shown in Persian digits');
-  assert.ok(!html.includes('2026-03-21'), 'no ASCII digits in jalali date');
-  assert.ok(!html.includes('2026-03-22'), 'no ASCII digits in visit_date fallback');
+  // Past visits use the shipped Gregorian-to-Jalali helper loaded on cpms-doctor.
+  assert.ok(html.includes('<li>۱۴۰۵/۰۱/۰۳ — پایان ویزیت (دکتر رضایی)</li>'), 'server jalali_date is rendered as the exact past-visit row');
+  assert.ok(html.includes('<li>۱۴۰۵/۰۱/۰۱ — پرداخت‌شده</li>'), 'Gregorian fallback converts to the exact expected Jalali row');
+  assert.ok(html.includes('<li>۲۰۲۶-۰۳-۲۲ it&#39;s &lt;b&gt;&amp;&lt;/b&gt; — خارج‌شده</li>'), 'invalid visit date fallback is rendered in the exact row');
+  assert.ok(!html.includes('2026-03-21'), 'Gregorian ASCII date is not displayed');
+  assert.ok(!html.includes('۲۰۲۶-۰۳-۲۱'), 'Gregorian date is not displayed in Persian digits either');
+  assert.ok(!html.includes('2026-03-22'), 'invalid fallback has Persian digits');
   assert.strictEqual(JSON.stringify(record), recordBefore, 'record is unchanged');
 }
 

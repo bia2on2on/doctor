@@ -7000,6 +7000,12 @@ Integration assertion counts differ between pushes (76873/76877/76874) with no t
 - OBSERVED: Workflow contracts 178 passed; workflow YAML 17 passed; companion-isolation passed; tenant-tripwire reported the 3 documented suspects; changed-lines collector self-tests 6/6 passed; Node spec plus existing JS specs passed; diff check passed. Native dialog token scan returned 0 matches in SecretaryFinancePage.php.
 - LIMITATION: Client checks validate input format, not contextual rules such as item discount exceeding item amount or payment/refund exceeding the applicable balance (`InvoiceCalc.php:45-60,82-91`; `FinanceService.php:697-703`); server-side validation handles those cases. PHP lint/PHPCS and local PHPUnit invocation are UNKNOWN (no native PHP). Refund callback tests stub `askPrompt`; the real browser and browser number-input sanitization are not exercised. CI status is reported in the associated pull request.
 
+### [2026-11-16 UTC] — PR #356 display batch round 6
+- OBSERVED: On the fresh clone at `ff076bedb0c180dea926ce991a8848ff944abc46`, restored the dashboard follow-up interval assertion, supplied Jalali past-visit date fixture, exact rendered rows, and made the Day2 Node wrapper fail when Node is absent. Three source mutations were applied, each made the JS spec fail, then reverted: interval digits removed; supplied `jalali_date` ignored; Gregorian-to-Jalali day incremented. The fallback fixture uses a distinct exact row.
+- OBSERVED: Workflow contract tests 178 passed; YAML check 17 files passed; companion isolation passed; tenant tripwire returned the 3 existing suspects; both JS specs and `node --check` passed; `git diff --check` passed; changed-lines WPCS collection completed using baseline `2263ed673a8fdf4ab91e6a7fffae6d82252e4324`.
+- LIMITATION: Native PHP is absent; PHP syntax validation is UNKNOWN. CI status is reported after the single round-6 push; no merge authorized.
+
+
 ### [2026-11-16 UTC] — Appointment-request DESIGN — **revision 2** (design only; no schema, no code) — branch `arena/2283a2f6-doctor`, draft PR #354
 
 - **Starting basis (OBSERVED):** repo `bia2on2on/doctor`, branch `arena/2283a2f6-doctor`, branched from `main` = `aec7306f6f2d7088658f7b3aaf57cb407e97b970`; pre-flight `git status` clean; `git fetch origin` → `origin/main` still `aec7306` (no merge needed). Clone is **shallow** (grafted at `aec7306`), so #340 was read with `git fetch origin arena/711a94ea-doctor` + `git show`.

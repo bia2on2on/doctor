@@ -451,7 +451,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         var fuHtml = (d.follow_ups || []).map(function (f) {
             var followUpDate = (followUpDates[String(f.id)] || {}).suggested_date_jalali;
             return '<li>' + (f.suggested_date
-                ? 'تاریخ: ' + esc(followUpDate || f.suggested_date)
+                ? 'تاریخ: ' + esc(displayDigits(followUpDate || f.suggested_date))
                 : 'بازه: ' + esc(displayDigits(f.interval_days)) + ' روز') +
                 ' — ' + esc(f.reason || '') + ' <span class="cpms-doc-badge status-' + esc(f.status) + '">' + esc(f.status) + '</span></li>';
         }).join('') || '<p class="cpms-doc-muted">پیگیری ثبت نشده است.</p>';
@@ -464,7 +464,8 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
         }).join('') || '<p class="cpms-doc-muted">فایلی پیوست نشده است.</p>';
 
         var pastHtml = (d.past_visits || []).map(function (pv) {
-            return '<li>' + esc(displayDigits(pv.jalali_date || pv.visit_date)) + ' — ' + (STATUS_LABELS[pv.status] || esc(pv.status)) +
+            var pastVisitDate = pv.jalali_date || (window.CpmsJalali && window.CpmsJalali.isoToJalaliText(pv.visit_date)) || pv.visit_date;
+            return '<li>' + esc(displayDigits(pastVisitDate)) + ' — ' + (STATUS_LABELS[pv.status] || esc(pv.status)) +
                 (pv.clinician_name ? ' (' + esc(pv.clinician_name) + ')' : '') + '</li>';
         }).join('') || '<p class="cpms-doc-muted">سابقه‌ای نیست.</p>';
 
@@ -494,7 +495,7 @@ window.CPMS_DOC = <?php echo wp_json_encode($config); ?>;
             '<div class="cpms-doc-form" style="margin-bottom:12px">' +
                 '<div class="cpms-doc-row">' +
                     '<input id="cpms-doc-rx-generic" placeholder="نام ژنریک" style="flex:2">' +
-                    '<input id="cpms-doc-rx-dose" placeholder="دوز (مثلاً 500mg)">' +
+                    '<input id="cpms-doc-rx-dose" placeholder="دوز (مثلاً ۵۰۰mg)">' +
                     '<input id="cpms-doc-rx-freq" placeholder="بهرا‌ه‌برداری (مثلاً هر ۸ ساعت)">' +
                     '<input id="cpms-doc-rx-days" type="number" min="1" placeholder="مدت (روز)">' +
                 '</div>' +
