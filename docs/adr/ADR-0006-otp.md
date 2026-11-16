@@ -1,5 +1,34 @@
 # ADR-0006 — طراحی OTP (Hash-only، TTL، Attempts، Rate Limit)
 
+> ## ⚠️ PARTIALLY SUPERSEDED — 2026-11-09 (تصمیم مالک OD-A، Option A)
+>
+> بند «بازاستفادهٔ هویتِ قطعی `{mobile}@otp.cpms.local` جایگزین ساختِ تکراری کاربر» و هر بند
+> دیگری از این سند که ساخت/یابیدن/اتصال خودکار حساب یا Patient بر پایهٔ موبایل را توصیف می‌کند،
+> با تصمیم مالک ۲۰۲۶-۱۱-۰۹ **منسوخ** است: تأیید OTP فقط possession موبایل را اثبات می‌کند؛
+> هیچ حساب/Patient ساخته/یابیده/لینک نمی‌شود؛ پاکت یکنواخت صفردسترسی؛ بدون Session و بدون
+> `LOGIN_SUCCESS`. موبایل مشترک هرگز مبنای ownership/access نیست. متن اصلی عمداً دست‌نخورده
+> باقی مانده تا تاریخچهٔ تصمیم حفظ شود (قاعدهٔ «ADR تاریخی Superseded می‌شود، نه پاک»).
+> دور ۱۵ (۲۰۲۶-۱۱-۰۹) تصحیح شد: حکم «دسترسی بیمار فقط از مسیر لینکِ صریح staff» به آن
+> صورت درست نیست — این PR هیچ لینک/Sessionِ legacy را ابطال نمی‌کند،
+> لینکِ فعال با `identity_id IS NULL` صرف‌نظر از منشأ پذیرفته می‌شود
+> (`PatientRepository.php` — `active_linked_patients_for_user()`؛
+> `clinical_access_identity_predicate()` که `identity_id IS NULL` را صریحاً می‌پذیرد)،
+> ثبتِ خودِ بیمارِ تأییدشده (`POST /patient/enroll`، C0a) لینکِ مستقلِ بدون staff می‌سازد،
+> و منشأِ لینک‌های قدیمی قابل اثبات نیست (الگوهای bridge-email/login و ردیف‌های link/audit
+> فقط نامزدها را مشخص می‌کنند — INFERENCE)؛ شرطِ «فقط نصب‌های تازه» (INFERENCE —
+> راستی‌آزمایی‌نشده) نیز به همین ریشه محدود است و به‌طور مطلق درست نیست.
+> همچنین: B2 confirm هیچ Patient نمی‌سازد
+> (fail-closed — دور ۱۴ OD-A F1) و ستونِ موضوع روی نصب‌های pre-0022 هر caller که به
+> `resolveBookingPatientForHold()` برسد را با پاکتِ خنثیِ `503 CLINIC_SERVICE_UNAVAILABLE`
+> fail-closed می‌کند — گیت‌های زودتر (license، clinician، slot، patient-session/clinic scope)
+> پیش از آن با پاکت‌های خودشان رد می‌کنند (دور ۱۴ F3؛ تصحیح دور ۱۷).
+> Addendumِ زیر (بازاستفادهٔ هویت؛ مرجع Clinic برای OTP، جست‌وجوی Patient و لینک)
+> فقط تاریخچه است.
+>
+> مرجع: `docs/api/api-contract.md` (یادداشت منسوخیِ بازاستفادهٔ هویت) و
+> `docs/agent-log.md` (2026-11-10).
+
+
 وضعیت: Accepted | تاریخ: 2026-09-05
 
 ## Context
