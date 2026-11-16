@@ -139,7 +139,7 @@
  *   T10 two-Clinic challenge order: A's stale code cannot verify B's latest
  *       challenge, failure mutates only the latest challenge, B's valid code
  *       yields the uniform zero-access envelope — no client Clinic switch
- *       (owner decision A; latest-row guards unchanged)
+ *       (owner decision A; latest-row guards as implemented)
  *   T11 A3 resolves/creates/reuses NOTHING from the mobile: no wp_users row,
  *       same count before/after, uniform zero-access envelope — even for the
  *       deterministic bridge email's pre-existing owner   (owner decision A)
@@ -198,8 +198,8 @@
  *
  *   T26 A3 fails closed when the deterministic bridge email
  *       {mobile}@otp.cpms.local is held by a NON-patient WP account: owner
- *       decision A returns the uniform 200 zero-access envelope (identical
- *       for the numbers exercised here); no session, no patient_links, no user_id in the
+ *       decision A returns the uniform 200 zero-access envelope (equal decoded data for
+ *       the numbers exercised here); no session, no patient_links, no user_id in the
  *       payload, no wp_users/Patient/link side effects, no silent role
  *       conversion, and no disclosure of the bridge-email owner.
  *
@@ -716,9 +716,9 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         self::assertSame(
             [],
             (array) ($data['data']['patient_links'] ?? ['x']),
-            'owner decision A: patient_links must be empty — no mobile-derived patient resolution of any kind.'
+            'patient_links is [] in this verify.'
         );
-        self::assertSame(0, (int) ($data['data']['user_id'] ?? -1), 'owner decision A: no mobile-derived account resolution.');
+        self::assertSame(0, (int) ($data['data']['user_id'] ?? -1), 'user_id is 0 in this verify.');
         self::assertFalse((bool) ($data['data']['session_issued'] ?? true), 'owner decision A: no session is issued.');
         self::assertSame(
             0,
@@ -825,14 +825,14 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         self::assertSame(200, $verify->get_status(), "owner decision A: B's valid code is possession proof — uniform 200 zero-access envelope.");
         $data = $verify->get_data();
         self::assertFalse((bool) ($data['data']['session_issued'] ?? true), 'owner decision A: a login-purpose verify must issue NO session.');
-        self::assertSame(0, (int) ($data['data']['user_id'] ?? -1), 'owner decision A: no mobile-derived account resolution.');
+        self::assertSame(0, (int) ($data['data']['user_id'] ?? -1), 'user_id is 0 in this verify.');
         self::assertSame(
             [],
             (array) ($data['data']['patient_links'] ?? ['x']),
-            'owner decision A: no patient resolution from mobile in any Clinic.'
+            'patient_links is [] in this verify.'
         );
-        self::assertSame(0, $this->countPatientLinks($patientB), 'owner decision A: no auto-link in the challenge Clinic either.');
-        self::assertSame(0, $this->countPatientLinks($patientA), 'Patient in the non-challenge Clinic must not be linked.');
+        self::assertSame(0, $this->countPatientLinks($patientB), 'Link row count for this Patient is 0.');
+        self::assertSame(0, $this->countPatientLinks($patientA), 'Link row count for this Patient is 0.');
 
         $consumedA = App::db()->fetchValue(
             'SELECT consumed_at FROM ' . App::db()->table('cpms_otp_tokens') . ' WHERE id = %d',
@@ -861,7 +861,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * (a same-mobile Patient exists only in another Clinic). owner decision
      * A: A3 must resolve NOTHING from the mobile — the pre-existing WP user
      * is NOT reused, NOT logged in and NOT linked: uniform 200 zero-access
-     * envelope, wp_users count unchanged, no Patient link anywhere.
+     * envelope, wp_users count compared, no Patient link found for the colliding mobile.
      */
     public function testA3ResolvesNothingFromTheMobileEvenWhenBridgeEmailUserExists(): void
     {
@@ -897,17 +897,17 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $data = $verify->get_data();
         // owner decision A: NO mobile-derived reuse — not even of a same-mobile
         // cpms_patient account established by other means.
-        self::assertSame(0, (int) ($data['data']['user_id'] ?? -1), 'owner decision A: no mobile-derived account resolution of any kind.');
+        self::assertSame(0, (int) ($data['data']['user_id'] ?? -1), 'user_id is 0 in this verify.');
         self::assertFalse((bool) ($data['data']['session_issued'] ?? true), 'owner decision A: no session is issued.');
-        self::assertFalse((bool) ($data['data']['is_new_user'] ?? true), 'No user is created or reused.');
+        self::assertFalse((bool) ($data['data']['is_new_user'] ?? true), 'is_new_user is false in this verify.');
 
         $usersAfter = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'users'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
-        self::assertSame($usersBefore, $usersAfter, 'No wp_users row may be created (owner decision A: no provisioning).');
+        self::assertSame($usersBefore, $usersAfter, 'wp_users row count equals the pre-verify count.');
 
         self::assertSame(
             [],
             array_values((array) ($data['data']['patient_links'] ?? ['non-empty'])),
-            'No Patient exists in the challenge Clinic, so no Patient link may appear.'
+            'patient_links is [] in this verify.'
         );
         self::assertSame(0, $this->countPatientLinks($patientB), 'The other-Clinic Patient must never be linked.');
     }
@@ -925,10 +925,10 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      *
      * owner decision A (2026-11-09) UPDATED EXPECTATIONS: the response is now
      * the UNIFORM 200 zero-access envelope (`user_id=0`, `patient_links=[]`,
-     * `session_issued=false`) — identical for the numbers exercised in this class, so there is no
-     * envelope difference between "invalid code", "valid code / no linkable
-     * account" and "valid code / colliding staff account" — the strongest
-     * possible non-disclosure. Still required and still pinned:
+     * `session_issued=false`) — equal status/code/message/decoded data for the valid-code numbers exercised by this test's
+     * fixture comparisons (equal status/code/message/decoded data, checked at the assertions below):
+     * "valid code / no linkable account" and "valid code / colliding staff account".
+     * Still required and still pinned:
      *   - no session/current user, no patient_links exposure, no user_id
      *     different from 0, no disclosure of which account owns the bridge email;
      *   - zero provisioning side effects: no new wp_users row, no Patient
@@ -988,15 +988,15 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         );
 
         // No session: the failing verify must not authenticate anyone.
-        self::assertSame(0, get_current_user_id(), 'Fail-closed verify must leave the request anonymous.');
+        self::assertSame(0, get_current_user_id(), 'current user id is 0 after fail-closed verify.');
 
         // Zero provisioning side effects.
         $usersAfter = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->prefix . 'users'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared,WordPress.DB.DirectDatabaseQuery
-        self::assertSame($usersBefore, $usersAfter, 'No wp_users row may be created on the fail-closed path.');
+        self::assertSame($usersBefore, $usersAfter, 'wp_users row count equals the pre-verify count.');
         self::assertSame(
             0,
             $this->countPatientsForMobile($this->clinicA, self::MOBILE_T26),
-            'No Patient row may be created for the mobile on the fail-closed path.'
+            'Patient row count for the mobile is 0.'
         );
         self::assertSame(
             0,
@@ -1019,9 +1019,9 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
     // =================================================================
 
     /**
-     * T12 — before any authentication there is no Hold and held_count is
-     * unchanged; even AFTER A3 (owner decision A: no session is issued) but
-     * BEFORE B1 nothing has consumed capacity. The Hold is exclusively the
+     * T12 — before any authentication there is no Hold and held_count is 0
+     * (compared below); even AFTER A3 (owner decision A: no session is issued) but
+     * BEFORE B1 nothing has consumed capacity (counts compared below). The Hold is exclusively the
      * authenticated B1 act.
      */
     public function testNoHoldExistsBeforeOrImmediatelyAfterAuthentication(): void
@@ -1041,7 +1041,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $this->issueKnownOtpToken(self::MOBILE_T12, '404040');
         $result = App::otpService()->verify(self::MOBILE_T12, '404040');
         self::assertFalse((bool) $result['session_issued'], 'owner decision A: no session is issued.');
-        self::assertSame(0, (int) $result['user_id'], 'owner decision A: no mobile-derived account resolution.');
+        self::assertSame(0, (int) $result['user_id'], 'user_id is 0 in this verify.');
         $this->ambientScope(null);
 
         self::assertSame(0, $this->countRows('cpms_slot_holds'), 'After A3 but before B1: still no Hold — the Hold is the authenticated B1 act.');
@@ -1186,13 +1186,13 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * test (possession-only caller, NO linked Patient anywhere) reached the
      * B2 new-Patient names gate because the OTP verify stamped a clinic-scoped
      * session token. Owner decision A abolished that stamp, so a caller whose
-     * session clinic cannot resolve fails closed BEFORE any hold, identity
+     * session clinic does not resolve -> fail closed BEFORE any hold, identity
      * or capacity logic runs — the names gate is not reachable without a new
      * booking path and must not be simulated by fabricating session state.
      *
      * What this test now pins: a bare caller (integration-created `cpms_patient`
-     * user, no Patient, no link, no OTP session anywhere) cannot hold, cannot
-     * consume capacity, cannot create a Patient or an Appointment, and cannot
+     * user, no Patient, no link, no OTP session anywhere) does not hold, does not
+     * consume capacity, does not create a Patient or an Appointment, and does not
      * touch the DECOY Patient seeded in the booking Clinic — the uniform
      * CLINIC_SCOPE_REQUIRED envelope.
      *
@@ -1220,7 +1220,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
             'slot_id' => $slot['slot_id'],
         ], asUserId: $userId, withNonce: true);
         self::assertSame(400, $hold->get_status(), 'owner decision A: fail closed before any Hold is created. Body: ' . wp_json_encode($hold->get_data()));
-        $this->assertClinicError($hold, 'CLINIC_SCOPE_REQUIRED', 400, 'a caller whose session clinic cannot resolve gets the uniform fail-closed envelope.');
+        $this->assertClinicError($hold, 'CLINIC_SCOPE_REQUIRED', 400, 'a caller whose session clinic does not resolve gets the uniform fail-closed envelope.');
         self::assertSame(0, $this->heldCountOf($slot['slot_id']), 'no slot capacity is consumed.');
         self::assertSame(0, $this->countRows('cpms_slot_holds'), 'no Hold row is created.');
         self::assertSame(0, $this->countPatientsForMobile($this->clinicA, self::MOBILE_T14), 'no Patient is created in any Clinic.');
@@ -1228,8 +1228,8 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
 
         $decoyRow = $this->patientRowByMobile($this->clinicA, self::MOBILE_DECOY);
         self::assertNotNull($decoyRow, 'the DECOY Patient row must exist.');
-        self::assertSame('Decoy', (string) $decoyRow['first_name'], 'the decoy Patient is untouched.');
-        self::assertSame('Target', (string) $decoyRow['last_name'], 'the decoy Patient is untouched.');
+        self::assertSame('Decoy', (string) $decoyRow['first_name'], 'the decoy Patient row first_name is the seeded value.');
+        self::assertSame('Target', (string) $decoyRow['last_name'], 'the decoy Patient row last_name is the seeded value.');
         self::assertSame(0, $this->countAppointmentsForPatient($decoyPatient), 'the client-claimed decoy gains no appointment.');
     }
 
@@ -1286,7 +1286,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * exists ONLY in another Clinic grants this caller NOTHING in the booking
      * Clinic: with no resolvable session clinic the hold fails closed with
      * CLINIC_SCOPE_REQUIRED, no Hold/Appointment/new Patient is created, and
-     * the other-Clinic row is untouched. The pre-OD-A shape (possession-only
+     * the other-Clinic row's name fields and counts are checked by field below. The pre-OD-A shape (possession-only
      * booking treating the caller as a NEW Patient in the booking Clinic)
      * required the OTP-stamped session owner decision A abolished; the
      * new-Patient gate coverage is disclosed as deleted (see T14 note).
@@ -1314,8 +1314,8 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         self::assertSame(0, $this->countPatientsForMobile($this->clinicA, self::MOBILE_T16), 'no Patient is created in the booking Clinic.');
 
         $otherClinicRow = $this->patientRowByMobile($this->clinicB, self::MOBILE_T16);
-        self::assertSame('Elsewhere', (string) $otherClinicRow['first_name'], 'the other-Clinic Patient row is untouched.');
-        self::assertSame('Only', (string) $otherClinicRow['last_name'], 'the other-Clinic Patient row is untouched.');
+        self::assertSame('Elsewhere', (string) $otherClinicRow['first_name'], 'the other-Clinic Patient row first_name is the seeded value.');
+        self::assertSame('Only', (string) $otherClinicRow['last_name'], 'the other-Clinic Patient row last_name is the seeded value.');
         self::assertSame(0, $this->countAppointmentsForPatient($patientB), 'the other-Clinic Patient gains no appointment here.');
     }
 
@@ -2430,8 +2430,8 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
 
         $otherClinicRow = $this->patientRowByMobile($this->clinicB, self::MOBILE_R2);
         self::assertNotNull($otherClinicRow, 'the other-Clinic Patient row must exist.');
-        self::assertSame('Only', (string) $otherClinicRow['first_name'], 'the other-Clinic Patient row is untouched.');
-        self::assertSame('ClinicB', (string) $otherClinicRow['last_name'], 'the other-Clinic Patient row is untouched.');
+        self::assertSame('Only', (string) $otherClinicRow['first_name'], 'the other-Clinic Patient row first_name is the seeded value.');
+        self::assertSame('ClinicB', (string) $otherClinicRow['last_name'], 'the other-Clinic Patient row last_name is the seeded value.');
         self::assertSame(0, $this->countAppointmentsForPatient($patientB), 'the other-Clinic Patient gains no appointment here.');
     }
 
@@ -2522,10 +2522,10 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * CLOSED at confirm time: HTTP 400 CLINIC_VALIDATION_FAILED with the
      * exact message 'پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)'
      * — with missing, whitespace-only or valid names, and with hostile
-     * identity claims (compared within this fixture only). NO Patient row,
-     * Patient link, Appointment or WP-user change is produced; the helper
-     * checks total row counts (Patients by holder mobile, caller links,
-     * total appointments) and Hold state; no audit assertion exists in this
+     * identity claims (compared within this fixture only). The helper
+     * checks: total appointments count, total Patient rows for the holder
+     * mobile, caller link count, Hold state; it does not check row contents;
+     * no audit assertion exists in this
      * test. The seeded Hold stays active/retryable and keeps its capacity
      * claim.
      *
@@ -2571,7 +2571,7 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId, 1);
         $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
-        // (2) whitespace-only first_name -> identical decoded-data response.
+        // (2) whitespace-only first_name -> equal decoded-data response (checked below).
         $attempt2 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
             'first_name' => '   ',
@@ -2594,16 +2594,16 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         $this->assertSeededHoldUntouchedAndNothingCreated($slot['slot_id'], $holdToken, self::MOBILE_R5, $userId, 1);
         $this->assertWpUserUnchanged($wpUserBefore, $capsBefore, $userId);
 
-        // The pre-existing same-mobile Patient row is untouched; the decoy
+        // Name fields of the pre-existing same-mobile Patient row are checked by field below; the decoy
         // gains no appointment and no link.
         $sameMobileRow = $this->patientRowByMobile($this->clinicA, self::MOBILE_R5);
-        self::assertNotNull($sameMobileRow, 'the pre-existing same-mobile Patient row must remain');
+        self::assertNotNull($sameMobileRow, 'the pre-existing same-mobile Patient row exists.');
         self::assertSame($sameMobilePatient, (int) $sameMobileRow['id']);
-        self::assertSame('Hamsaye', (string) $sameMobileRow['first_name'], 'the pre-existing same-mobile row first_name is the seeded value');
+        self::assertSame('Hamsaye', (string) $sameMobileRow['first_name'], 'the pre-existing same-mobile row first_name is the seeded value.');
         self::assertSame('Row', (string) $sameMobileRow['last_name']);
         self::assertSame(0, $this->countAppointmentsForPatient($sameMobilePatient), 'the same-mobile patient gains no appointment');
         self::assertSame(0, $this->countAppointmentsForPatient($decoyPatient), 'the client-claimed decoy patient gains no appointment');
-        self::assertSame(0, $this->countPatientLinksForUser($userId), 'NO Patient link is ever created for this caller');
+        self::assertSame(0, $this->countPatientLinksForUser($userId), 'Caller link count for this user is 0.');
 
         $holdRow = $this->holdRowByToken($holdToken);
         self::assertSame('active', (string) $holdRow['status'], 'An attacker probe does not consume the Hold.');
@@ -2617,13 +2617,14 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
      * Clinic — the booking Clinic holds NO same-mobile row and the caller has
      * zero links there. The response fails closed with the same status/code/message contract as the R5 case:
      * HTTP 400 CLINIC_VALIDATION_FAILED with the exact uniform message. No
-     * Patient is created in the booking Clinic; the other-Clinic row is
-     * untouched; no link, Appointment, or WP-user side effect; the Hold stays
+     * Patient row is created in the booking Clinic (count checked below); the other-Clinic
+     * row's name fields are checked by field below; no link/Appointment/WP-user count
+     * change (checked below); the Hold stays
      * active/retryable with its capacity.
      *
      * What is NOT restorable (stated precisely): the live B1 hold — after the
      * item-A fix, hold() requires a linked active Patient in the booking
-     * Clinic, so this caller can never reach the names gate through a LIVE
+     * Clinic, so this caller does not reach the names gate through a LIVE
      * hold again. The flipped T16 (fail-closed at hold time) stays in force.
      */
     public function testSeededHoldSameMobilePatientOnlyInAnotherClinicFailsClosedIdentically(): void
@@ -2683,15 +2684,15 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         self::assertSame('Elsewhere', (string) $otherClinicRow['first_name'], 'The other-Clinic Patient row first_name is the seeded value.');
         self::assertSame('Only', (string) $otherClinicRow['last_name'], 'The other-Clinic Patient row last_name is the seeded value.');
         self::assertSame(0, $this->countAppointmentsForPatient($patientB), 'The other-Clinic Patient gains no appointment here.');
-        self::assertSame(1, $this->countPatientLinksForUser($userId), 'Caller link count is 1: the other-Clinic link; count compared.');
+        self::assertSame(1, $this->countPatientLinksForUser($userId), 'Caller link count is 1 (count only; contents of the link row not checked).');
     }
 
     /**
-     * R7 — ITEM B(2): a caller linked ONLY in another Clinic cannot book into
-     * the booking Clinic via the REST path either — the uniform
-     * CLINIC_SCOPE_REQUIRED 400 (uniform scope envelope), with no Hold, no
-     * Appointment, no Patient and no capacity consumed. Distinct from the
-     * seeded-marker R2/R6 cases: here the REST session resolves links only.
+     * R7 — ITEM B(2): a caller linked ONLY in another Clinic gets the
+     * uniform CLINIC_SCOPE_REQUIRED 400 envelope; the checks below compare
+     * Hold/Appointment/Patient/appointment row counts and the slot held
+     * count (all 0). Distinct from the seeded-marker R2/R6 cases: here the
+     * REST session resolves links only.
      *
      * owner decision: shared mobile is never an ownership/access basis.
      */
@@ -2727,8 +2728,8 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
         self::assertSame(0, $this->countRows('cpms_appointments'), 'no Appointment is created.');
 
         $otherClinicRow = $this->patientRowByMobile($this->clinicB, self::MOBILE_R7);
-        self::assertSame('Other', (string) $otherClinicRow['first_name'], 'the other-Clinic Patient row is untouched.');
-        self::assertSame('Clinic', (string) $otherClinicRow['last_name'], 'the other-Clinic Patient row is untouched.');
+        self::assertSame('Other', (string) $otherClinicRow['first_name'], 'the other-Clinic Patient row first_name is the seeded value.');
+        self::assertSame('Clinic', (string) $otherClinicRow['last_name'], 'the other-Clinic Patient row last_name is the seeded value.');
         self::assertSame(0, $this->countAppointmentsForPatient($patientB), 'the other-Clinic Patient gains no appointment here.');
     }
 
@@ -2790,9 +2791,11 @@ final class Phase8Slice2OtpHoldConfirmRedTest extends WP_UnitTestCase
     }
 
     /**
-     * Post-failure invariants for the confirm-side names gate on a seeded
-     * Hold: the Hold stays active/retryable, the held capacity is kept, and
-     * nothing is created for the booking mobile.
+     * Post-failure counts for the confirm-side names gate on a seeded
+     * Hold: the helper compares the given expected counts (Patients for
+     * the holder mobile, caller links, appointments) and the Hold state
+     * (active, capacity claim intact). It checks counts only — not row
+     * contents or audit rows.
      */
     private function assertSeededHoldUntouchedAndNothingCreated(int $slotId, string $holdToken, string $mobile, int $userId, int $expectedPatientRows = 0, int $expectedLinks = 0): void
     {

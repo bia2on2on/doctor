@@ -1159,7 +1159,7 @@ def patient_portal_otp_login_surface(browser):
           config.get("otp_request_path") == "/otp/request" and config.get("otp_verify_path") == "/otp/verify",
           f"configured routes={config.get('otp_request_path')},{config.get('otp_verify_path')}")
     # Round 15 (Reader-2 G3): before/after DELTA across the OTP request+verify
-    # steps — total wp_users and total patient_links counts must be UNCHANGED.
+    # steps — total {prefix}users and total {prefix}cpms_patient_user_links counts must be UNCHANGED.
     # Fail-closed when the isolated DB or its table prefix cannot be read.
     delta_prefix = wp_table_prefix()
     users_before = wp_scalar(f"SELECT COUNT(*) FROM {delta_prefix}users", WP_DIR) if delta_prefix else None

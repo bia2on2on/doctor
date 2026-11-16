@@ -19,13 +19,13 @@ use WP_UnitTestCase;
  *   - NO mobile-derived WP account creation/reuse ({mobile}@otp.cpms.local
  *     has no authority);
  *   - NO session, therefore no LOGIN_SUCCESS audit;
- *   - the response is the SAME uniform 200 zero-access envelope for the
- *     valid code — existing Patient, non-existing mobile, pre-linked account,
- *     or staff-colliding bridge email produce equal decoded response data in this fixture pair.
+ *   - the response is the uniform 200 zero-access envelope for a valid code;
+ *     existing-vs-non-existing mobile decoded data equality is compared at
+ *     testRestEnvelopeIsIdenticalForExistingAndNonExistingNumbers (fixture pair only).
  *
  * Shared mobile is never an ownership/access basis: two Patients in
- * DIFFERENT clinics/organizations sharing one mobile are equally unlinked.
- * (Two Patients in ONE clinic cannot share a mobile at all — schema key
+ * DIFFERENT clinics/organizations sharing one mobile stay unlinked (each link-row count compared).
+ * (Two Patients in ONE clinic do not share a mobile — schema key
  * u_pat_mobile (clinic_id, mobile) enforces it.)
  *
  * Patient access in this slice still requires a persisted Patient<->User
@@ -156,11 +156,11 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         self::assertSame([], (array) $result['patient_links'], 'owner decision A: no Patient resolution from mobile.');
         self::assertFalse((bool) $result['is_new_user']);
         self::assertFalse((bool) $result['session_issued'], 'owner decision A: no session is issued.');
-        self::assertSame(0, get_current_user_id(), 'no account may be authenticated.');
+        self::assertSame(0, get_current_user_id(), 'current user id is 0 after verify.');
 
-        self::assertSame($usersBefore, $this->userCount(), 'no wp_users row may be created.');
-        self::assertSame($linksBefore, $this->linkCount(), 'no Patient link may be created in ANY clinic.');
-        self::assertSame(0, $this->linksForPatientMobile(self::MOBILE), 'no link may exist for any same-mobile Patient.');
+        self::assertSame($usersBefore, $this->userCount(), 'wp_users row count equals the pre-verify count.');
+        self::assertSame($linksBefore, $this->linkCount(), 'Link row count equals the pre-verify count.');
+        self::assertSame(0, $this->linksForPatientMobile(self::MOBILE), 'Link row count for same-mobile Patients is 0.');
         self::assertSame(0, $this->auditCountActionSince('LOGIN_SUCCESS', $loginAuditBefore), 'owner decision A: no session means no LOGIN_SUCCESS is written.');
         self::assertSame(1, $this->auditCountActionSince('OTP_VERIFY_OK', $verifyOkBefore), 'the mandatory possession audit is still written exactly once.');
     }
@@ -252,8 +252,8 @@ final class OtpPossessionOnlyTest extends WP_UnitTestCase
         self::assertSame([], (array) $result['patient_links'], 'OTP returns no Patient data — linking an existing Patient to a WP account (the staff-link flow) is a Slice 2 concern.');
         self::assertFalse((bool) $result['session_issued'], 'slice 1: even a pre-existing explicit link is NOT an OTP access basis.');
         self::assertSame(0, get_current_user_id());
-        self::assertSame($linksBefore, $this->linkCount(), 'the pre-existing link must remain untouched.');
-        self::assertSame($usersBefore, $this->userCount(), 'no additional account may be created.');
+        self::assertSame($linksBefore, $this->linkCount(), 'Link row count equals the pre-verify count.');
+        self::assertSame($usersBefore, $this->userCount(), 'wp_users row count equals the pre-verify count.');
     }
 
     public function testVerifyRouteFailsClosedWith503WhenOtpSettingsUnreadable(): void

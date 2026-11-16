@@ -385,7 +385,7 @@ final class OtpSecurityTest extends WP_UnitTestCase
         self::assertSame(0, (int) $result['user_id'], 'owner decision A: no mobile-derived account resolution.');
         self::assertFalse($result['is_new_user']);
         self::assertFalse($result['session_issued'], 'owner decision A: OTP issues no session here.');
-        self::assertSame($before, $this->userCount(), 'owner decision A: no wp_users row may be created.');
+        self::assertSame($before, $this->userCount(), 'wp_users row count equals the pre-verify count.');
     }
 
     /**
@@ -469,11 +469,11 @@ final class OtpSecurityTest extends WP_UnitTestCase
     }
 
     /**
-     * OTP possession must never turn a durable Patient↔Staff link into Staff
-     * authentication. Under owner decision A the zero-access response is
-     * UNIFORMLY the same envelope for every number (staff-linked, patient-
-     * linked, or nonexistent) — non-disclosure is exact, not statistical —
-     * and the staff role, account count and links must remain unchanged.
+     * OTP possession must not turn a durable Patient↔Staff link into Staff
+     * authentication. Under owner decision A this test compares the zero-access
+     * envelope fields for the staff-linked fixture only (`user_id=0`, empty
+     * links, `session_issued=false`) and counts wp_users / link rows before
+     * and after; the staff role is asserted below.
      * owner decision: shared mobile is never an ownership/access basis.
      */
     public function testLoginOtpCannotAuthenticateStaffLinkedToPatientRecord(): void
@@ -506,16 +506,15 @@ final class OtpSecurityTest extends WP_UnitTestCase
         $linksBefore = (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links'));
         wp_set_current_user(0);
 
-        // owner decision A: valid code, possession proven — yet ZERO access:
-        // same uniform zero-access envelope as every other number.
+        // owner decision A: valid code, ZERO access in this fixture (user_id=0, session_issued=false).
         $result = $this->service()->verify($mobile, '111007', OtpService::PURPOSE_LOGIN);
         self::assertSame(0, (int) $result['user_id']);
         self::assertFalse($result['session_issued'], 'owner decision A: OTP does not authenticate the staff account.');
         self::assertSame([], $result['patient_links']);
 
-        self::assertSame($usersBefore, $this->userCount(), 'OTP denial must not create another account.');
+        self::assertSame($usersBefore, $this->userCount(), 'wp_users row count equals the pre-verify count.');
         self::assertSame($linksBefore, (int) $db->fetchValue('SELECT COUNT(*) FROM ' . $db->table('cpms_patient_user_links')));
-        self::assertSame(['cpms_secretary'], (array) get_userdata($staffId)->roles, 'Staff role must remain unchanged.');
-        self::assertSame(0, get_current_user_id(), 'A denied OTP must not authenticate the current request.');
+        self::assertSame(['cpms_secretary'], (array) get_userdata($staffId)->roles, 'Staff role is cpms_secretary after verify.');
+        self::assertSame(0, get_current_user_id(), 'current user id is 0 after verify.');
     }
 }

@@ -98,7 +98,7 @@ final class OtpFlowTest extends WP_UnitTestCase
     {
         $this->issueKnownCode('424242');
 
-        // users-count unchanged (single-use assert below retained).
+        // users-count snapshot (single-use assert below retained).
         global $wpdb;
         $usersBefore = (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->users); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
@@ -108,7 +108,7 @@ final class OtpFlowTest extends WP_UnitTestCase
         $this->assertFalse($result['is_new_user']);
         $this->assertSame([], $result['patient_links'], 'owner decision A: no patient resolution from mobile.');
         $this->assertFalse($result['session_issued'], 'owner decision A: OTP issues no patient session here.');
-        $this->assertSame($usersBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->users), 'owner decision A: no wp_users row may be created.'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
+        $this->assertSame($usersBefore, (int) $wpdb->get_var('SELECT COUNT(*) FROM ' . $wpdb->users), 'wp_users row count equals the pre-verify count.'); // phpcs:ignore WordPress.DB.PreparedSQL.NotPrepared
 
         // Token مصرف شده (تک‌بار)
         $consumed = $wpdb->get_var(
@@ -378,7 +378,7 @@ final class OtpFlowTest extends WP_UnitTestCase
         $result = $otp->verify(self::MOBILE, '246810');
 
         $this->assertSame(0, (int) $result['user_id']);
-        $this->assertSame([], $result['patient_links'], 'owner decision A: no Patient resolution in any Clinic.');
+        $this->assertSame([], $result['patient_links'], 'patient_links is the empty array in this verify.');
         $this->assertFalse($result['session_issued']);
         $this->assertFalse($result['is_new_user']);
 
@@ -390,7 +390,7 @@ final class OtpFlowTest extends WP_UnitTestCase
                     $pid
                 )
             );
-            $this->assertSame(0, (int) $link, 'owner decision A: no auto-link in any Clinic.');
+            $this->assertSame(0, (int) $link, 'Link row count for this Patient is 0.');
         }
     }
 

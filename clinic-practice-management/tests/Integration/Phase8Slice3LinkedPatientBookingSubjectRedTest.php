@@ -366,7 +366,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
 
         $slot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '12:00:00', 1);
 
-        // owner decision A (2026-11-09): a zero-link OTP identity cannot originate a Hold
+        // owner decision A (2026-11-09): a zero-link OTP identity does not originate a Hold
         // via B1 anymore, so this test's subject (the confirm-side same-mobile non-reuse
         // rule) starts from a persisted Hold of the historical shape (patient_id NULL) —
         // seed it directly.
@@ -387,7 +387,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         self::assertNotSame(200, $response->get_status(), 'Same-mobile unlinked must NOT be silently reused — must fail closed with safe validation when uniqueness prevents creation. Body: ' . wp_json_encode($response->get_data()));
         $code = is_array($response->get_data()) ? (string) ($response->get_data()['code'] ?? '') : '';
         self::assertSame('CLINIC_VALIDATION_FAILED', $code, 'Must be generic non-enumerating CLINIC_VALIDATION_FAILED.');
-        self::assertSame('پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)', (string) ($response->get_data()['message'] ?? ''), 'Uniform fail-closed message — same-mobile existence is not observable (round 14 OD-A F1).');
+        self::assertSame('پروفایل شما ناقص است — ابتدا موبایل خود را تأیید کنید (OTP)', (string) ($response->get_data()['message'] ?? ''), 'Uniform fail-closed message with names — the message checked here (round 14 OD-A F1).');
         // B2 same-mobile duplicate is pure input validation (400 per error-codes.md registry; BookingService default 400).
         self::assertSame(400, $response->get_status(), 'B2 same-mobile validation must be 400 (generic validation) per registry. Got: ' . $response->get_status() . ' Body: ' . wp_json_encode($response->get_data()));
         self::assertSame(400, (int) ($response->get_data()['data']['status'] ?? 0), 'Envelope data.status must be 400.');
@@ -556,7 +556,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
 
         $slot = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '16:00:00', 1);
 
-        // owner decision A (2026-11-09): a zero-link OTP identity cannot originate a Hold
+        // owner decision A (2026-11-09): a zero-link OTP identity does not originate a Hold
         // via B1 anymore, so this test's subject starts from a persisted Hold of the
         // historical shape (patient_id NULL) — seed it directly.
         // Round 14 OD-A (F1/B1): confirm of a Historical-NULL Hold whose caller holds
@@ -581,7 +581,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         self::assertSame('active', (string) $holdRow['status'], 'Hold must remain active/retryable.');
         self::assertSame(1, $this->heldCountOf($slot['slot_id']), 'Capacity still held.');
 
-        // B2 with valid names -> the same fail-closed envelope (identical decoded data); NO Patient created.
+        // B2 with valid names -> the same fail-closed envelope (equal decoded data, compared below); NO Patient created.
         $attempt2 = $this->restPost(self::NS . self::CONFIRM_PATH, [
             'hold_token' => $holdToken,
             'first_name' => 'نرگس',
@@ -1073,7 +1073,7 @@ final class Phase8Slice3LinkedPatientBookingSubjectRedTest extends WP_UnitTestCa
         $this->setRole($user0, 'cpms_patient');
         cpms_test_seed_patient_session($user0, $this->clinicA);
         $slot0 = $this->seedSlot($this->clinicA, $this->locationA, $this->clinicianA, $this->ymdDaysAhead(5), '07:00:00', 1);
-        // owner decision A (2026-11-09): B1 for a zero-link identity cannot succeed
+        // owner decision A (2026-11-09): B1 for a zero-link identity does not succeed
         // anymore; the "historical 0 linked" case is by definition a Hold persisted
         // before that rule — seed the row of the historical shape directly.
         $token0 = $this->seedLegacyNullHoldRow($this->clinicA, $slot0['slot_id'], $user0, $mobile0);

@@ -462,14 +462,14 @@ final class BookingFlowTest extends WP_UnitTestCase
     {
         global $wpdb;
         $slot = $this->makeSlot(3, '10:00', 1);
-        // owner decision A (2026-11-09): a zero-link OTP identity cannot originate
+        // owner decision A (2026-11-09): a zero-link OTP identity does not originate
         // a Hold via hold() — under this shape the historical NULL hold is seeded
-        // directly so the confirm-side subject is unchanged.
+        // directly so the confirm-side subject is the persisted one.
         // Round 14 OD-A (F1/B1): confirm of a Historical-NULL Hold whose caller
         // holds NO linked Patient in the booking Clinic fails closed — no Patient
-        // is created, no link, no appointment, no identity activation. Supplied
-        // names do not open the gate; the response is the uniform fail-closed
-        // envelope; the response equals the other variants in this fixture.
+        // row for the holder mobile, no caller link, no Appointment is created in
+        // this test (checked below); Supplied names do not open the gate in this
+        // single confirm attempt with valid names.
         $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
         try {
             $this->booking()->confirm($hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی');
@@ -552,7 +552,7 @@ final class BookingFlowTest extends WP_UnitTestCase
         // A pre-VERIFIED organization identity for the bridge user — this used
         // to make confirm "reuse" it when auto-creating the Patient. Round 14
         // OD-A (F1/B1) removes patient creation from confirm entirely: the
-        // pre-verified identity grants no scope and is left untouched.
+        // a pre-verified identity grants no scope.
         $identityId = $identityService->create_identity( $organizationId );
         $identityService->link_user( $organizationId, $identityId, $this->otherUserId, '09120000002' );
 
@@ -568,9 +568,9 @@ final class BookingFlowTest extends WP_UnitTestCase
         }
 
         $slot = $this->makeSlot( 3, '11:00', 1 );
-        // owner decision A (2026-11-09): zero-link OTP identities cannot originate a
+        // owner decision A (2026-11-09): zero-link OTP identities do not originate a
         // Hold anymore — seed the persisted (historical, patient_id NULL) Hold so the
-        // confirm-side subject is unchanged.
+        // confirm-side subject is the persisted one.
         $hold = ['hold_token' => $this->seedBridgeHold($slot['id'], $this->otherUserId, '09120000002')];
         try {
             $this->booking()->confirm( $hold['hold_token'], $this->otherUserId, null, $this->uuid(), 'سارا', 'کریمی' );
@@ -730,7 +730,7 @@ final class BookingFlowTest extends WP_UnitTestCase
         global $wpdb;
         // Round 14 (F3): migration 2026_09_20_0022_slot_holds_patient_binding
         // has NOT been applied — cpms_slot_holds.patient_id does not exist, so
-        // a Hold cannot persist its booking subject. The service must fail
+        // a Hold does not persist its booking subject. The service fails
         // closed with the neutral, existing CLINIC_SERVICE_UNAVAILABLE (503,
         // the RuntimeSchemaGate public contract) for every caller that
         // REACHES resolveBookingPatientForHold() — linked (one or two real
@@ -797,7 +797,7 @@ final class BookingFlowTest extends WP_UnitTestCase
             foreach ( [ $this->patientUserId => 'linked', $this->otherUserId => 'zero-link' ] as $userId => $kind ) {
                 try {
                     $service->hold( $userId, $this->clinicianId, $slot['date'], $slot['time'] );
-                    $this->fail( $kind . ' caller must not be admitted when subject binding cannot be persisted' );
+                    $this->fail( $kind . ' caller must not be admitted when subject binding is unavailable' );
                 } catch ( BookingException $exception ) {
                     $this->assertSame( 'CLINIC_SERVICE_UNAVAILABLE', $exception->errorCode, $kind . ' caller' );
                     $this->assertSame( 503, $exception->httpStatus, $kind . ' caller' );
@@ -820,7 +820,7 @@ final class BookingFlowTest extends WP_UnitTestCase
             );
             try {
                 $service->hold( $this->patientUserId, $this->clinicianId, $slot['date'], $slot['time'], null, (int) $linked[0]['patient_id'] );
-                $this->fail( 'a requested patient_id must not be admitted when subject binding cannot be persisted' );
+                $this->fail( 'a requested patient_id must not be admitted when subject binding is unavailable' );
             } catch ( BookingException $exception ) {
                 $this->assertSame( 'CLINIC_SERVICE_UNAVAILABLE', $exception->errorCode );
                 $this->assertSame( 503, $exception->httpStatus );
