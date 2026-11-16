@@ -276,6 +276,149 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         return d.message || d.code || 'خطا';
     }
 
+    /**
+     * Check if a number input has badInput (invalid entry like incomplete exponent).
+     * Returns true if the input is invalid and should be rejected.
+     */
+    function hasBadInput(el) {
+        return el && el.validity && el.validity.badInput === true;
+    }
+
+    /**
+     * Core money amount validation (used by all finance UI money inputs).
+     * - Raw input must reach this helper (caller uses raw:true for askPrompt).
+     * - Rejects ANY invisible/format character anywhere in the raw input (U+00AD, U+061C,
+     *   U+180E, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+FEFF).
+     * - Normalizes Persian (U+06F0-U+06F9) and Arabic-Indic (U+0660-U+0669) digits to ASCII.
+     * - Accepts integer with optional leading zeros (^\d+$) OR integral decimal (^\d+\.0+$).
+     * - Rejects separators, non-integral decimals, exponents, signs, letters, fullwidth digits,
+     *   Unicode minus (U+2212), any invisible/format character.
+     * - Total input length capped at 40 chars before parsing.
+     * - Options:
+     *   required: if false, blank/whitespace returns {ok:true, blank:true} (caller omits field)
+     *   allowZero: if true, "0" is accepted (default false for positive-only amounts)
+     *   min: minimum allowed value (inclusive)
+     *   max: maximum allowed value (inclusive; default per-field bound or MAX_SAFE_INTEGER)
+     * - ANY non-blank input not matching the accepted form returns {ok:false, error:'...'}.
+     * Fail-closed: invalid input never results in a request being sent.
+     */
+    function validateMoneyAmount(input, options) {
+        var opts = options || {};
+        var required = opts.required !== false; // default true
+        var allowZero = opts.allowZero === true;
+        var min = (opts.min !== undefined && opts.min !== null) ? opts.min : (allowZero ? 0 : 1);
+        // Default max: DECIMAL(12,2) integer part = 9999999999, never above MAX_SAFE_INTEGER
+        var defaultMax = Math.min(9999999999, Number.MAX_SAFE_INTEGER);
+        var max = (opts.max !== undefined && opts.max !== null) ? opts.max : defaultMax;
+
+        // Raw input for invisible-char check (caller should pass raw for askPrompt)
+        var raw = String(input);
+
+        // F1: Reject ANY invisible/format character anywhere in raw input
+        // U+00AD (soft hyphen), U+061C (ALM), U+180E (Mongolian vowel separator),
+        // U+200B-U+200F (ZWSP, ZWNJ, ZWJ, LRM, RLM), U+202A-U+202E (embedding),
+        // U+2060-U+2064 (word joiner, invisible times, etc.), U+2066-U+2069 (isolates),
+        // U+FEFF (BOM)
+        if (/[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(raw)) {
+            return { ok: false, error: 'مبلغ نامعتبر است. کاراکترهای نامرئی مجاز نیستند.' };
+        }
+
+        // Trim ordinary whitespace
+        var str = raw.trim();
+
+        // Blank handling
+        if (str === '') {
+            return required ? { ok: false, error: 'این مقدار الزامی است.' } : { ok: true, blank: true };
+        }
+
+        // Length cap before parsing (prevents absurdly long strings)
+        if (str.length > 40) {
+            return { ok: false, error: 'مبلغ نامعتبر است. طول ورودی بیش از حد مجاز است.' };
+        }
+
+        // Normalize Persian and Arabic-Indic digits to ASCII
+        var normalized = str.replace(/[\u06F0-\u06F9]/g, function (ch) {
+            return String.fromCharCode(ch.charCodeAt(0) - 0x06F0 + 0x30);
+        }).replace(/[\u0660-\u0669]/g, function (ch) {
+            return String.fromCharCode(ch.charCodeAt(0) - 0x0660 + 0x30);
+        });
+
+        // Accept: integer with leading zeros OK (^\d+$) OR integral decimal (^\d+\.0+$)
+        // Reject: separators, non-integral decimals, exponents, signs, letters, fullwidth, Unicode minus
+        var intRegex = /^\d+$/;
+        var decRegex = /^\d+\.0+$/;
+        var isInteger = intRegex.test(normalized);
+        var isIntegralDecimal = decRegex.test(normalized);
+
+        if (!isInteger && !isIntegralDecimal) {
+            var msg = allowZero
+                ? 'مبلغ نامعتبر است. فقط عدد صحیح یا اعشار صحیح (مثلا 300.0) بدون جداکننده، علامت یا کاراکتر نامرئی مجاز است.'
+                : 'مبلغ نامعتبر است. فقط عدد صحیح مثبت یا اعشار صحیح (مثلا 300.0) بدون جداکننده، علامت یا کاراکتر نامرئی مجاز است.';
+            return { ok: false, error: msg };
+        }
+
+        // Parse value
+        var value = isInteger ? parseInt(normalized, 10) : parseFloat(normalized);
+        // Extra guards: range, safe integer, and integral check
+        if (value < min || value > max || !Number.isInteger(value) || value !== Number(normalized)) {
+            var msg = 'مبلغ خارج از محدوده مجاز است (حداقل ' + min + '، حداکثر ' + max + ').';
+            return { ok: false, error: msg };
+        }
+
+        return { ok: true, value: value };
+    }
+
+    /**
+     * Validate refund amount input (required; blank is an error per manager decision).
+     * Wrapper around validateMoneyAmount with refund-specific options.
+     * Blank/whitespace returns { ok: false, error: ... } — caller shows error and does not send request.
+     */
+    function validateRefundAmount(input) {
+        return validateMoneyAmount(input, { required: true, allowZero: false, min: 1 });
+    }
+
+    /**
+     * Validate quantity input per server rules (DECIMAL(8,2), max 100, max 2 decimals).
+     * Blank/unparseable defaults to 1 (matching base parseFloat behaviour).
+     * Returns { ok: true, value: float } or { ok: false, error: string }
+     */
+    function validateQuantity(input) {
+        // 1. Check badInput state from browser (partial/invalid number input)
+        // Note: this is checked by caller before calling validateQuantity
+        // 2. Blank/unparseable defaults to 1 (base behaviour: parseFloat -> NaN -> 1)
+        if (input === null || input === undefined || input === '') {
+            return { ok: true, value: 1 };
+        }
+        var rawStr = String(input);
+        // 3. Reject invisible/format characters BEFORE trimming (same as validateMoneyAmount)
+        // JavaScript's trim() removes BOM (U+FEFF) so we must check before trim
+        if (/[\u00AD\u061C\u180E\u200B-\u200F\u202A-\u202E\u2060-\u2064\u2066-\u2069\uFEFF]/.test(rawStr)) {
+            return { ok: false, error: 'تعداد نامعتبر است' };
+        }
+        var str = rawStr.trim();
+        if (str === '') {
+            return { ok: true, value: 1 };
+        }
+        // 4. Must be valid number format (digits, optional decimal point)
+        if (!/^\d+(\.\d+)?$/.test(str)) {
+            return { ok: false, error: 'تعداد نامعتبر است' };
+        }
+        // 5. Parse and validate per server rules
+        var qty = parseFloat(str);
+        if (!isFinite(qty) || qty <= 0) {
+            return { ok: false, error: 'تعداد باید مثبت باشد' };
+        }
+        // Server MAX_QUANTITY = 100.0
+        if (qty > 100.0) {
+            return { ok: false, error: 'تعداد نمی‌تواند بیشتر از ۱۰۰ باشد' };
+        }
+        // Server requires max 2 decimal places
+        if (Math.round(qty * 100) / 100 !== qty) {
+            return { ok: false, error: 'تعداد نمی‌تواند بیش از ۲ رقم اعشار داشته باشد' };
+        }
+        return { ok: true, value: qty };
+    }
+
     function esc(s) {
         return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
             return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
@@ -485,14 +628,27 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
     var svcSave = document.getElementById('cpms-fin-svc-save');
     if (svcSave) {
         svcSave.addEventListener('click', function () {
+            var priceEl = document.getElementById('cpms-fin-svc-price');
+            if (hasBadInput(priceEl)) {
+                notice('مبلغ نامعتبر است. ورودی نامکتمل یا نامعتبر.', 'warning');
+                return;
+            }
             var id = document.getElementById('cpms-fin-svc-id').value;
+            var priceValidation = validateMoneyAmount(
+                priceEl.value,
+                { required: true, allowZero: true, min: 0 }
+            );
+            if (!priceValidation.ok) {
+                notice(priceValidation.error, 'warning');
+                return;
+            }
             var body = {
                 code: document.getElementById('cpms-fin-svc-code').value.trim(),
                 name: document.getElementById('cpms-fin-svc-name').value.trim(),
-                price: parseInt(document.getElementById('cpms-fin-svc-price').value, 10)
+                price: priceValidation.value
             };
-            if (!body.code || !body.name || isNaN(body.price) || body.price < 0) {
-                notice('کد، نام و قیمت صحیح وارد کنید', 'warning');
+            if (!body.code || !body.name) {
+                notice('کد و نام تعرفه الزامی است', 'warning');
                 return;
             }
             api('POST', id ? 'config/services/' + id : 'config/services', body).then(function (r) {
@@ -572,10 +728,38 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
             if (!ok) { return; }
             var svc = row.querySelector('.cpms-fin-i-svc');
             var desc = row.querySelector('.cpms-fin-i-desc');
-            var qty = parseFloat(row.querySelector('.cpms-fin-i-qty').value);
-            var price = row.querySelector('.cpms-fin-i-price').value;
-            var disc = parseInt(row.querySelector('.cpms-fin-i-disc').value || '0', 10);
-            var item = { quantity: isNaN(qty) ? 1 : qty, discount: isNaN(disc) ? 0 : disc };
+            var qtyEl = row.querySelector('.cpms-fin-i-qty');
+            var priceEl = row.querySelector('.cpms-fin-i-price');
+            var discEl = row.querySelector('.cpms-fin-i-disc');
+
+            // F2: Check badInput for quantity
+            if (hasBadInput(qtyEl)) {
+                notice('تعداد نامعتبر است. ورودی نامکتمل یا نامعتبر.', 'warning');
+                ok = false; return;
+            }
+            // F6: Validate quantity per server rules (DECIMAL(8,2), max 100, max 2 decimals)
+            var qtyValidation = validateQuantity(qtyEl.value);
+            if (!qtyValidation.ok) {
+                notice('تعداد: ' + qtyValidation.error, 'warning');
+                ok = false; return;
+            }
+            var qty = qtyValidation.value;
+
+            // Item discount (optional, >= 0)
+            if (hasBadInput(discEl)) {
+                notice('تخفیف قلم نامعتبر است. ورودی نامکتمل یا نامعتبر.', 'warning');
+                ok = false; return;
+            }
+            var discValidation = validateMoneyAmount(
+                discEl.value,
+                { required: false, allowZero: true, min: 0 }
+            );
+            if (!discValidation.ok) {
+                notice('تخفیف قلم: ' + discValidation.error, 'warning');
+                ok = false; return;
+            }
+            var item = { quantity: qty, discount: discValidation.blank ? 0 : discValidation.value };
+
             if (svc) {
                 item.service_id = parseInt(svc.value, 10);
                 if (!item.service_id) { ok = false; return; }
@@ -583,15 +767,63 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
                 item.description = desc.value.trim();
                 if (!item.description) { ok = false; return; }
             }
-            if (price !== '') { item.unit_price = parseInt(price, 10); }
+
+            // F2: Check badInput for unit_price
+            if (hasBadInput(priceEl)) {
+                notice('قیمت واحد نامعتبر است. ورودی نامکتمل یا نامعتبر.', 'warning');
+                ok = false; return;
+            }
+            // Item unit_price (optional, >= 0)
+            if (priceEl.value !== '') {
+                var priceValidation = validateMoneyAmount(
+                    priceEl.value,
+                    { required: false, allowZero: true, min: 0 }
+                );
+                if (!priceValidation.ok) {
+                    notice('قیمت واحد: ' + priceValidation.error, 'warning');
+                    ok = false; return;
+                }
+                item.unit_price = priceValidation.value;
+            }
             items.push(item);
         });
         if (!ok || items.length === 0) { notice('هر قلم باید شرح/تعرفه و مقادیر معتبر داشته باشد', 'warning'); return; }
+
+        // Invoice-level discount (optional, >= 0)
+        var invDiscountEl = document.getElementById('cpms-fin-inv-discount');
+        if (hasBadInput(invDiscountEl)) {
+            notice('تخفیف کل فاکتور نامعتبر است. ورودی نامکتمل یا نامعتبر.', 'warning');
+            return;
+        }
+        var invDiscountValidation = validateMoneyAmount(
+            invDiscountEl.value,
+            { required: false, allowZero: true, min: 0 }
+        );
+        if (!invDiscountValidation.ok) {
+            notice('تخفیف کل فاکتور: ' + invDiscountValidation.error, 'warning');
+            return;
+        }
+
+        // Invoice tax (optional, >= 0)
+        var invTaxEl = document.getElementById('cpms-fin-inv-tax');
+        if (hasBadInput(invTaxEl)) {
+            notice('مالیات فاکتور نامعتبر است. ورودی نامکتمل یا نامعتبر.', 'warning');
+            return;
+        }
+        var invTaxValidation = validateMoneyAmount(
+            invTaxEl.value,
+            { required: false, allowZero: true, min: 0 }
+        );
+        if (!invTaxValidation.ok) {
+            notice('مالیات فاکتور: ' + invTaxValidation.error, 'warning');
+            return;
+        }
+
         var body = {
             visit_id: state.issueVisit,
             items: items,
-            discount: parseInt(document.getElementById('cpms-fin-inv-discount').value || '0', 10),
-            tax: parseInt(document.getElementById('cpms-fin-inv-tax').value || '0', 10)
+            discount: invDiscountValidation.blank ? 0 : invDiscountValidation.value,
+            tax: invTaxValidation.blank ? 0 : invTaxValidation.value
         };
         // Busy-lock (double-submit window): the issue button stays disabled until
         // the POST settles, then re-enables. Body and messages are unchanged.
@@ -700,11 +932,22 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         var payBtn = document.getElementById('cpms-fin-pay-submit');
         if (payBtn) {
             payBtn.addEventListener('click', function () {
-                var amount = parseInt(document.getElementById('cpms-fin-pay-amount').value, 10);
-                if (isNaN(amount) || amount <= 0) { notice('مبلغ نامعتبر است', 'warning'); return; }
+                var payAmountEl = document.getElementById('cpms-fin-pay-amount');
+                if (hasBadInput(payAmountEl)) {
+                    notice('مبلغ پرداخت نامعتبر است. ورودی نامکتمل یا نامعتبر.', 'warning');
+                    return;
+                }
+                var amountValidation = validateMoneyAmount(
+                    payAmountEl.value,
+                    { required: true, allowZero: false, min: 1 }
+                );
+                if (!amountValidation.ok) {
+                    notice(amountValidation.error, 'warning');
+                    return;
+                }
                 var headers = { 'Idempotency-Key': (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : uidFallback() };
                 api('POST', 'invoices/' + inv.id + '/payments', {
-                    amount: amount,
+                    amount: amountValidation.value,
                     method: document.getElementById('cpms-fin-pay-method').value,
                     transaction_ref: document.getElementById('cpms-fin-pay-ref').value || null
                 }, headers).then(function (r) {
@@ -719,12 +962,24 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
         var adjBtn = document.getElementById('cpms-fin-adj-submit');
         if (adjBtn) {
             adjBtn.addEventListener('click', function () {
-                var amount = parseInt(document.getElementById('cpms-fin-adj-amount').value, 10);
+                var adjAmountEl = document.getElementById('cpms-fin-adj-amount');
+                if (hasBadInput(adjAmountEl)) {
+                    notice('مبلغ اصلاح نامعتبر است. ورودی نامکتمل یا نامعتبر.', 'warning');
+                    return;
+                }
+                var amountValidation = validateMoneyAmount(
+                    adjAmountEl.value,
+                    { required: true, allowZero: false, min: 1 }
+                );
+                if (!amountValidation.ok) {
+                    notice(amountValidation.error, 'warning');
+                    return;
+                }
                 var reason = document.getElementById('cpms-fin-adj-reason').value.trim();
-                if (isNaN(amount) || amount <= 0 || !reason) { notice('مبلغ و دلیل اصلاح الزامی است', 'warning'); return; }
+                if (!reason) { notice('دلیل اصلاح الزامی است', 'warning'); return; }
                 api('POST', 'invoices/' + inv.id + '/adjustments', {
                     type: document.getElementById('cpms-fin-adj-type').value,
-                    amount: amount,
+                    amount: amountValidation.value,
                     reason: reason
                 }).then(function (r) {
                     if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }
@@ -759,11 +1014,16 @@ window.CPMS_FIN = <?php echo wp_json_encode($config); ?>;
                         // مبلغ اختیاری: خالی = کل مبلغ باقیمانده؛ لغو = انصرافِ کامل.
                         var amtMsg = 'مبلغ بازپرداخت به ریال'
                             + ' (خالی = کل مبلغ باقیمانده قابل بازگردانی):';
-                        return askPrompt(amtMsg, { inputMode: 'numeric' }).then(function (amt) {
+                        return askPrompt(amtMsg, { inputMode: 'numeric', raw: true }).then(function (amt) {
                             if (amt === null) { return; }
+                            var validation = validateRefundAmount(amt);
+                            if (!validation.ok) {
+                                notice(validation.error, 'error');
+                                return;
+                            }
                             var body2 = { reason: rr };
-                            if (amt !== '' && !isNaN(parseInt(amt, 10))) {
-                                body2.amount = parseInt(amt, 10);
+                            if (!validation.blank) {
+                                body2.amount = validation.value;
                             }
                             api('POST', 'payments/' + id + '/refund', body2).then(function (r) {
                                 if (r.__status !== 200) { notice(errMessage(r), 'error'); return; }

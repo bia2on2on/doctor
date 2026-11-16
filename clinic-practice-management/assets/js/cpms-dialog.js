@@ -195,7 +195,8 @@
                     finish(true);
                     return;
                 }
-                var value = String(input.value || '').trim();
+                var rawValue = String(input.value || '');
+                var value = settings.raw === true ? rawValue : rawValue.trim();
                 if (settings.required === true && value === '') {
                     error.textContent = settings.requiredMessage || 'این مقدار الزامی است.';
                     error.hidden = false;

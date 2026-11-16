@@ -6089,3 +6089,53 @@ Sync-only merge; no behaviour change, no product code, no test touched by this s
 ### [2026-11-15] — Refund idempotency design PR #349: sync with main before merge (docs only)
 
 Merged `origin/main` (`dcbe44d58371ba5e0f5ada27b2ed2a7bb0d94532`, after #335 and #350) into the PR branch (previous head `8f418521df67b9e6049aa6eaf85a4c64976b2c9d`) with a normal merge commit. The only conflict was this ledger: all of main's entries are kept first, followed by this branch's entries; 0 deletions versus main and main's bytes are an exact prefix. The design document (125,796 bytes, blob `3650da760ca55b0897cf8b72fc2734a22c481954`), `docs/srs/SRS.md` and `docs/api/api-contract.md` are byte-identical to the previous head. This PR is design only: merging it is NOT permission to build; no schema, migration or implementation without a separate explicit owner approval; the delegated decisions D1-D12 are owner-delegated manager decisions subject to two independent finance reviews; the open owner decisions remain listed in the PR body and the design document. No PHP was run (local PHP is PHP-WASM only).
+
+### [2026-11-15 UTC] — Messaging rate-limit test window guard
+- OBSERVED: Added a bounded wait and window-ID assertion to `StaffMessagingSecurityTest`; product code was not edited.
+- INFERENCE: The existing test is window-boundary sensitive; a timing cause has not been established.
+- LIMITATION: Local integration execution requires a real WordPress test database; PHP-WASM token parsing is not integration evidence.
+
+
+### [2026-11-15 UTC] — fix(finance-ui): F1-F7 blocker resolution on PR #352 (branch arena/86f1d309-doctor)
+
+- **Preflight (OBSERVED):** branch `arena/86f1d309-doctor`, HEAD `4c1edf1`, base `2f413c0` (PR #352 open, draft). Two independent readers reported F1-F7 blockers on initial head `c1882390`.
+- **F1 (OBSERVED fixed):** `cpms-dialog.js` — added `raw: true` opt-in to `askPrompt()` (preserves default trim for all other callers). Refund dialog call site in `SecretaryFinancePage.php:1017` uses `raw:true`. Verified: 9 askPrompt callers across 4 files (SecretaryFinancePage.php:3, DoctorDashboardPage.php:1, SecretaryQueuePage.php:2, SmsSettingsPage.php:3) — only refund amount caller opts in.
+- **F2 (OBSERVED fixed):** Added `hasBadInput(el)` helper in `SecretaryFinancePage.php:283` checking `el.validity.badInput === true` for `type=number` inputs. Integrated at 8 handlers (service price, invoice item qty, invoice item price, invoice item discount, invoice discount, invoice tax, payment amount, adjustment amount).
+- **F3 (OBSERVED fixed):** Rewrote `validateMoneyAmount()` in `SecretaryFinancePage.php:287-358`:
+  - Accepts leading zeros (`^\d+$`) and integral decimals (`^\d+\.0+$`) matching base `parseInt` behavior
+  - Rejects non-integral decimals, separators, exponents, signs, non-digits, fullwidth digits
+  - Invisible/format character rejection regex (U+00AD, U+061C, U+180E, U+200B-U+200F, U+202A-U+202E, U+2060-U+2064, U+2066-U+2069, U+FEFF)
+  - 40-char length cap before parsing
+- **F4 (OBSERVED fixed):** Default `max` changed from `MAX_SAFE_INTEGER` to DECIMAL(12,2) integer-part bound = 9999999999 (min of that and `MAX_SAFE_INTEGER`).
+- **F5 (OBSERVED addressed):** Test spec `tests/js/refund-amount-validation.spec.js` extracts and exercises real `validateMoneyAmount`, `validateRefundAmount`, `validateQuantity` from `SecretaryFinancePage.php` at runtime via `vm` context (stubs for `notice`, `api`, `errMessage` inside vm). 17 checks pass (14 money + 2 quantity + 1 click-path).
+- **F6 (OBSERVED fixed):** Added `validateQuantity()` in `SecretaryFinancePage.php:383-430` matching server rules (`MoneyInput::quantity` in `FinanceService.php`, `clinic-practice-management/src/Domain/Finance/MoneyInput.php:24,53,66`):
+  - DECIMAL(8,2) bound → max 100.0, max 2 decimal places (`round(qty,2) === qty`)
+  - Blank/unparseable defaults to 1 (matching base `parseFloat` → `NaN` → `1` behaviour)
+  - Required, positive, rejects invisible chars, non-numeric, Persian/Arabic digits (no normalization for quantity), comma separators, >2 decimals
+  - Wired into `submitIssue()` for invoice item quantity with `hasBadInput()` check
+- **F7 (OBSERVED addressed):** Single ledger entry for PR #352 with accurate claims. PR body updated via REST PATCH and read back.
+- **Gates (OBSERVED locally):**
+  - Node spec: `17/17 checks passed` (`refund-amount-validation.spec.js`)
+  - `git diff --check` clean
+  - Python workflow contracts: 178 OK
+  - `bin/check-workflow-yaml.py` → WORKFLOW_YAML_OK files=17
+  - `.github/scripts/companion-isolation.py --changed-files` → PASS
+  - `bin/tenant-tripwire.py` → hardcodes: 0, suspects: 3 (pre-existing)
+  - PHP syntax: NOT RUN locally (PHP-WASM only); CI runs `php -l` / `token_get_all` on changed PHP
+  - `bin/wpcs-changed-lines.py` → UNKNOWN (PHP-WASM, cannot run phpcs)
+- **Mutation tests (ALL RUN locally — 15 mutations, 5 correctly FAILED, 10 VACUOUS):**
+  - 8 hasBadInput removals (one per handler): VACUOUS (spec tests validation in isolation, not through handlers)
+  - Refund call-site helper skipped: VACUOUS (spec tests validateRefundAmount directly)
+  - raw:true removed at refund askPrompt: VACUOUS (spec passes raw input directly)
+  - Bound 9999999998: FAILED (good)
+  - Bound 10000000000: FAILED (good)
+  - Quantity bound 101: FAILED (good)
+  - "007" rejected: FAILED (good)
+  - Blank refund accepted: FAILED (good)
+- **Known limits (explicit):**
+  - UI-only; server rules unchanged (MoneyInput, FinanceService zero diff)
+  - Client validation is convenience; server stays authority
+  - PHP syntax not locally verifiable; CI is evidence
+  - 10 vacuous mutations indicate test coverage gaps in handler integration paths
+  - WPCS changed-line check UNKNOWN (cannot run phpcs in PHP-WASM)
+- **Deliverable:** Updated PR #352 from `arena/86f1d309-doctor` to `main`. Not marked ready, not merged.
