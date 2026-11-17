@@ -12,10 +12,12 @@ between):
              scoped admin page refuses it and offers no action at all
   journeys   independent Chromium logins, then one real workflow per
              persona through the production REST stack, from inside the page so
-             the cookies and REST nonce are the browser's own; then a real
-             OTP login of the demo patient (challenge -> sanctioned code ->
-             verify -> bound identity -> captured booking -> replay); then the
-             admin diagnose + teardown forms
+             the cookies and REST nonce are the browser's own; then the real
+             possession-only OTP verification drill (challenge -> sanctioned
+             code -> wrong-code refusal -> zero-access verify with no cookie or
+             identity write -> consumed-code replay refusal), followed by an
+             explicit patient-only link + password login booking + idempotent
+             replay; then the admin diagnose + teardown forms
 
 Honest scope notes (do not overclaim):
   * Each persona lands on its real production surface (the front-end Staff Portal
@@ -27,10 +29,14 @@ Honest scope notes (do not overclaim):
     layout and drag/drop behaviour are not covered here.
   * The patient OTP journey posts the same `/otp/request` payload the public
     booking widget posts (mobile + the persisted clinician/slot/date/time
-    selection) from inside the real booking page, then verifies through the
-    production `/otp/verify` endpoint. The calendar/slot *click* path and the
-    patient portal's own OTP form (which multi-Clinic installs refuse with
-    CLINIC_SCOPE_REQUIRED by design) are not driven.
+    selection) from inside the real booking page, then verifies possession-only
+    behaviour through the production `/otp/verify` endpoint (zero-access
+    envelope, no session cookie, no user/link/patient write, single-use replay
+    refusal). Authenticated patient reads, Hold, Confirm and idempotent replay
+    then run under the provisioned patient-only WP account after linking it via
+    WP-CLI and signing in through `wp-login.php`. The calendar/slot *click* path
+    and the patient portal's own OTP form (which multi-Clinic installs refuse
+    with CLINIC_SCOPE_REQUIRED by design) are not driven.
   * clinic_manager and organization_manager prove the portal renders *and* that
     their fixture membership (not a WordPress role) grants the surface. The
     organization manager additionally drives the portal's own lifecycle form
@@ -49,10 +55,14 @@ Honest scope notes (do not overclaim):
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
+import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -119,12 +129,406 @@ def annotate(title: str, message: str) -> None:
     print(f"::error title={title}::{flat}", flush=True)
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
-    CHECKS.append({"name": name, "ok": bool(ok), "detail": detail})
-    print(("PASS " if ok else "FAIL ") + name + ((" — " + detail) if detail else ""), flush=True)
+_SAFE_ERROR_CODE_RE = re.compile(r"(?:CLINIC|SCOPED|CPMS)_[A-Z0-9_]{1,56}|rest_[a-z0-9_]{1,56}")
+_SAFE_EXC_CLASS_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+_SAFE_KEY_NAME_RE = re.compile(r"[a-z][a-zA-Z0-9_]{0,47}")
+_SAFE_FLAG_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_FORBIDDEN_INT_FLAG_SEGMENTS = frozenset({
+    "token", "otp", "code", "nonce", "cookie", "password", "pass",
+    "secret", "key", "reference", "mobile", "phone", "ticket", "session",
+})
+_ALLOWED_COUNT_SUFFIXES = ("_count", "_delta", "_len")
+_SECRET_DETAIL_JSON_RE = re.compile(
+    r'(["\'](?:hold_token|confirm_token|idempotency_key|idempotency-key|idempotency|'
+    r'otp|otp_code|token_id|latest_token_id|nonce|_wpnonce|wp_nonce|x-wp-nonce|rest_nonce|'
+    r'cookie|set-cookie|set_cookie|password|user_pass|secret|reference_code|'
+    r'cpsd_persona_entry|patient_name|full_name|first_name|last_name|'
+    r'national_code|mobile|phone|note_summary|content_text|diagnosis)["\']\s*:\s*)'
+    r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|-?\d+)',
+    re.IGNORECASE,
+)
+_SECRET_DETAIL_KV_RE = re.compile(
+    r'(\b(?:hold_token|confirm_token|idempotency_key|idempotency-key|'
+    r'otp|otp_code|token_id|latest_token_id|nonce|_wpnonce|wp_nonce|x-wp-nonce|rest_nonce|'
+    r'cookie|set-cookie|set_cookie|password|user_pass|secret|reference_code|'
+    r'cpsd_persona_entry|patient_name|full_name|first_name|last_name|'
+    r'national_code|mobile|phone|note_summary|content_text|diagnosis)\s*[=:]\s*)'
+    r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,;\])\}]+)',
+    re.IGNORECASE,
+)
+_EXPECTED_SURFACE_CONFIG_KEYS = ("nonce", "rest_root")
+
+
+def safe_error_code(source: object) -> str:
+    """Return a matching machine error code or `<nonstandard_code>`."""
+    if isinstance(source, dict):
+        data = source.get("data")
+        raw = data.get("code") if isinstance(data, dict) and "code" in data else source.get("code")
+    else:
+        raw = source
+    if raw is None or raw == "":
+        return ""
+    if not isinstance(raw, str):
+        return "<nonstandard_code>"
+    return raw if _SAFE_ERROR_CODE_RE.fullmatch(raw) else "<nonstandard_code>"
+
+
+def safe_key_names(payload: object) -> list[str]:
+    """Return sorted schema key names of a dict payload without any values."""
+    if not isinstance(payload, dict):
+        return []
+    safe: list[str] = []
+    has_other = False
+    for key in payload.keys():
+        if isinstance(key, str) and _SAFE_KEY_NAME_RE.fullmatch(key):
+            safe.append(key)
+        else:
+            has_other = True
+    names = sorted(safe)
+    if has_other:
+        names.append("<nonstandard_key>")
+    return names
+
+
+def _validate_safe_flags(flags: dict[str, object]) -> dict[str, bool | int]:
+    """Validate boolean and non-identifier/non-secret integer detail flags."""
+    clean: dict[str, bool | int] = {}
+    for name, value in flags.items():
+        if not isinstance(name, str) or not _SAFE_FLAG_NAME_RE.fullmatch(name):
+            raise ValueError(f"unsafe detail flag name: {name!r}")
+        if type(value) is bool:
+            clean[name] = value
+            continue
+        if type(value) is int:
+            if name == "id" or name.endswith("_id"):
+                raise ValueError(f"identifier value disallowed in detail flag: {name}")
+            if not name.endswith(_ALLOWED_COUNT_SUFFIXES):
+                if set(name.split("_")) & _FORBIDDEN_INT_FLAG_SEGMENTS:
+                    raise ValueError(f"secret-like int disallowed in detail flag: {name}")
+            clean[name] = value
+            continue
+        raise ValueError(f"unsafe detail flag type for {name}: {type(value).__name__}")
+    return clean
+
+
+def safe_counts_detail(**flags: bool | int) -> str:
+    """Format validated boolean/count check details with no IDs, tokens, or bodies."""
+    return json.dumps(_validate_safe_flags(flags))
+
+
+def safe_response_detail(result: object, **flags: bool | int) -> str:
+    """Format safe API response detail: HTTP status, error code, key names, bools, counts."""
+    clean_flags = _validate_safe_flags(flags)
+    parts: list[str] = []
+    if isinstance(result, dict):
+        status = result.get("status")
+        if type(status) is int:
+            parts.append(f"HTTP {status}")
+        code = safe_error_code(result)
+        if code:
+            parts.append(code)
+        if "data" in result:
+            body = result.get("data")
+            if isinstance(body, dict) and isinstance(body.get("data"), dict):
+                parts.append(f"keys={json.dumps(safe_key_names(body['data']))}")
+            elif isinstance(body, dict) and isinstance(body.get("data"), list):
+                parts.append(f"count={len(body['data'])}")
+            elif isinstance(body, list):
+                parts.append(f"count={len(body)}")
+            elif isinstance(body, dict):
+                parts.append(f"keys={json.dumps(safe_key_names(body))}")
+            else:
+                parts.append(f"data_type={type(body).__name__}")
+        else:
+            parts.append(f"keys={json.dumps(safe_key_names(result))}")
+    elif isinstance(result, list):
+        parts.append(f"count={len(result)}")
+    for name, value in clean_flags.items():
+        parts.append(f"{name}={value}")
+    return " ".join(parts)
+
+
+def safe_records_detail(records: object, listed: object) -> str:
+    """Format HTTP status and record count without record fields or values."""
+    status = records.get("status") if isinstance(records, dict) and type(records.get("status")) is int else 0
+    count = len(listed) if isinstance(listed, list) else 0
+    return f"HTTP {status} count={count}"
+
+
+def format_missing_config_diagnostic(probe: object, *, on_login_page: bool = False) -> str:
+    """Format bounded non-HTML diagnostics for a missing surface REST config."""
+    data = probe if isinstance(probe, dict) else {}
+    raw_status = data.get("http_status")
+    status_text = str(raw_status) if type(raw_status) is int and 100 <= raw_status <= 599 else "unknown"
+    raw_len = data.get("page_length")
+    page_len = raw_len if type(raw_len) is int and raw_len >= 0 else 0
+    raw_missing = data.get("missing_config_keys")
+    if isinstance(raw_missing, list):
+        missing = [k for k in _EXPECTED_SURFACE_CONFIG_KEYS if k in raw_missing]
+    else:
+        missing = list(_EXPECTED_SURFACE_CONFIG_KEYS)
+    return "\n".join((
+        f"http_status={status_text}",
+        f"page_length={page_len}",
+        f"config_node_found={bool(data.get('config_node_found'))}",
+        f"config_json_valid={bool(data.get('config_json_valid'))}",
+        f"window_config_found={bool(data.get('window_config_found'))}",
+        f"on_login_page={bool(on_login_page)}",
+        f"missing_config_keys={','.join(missing)}",
+    )) + "\n"
+
+
+def safe_exception_category(exc: BaseException) -> str:
+    """Format exception class name plus a fixed label; omits message, URL, and stack trace."""
+    cls_name = type(exc).__name__
+    if not isinstance(cls_name, str) or not _SAFE_EXC_CLASS_RE.fullmatch(cls_name):
+        cls_name = "Exception"
+    return f"{cls_name}: browser phase failed"
+
+
+def format_check_detail(detail: object) -> str:
+    """Prevent check() from serializing dict/list values or secret key/value pairs."""
+    if detail is None or detail == "":
+        return ""
+    if isinstance(detail, (dict, list)):
+        return safe_response_detail(detail)
+    text = str(detail)
+    text = _SECRET_DETAIL_JSON_RE.sub(r'\1"<redacted>"', text)
+    text = _SECRET_DETAIL_KV_RE.sub(r"\1<redacted>", text)
+    return text
+
+
+def check(name: str, ok: bool, detail: object = "") -> None:
+    safe_detail = format_check_detail(detail)
+    CHECKS.append({"name": name, "ok": bool(ok), "detail": safe_detail})
+    print(("PASS " if ok else "FAIL ") + name + ((" — " + safe_detail) if safe_detail else ""), flush=True)
     if not ok:
-        annotate("SCOPED_BROWSER", name + ((" — " + detail) if detail else ""))
-        raise AssertionError(name + ": " + detail)
+        annotate("SCOPED_BROWSER", name + ((" — " + safe_detail) if safe_detail else ""))
+        raise AssertionError(name + ": " + safe_detail)
+
+
+def selftest_safe_detail() -> dict[str, int]:
+    """Pure-logic self-check using synthetic placeholders; leaves CHECKS and stdout untouched."""
+    sentinels = {
+        "hold_token": "SYNTH_HOLD_9f8e7d6c5b4a",
+        "confirm_token": "SYNTH_CONFIRM_1a2b3c4d5e",
+        "idempotency_key": "SYNTH_IDEM_778899aabbcc",
+        "otp_code": "839204",
+        "token_id": 94827163,
+        "latest_token_id": 94827164,
+        "nonce": "SYNTH_NONCE_ccddeeff00",
+        "cookie": "wordpress_logged_in_synth=SYNTH_COOKIE_val99",
+        "password": "SYNTH_PASS_zzxxyy1122",
+        "reference_code": "SYNTH_REF_445566",
+        "patient_name": "SYNTH_NAME_SARA_EXAMPLE",
+        "first_name": "SYNTH_FIRST_SARA",
+        "last_name": "SYNTH_LAST_EXAMPLE",
+        "national_code": "0099887766",
+        "mobile": "09001112233",
+        "content_text": "SYNTH_RECORD_NOTE_01",
+        "visit_reason": "SYNTH_VISIT_REASON_FOLLOWUP",
+    }
+    sentinel_strings = tuple(str(v) for v in sentinels.values())
+    record_named_row = {
+        "id": 401,
+        "patient_name": sentinels["patient_name"],
+        "first_name": sentinels["first_name"],
+        "last_name": sentinels["last_name"],
+        "national_code": sentinels["national_code"],
+        "mobile": sentinels["mobile"],
+        "content_text": sentinels["content_text"],
+    }
+    fake_records = [
+        record_named_row,
+        {
+            "id": 402,
+            "patient_name": sentinels["patient_name"],
+            "visit_reason": sentinels["visit_reason"],
+        },
+    ]
+    records_list_resp = {"status": 200, "data": {"data": fake_records}}
+    records_dict_resp = {"status": 200, "data": {"records": fake_records}}
+    hold_envelope = {
+        "status": 200,
+        "data": {"data": {
+            "hold_token": sentinels["hold_token"],
+            "expires_at": "2026-11-16T12:00:00Z",
+            "slot": {"id": 5},
+            **sentinels,
+        }},
+    }
+    bad_code_envelope = {
+        "status": 409,
+        "data": {
+            "code": sentinels["hold_token"],
+            "message": sentinels["password"],
+            sentinels["nonce"]: sentinels["cookie"],
+            "hold_token": sentinels["hold_token"],
+        },
+    }
+    keyed_sentinels = {k: v for k, v in sentinels.items() if k != "visit_reason"}
+    cases = [
+        ("hold_pass", True, safe_response_detail(hold_envelope, has_hold_token=True)),
+        ("hold_fail", False, safe_response_detail(bad_code_envelope, has_hold_token=False)),
+        ("records_empty_pass", True, safe_records_detail({"status": 200, "data": []}, [])),
+        ("records_isolation_fail", False, safe_records_detail(records_list_resp, fake_records)),
+        ("records_dict_fail", False, records_dict_resp),
+        ("records_json_fail", False, f"HTTP 200 records={json.dumps([record_named_row])}"),
+        ("raw_dict_pass", True, dict(sentinels)),
+        ("raw_dict_fail", False, hold_envelope),
+        ("list_pass", True, [dict(sentinels)]),
+        ("json_str_pass", True, json.dumps(keyed_sentinels)),
+        ("json_str_fail", False, json.dumps({"nested": keyed_sentinels})),
+        ("kv_str_pass", True, " ".join(f"{k}={v}" for k, v in keyed_sentinels.items())),
+        ("counts_pass", True, safe_counts_detail(
+            same_token=True, consumed=True, unconsumed=0, tokens_delta=1, verify_ok_delta=1,
+        )),
+    ]
+    saved = list(CHECKS)
+    buf = io.StringIO()
+    try:
+        CHECKS.clear()
+        with contextlib.redirect_stdout(buf):
+            for label, ok, detail in cases:
+                if ok:
+                    check(label, True, detail)
+                else:
+                    try:
+                        check(label, False, detail)
+                    except AssertionError as exc:
+                        err_text = str(exc)
+                        for secret in sentinel_strings:
+                            if secret in err_text:
+                                raise RuntimeError(f"safe detail self-test failed on {label} exception") from None
+                    else:
+                        raise RuntimeError(f"safe detail self-test failed to raise on {label}")
+        captured_stdout = buf.getvalue()
+        captured_checks = json.dumps(CHECKS, ensure_ascii=False)
+        for secret in sentinel_strings:
+            if secret in captured_stdout or secret in captured_checks:
+                raise RuntimeError("safe detail self-test detected sentinel in check sink")
+        if 'HTTP 200' not in CHECKS[0]["detail"] or '"hold_token"' not in CHECKS[0]["detail"]:
+            raise RuntimeError("safe detail self-test lost status or key-name metadata")
+        if CHECKS[2]["detail"] != "HTTP 200 count=0" or CHECKS[3]["detail"] != "HTTP 200 count=2":
+            raise RuntimeError("safe detail self-test broke status/count records contract")
+    finally:
+        CHECKS[:] = saved
+
+    synth_html = f"<html><body>{sentinels['patient_name']}<script>{sentinels['nonce']}</script></body></html>"
+    diag_text = format_missing_config_diagnostic(
+        {
+            "http_status": 200,
+            "page_length": len(synth_html),
+            "config_node_found": True,
+            "config_json_valid": False,
+            "window_config_found": False,
+            "missing_config_keys": ["nonce", "rest_root", sentinels["nonce"]],
+            "nonce": sentinels["nonce"],
+            "html": synth_html,
+        },
+        on_login_page=False,
+    )
+    if "<" in diag_text or "missing_config_keys=nonce,rest_root" not in diag_text or "http_status=200" not in diag_text:
+        raise RuntimeError("safe detail self-test broke missing-config diagnostic contract")
+    for secret in sentinel_strings:
+        if secret in diag_text:
+            raise RuntimeError("safe detail self-test detected sentinel in missing-config diagnostic")
+
+    global EVIDENCE, sync_playwright
+    fake_ticket = "FAKE_TICKET_7a6b5c4d3e2f"
+    fake_ticket_url = f"https://demo.invalid/portal/?cpsd_persona_entry={fake_ticket}&persona=doctor"
+    saved_exc_checks = list(CHECKS)
+    saved_evidence = EVIDENCE
+    saved_playwright = sync_playwright
+    saved_argv = list(sys.argv)
+    exc_out_buf = io.StringIO()
+    exc_err_buf = io.StringIO()
+
+    def _raise_synth_ticket_nav():
+        raise TimeoutError(
+            f'Page.goto: Timeout 30000ms exceeded navigating to "{fake_ticket_url}" '
+            "(waiting until domcontentloaded)\nTraceback (most recent call last): synth"
+        ) from RuntimeError(fake_ticket_url)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        try:
+            CHECKS.clear()
+            EVIDENCE = Path(tmp_dir)
+            sync_playwright = _raise_synth_ticket_nav
+            sys.argv = [sys.argv[0] if sys.argv else "browser_scoped.py", "sessions"]
+            with contextlib.redirect_stdout(exc_out_buf), contextlib.redirect_stderr(exc_err_buf):
+                exc_rc = main()
+        finally:
+            CHECKS[:] = saved_exc_checks
+            EVIDENCE = saved_evidence
+            sync_playwright = saved_playwright
+            sys.argv = saved_argv
+        result_file = Path(tmp_dir) / "browser-result-sessions.json"
+        written_raw = result_file.read_text(encoding="utf-8") if result_file.is_file() else ""
+    exc_stdout = exc_out_buf.getvalue()
+    exc_stderr = exc_err_buf.getvalue()
+    combined_exc = "\n".join((written_raw, exc_stdout, exc_stderr))
+    for forbidden in (
+        fake_ticket_url,
+        fake_ticket,
+        "cpsd_persona_entry",
+        "demo.invalid",
+        "https://",
+        "http://",
+        "Page.goto",
+        "Traceback",
+    ):
+        if forbidden in combined_exc:
+            raise RuntimeError("safe detail self-test detected ticket URL or exception text in outer handler")
+    expected_err = "TimeoutError: browser phase failed"
+    expected_result = {"ok": False, "phase": "sessions", "checks": [], "error": expected_err}
+    expected_lines = [
+        f"::error title=SCOPED_BROWSER::sessions: {expected_err}",
+        "CPSD_BROWSER_RESULT=" + json.dumps({"ok": False, "phase": "sessions", "error": expected_err}, ensure_ascii=False),
+    ]
+    written_obj = json.loads(written_raw) if written_raw else {}
+    if (
+        exc_rc != 1
+        or written_obj != expected_result
+        or exc_stdout.splitlines() != expected_lines
+        or exc_stderr != ""
+    ):
+        raise RuntimeError("safe detail self-test broke outer handler contract")
+
+    rejected = 0
+    bad_flags: tuple[dict[str, object], ...] = (
+        {"hold_token": sentinels["hold_token"]},
+        {"confirm_token": sentinels["confirm_token"]},
+        {"idempotency_key": sentinels["idempotency_key"]},
+        {"otp_code": sentinels["otp_code"]},
+        {"otp": int(sentinels["otp_code"])},
+        {"code": int(sentinels["otp_code"])},
+        {"token_id": sentinels["token_id"]},
+        {"latest_token_id": sentinels["latest_token_id"]},
+        {"link_id": 77},
+        {"appointment_id": 88},
+        {"id": 99},
+        {"nonce": sentinels["nonce"]},
+        {"cookie": sentinels["cookie"]},
+        {"password": sentinels["password"]},
+        {"reference_code": sentinels["reference_code"]},
+        {"body": dict(sentinels)},
+        {"items": [sentinels["hold_token"]]},
+    )
+    for bad in bad_flags:
+        try:
+            safe_response_detail(hold_envelope, **bad)  # type: ignore[arg-type]
+        except ValueError:
+            rejected += 1
+        else:
+            raise RuntimeError(f"safe detail self-test accepted unsafe flag {sorted(bad)}")
+    return {
+        "cases": len(cases),
+        "outer_handler": 1,
+        "rejected_flags": rejected,
+        "sentinels": len(sentinel_strings),
+        "leaks": 0,
+    }
 
 
 # --- Shared in-page dialog (assets/js/cpms-dialog.js) — DUAL-MODE answers ----
@@ -362,6 +766,63 @@ CONFIG_JS = """
 """
 
 
+MISSING_CONFIG_PROBE_JS = """
+(selectors) => {
+  const okNonce = (value) => typeof value === 'string' && /^[0-9a-f]{10}$/.test(value.trim());
+  const okRoot = (value) => typeof value === 'string' && value.trim().length > 0;
+  let status = null;
+  try {
+    const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+    if (nav && Number.isInteger(nav.responseStatus) && nav.responseStatus >= 100 && nav.responseStatus <= 599) {
+      status = nav.responseStatus;
+    }
+  } catch (e) { /* navigation status unavailable */ }
+  let nodeFound = false;
+  let jsonValid = false;
+  let hasNonce = false;
+  let hasRoot = false;
+  for (const selector of selectors) {
+    const node = document.querySelector(selector);
+    if (!node) continue;
+    nodeFound = true;
+    try {
+      const parsed = JSON.parse(node.textContent || '');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        jsonValid = true;
+        if (okNonce(parsed.nonce)) hasNonce = true;
+        if (okRoot(parsed.rest_root)) hasRoot = true;
+      }
+    } catch (e) { /* malformed config script */ }
+  }
+  let winFound = false;
+  for (const name of ['CPMS_Q', 'CPMS_DOC', 'CPMS_FIN']) {
+    const cfg = window[name];
+    if (cfg && typeof cfg === 'object') {
+      winFound = true;
+      if (okNonce(cfg.nonce)) hasNonce = true;
+      if (okRoot(cfg.rest_url)) hasRoot = true;
+    }
+  }
+  if (window.wpApiSettings && typeof window.wpApiSettings === 'object') {
+    winFound = true;
+    if (okNonce(window.wpApiSettings.nonce)) hasNonce = true;
+    if (okRoot(window.wpApiSettings.root)) hasRoot = true;
+  }
+  const missing = [];
+  if (!hasNonce) missing.push('nonce');
+  if (!hasRoot) missing.push('rest_root');
+  return {
+    http_status: status,
+    page_length: document.documentElement ? document.documentElement.outerHTML.length : 0,
+    config_node_found: nodeFound,
+    config_json_valid: jsonValid,
+    window_config_found: winFound,
+    missing_config_keys: missing,
+  };
+}
+"""
+
+
 def surface_config(page, label: str) -> dict:
     """Read the REST config the rendered surface itself publishes."""
     config = page.evaluate(CONFIG_JS, list(CONFIG_SELECTORS)) or {}
@@ -369,12 +830,29 @@ def surface_config(page, label: str) -> dict:
     if nonce:
         check(f"{label}: surface publishes its own REST nonce ({config.get('source')})", True, page.url)
         return config
-    # Diagnostics beat a bare assertion: keep the page so the failure is readable.
+    # Write a bounded diagnostic summary (no HTML, page text, or nonce values).
+    probe: dict = {}
+    on_login = "/wp-login.php" in str(page.url or "")
     try:
-        (EVIDENCE / f"no-config-{label.replace(' ', '-')}.html").write_text(page.content(), encoding="utf-8")
-    except Exception:  # pragma: no cover - diagnostics only
+        probe = page.evaluate(MISSING_CONFIG_PROBE_JS, list(CONFIG_SELECTORS)) or {}
+    except Exception:  # pragma: no cover - diagnostics fallback
+        probe = {}
+    try:
+        diag = format_missing_config_diagnostic(probe, on_login_page=on_login)
+        (EVIDENCE / f"no-config-{label.replace(' ', '-')}.html").write_text(diag, encoding="utf-8")
+    except Exception:  # pragma: no cover - diagnostics fallback
         pass
-    check(f"{label}: surface publishes its own REST nonce", False, f"url={page.url}")
+    raw_len = probe.get("page_length") if isinstance(probe, dict) else 0
+    page_len = raw_len if type(raw_len) is int and raw_len >= 0 else 0
+    check(
+        f"{label}: surface publishes its own REST nonce",
+        False,
+        safe_counts_detail(
+            page_len=page_len,
+            config_node_found=bool(probe.get("config_node_found")) if isinstance(probe, dict) else False,
+            on_login_page=on_login,
+        ),
+    )
     return {}
 
 
@@ -474,6 +952,366 @@ def session_cookies(ctx) -> dict:
     }
 
 
+def auth_cookie_names(ctx) -> list[str]:
+    """Every WordPress auth/settings cookie name across all paths (no values)."""
+    names = []
+    for cookie in ctx.cookies():
+        name = str(cookie.get("name", ""))
+        if name.startswith("wordpress_") or name.startswith("wp-settings-"):
+            names.append(name)
+    return sorted(names)
+
+
+def response_sets_auth_cookie(response) -> bool:
+    """True when any raw Set-Cookie header sets a WordPress auth/settings cookie."""
+    for header in response.headers_array():
+        if str(header.get("name", "")).lower() != "set-cookie":
+            continue
+        cookie_name = str(header.get("value", "")).split("=", 1)[0].strip()
+        if cookie_name.startswith("wordpress_") or cookie_name.startswith("wp-settings-"):
+            return True
+    return False
+
+
+def is_zero_access_otp_envelope(data: object) -> bool:
+    """Exact PR #340 possession-only /otp/verify data envelope contract."""
+    if not isinstance(data, dict):
+        return False
+    user_id = data.get("user_id")
+    links = data.get("patient_links")
+    return (
+        set(data.keys()) == {"user_id", "patient_links", "is_new_user", "session_issued"}
+        and type(user_id) is int
+        and user_id == 0
+        and isinstance(links, list)
+        and len(links) == 0
+        and data.get("is_new_user") is False
+        and data.get("session_issued") is False
+    )
+
+
+def is_wp_auth_cookie_name(name: str) -> bool:
+    """True for WordPress logged-in, secure-auth, and auth cookies (excludes test probe)."""
+    return name.startswith("wordpress_") and name != "wordpress_test_cookie"
+
+
+def _is_wp_settings_cookie_name(name: str) -> bool:
+    return name.startswith("wp-settings-")
+
+
+def canonical_wp_cookie_records(
+    cookies: object,
+    predicate,
+) -> list[tuple[str, str, str, str, float, bool, bool, str]]:
+    """Sorted cookie tuples preserving real values and multi-path entries."""
+    if not isinstance(cookies, list):
+        raise AssertionError("cookie snapshot must be a list")
+    records: list[tuple[str, str, str, str, float, bool, bool, str]] = []
+    for raw in cookies:
+        if not isinstance(raw, dict):
+            raise AssertionError("cookie entry must be a dict")
+        name = raw.get("name")
+        value = raw.get("value")
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise AssertionError("cookie name and value must be strings")
+        if not predicate(name):
+            continue
+        raw_expires = raw.get("expires", -1)
+        if isinstance(raw_expires, bool) or not isinstance(raw_expires, (int, float)):
+            raise AssertionError("cookie expires must be numeric")
+        records.append((
+            name,
+            str(raw.get("domain", "")),
+            str(raw.get("path", "")),
+            value,
+            float(raw_expires),
+            bool(raw.get("secure", False)),
+            bool(raw.get("httpOnly", False)),
+            str(raw.get("sameSite", "")),
+        ))
+    return sorted(records)
+
+
+def _cookie_slot_multiset(records: list[tuple]) -> dict[tuple[str, str, str], int]:
+    counts: dict[tuple[str, str, str], int] = {}
+    for rec in records:
+        slot = (rec[0], rec[1], rec[2])
+        counts[slot] = counts.get(slot, 0) + 1
+    return counts
+
+
+def assert_wp_auth_cookies_unchanged(before_cookies: object, after_cookies: object) -> dict:
+    """Compare WordPress auth and settings cookie names, attributes, and values.
+
+    Requires at least one non-empty `wordpress_logged_in_*` cookie and at least
+    one non-empty `wordpress_sec_*` or `wordpress_*` auth cookie in the baseline,
+    then asserts exact record equality after replay without emitting raw cookie
+    values in return payloads or exception messages.
+    """
+    before_auth = canonical_wp_cookie_records(before_cookies, is_wp_auth_cookie_name)
+    after_auth = canonical_wp_cookie_records(after_cookies, is_wp_auth_cookie_name)
+    before_logged_in = [r for r in before_auth if r[0].startswith("wordpress_logged_in_")]
+    before_sec = [r for r in before_auth if r[0].startswith("wordpress_sec_")]
+    before_plain_auth = [
+        r for r in before_auth
+        if not r[0].startswith("wordpress_logged_in_") and not r[0].startswith("wordpress_sec_")
+    ]
+    if not before_logged_in:
+        raise AssertionError("baseline missing wordpress_logged_in_* cookie")
+    if not before_sec and not before_plain_auth:
+        raise AssertionError("baseline missing wordpress_sec_* or wordpress_* auth cookie")
+    if any(not rec[3].strip() or rec[3].strip().lower() == "deleted" for rec in before_auth):
+        raise AssertionError("baseline has blank or deleted WordPress auth cookie value")
+
+    if after_auth != before_auth:
+        b_slots = _cookie_slot_multiset(before_auth)
+        a_slots = _cookie_slot_multiset(after_auth)
+        removed_count = sum(max(0, n - a_slots.get(s, 0)) for s, n in b_slots.items())
+        added_count = sum(max(0, n - b_slots.get(s, 0)) for s, n in a_slots.items())
+        b_vals: dict[tuple[str, str, str], list[str]] = {}
+        a_vals: dict[tuple[str, str, str], list[str]] = {}
+        for r in before_auth:
+            b_vals.setdefault((r[0], r[1], r[2]), []).append(r[3])
+        for r in after_auth:
+            a_vals.setdefault((r[0], r[1], r[2]), []).append(r[3])
+        value_changed = sum(1 for s in (set(b_vals) & set(a_vals)) if b_vals[s] != a_vals[s])
+        raise AssertionError(
+            f"WordPress auth cookies changed: before={len(before_auth)} after={len(after_auth)} "
+            f"removed={removed_count} added={added_count} value_changed={value_changed} "
+            f"attr_changed={removed_count == 0 and added_count == 0 and value_changed == 0}"
+        )
+
+    before_settings = canonical_wp_cookie_records(before_cookies, _is_wp_settings_cookie_name)
+    after_settings = canonical_wp_cookie_records(after_cookies, _is_wp_settings_cookie_name)
+    if after_settings != before_settings:
+        raise AssertionError(
+            f"WordPress settings cookies changed: before={len(before_settings)} after={len(after_settings)}"
+        )
+
+    return {
+        "auth_count": len(before_auth),
+        "logged_in_count": len(before_logged_in),
+        "sec_count": len(before_sec),
+        "auth_variant_count": len(before_plain_auth),
+        "settings_count": len(before_settings),
+    }
+
+
+def request_carries_wp_logged_in_cookie(cookie_header: object, before_cookies: object) -> bool:
+    """True when outgoing Cookie header includes an exact baseline logged-in name=value."""
+    if not isinstance(cookie_header, str) or not cookie_header.strip():
+        return False
+    baseline_logged_in = [
+        (rec[0], rec[3])
+        for rec in canonical_wp_cookie_records(before_cookies, is_wp_auth_cookie_name)
+        if rec[0].startswith("wordpress_logged_in_") and rec[3].strip()
+    ]
+    if not baseline_logged_in:
+        return False
+    sent: dict[str, list[str]] = {}
+    for part in cookie_header.split(";"):
+        item = part.strip()
+        if "=" not in item:
+            continue
+        key, val = item.split("=", 1)
+        sent.setdefault(key.strip(), []).append(val)
+    return any(val in sent.get(name, []) for name, val in baseline_logged_in)
+
+
+def assert_same_otp_refusal_class(anon_refusal: object, auth_refusal: object) -> dict:
+    """Compare authenticated OTP replay refusal status and error shape to anonymous replay."""
+    if not isinstance(anon_refusal, dict) or not isinstance(auth_refusal, dict):
+        raise AssertionError("OTP refusal responses must be dicts")
+    anon_status = anon_refusal.get("status")
+    auth_status = auth_refusal.get("status")
+    if type(anon_status) is not int or type(auth_status) is not int:
+        raise AssertionError("OTP refusal status must be int")
+    if anon_status not in (400, 401, 422) or auth_status != anon_status:
+        raise AssertionError(f"OTP refusal status mismatch: anon={anon_status} auth={auth_status}")
+    if not is_json_response(anon_refusal) or not is_json_response(auth_refusal):
+        raise AssertionError("OTP refusal body is not a JSON object")
+    anon_body = anon_refusal["data"]
+    auth_body = auth_refusal["data"]
+    anon_code = code_of(anon_refusal)
+    auth_code = code_of(auth_refusal)
+    if anon_code != "CLINIC_OTP_INVALID" or auth_code != anon_code:
+        raise AssertionError(
+            f"OTP refusal code mismatch: anon={safe_error_code(anon_code)!r} auth={safe_error_code(auth_code)!r}"
+        )
+    anon_msg = anon_body.get("message")
+    auth_msg = auth_body.get("message")
+    if (
+        not isinstance(anon_msg, str) or not anon_msg.strip()
+        or not isinstance(auth_msg, str) or not auth_msg.strip()
+    ):
+        raise AssertionError("OTP refusal message missing")
+    anon_data = anon_body.get("data")
+    auth_data = auth_body.get("data")
+    if not isinstance(anon_data, dict) or not isinstance(auth_data, dict):
+        raise AssertionError("OTP refusal data object missing")
+    if anon_data.get("status") != anon_status or auth_data.get("status") != auth_status:
+        raise AssertionError("OTP refusal data.status does not match HTTP status")
+    if set(auth_body.keys()) != set(anon_body.keys()):
+        raise AssertionError(
+            f"OTP refusal keys differ: anon={safe_key_names(anon_body)} auth={safe_key_names(auth_body)}"
+        )
+    forbidden = {"session_issued", "user_id", "patient_links", "is_new_user"}
+    if (forbidden & set(auth_body.keys())) or (forbidden & set(auth_data.keys())):
+        raise AssertionError("OTP refusal exposed verify-success fields")
+    return {"status": auth_status, "code": auth_code}
+
+
+def check_wp_auth_cookies_unchanged(name: str, before_cookies: object, after_cookies: object) -> dict:
+    """Run assert_wp_auth_cookies_unchanged inside check() without logging cookie values."""
+    try:
+        summary = assert_wp_auth_cookies_unchanged(before_cookies, after_cookies)
+    except AssertionError as exc:
+        check(name, False, str(exc))
+        raise
+    check(name, True, json.dumps(summary))
+    return summary
+
+
+def check_same_otp_refusal_class(name: str, anon_refusal: object, auth_refusal: object) -> dict:
+    """Run assert_same_otp_refusal_class inside check()."""
+    try:
+        summary = assert_same_otp_refusal_class(anon_refusal, auth_refusal)
+    except AssertionError as exc:
+        check(name, False, str(exc))
+        raise
+    check(name, True, f"HTTP {summary['status']} {summary['code']}")
+    return summary
+
+
+def wp_eval_json(marker: str, code: str, env_extra: dict | None = None) -> dict:
+    """Run a bounded WP-CLI PHP snippet and return the single JSON object for `marker`."""
+    wp_dir = os.environ.get("WP_DIR", "").strip()
+    if not wp_dir:
+        raise RuntimeError("WP_DIR is required for database invariant checks")
+    merged = os.environ.copy()
+    if env_extra:
+        merged.update(env_extra)
+    proc = subprocess.run(
+        ["wp", "eval", code, f"--path={wp_dir}", "--allow-root"],
+        capture_output=True,
+        text=True,
+        timeout=90,
+        env=merged,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"WP-CLI eval ({marker}) failed rc={proc.returncode} "
+            f"stderr_len={len(proc.stderr or '')} stdout_len={len(proc.stdout or '')}"
+        )
+    prefix = marker + "="
+    line = next((row for row in (proc.stdout or "").splitlines() if row.startswith(prefix)), "")
+    if not line:
+        raise RuntimeError(f"WP-CLI eval ({marker}) returned no marked JSON line")
+    parsed = json.loads(line[len(prefix):])
+    if not isinstance(parsed, dict):
+        raise RuntimeError(f"WP-CLI eval ({marker}) root must be an object")
+    return parsed
+
+
+def otp_db_snapshot(clinic_id: int, mobile: str) -> dict:
+    """Read non-secret row counts and latest token state for OTP checks."""
+    return wp_eval_json(
+        "CPSD_OTP_COUNTS",
+        r'''
+$db = \ClinicCore\Bootstrap\App::db();
+$wpdb = $db->wpdb();
+$cid = (int) getenv("CPSD_SNAP_CLINIC_ID");
+$mob = (string) getenv("CPSD_SNAP_MOBILE");
+$tok = $db->fetchRow(
+    "SELECT id, attempts, consumed_at FROM " . $db->table("cpms_otp_tokens")
+    . " WHERE clinic_id = %d AND mobile = %s ORDER BY id DESC LIMIT 1",
+    [$cid, $mob]
+);
+$last_ok = $db->fetchRow(
+    "SELECT actor_wp_user_id FROM " . $db->table("cpms_audit_logs")
+    . " WHERE clinic_id = %d AND action = %s ORDER BY id DESC LIMIT 1",
+    [$cid, "OTP_VERIFY_OK"]
+);
+$last_actor = ($last_ok !== null && array_key_exists("actor_wp_user_id", $last_ok) && $last_ok["actor_wp_user_id"] !== null)
+    ? (int) $last_ok["actor_wp_user_id"]
+    : null;
+echo "CPSD_OTP_COUNTS=" . wp_json_encode([
+    "users" => (int) $db->fetchValue("SELECT COUNT(*) FROM {$wpdb->users}"),
+    "links" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patient_user_links")),
+    "clinic_links" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patient_user_links") . " WHERE clinic_id = %d", [$cid]),
+    "patients" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patients")),
+    "clinic_patients" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patients") . " WHERE clinic_id = %d", [$cid]),
+    "tokens" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_otp_tokens") . " WHERE clinic_id = %d AND mobile = %s", [$cid, $mob]),
+    "unconsumed" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_otp_tokens") . " WHERE clinic_id = %d AND mobile = %s AND consumed_at IS NULL", [$cid, $mob]),
+    "latest_token_id" => $tok === null ? 0 : (int) $tok["id"],
+    "latest_attempts" => $tok === null ? -1 : (int) $tok["attempts"],
+    "latest_consumed" => $tok !== null && $tok["consumed_at"] !== null && (string) $tok["consumed_at"] !== "",
+    "verify_ok" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_audit_logs") . " WHERE clinic_id = %d AND action = %s", [$cid, "OTP_VERIFY_OK"]),
+    "last_verify_actor" => $last_actor,
+    "login_success" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_audit_logs") . " WHERE action = %s", ["LOGIN_SUCCESS"]),
+    "holds" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_slot_holds") . " WHERE clinic_id = %d", [$cid]),
+    "appointments" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_appointments") . " WHERE clinic_id = %d", [$cid]),
+]) . PHP_EOL;
+''',
+        {"CPSD_SNAP_CLINIC_ID": str(clinic_id), "CPSD_SNAP_MOBILE": mobile},
+    )
+
+
+def link_fixture_patient_account(clinic_id: int, patient_id: int, wp_user_id: int, mobile: str) -> dict:
+    """Explicitly link the provisioned patient-only WP account to the fixture patient."""
+    return wp_eval_json(
+        "CPSD_PATIENT_LINK",
+        r'''
+$db = \ClinicCore\Bootstrap\App::db();
+$cid = (int) getenv("CPSD_LINK_CLINIC_ID");
+$pid = (int) getenv("CPSD_LINK_PATIENT_ID");
+$uid = (int) getenv("CPSD_LINK_WP_USER_ID");
+$mob = (string) getenv("CPSD_LINK_MOBILE");
+$user = get_userdata($uid);
+if (!$user) {
+    throw new RuntimeException("synthetic patient WP user missing");
+}
+$roles = array_values((array) $user->roles);
+$clinic_mem = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_clinic_memberships") . " WHERE wp_user_id = %d", [$uid]);
+$org_mem = (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_organization_memberships") . " WHERE wp_user_id = %d", [$uid]);
+$is_admin = user_can($uid, "manage_options");
+if ($roles !== [\ClinicCore\Auth\RolesAndCapabilities::ROLE_PATIENT] || $clinic_mem !== 0 || $org_mem !== 0 || $is_admin) {
+    throw new RuntimeException("synthetic patient account is not patient-only");
+}
+$pat = $db->fetchRow("SELECT id, status FROM " . $db->table("cpms_patients") . " WHERE id = %d AND clinic_id = %d LIMIT 1", [$pid, $cid]);
+if ($pat === null || (string) ($pat["status"] ?? "") !== "active") {
+    throw new RuntimeException("fixture patient is missing or inactive");
+}
+$ok = $db->insert("cpms_patient_user_links", [
+    "clinic_id" => $cid,
+    "patient_id" => $pid,
+    "wp_user_id" => $uid,
+    "mobile_at_link" => $mob,
+    "is_primary" => 1,
+    "linked_at" => $db->nowUtcSql(),
+]);
+$link_id = $db->wpdb_last_insert_id();
+if (!$ok || $link_id <= 0) {
+    throw new RuntimeException("patient link insert failed");
+}
+echo "CPSD_PATIENT_LINK=" . wp_json_encode([
+    "link_id" => $link_id,
+    "roles" => $roles,
+    "clinic_memberships" => $clinic_mem,
+    "org_memberships" => $org_mem,
+    "is_admin" => $is_admin,
+    "clinic_links" => (int) $db->fetchValue("SELECT COUNT(*) FROM " . $db->table("cpms_patient_user_links") . " WHERE clinic_id = %d", [$cid]),
+]) . PHP_EOL;
+''',
+        {
+            "CPSD_LINK_CLINIC_ID": str(clinic_id),
+            "CPSD_LINK_PATIENT_ID": str(patient_id),
+            "CPSD_LINK_WP_USER_ID": str(wp_user_id),
+            "CPSD_LINK_MOBILE": mobile,
+        },
+    )
+
+
 def new_idempotency_key() -> str:
     """A canonical UUIDv4, the only shape the payment routes accept."""
     return str(uuid.uuid4())
@@ -561,7 +1399,7 @@ def provision_phase(browser) -> None:
     check("all credentials non-empty", all(v["username"] and v["password"] for v in creds.values()))
     check("every declared persona received credentials",
           sorted(creds.keys()) == sorted(PERSONAS), json.dumps(sorted(creds.keys())))
-    admin.screenshot(path=str(EVIDENCE / "scoped-admin-provisioned.png"))
+    # Screenshot omitted: this POST response displays live one-time persona passwords.
     CREDENTIALS_FILE.write_text(json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # The Owner's one-click dashboard: one page that says what is true and offers
@@ -707,7 +1545,7 @@ def repair_phase(browser) -> None:
         if (row.get_attribute("data-cpsd-persona-portal") or "") == "doctor":
             doctor_link = row.locator("a").first.get_attribute("href") or ""
     check("the doctor portal link is a real URL", doctor_link.startswith("http"), doctor_link)
-    admin.screenshot(path=str(EVIDENCE / "repair-portals.png"))
+    # Screenshot omitted: ACTION_LAUNCH displays live rotated persona passwords above.
 
     # The purpose of the whole exercise: a rotated password must really open the
     # real production portal of that persona.
@@ -734,7 +1572,7 @@ def repair_phase(browser) -> None:
           f"rows={admin.locator('tr[data-cpsd-persona-portal]').count()}")
     check("a second click still offers no destructive action",
           admin.locator('form[data-cpsd-form="teardown"]').count() == 0)
-    admin.screenshot(path=str(EVIDENCE / "repair-second-click.png"))
+    # Screenshot omitted: second ACTION_LAUNCH rotates and displays live persona passwords.
 
     JOURNEY_EVIDENCE["repair"] = {
         "activated": True,
@@ -1073,14 +1911,25 @@ def lifecycle_phase(browser, creds: dict, targets: dict, management_url: str) ->
     return evidence
 
 
-def patient_otp_journey(browser, targets: dict) -> None:
-    """Real OTP login of the demo patient, then one captured write and its replay.
+def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
+    """Possession-only OTP proof + linked patient password booking and replay.
 
-    Nothing here bypasses a production boundary: the challenge is created by the
-    public `/otp/request` route, the code is disclosed only through the scoped
-    companion's administrator form (which rebinds the hash of that live
-    challenge and never mints a token or a session), and the login, the patient
-    read, the hold and the confirm all go through the delivered REST stack.
+    1. Anonymous visitor on the real booking page runs `/otp/request`, discloses
+       the live challenge code via the scoped admin form, proves a wrong code is
+       refused with `CLINIC_OTP_INVALID`, proves the valid code returns HTTP 200
+       with the complete PR #340 zero-access envelope (`user_id=0`,
+       `patient_links=[]`, `is_new_user=false`, `session_issued=false`), sets no
+       auth cookie of any scheme, creates no `wp_users`, `cpms_patient_user_links`
+       or `cpms_patients` row, records the `OTP_VERIFY_OK` (`actor_wp_user_id=0`)
+       possession audit without `LOGIN_SUCCESS`, consumes the token, and refuses
+       anonymous replay of the consumed code.
+    2. The provisioned patient-only WP account is explicitly linked to the
+       fixture patient via WP-CLI, signed in through `wp-login.php`, checks
+       clinical fail-closed reads, replays the already-consumed OTP inside that
+       authenticated browser context while verifying refusal equivalence, no WP
+       auth/settings `Set-Cookie`, and unchanged auth/settings cookie names and
+       values, and then completes `/booking/hold`, `/booking/confirm`,
+       idempotent replay, and `/appointments/mine` under the same session.
     """
     clinic_id = int(targets.get("clinic_id") or 0)
     patient_id = int(targets.get("patient_id") or 0)
@@ -1103,171 +1952,459 @@ def patient_otp_journey(browser, targets: dict) -> None:
           bool(slot.get("id")) and int(slot.get("id") or 0) != int(fixture_slot.get("id") or 0),
           json.dumps({"patient_slot": slot, "reception_slot": fixture_slot}, ensure_ascii=False))
 
-    # ------------------------------------------------ anonymous public page
-    ctx = browser.new_context(viewport={"width": 1280, "height": 900})
-    page = ctx.new_page()
-    page.goto(str(booking.get("url")), wait_until="domcontentloaded")
-    check("the anonymous public booking page renders its own OTP step",
-          page.locator('[data-role="otp-mobile"]').count() == 1
-          and page.locator('[data-role="otp-code"]').count() == 1, f"url={page.url}")
-    check("the anonymous visitor starts without a WordPress session",
-          session_cookies(ctx) == {}, str(sorted(session_cookies(ctx))))
+    selftest_safe_detail()
+    before_req = otp_db_snapshot(clinic_id, mobile)
+    consumed_code = ""
+    try:
+        # -------------------------------------------- anonymous public page
+        ctx = browser.new_context(viewport={"width": 1280, "height": 900})
+        try:
+            page = ctx.new_page()
+            page.goto(str(booking.get("url")), wait_until="domcontentloaded")
+            check("the anonymous public booking page renders its own OTP step",
+                  page.locator('[data-role="otp-mobile"]').count() == 1
+                  and page.locator('[data-role="otp-code"]').count() == 1, f"url={page.url}")
+            check("the anonymous visitor starts without a WordPress session",
+                  auth_cookie_names(ctx) == [], str(auth_cookie_names(ctx)))
 
-    booking_cfg = booking_surface_config(page)
-    booking_root = rest_root_from(booking_cfg)
-    check("the booking widget publishes the REST root this install serves",
-          bool(booking_cfg.get("rest_root")), f"root={booking_cfg.get('rest_root')!r}")
-    otp_request_path = str(booking_cfg.get("otp_request_path") or "/otp/request")
-    otp_verify_path = str(booking_cfg.get("otp_verify_path") or "/otp/verify")
-    check("the anonymous widget publishes the OTP continuation paths it uses",
-          otp_request_path.endswith("/otp/request") and otp_verify_path.endswith("/otp/verify"),
-          f"request={otp_request_path} verify={otp_verify_path}")
+            booking_cfg = booking_surface_config(page)
+            booking_root = rest_root_from(booking_cfg)
+            check("the booking widget publishes the REST root this install serves",
+                  bool(booking_cfg.get("rest_root")), f"root={booking_cfg.get('rest_root')!r}")
+            otp_request_path = str(booking_cfg.get("otp_request_path") or "/otp/request")
+            otp_verify_path = str(booking_cfg.get("otp_verify_path") or "/otp/verify")
+            check("the anonymous widget publishes the OTP continuation paths it uses",
+                  otp_request_path.endswith("/otp/request") and otp_verify_path.endswith("/otp/verify"),
+                  f"request={otp_request_path} verify={otp_verify_path}")
 
-    requested = api(page, "", "POST", otp_request_path, {
-        "mobile": mobile,
-        "purpose": "login",
-        "clinician_id": int(slot.get("clinician_id") or 0),
-        "slot_id": int(slot.get("id") or 0),
-        "slot_date": str(slot.get("date") or ""),
-        "slot_time": str(slot.get("time") or ""),
-    }, rest_root=booking_root)
-    check("the public OTP request creates a challenge bound to the fixture Clinic",
-          requested["status"] == 200 and is_json_response(requested),
-          f"HTTP {requested['status']} {code_of(requested)} "
-          f"{json.dumps(requested.get('data'), ensure_ascii=False)[:200]}")
+            with page.expect_response(
+                lambda r: r.request.method == "POST" and ("/otp/request" in r.url or "%2Fotp%2Frequest" in r.url),
+                timeout=25000,
+            ) as req_resp_info:
+                requested = api(page, "", "POST", otp_request_path, {
+                    "mobile": mobile,
+                    "purpose": "login",
+                    "clinician_id": int(slot.get("clinician_id") or 0),
+                    "slot_id": int(slot.get("id") or 0),
+                    "slot_date": str(slot.get("date") or ""),
+                    "slot_time": str(slot.get("time") or ""),
+                }, rest_root=booking_root)
+            check("the public OTP request creates a challenge bound to the fixture Clinic",
+                  requested["status"] == 200 and is_json_response(requested)
+                  and auth_cookie_names(ctx) == [] and not response_sets_auth_cookie(req_resp_info.value),
+                  safe_response_detail(
+                      requested,
+                      cookie_count=len(auth_cookie_names(ctx)),
+                      wp_set_cookie=response_sets_auth_cookie(req_resp_info.value),
+                  ))
+            after_req = otp_db_snapshot(clinic_id, mobile)
+            challenge_token_id = int(after_req.get("latest_token_id") or 0)
+            check("OTP request persists one unconsumed token and creates no user, link or patient",
+                  after_req["tokens"] == before_req["tokens"] + 1
+                  and challenge_token_id > int(before_req.get("latest_token_id") or 0)
+                  and after_req["latest_consumed"] is False
+                  and after_req["unconsumed"] == 1
+                  and after_req["users"] == before_req["users"]
+                  and after_req["links"] == before_req["links"]
+                  and after_req["patients"] == before_req["patients"]
+                  and after_req["login_success"] == before_req["login_success"],
+                  safe_counts_detail(
+                      tokens_delta=after_req["tokens"] - before_req["tokens"],
+                      token_advanced=challenge_token_id > int(before_req.get("latest_token_id") or 0),
+                      consumed=bool(after_req["latest_consumed"]),
+                      unconsumed=after_req["unconsumed"],
+                      users_delta=after_req["users"] - before_req["users"],
+                      links_delta=after_req["links"] - before_req["links"],
+                      patients_delta=after_req["patients"] - before_req["patients"],
+                      login_success_delta=after_req["login_success"] - before_req["login_success"],
+                  ))
 
-    # ------------------------------- sanctioned code disclosure (admin form)
-    ctx_a, admin = admin_login(browser)
-    admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
-    submit_form(admin, "otp")
-    otp_node = admin.locator("[data-cpsd-otp-code]")
-    code = otp_node.inner_text().strip() if otp_node.count() else ""
-    check("the scoped admin form shows the code of that live challenge",
-          len(code) == 6 and code.isdigit(), f"code_len={len(code)}")
-    admin.screenshot(path=str(EVIDENCE / "scoped-admin-otp.png"))
-    ctx_a.close()
+            # --------------------------- sanctioned code disclosure (admin form)
+            ctx_a, admin = admin_login(browser)
+            try:
+                admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
+                submit_form(admin, "otp")
+                otp_card = admin.locator('[data-cpsd-secret="otp"]')
+                otp_node = otp_card.locator("[data-cpsd-otp-code]")
+                otp_card_count = otp_card.count()
+                otp_node_count = otp_node.count()
+                code = otp_node.inner_text().strip() if otp_node_count else ""
+                # Screenshot omitted: this POST response renders the live OTP code.
+                check("the scoped admin form shows the code of that live challenge",
+                      otp_card_count == 1 and otp_node_count == 1
+                      and len(code) == 6 and code.isdigit(),
+                      safe_counts_detail(
+                          otp_card_count=otp_card_count,
+                          otp_node_count=otp_node_count,
+                          code_len=len(code),
+                      ))
+            finally:
+                ctx_a.close()
 
-    # --------------------------------------------- wrong code fails closed
-    wrong = "000000" if code != "000000" else "111111"
-    refused = api(page, "", "POST", otp_verify_path,
-                  {"mobile": mobile, "code": wrong}, rest_root=booking_root)
-    check("a wrong OTP code is refused by the production verify path",
-          refused["status"] in (400, 401, 422) and is_json_response(refused)
-          and code_of(refused) == "CLINIC_OTP_INVALID",
-          f"HTTP {refused['status']} {code_of(refused)}")
-    check("the refused code issued no WordPress session", session_cookies(ctx) == {},
-          str(sorted(session_cookies(ctx))))
+            # ----------------------------------------- wrong code fails closed
+            before_wrong = otp_db_snapshot(clinic_id, mobile)
+            wrong = "000000" if code != "000000" else "111111"
+            with page.expect_response(
+                lambda r: r.request.method == "POST" and ("/otp/verify" in r.url or "%2Fotp%2Fverify" in r.url),
+                timeout=25000,
+            ) as wrong_resp_info:
+                refused = api(page, "", "POST", otp_verify_path,
+                              {"mobile": mobile, "code": wrong}, rest_root=booking_root)
+            after_wrong = otp_db_snapshot(clinic_id, mobile)
+            check("a wrong OTP code is refused by the production verify path",
+                  refused["status"] in (400, 401, 422) and is_json_response(refused)
+                  and code_of(refused) == "CLINIC_OTP_INVALID"
+                  and after_wrong["latest_token_id"] == challenge_token_id
+                  and after_wrong["latest_consumed"] is False
+                  and after_wrong["unconsumed"] == 1
+                  and after_wrong["latest_attempts"] == before_wrong["latest_attempts"] + 1
+                  and after_wrong["verify_ok"] == before_wrong["verify_ok"],
+                  safe_response_detail(
+                      refused,
+                      same_token=after_wrong["latest_token_id"] == challenge_token_id,
+                      attempts=after_wrong["latest_attempts"],
+                  ))
+            check("the refused code issued no WordPress session and wrote no identity row",
+                  auth_cookie_names(ctx) == []
+                  and not response_sets_auth_cookie(wrong_resp_info.value)
+                  and after_wrong["users"] == before_wrong["users"]
+                  and after_wrong["links"] == before_wrong["links"]
+                  and after_wrong["patients"] == before_wrong["patients"],
+                  str(auth_cookie_names(ctx)))
 
-    # --------------------------------------------------- real OTP login
-    verified = api(page, "", "POST", otp_verify_path,
-                   {"mobile": mobile, "code": code}, rest_root=booking_root)
-    verified_data = payload_of(verified)
-    check("the production verify path issues a session for the OTP code",
-          verified["status"] == 200 and is_json_response(verified)
-          and verified_data.get("session_issued") is True,
-          f"HTTP {verified['status']} {code_of(verified)} "
-          f"{json.dumps(verified_data, ensure_ascii=False)[:300]}")
-    check("OTP log-in reuses the existing synthetic identity (no new WP user)",
-          verified_data.get("is_new_user") is False and int(verified_data.get("user_id") or 0) == patient_wp,
-          f"user_id={verified_data.get('user_id')} is_new_user={verified_data.get('is_new_user')}")
-    links = verified_data.get("patient_links") if isinstance(verified_data.get("patient_links"), list) else []
-    check("the OTP login bound exactly the synthetic patient to that account",
-          len(links) == 1 and int((links[0] or {}).get("id") or 0) == patient_id,
-          json.dumps(links, ensure_ascii=False)[:300])
-    logged_in = session_cookies(ctx)
-    check("the browser now holds the WordPress session cookie issued by OTP",
-          bool(logged_in), str(sorted(logged_in)))
+            # ------------------------ real possession-only OTP verification
+            before_verify = after_wrong
+            with page.expect_response(
+                lambda r: r.request.method == "POST" and ("/otp/verify" in r.url or "%2Fotp%2Fverify" in r.url),
+                timeout=25000,
+            ) as verify_resp_info:
+                verified = api(page, "", "POST", otp_verify_path,
+                               {"mobile": mobile, "code": code}, rest_root=booking_root)
+            verified_data = payload_of(verified)
+            check("the production verify path returns the HTTP 200 zero-access envelope",
+                  verified["status"] == 200 and is_json_response(verified)
+                  and is_zero_access_otp_envelope(verified_data),
+                  safe_response_detail(verified, zero_access=is_zero_access_otp_envelope(verified_data)))
+            check("OTP verification sets no WordPress auth or settings cookie",
+                  auth_cookie_names(ctx) == []
+                  and not response_sets_auth_cookie(verify_resp_info.value),
+                  f"cookies={auth_cookie_names(ctx)}")
+            after_verify = otp_db_snapshot(clinic_id, mobile)
+            check("OTP verification creates no wp_users, patient link, patient, hold or appointment row",
+                  after_verify["users"] == before_verify["users"]
+                  and after_verify["links"] == before_verify["links"]
+                  and after_verify["clinic_links"] == 0
+                  and after_verify["patients"] == before_verify["patients"]
+                  and after_verify["clinic_patients"] == before_verify["clinic_patients"]
+                  and after_verify["holds"] == before_verify["holds"]
+                  and after_verify["appointments"] == before_verify["appointments"],
+                  safe_counts_detail(
+                      users_delta=after_verify["users"] - before_verify["users"],
+                      links_delta=after_verify["links"] - before_verify["links"],
+                      clinic_links=after_verify["clinic_links"],
+                      patients_delta=after_verify["patients"] - before_verify["patients"],
+                      clinic_patients_delta=after_verify["clinic_patients"] - before_verify["clinic_patients"],
+                      holds_delta=after_verify["holds"] - before_verify["holds"],
+                      appointments_delta=after_verify["appointments"] - before_verify["appointments"],
+                  ))
+            check("OTP verification consumes the challenge and audits possession without LOGIN_SUCCESS",
+                  after_verify["tokens"] == before_verify["tokens"]
+                  and after_verify["latest_token_id"] == challenge_token_id
+                  and after_verify["latest_consumed"] is True
+                  and after_verify["unconsumed"] == 0
+                  and after_verify["verify_ok"] == before_verify["verify_ok"] + 1
+                  and type(after_verify["last_verify_actor"]) is int
+                  and after_verify["last_verify_actor"] == 0
+                  and after_verify["login_success"] == before_verify["login_success"],
+                  safe_counts_detail(
+                      same_token=after_verify["latest_token_id"] == challenge_token_id,
+                      consumed=bool(after_verify["latest_consumed"]),
+                      unconsumed=after_verify["unconsumed"],
+                      verify_ok_delta=after_verify["verify_ok"] - before_verify["verify_ok"],
+                      last_verify_actor=after_verify["last_verify_actor"],
+                      login_success_delta=after_verify["login_success"] - before_verify["login_success"],
+                  ))
 
-    # ------------------------------------- the bound identity reads its own data
-    page.goto(patient_url, wait_until="domcontentloaded")
-    check("the OTP session renders the patient portal",
-          page.locator("script.cpms-patient-portal__config").count() == 1, f"url={page.url}")
-    cfg = surface_config(page, "otp patient")
-    nonce = str(cfg.get("nonce", ""))
-    root = str(cfg.get("rest_root", "") or REST)
+            # ----------------------------------- anonymous replay of consumed code
+            with page.expect_response(
+                lambda r: r.request.method == "POST" and ("/otp/verify" in r.url or "%2Fotp%2Fverify" in r.url),
+                timeout=25000,
+            ) as replay_resp_info:
+                replay = api(page, "", "POST", otp_verify_path,
+                             {"mobile": mobile, "code": code}, rest_root=booking_root)
+            # Keep the consumed code in local memory for the authenticated-session
+            # replay check below; wiped in the outer finally and not logged.
+            consumed_code = code
+            code = ""
+            after_replay = otp_db_snapshot(clinic_id, mobile)
+            check("replaying the consumed OTP code is refused (single use)",
+                  replay["status"] in (400, 401, 422) and is_json_response(replay)
+                  and code_of(replay) == "CLINIC_OTP_INVALID",
+                  safe_response_detail(replay))
+            check("the replay issued no session cookie and wrote no identity or audit row",
+                  auth_cookie_names(ctx) == []
+                  and not response_sets_auth_cookie(replay_resp_info.value)
+                  and after_replay["latest_token_id"] == challenge_token_id
+                  and after_replay["latest_consumed"] is True
+                  and after_replay["unconsumed"] == 0
+                  and after_replay["users"] == after_verify["users"]
+                  and after_replay["links"] == after_verify["links"]
+                  and after_replay["patients"] == after_verify["patients"]
+                  and after_replay["verify_ok"] == after_verify["verify_ok"]
+                  and after_replay["login_success"] == after_verify["login_success"],
+                  f"cookies={auth_cookie_names(ctx)}")
+        finally:
+            ctx.close()
 
-    # The demo patient row carries a synthetic cross-Clinic IDENTITY, and the
-    # delivered clinical reads require the WordPress user to be linked to that
-    # IDENTITY, not merely to the patient row (clinical_access_identity_
-    # predicate). OTP writes cpms_patient_user_links only; it does not create an
-    # identity link. Both reads must therefore stay fail-closed even for the
-    # now-bound session, and asserting exactly that is the honest form: the
-    # binding itself is proven by the production verify response above (and by
-    # the booking below), not by pretending the portal now exposes the record.
-    me = api(page, nonce, "GET", "/patient/me", rest_root=root)
-    check("the bound patient's clinical read stays fail-closed without an identity link",
-          me["status"] == 404 and code_of(me) == "CLINIC_NOT_FOUND",
-          f"HTTP {me['status']} {code_of(me)}")
-    records = api(page, nonce, "GET", "/patient/my-records", rest_root=root)
-    listed = list_of(records)
-    check("the bound patient's record list stays empty for the same reason",
-          records["status"] == 200 and listed == [],
-          f"HTTP {records['status']} {json.dumps(listed, ensure_ascii=False)[:200]}")
+        # ----- explicit patient-only link + native password login continuation
+        linked = link_fixture_patient_account(clinic_id, patient_id, patient_wp, mobile)
+        after_link = otp_db_snapshot(clinic_id, mobile)
+        check("fixture patient-only WP account is explicitly linked without adding users or patients",
+              int(linked.get("link_id") or 0) > 0
+              and linked.get("roles") == ["cpms_patient"]
+              and linked.get("clinic_memberships") == 0
+              and linked.get("org_memberships") == 0
+              and linked.get("is_admin") is False
+              and after_link["users"] == after_replay["users"]
+              and after_link["links"] == after_replay["links"] + 1
+              and after_link["clinic_links"] == 1
+              and after_link["patients"] == after_replay["patients"],
+              safe_counts_detail(
+                  has_link=int(linked.get("link_id") or 0) > 0,
+                  patient_role_only=linked.get("roles") == ["cpms_patient"],
+                  clinic_memberships=int(linked.get("clinic_memberships") or 0),
+                  org_memberships=int(linked.get("org_memberships") or 0),
+                  is_admin=bool(linked.get("is_admin")),
+                  users_delta=after_link["users"] - after_replay["users"],
+                  links_delta=after_link["links"] - after_replay["links"],
+                  clinic_links=after_link["clinic_links"],
+                  patients_delta=after_link["patients"] - after_replay["patients"],
+              ))
 
-    # ------------------------------------------- replay of the consumed code
-    replay = api(page, "", "POST", otp_verify_path,
-                 {"mobile": mobile, "code": code}, rest_root=booking_root)
-    check("replaying the consumed OTP code is refused (single use)",
-          replay["status"] in (400, 401, 422) and code_of(replay) == "CLINIC_OTP_INVALID",
-          f"HTTP {replay['status']} {code_of(replay)}")
-    check("the replay did not replace the browser session", session_cookies(ctx) == logged_in,
-          "cookie set changed")
+        patient_ctx, patient_page = persona_login(
+            browser, creds["patient"]["username"], creds["patient"]["password"]
+        )
+        try:
+            patient_page.goto(patient_url, wait_until="domcontentloaded")
+            portal_cfg_count = patient_page.locator("script.cpms-patient-portal__config").count()
+            check("the linked patient session renders the patient portal",
+                  portal_cfg_count == 1,
+                  safe_counts_detail(config_count=portal_cfg_count))
+            cfg = surface_config(patient_page, "linked patient")
+            nonce = str(cfg.get("nonce", ""))
+            root = str(cfg.get("rest_root", "") or REST)
 
-    # --------------------------- captured write + idempotent replay, as the patient
-    hold = api(page, nonce, "POST", "/booking/hold", {
-        "clinician_id": int(slot.get("clinician_id") or 0),
-        "slot_id": int(slot.get("id") or 0),
-        "slot_date": str(slot.get("date") or ""),
-        "slot_time": str(slot.get("time") or ""),
-    }, rest_root=root)
-    hold_data = payload_of(hold)
-    hold_token = str(hold_data.get("hold_token") or "")
-    check("the OTP-bound patient holds a real slot",
-          hold["status"] == 200 and bool(hold_token),
-          f"HTTP {hold['status']} {code_of(hold)} {json.dumps(hold_data, ensure_ascii=False)[:200]}")
+            # The demo patient row carries a synthetic cross-Clinic IDENTITY, and
+            # the delivered clinical reads require the WordPress user to be linked
+            # to that IDENTITY, not merely to the patient row
+            # (clinical_access_identity_ predicate). Linking
+            # cpms_patient_user_links alone does not create an identity link, so
+            # both reads stay fail-closed.
+            me = api(patient_page, nonce, "GET", "/patient/me", rest_root=root)
+            check("the linked patient's clinical read stays fail-closed without an identity link",
+                  me["status"] == 404 and code_of(me) == "CLINIC_NOT_FOUND",
+                  safe_response_detail(me))
+            records = api(patient_page, nonce, "GET", "/patient/my-records", rest_root=root)
+            listed = list_of(records)
+            check("the linked patient's record list stays empty for the same reason",
+                  records["status"] == 200 and listed == [],
+                  safe_response_detail(records, record_count=len(listed)))
 
-    key = new_idempotency_key()
-    confirm_body = {"hold_token": hold_token, "reason": "scoped demo patient journey"}
-    captured = api(page, nonce, "POST", "/booking/confirm", confirm_body,
-                   headers={"Idempotency-Key": key}, rest_root=root)
-    captured_data = payload_of(captured)
-    appointment_id = int(captured_data.get("appointment_id") or captured_data.get("id") or 0)
-    # No first_name/last_name is sent, and the delivered new-patient path
-    # REQUIRES both (requireNewPatientNames -> 400). A 200 here therefore proves
-    # the confirm resolved the OTP-bound existing patient instead of creating a
-    # fresh one from this session's mobile.
-    check("the captured booking is committed once for the OTP-bound patient "
-          "(no names sent, so the new-patient path was not taken)",
-          captured["status"] == 200 and appointment_id > 0,
-          f"HTTP {captured['status']} {code_of(captured)} "
-          f"{json.dumps(captured_data, ensure_ascii=False)[:200]}")
-    check("the committed appointment is a new row, not the fixture appointment",
-          appointment_id != int(targets.get("appointment_id") or 0),
-          f"appointment={appointment_id} fixture={targets.get('appointment_id')}")
+            # --- authenticated replay of the earlier-consumed OTP (session held)
+            before_auth_replay = otp_db_snapshot(clinic_id, mobile)
+            check("challenge replayed inside patient session is the earlier consumed OTP token",
+                  len(consumed_code) == 6
+                  and consumed_code.isdigit()
+                  and before_auth_replay["tokens"] == after_verify["tokens"]
+                  and before_auth_replay["latest_token_id"] == challenge_token_id
+                  and before_auth_replay["latest_consumed"] is True
+                  and before_auth_replay["unconsumed"] == 0,
+                  safe_counts_detail(
+                      same_token=before_auth_replay["latest_token_id"] == challenge_token_id,
+                      consumed=bool(before_auth_replay["latest_consumed"]),
+                      unconsumed=before_auth_replay["unconsumed"],
+                  ))
+            cookies_before_auth_replay = patient_ctx.cookies()
 
-    replayed = api(page, nonce, "POST", "/booking/confirm", confirm_body,
-                   headers={"Idempotency-Key": key}, rest_root=root)
-    replayed_data = payload_of(replayed)
-    check("replaying the identical request returns the same appointment",
-          replayed["status"] == 200
-          and int(replayed_data.get("appointment_id") or replayed_data.get("id") or 0) == appointment_id,
-          f"HTTP {replayed['status']} {code_of(replayed)} "
-          f"{json.dumps(replayed_data, ensure_ascii=False)[:200]}")
+            # 1) Public-route call shape (no X-WP-Nonce; browser sends live session cookies).
+            with patient_page.expect_response(
+                lambda r: r.request.method == "POST" and ("/otp/verify" in r.url or "%2Fotp%2Fverify" in r.url),
+                timeout=25000,
+            ) as auth_replay_resp_info:
+                auth_replay = api(patient_page, "", "POST", otp_verify_path,
+                                  {"mobile": mobile, "code": consumed_code}, rest_root=booking_root)
+            auth_replay_resp = auth_replay_resp_info.value
+            cookies_after_auth_replay = patient_ctx.cookies()
+            sent_cookie_public = request_carries_wp_logged_in_cookie(
+                auth_replay_resp.request.header_value("cookie"),
+                cookies_before_auth_replay,
+            )
+            check_same_otp_refusal_class(
+                "authenticated OTP replay is refused with the same status and error class as anonymous replay",
+                replay,
+                auth_replay,
+            )
+            check("authenticated OTP replay sent the live session cookie and received no WP Set-Cookie",
+                  sent_cookie_public and not response_sets_auth_cookie(auth_replay_resp),
+                  f"sent_logged_in={sent_cookie_public} wp_set_cookie={response_sets_auth_cookie(auth_replay_resp)}")
+            check_wp_auth_cookies_unchanged(
+                "authenticated OTP replay did not change WordPress auth or settings cookie names or values",
+                cookies_before_auth_replay,
+                cookies_after_auth_replay,
+            )
 
-    mine = api(page, nonce, "GET", "/appointments/mine", rest_root=root)
-    mine_list = list_of(mine)
-    slot_date = str(slot.get("date") or "")
-    slot_time = str(slot.get("time") or "")[:5]
-    same_slot = [row for row in mine_list
-                 if isinstance(row, dict) and str(row.get("date") or "") == slot_date
-                 and str(row.get("time") or "")[:5] == slot_time]
-    check("exactly one appointment exists for the captured slot after the replay",
-          mine["status"] == 200 and len(same_slot) == 1
-          and int(same_slot[0].get("id") or 0) == appointment_id,
-          f"HTTP {mine['status']} matches={json.dumps(same_slot, ensure_ascii=False)[:300]}")
+            # 2) REST-nonce call shape (keeps get_current_user_id() == patient_wp on the server).
+            with patient_page.expect_response(
+                lambda r: r.request.method == "POST" and ("/otp/verify" in r.url or "%2Fotp%2Fverify" in r.url),
+                timeout=25000,
+            ) as auth_nonce_replay_resp_info:
+                auth_nonce_replay = api(patient_page, nonce, "POST", otp_verify_path,
+                                        {"mobile": mobile, "code": consumed_code}, rest_root=booking_root)
+            consumed_code = ""
+            auth_nonce_replay_resp = auth_nonce_replay_resp_info.value
+            cookies_after_nonce_replay = patient_ctx.cookies()
+            sent_cookie_nonce = request_carries_wp_logged_in_cookie(
+                auth_nonce_replay_resp.request.header_value("cookie"),
+                cookies_before_auth_replay,
+            )
+            sent_rest_nonce = bool(nonce) and (auth_nonce_replay_resp.request.header_value("x-wp-nonce") == nonce)
+            check_same_otp_refusal_class(
+                "REST-authenticated OTP replay (with X-WP-Nonce) matches anonymous refusal class",
+                replay,
+                auth_nonce_replay,
+            )
+            check("REST-authenticated OTP replay sent cookie + nonce and received no WP Set-Cookie",
+                  sent_cookie_nonce and sent_rest_nonce
+                  and not response_sets_auth_cookie(auth_nonce_replay_resp),
+                  f"sent_logged_in={sent_cookie_nonce} sent_nonce={sent_rest_nonce} "
+                  f"wp_set_cookie={response_sets_auth_cookie(auth_nonce_replay_resp)}")
+            check_wp_auth_cookies_unchanged(
+                "REST-authenticated OTP replay kept WordPress auth and settings cookie names and values unchanged",
+                cookies_before_auth_replay,
+                cookies_after_nonce_replay,
+            )
+            after_auth_replay = otp_db_snapshot(clinic_id, mobile)
+            check("authenticated OTP replay wrote no identity, booking, or audit row",
+                  after_auth_replay["latest_token_id"] == challenge_token_id
+                  and after_auth_replay["latest_consumed"] is True
+                  and after_auth_replay["unconsumed"] == 0
+                  and after_auth_replay["users"] == before_auth_replay["users"]
+                  and after_auth_replay["links"] == before_auth_replay["links"]
+                  and after_auth_replay["patients"] == before_auth_replay["patients"]
+                  and after_auth_replay["holds"] == before_auth_replay["holds"]
+                  and after_auth_replay["appointments"] == before_auth_replay["appointments"]
+                  and after_auth_replay["verify_ok"] == before_auth_replay["verify_ok"]
+                  and after_auth_replay["login_success"] == before_auth_replay["login_success"],
+                  json.dumps({
+                      "verify_ok_delta": after_auth_replay["verify_ok"] - before_auth_replay["verify_ok"],
+                      "login_success_delta": after_auth_replay["login_success"] - before_auth_replay["login_success"],
+                  }))
 
-    page.screenshot(path=str(EVIDENCE / "journey-patient-otp.png"))
-    ctx.close()
+            # ------------------- captured write + idempotent replay, as the patient
+            hold = api(patient_page, nonce, "POST", "/booking/hold", {
+                "clinician_id": int(slot.get("clinician_id") or 0),
+                "slot_id": int(slot.get("id") or 0),
+                "slot_date": str(slot.get("date") or ""),
+                "slot_time": str(slot.get("time") or ""),
+            }, rest_root=root)
+            hold_data = payload_of(hold)
+            hold_token = str(hold_data.get("hold_token") or "")
+            check("the linked patient holds a real slot",
+                  hold["status"] == 200 and bool(hold_token),
+                  safe_response_detail(hold, has_hold_token=bool(hold_token)))
+
+            key = new_idempotency_key()
+            confirm_body = {"hold_token": hold_token, "reason": "scoped demo patient journey"}
+            captured = api(patient_page, nonce, "POST", "/booking/confirm", confirm_body,
+                           headers={"Idempotency-Key": key}, rest_root=root)
+            captured_data = payload_of(captured)
+            appointment_id = int(captured_data.get("appointment_id") or captured_data.get("id") or 0)
+            # No first_name/last_name is sent; under PR #340 confirm resolves the
+            # caller's linked active Patient rather than creating a cpms_patients row.
+            check("the captured booking is committed once for the linked patient "
+                  "(no names sent, and no new patient row is created)",
+                  captured["status"] == 200 and appointment_id > 0,
+                  safe_response_detail(captured, has_appointment=appointment_id > 0))
+            check("the committed appointment is a new row, not the fixture appointment",
+                  appointment_id != int(targets.get("appointment_id") or 0),
+                  safe_counts_detail(
+                      distinct_from_fixture=appointment_id != int(targets.get("appointment_id") or 0),
+                      has_appointment=appointment_id > 0,
+                  ))
+
+            replayed = api(patient_page, nonce, "POST", "/booking/confirm", confirm_body,
+                           headers={"Idempotency-Key": key}, rest_root=root)
+            replayed_data = payload_of(replayed)
+            replayed_appointment_id = int(replayed_data.get("appointment_id") or replayed_data.get("id") or 0)
+            check("replaying the identical request returns the same appointment",
+                  replayed["status"] == 200
+                  and replayed_appointment_id == appointment_id,
+                  safe_response_detail(replayed, same_appointment=replayed_appointment_id == appointment_id))
+
+            after_booking = otp_db_snapshot(clinic_id, mobile)
+            booked_row = wp_eval_json(
+                "CPSD_BOOKED_APPT",
+                r'''
+$db = \ClinicCore\Bootstrap\App::db();
+$row = $db->fetchRow(
+    "SELECT clinic_id, patient_id, slot_id, status FROM " . $db->table("cpms_appointments") . " WHERE id = %d LIMIT 1",
+    [(int) getenv("CPSD_APPT_ID")]
+);
+echo "CPSD_BOOKED_APPT=" . wp_json_encode([
+    "clinic_id" => (int) ($row["clinic_id"] ?? 0),
+    "patient_id" => (int) ($row["patient_id"] ?? 0),
+    "slot_id" => (int) ($row["slot_id"] ?? 0),
+    "status" => (string) ($row["status"] ?? ""),
+]) . PHP_EOL;
+''',
+                {"CPSD_APPT_ID": str(appointment_id)},
+            )
+            check("confirm and replay committed one appointment on the existing linked patient row",
+                  after_booking["appointments"] == after_link["appointments"] + 1
+                  and after_booking["patients"] == after_link["patients"]
+                  and after_booking["users"] == after_link["users"]
+                  and after_booking["links"] == after_link["links"]
+                  and booked_row["clinic_id"] == clinic_id
+                  and booked_row["patient_id"] == patient_id
+                  and booked_row["slot_id"] == int(slot.get("id") or 0)
+                  and booked_row["status"] == "confirmed",
+                  safe_counts_detail(
+                      appointments_delta=after_booking["appointments"] - after_link["appointments"],
+                      patients_delta=after_booking["patients"] - after_link["patients"],
+                      users_delta=after_booking["users"] - after_link["users"],
+                      links_delta=after_booking["links"] - after_link["links"],
+                      clinic_match=booked_row["clinic_id"] == clinic_id,
+                      patient_match=booked_row["patient_id"] == patient_id,
+                      slot_match=booked_row["slot_id"] == int(slot.get("id") or 0),
+                      confirmed=booked_row["status"] == "confirmed",
+                  ))
+
+            mine = api(patient_page, nonce, "GET", "/appointments/mine", rest_root=root)
+            mine_list = list_of(mine)
+            slot_date = str(slot.get("date") or "")
+            slot_time = str(slot.get("time") or "")[:5]
+            same_slot = [row for row in mine_list
+                         if isinstance(row, dict) and str(row.get("date") or "") == slot_date
+                         and str(row.get("time") or "")[:5] == slot_time]
+            same_appointment = len(same_slot) == 1 and int(same_slot[0].get("id") or 0) == appointment_id
+            check("exactly one appointment exists for the captured slot after the replay",
+                  mine["status"] == 200 and same_appointment,
+                  safe_response_detail(
+                      mine,
+                      match_count=len(same_slot),
+                      same_appointment=same_appointment,
+                  ))
+            check_wp_auth_cookies_unchanged(
+                "patient session cookies stay unchanged after post-replay authenticated /appointments/mine",
+                cookies_before_auth_replay,
+                patient_ctx.cookies(),
+            )
+
+            patient_page.screenshot(path=str(EVIDENCE / "journey-patient-otp.png"))
+        finally:
+            patient_ctx.close()
+    finally:
+        consumed_code = ""
 
 
 def tamper_phase(browser) -> None:
@@ -1525,11 +2662,11 @@ def journeys_phase(browser) -> None:
     cfg = surface_config(page, "patient")
     nonce = str(cfg.get("nonce", ""))
     root = str(cfg.get("rest_root", "") or REST)
-    # The ONLY production writer of cpms_patient_user_links is the mobile-OTP
-    # enrollment flow, and this companion deliberately never reads or echoes an
-    # OTP code. The demo patient account is therefore authenticated but not
-    # bound to a patient record, so both routes must fail CLOSED: an empty record
-    # list and a non-enumerating 404, never somebody else's data.
+    # Before any cpms_patient_user_links row exists, the provisioned demo
+    # patient account is authenticated but unlinked (and under PR #340 OTP
+    # verify no longer writes links either), so both clinical routes must fail
+    # CLOSED: an empty record list and a non-enumerating 404, never somebody
+    # else's data.
     me = api(page, nonce, "GET", "/patient/me", rest_root=root)
     check("unbound demo patient gets a non-enumerating 404 for /patient/me",
           me["status"] == 404 and code_of(me) == "CLINIC_NOT_FOUND",
@@ -1548,7 +2685,7 @@ def journeys_phase(browser) -> None:
         listed = []
     check("unbound demo patient lists no patient records",
           records["status"] == 200 and listed == [],
-          f"HTTP {records['status']} records={json.dumps(record_body, ensure_ascii=False)[:200]}")
+          safe_records_detail(records, listed))
     queue_denied = api(page, nonce, "GET", "/staff/portal/reception/board",
                        headers=scope_headers(clinic_id, visit_location), rest_root=root)
     check("patient is refused the staff arrival board", queue_denied["status"] in (401, 403),
@@ -1575,8 +2712,8 @@ def journeys_phase(browser) -> None:
     page.screenshot(path=str(EVIDENCE / "journey-patient.png"))
     ctx.close()
 
-    # --------------- the patient again, this time bound by a real OTP login
-    patient_otp_journey(browser, targets)
+    # ---- possession-only OTP drill, then explicitly linked patient booking
+    patient_otp_journey(browser, targets, creds)
 
     # ---------------- clinic manager: the management portal for their own Clinic
     management_url = str((portals.get("management") or {}).get("url") or "")
@@ -2041,7 +3178,7 @@ def write_result(ok: bool, extra: dict | None = None) -> None:
             "clinic_manager/organization_manager assert the management portal surface, not REST journeys",
             "staff messaging and visit pricing ARE driven through the delivered modules (thread list, thread view, send, charge add/edit dialog, override, invoice, partial and final payment); only the pricing visit-list pagination and the finance receipt print view are not exercised",
             "The patient OTP journey posts the widget's own /otp/request payload from inside the real booking page; the calendar/slot click path and the patient portal's OTP form (which multi-Clinic installs refuse with CLINIC_SCOPE_REQUIRED) are not driven",
-            "Password-only patient login stays unbound by design: cpms_patient_user_links is written only by the mobile-OTP enrollment flow, which is exercised through the production /otp/verify route",
+            "Unlinked password patient login fails closed; /otp/verify is checked as possession-only (zero-access envelope, no cookie, no identity writes, single-use replay refusal in anonymous and authenticated patient contexts), and authenticated patient booking runs after linking the patient-only WP account via WP-CLI",
             "Screenshot pixels not inspected",
         ],
     }
@@ -2077,10 +3214,11 @@ def main() -> int:
                 browser.close()
     except Exception as exc:
         ok = False
-        result = {"ok": False, "phase": phase, "checks": CHECKS, "error": f"{type(exc).__name__}: {exc}"}
+        error = safe_exception_category(exc)
+        result = {"ok": False, "phase": phase, "checks": CHECKS, "error": error}
         (EVIDENCE / f"browser-result-{phase}.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        annotate("SCOPED_BROWSER", f"{phase}: {result['error']}")
-        print("CPSD_BROWSER_RESULT=" + json.dumps({"ok": False, "phase": phase, "error": result["error"]}, ensure_ascii=False),
+        annotate("SCOPED_BROWSER", f"{phase}: {error}")
+        print("CPSD_BROWSER_RESULT=" + json.dumps({"ok": False, "phase": phase, "error": error}, ensure_ascii=False),
               flush=True)
         return 1
     write_result(ok, {"phase": phase})
