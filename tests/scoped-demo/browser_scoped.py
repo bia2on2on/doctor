@@ -62,6 +62,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -129,6 +130,7 @@ def annotate(title: str, message: str) -> None:
 
 
 _SAFE_ERROR_CODE_RE = re.compile(r"(?:CLINIC|SCOPED|CPMS)_[A-Z0-9_]{1,56}|rest_[a-z0-9_]{1,56}")
+_SAFE_EXC_CLASS_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
 _SAFE_KEY_NAME_RE = re.compile(r"[a-z][a-zA-Z0-9_]{0,47}")
 _SAFE_FLAG_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
 _FORBIDDEN_INT_FLAG_SEGMENTS = frozenset({
@@ -274,6 +276,14 @@ def format_missing_config_diagnostic(probe: object, *, on_login_page: bool = Fal
         f"on_login_page={bool(on_login_page)}",
         f"missing_config_keys={','.join(missing)}",
     )) + "\n"
+
+
+def safe_exception_category(exc: BaseException) -> str:
+    """Format exception class name plus a fixed label; omits message, URL, and stack trace."""
+    cls_name = type(exc).__name__
+    if not isinstance(cls_name, str) or not _SAFE_EXC_CLASS_RE.fullmatch(cls_name):
+        cls_name = "Exception"
+    return f"{cls_name}: browser phase failed"
 
 
 def format_check_detail(detail: object) -> str:
@@ -424,6 +434,67 @@ def selftest_safe_detail() -> dict[str, int]:
         if secret in diag_text:
             raise RuntimeError("safe detail self-test detected sentinel in missing-config diagnostic")
 
+    global EVIDENCE, sync_playwright
+    fake_ticket = "FAKE_TICKET_7a6b5c4d3e2f"
+    fake_ticket_url = f"https://demo.invalid/portal/?cpsd_persona_entry={fake_ticket}&persona=doctor"
+    saved_exc_checks = list(CHECKS)
+    saved_evidence = EVIDENCE
+    saved_playwright = sync_playwright
+    saved_argv = list(sys.argv)
+    exc_out_buf = io.StringIO()
+    exc_err_buf = io.StringIO()
+
+    def _raise_synth_ticket_nav():
+        raise TimeoutError(
+            f'Page.goto: Timeout 30000ms exceeded navigating to "{fake_ticket_url}" '
+            "(waiting until domcontentloaded)\nTraceback (most recent call last): synth"
+        ) from RuntimeError(fake_ticket_url)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        try:
+            CHECKS.clear()
+            EVIDENCE = Path(tmp_dir)
+            sync_playwright = _raise_synth_ticket_nav
+            sys.argv = [sys.argv[0] if sys.argv else "browser_scoped.py", "sessions"]
+            with contextlib.redirect_stdout(exc_out_buf), contextlib.redirect_stderr(exc_err_buf):
+                exc_rc = main()
+        finally:
+            CHECKS[:] = saved_exc_checks
+            EVIDENCE = saved_evidence
+            sync_playwright = saved_playwright
+            sys.argv = saved_argv
+        result_file = Path(tmp_dir) / "browser-result-sessions.json"
+        written_raw = result_file.read_text(encoding="utf-8") if result_file.is_file() else ""
+    exc_stdout = exc_out_buf.getvalue()
+    exc_stderr = exc_err_buf.getvalue()
+    combined_exc = "\n".join((written_raw, exc_stdout, exc_stderr))
+    for forbidden in (
+        fake_ticket_url,
+        fake_ticket,
+        "cpsd_persona_entry",
+        "demo.invalid",
+        "https://",
+        "http://",
+        "Page.goto",
+        "Traceback",
+    ):
+        if forbidden in combined_exc:
+            raise RuntimeError("safe detail self-test detected ticket URL or exception text in outer handler")
+    expected_err = "TimeoutError: browser phase failed"
+    expected_result = {"ok": False, "phase": "sessions", "checks": [], "error": expected_err}
+    expected_lines = [
+        f"::error title=SCOPED_BROWSER::sessions: {expected_err}",
+        "CPSD_BROWSER_RESULT=" + json.dumps({"ok": False, "phase": "sessions", "error": expected_err}, ensure_ascii=False),
+    ]
+    written_obj = json.loads(written_raw) if written_raw else {}
+    if (
+        exc_rc != 1
+        or written_obj != expected_result
+        or exc_stdout.splitlines() != expected_lines
+        or exc_stderr != ""
+    ):
+        raise RuntimeError("safe detail self-test broke outer handler contract")
+
     rejected = 0
     bad_flags: tuple[dict[str, object], ...] = (
         {"hold_token": sentinels["hold_token"]},
@@ -451,7 +522,13 @@ def selftest_safe_detail() -> dict[str, int]:
             rejected += 1
         else:
             raise RuntimeError(f"safe detail self-test accepted unsafe flag {sorted(bad)}")
-    return {"cases": len(cases), "rejected_flags": rejected, "sentinels": len(sentinel_strings), "leaks": 0}
+    return {
+        "cases": len(cases),
+        "outer_handler": 1,
+        "rejected_flags": rejected,
+        "sentinels": len(sentinel_strings),
+        "leaks": 0,
+    }
 
 
 # --- Shared in-page dialog (assets/js/cpms-dialog.js) — DUAL-MODE answers ----
@@ -3137,10 +3214,11 @@ def main() -> int:
                 browser.close()
     except Exception as exc:
         ok = False
-        result = {"ok": False, "phase": phase, "checks": CHECKS, "error": f"{type(exc).__name__}: {exc}"}
+        error = safe_exception_category(exc)
+        result = {"ok": False, "phase": phase, "checks": CHECKS, "error": error}
         (EVIDENCE / f"browser-result-{phase}.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
-        annotate("SCOPED_BROWSER", f"{phase}: {result['error']}")
-        print("CPSD_BROWSER_RESULT=" + json.dumps({"ok": False, "phase": phase, "error": result["error"]}, ensure_ascii=False),
+        annotate("SCOPED_BROWSER", f"{phase}: {error}")
+        print("CPSD_BROWSER_RESULT=" + json.dumps({"ok": False, "phase": phase, "error": error}, ensure_ascii=False),
               flush=True)
         return 1
     write_result(ok, {"phase": phase})
