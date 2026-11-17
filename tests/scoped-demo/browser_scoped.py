@@ -140,7 +140,8 @@ _SECRET_DETAIL_JSON_RE = re.compile(
     r'(["\'](?:hold_token|confirm_token|idempotency_key|idempotency-key|idempotency|'
     r'otp|otp_code|token_id|latest_token_id|nonce|_wpnonce|wp_nonce|x-wp-nonce|rest_nonce|'
     r'cookie|set-cookie|set_cookie|password|user_pass|secret|reference_code|'
-    r'cpsd_persona_entry)["\']\s*:\s*)'
+    r'cpsd_persona_entry|patient_name|full_name|first_name|last_name|'
+    r'national_code|mobile|phone|note_summary|content_text|diagnosis)["\']\s*:\s*)'
     r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|-?\d+)',
     re.IGNORECASE,
 )
@@ -148,10 +149,12 @@ _SECRET_DETAIL_KV_RE = re.compile(
     r'(\b(?:hold_token|confirm_token|idempotency_key|idempotency-key|'
     r'otp|otp_code|token_id|latest_token_id|nonce|_wpnonce|wp_nonce|x-wp-nonce|rest_nonce|'
     r'cookie|set-cookie|set_cookie|password|user_pass|secret|reference_code|'
-    r'cpsd_persona_entry)\s*[=:]\s*)'
+    r'cpsd_persona_entry|patient_name|full_name|first_name|last_name|'
+    r'national_code|mobile|phone|note_summary|content_text|diagnosis)\s*[=:]\s*)'
     r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,;\])\}]+)',
     re.IGNORECASE,
 )
+_EXPECTED_SURFACE_CONFIG_KEYS = ("nonce", "rest_root")
 
 
 def safe_error_code(source: object) -> str:
@@ -243,6 +246,36 @@ def safe_response_detail(result: object, **flags: bool | int) -> str:
     return " ".join(parts)
 
 
+def safe_records_detail(records: object, listed: object) -> str:
+    """Format HTTP status and record count without record fields or values."""
+    status = records.get("status") if isinstance(records, dict) and type(records.get("status")) is int else 0
+    count = len(listed) if isinstance(listed, list) else 0
+    return f"HTTP {status} count={count}"
+
+
+def format_missing_config_diagnostic(probe: object, *, on_login_page: bool = False) -> str:
+    """Format bounded non-HTML diagnostics for a missing surface REST config."""
+    data = probe if isinstance(probe, dict) else {}
+    raw_status = data.get("http_status")
+    status_text = str(raw_status) if type(raw_status) is int and 100 <= raw_status <= 599 else "unknown"
+    raw_len = data.get("page_length")
+    page_len = raw_len if type(raw_len) is int and raw_len >= 0 else 0
+    raw_missing = data.get("missing_config_keys")
+    if isinstance(raw_missing, list):
+        missing = [k for k in _EXPECTED_SURFACE_CONFIG_KEYS if k in raw_missing]
+    else:
+        missing = list(_EXPECTED_SURFACE_CONFIG_KEYS)
+    return "\n".join((
+        f"http_status={status_text}",
+        f"page_length={page_len}",
+        f"config_node_found={bool(data.get('config_node_found'))}",
+        f"config_json_valid={bool(data.get('config_json_valid'))}",
+        f"window_config_found={bool(data.get('window_config_found'))}",
+        f"on_login_page={bool(on_login_page)}",
+        f"missing_config_keys={','.join(missing)}",
+    )) + "\n"
+
+
 def format_check_detail(detail: object) -> str:
     """Prevent check() from serializing dict/list values or secret key/value pairs."""
     if detail is None or detail == "":
@@ -277,8 +310,34 @@ def selftest_safe_detail() -> dict[str, int]:
         "cookie": "wordpress_logged_in_synth=SYNTH_COOKIE_val99",
         "password": "SYNTH_PASS_zzxxyy1122",
         "reference_code": "SYNTH_REF_445566",
+        "patient_name": "SYNTH_NAME_SARA_EXAMPLE",
+        "first_name": "SYNTH_FIRST_SARA",
+        "last_name": "SYNTH_LAST_EXAMPLE",
+        "national_code": "0099887766",
+        "mobile": "09001112233",
+        "content_text": "SYNTH_RECORD_NOTE_01",
+        "visit_reason": "SYNTH_VISIT_REASON_FOLLOWUP",
     }
     sentinel_strings = tuple(str(v) for v in sentinels.values())
+    record_named_row = {
+        "id": 401,
+        "patient_name": sentinels["patient_name"],
+        "first_name": sentinels["first_name"],
+        "last_name": sentinels["last_name"],
+        "national_code": sentinels["national_code"],
+        "mobile": sentinels["mobile"],
+        "content_text": sentinels["content_text"],
+    }
+    fake_records = [
+        record_named_row,
+        {
+            "id": 402,
+            "patient_name": sentinels["patient_name"],
+            "visit_reason": sentinels["visit_reason"],
+        },
+    ]
+    records_list_resp = {"status": 200, "data": {"data": fake_records}}
+    records_dict_resp = {"status": 200, "data": {"records": fake_records}}
     hold_envelope = {
         "status": 200,
         "data": {"data": {
@@ -297,15 +356,20 @@ def selftest_safe_detail() -> dict[str, int]:
             "hold_token": sentinels["hold_token"],
         },
     }
+    keyed_sentinels = {k: v for k, v in sentinels.items() if k != "visit_reason"}
     cases = [
         ("hold_pass", True, safe_response_detail(hold_envelope, has_hold_token=True)),
         ("hold_fail", False, safe_response_detail(bad_code_envelope, has_hold_token=False)),
+        ("records_empty_pass", True, safe_records_detail({"status": 200, "data": []}, [])),
+        ("records_isolation_fail", False, safe_records_detail(records_list_resp, fake_records)),
+        ("records_dict_fail", False, records_dict_resp),
+        ("records_json_fail", False, f"HTTP 200 records={json.dumps([record_named_row])}"),
         ("raw_dict_pass", True, dict(sentinels)),
         ("raw_dict_fail", False, hold_envelope),
         ("list_pass", True, [dict(sentinels)]),
-        ("json_str_pass", True, json.dumps(sentinels)),
-        ("json_str_fail", False, json.dumps({"nested": sentinels})),
-        ("kv_str_pass", True, " ".join(f"{k}={v}" for k, v in sentinels.items())),
+        ("json_str_pass", True, json.dumps(keyed_sentinels)),
+        ("json_str_fail", False, json.dumps({"nested": keyed_sentinels})),
+        ("kv_str_pass", True, " ".join(f"{k}={v}" for k, v in keyed_sentinels.items())),
         ("counts_pass", True, safe_counts_detail(
             same_token=True, consumed=True, unconsumed=0, tokens_delta=1, verify_ok_delta=1,
         )),
@@ -335,8 +399,30 @@ def selftest_safe_detail() -> dict[str, int]:
                 raise RuntimeError("safe detail self-test detected sentinel in check sink")
         if 'HTTP 200' not in CHECKS[0]["detail"] or '"hold_token"' not in CHECKS[0]["detail"]:
             raise RuntimeError("safe detail self-test lost status or key-name metadata")
+        if CHECKS[2]["detail"] != "HTTP 200 count=0" or CHECKS[3]["detail"] != "HTTP 200 count=2":
+            raise RuntimeError("safe detail self-test broke status/count records contract")
     finally:
         CHECKS[:] = saved
+
+    synth_html = f"<html><body>{sentinels['patient_name']}<script>{sentinels['nonce']}</script></body></html>"
+    diag_text = format_missing_config_diagnostic(
+        {
+            "http_status": 200,
+            "page_length": len(synth_html),
+            "config_node_found": True,
+            "config_json_valid": False,
+            "window_config_found": False,
+            "missing_config_keys": ["nonce", "rest_root", sentinels["nonce"]],
+            "nonce": sentinels["nonce"],
+            "html": synth_html,
+        },
+        on_login_page=False,
+    )
+    if "<" in diag_text or "missing_config_keys=nonce,rest_root" not in diag_text or "http_status=200" not in diag_text:
+        raise RuntimeError("safe detail self-test broke missing-config diagnostic contract")
+    for secret in sentinel_strings:
+        if secret in diag_text:
+            raise RuntimeError("safe detail self-test detected sentinel in missing-config diagnostic")
 
     rejected = 0
     bad_flags: tuple[dict[str, object], ...] = (
@@ -603,6 +689,63 @@ CONFIG_JS = """
 """
 
 
+MISSING_CONFIG_PROBE_JS = """
+(selectors) => {
+  const okNonce = (value) => typeof value === 'string' && /^[0-9a-f]{10}$/.test(value.trim());
+  const okRoot = (value) => typeof value === 'string' && value.trim().length > 0;
+  let status = null;
+  try {
+    const nav = performance.getEntriesByType && performance.getEntriesByType('navigation')[0];
+    if (nav && Number.isInteger(nav.responseStatus) && nav.responseStatus >= 100 && nav.responseStatus <= 599) {
+      status = nav.responseStatus;
+    }
+  } catch (e) { /* navigation status unavailable */ }
+  let nodeFound = false;
+  let jsonValid = false;
+  let hasNonce = false;
+  let hasRoot = false;
+  for (const selector of selectors) {
+    const node = document.querySelector(selector);
+    if (!node) continue;
+    nodeFound = true;
+    try {
+      const parsed = JSON.parse(node.textContent || '');
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        jsonValid = true;
+        if (okNonce(parsed.nonce)) hasNonce = true;
+        if (okRoot(parsed.rest_root)) hasRoot = true;
+      }
+    } catch (e) { /* malformed config script */ }
+  }
+  let winFound = false;
+  for (const name of ['CPMS_Q', 'CPMS_DOC', 'CPMS_FIN']) {
+    const cfg = window[name];
+    if (cfg && typeof cfg === 'object') {
+      winFound = true;
+      if (okNonce(cfg.nonce)) hasNonce = true;
+      if (okRoot(cfg.rest_url)) hasRoot = true;
+    }
+  }
+  if (window.wpApiSettings && typeof window.wpApiSettings === 'object') {
+    winFound = true;
+    if (okNonce(window.wpApiSettings.nonce)) hasNonce = true;
+    if (okRoot(window.wpApiSettings.root)) hasRoot = true;
+  }
+  const missing = [];
+  if (!hasNonce) missing.push('nonce');
+  if (!hasRoot) missing.push('rest_root');
+  return {
+    http_status: status,
+    page_length: document.documentElement ? document.documentElement.outerHTML.length : 0,
+    config_node_found: nodeFound,
+    config_json_valid: jsonValid,
+    window_config_found: winFound,
+    missing_config_keys: missing,
+  };
+}
+"""
+
+
 def surface_config(page, label: str) -> dict:
     """Read the REST config the rendered surface itself publishes."""
     config = page.evaluate(CONFIG_JS, list(CONFIG_SELECTORS)) or {}
@@ -610,12 +753,29 @@ def surface_config(page, label: str) -> dict:
     if nonce:
         check(f"{label}: surface publishes its own REST nonce ({config.get('source')})", True, page.url)
         return config
-    # Diagnostics beat a bare assertion: keep the page so the failure is readable.
+    # Write a bounded diagnostic summary (no HTML, page text, or nonce values).
+    probe: dict = {}
+    on_login = "/wp-login.php" in str(page.url or "")
     try:
-        (EVIDENCE / f"no-config-{label.replace(' ', '-')}.html").write_text(page.content(), encoding="utf-8")
-    except Exception:  # pragma: no cover - diagnostics only
+        probe = page.evaluate(MISSING_CONFIG_PROBE_JS, list(CONFIG_SELECTORS)) or {}
+    except Exception:  # pragma: no cover - diagnostics fallback
+        probe = {}
+    try:
+        diag = format_missing_config_diagnostic(probe, on_login_page=on_login)
+        (EVIDENCE / f"no-config-{label.replace(' ', '-')}.html").write_text(diag, encoding="utf-8")
+    except Exception:  # pragma: no cover - diagnostics fallback
         pass
-    check(f"{label}: surface publishes its own REST nonce", False, f"url={page.url}")
+    raw_len = probe.get("page_length") if isinstance(probe, dict) else 0
+    page_len = raw_len if type(raw_len) is int and raw_len >= 0 else 0
+    check(
+        f"{label}: surface publishes its own REST nonce",
+        False,
+        safe_counts_detail(
+            page_len=page_len,
+            config_node_found=bool(probe.get("config_node_found")) if isinstance(probe, dict) else False,
+            on_login_page=on_login,
+        ),
+    )
     return {}
 
 
@@ -1162,7 +1322,7 @@ def provision_phase(browser) -> None:
     check("all credentials non-empty", all(v["username"] and v["password"] for v in creds.values()))
     check("every declared persona received credentials",
           sorted(creds.keys()) == sorted(PERSONAS), json.dumps(sorted(creds.keys())))
-    admin.screenshot(path=str(EVIDENCE / "scoped-admin-provisioned.png"))
+    # Screenshot omitted: this POST response displays live one-time persona passwords.
     CREDENTIALS_FILE.write_text(json.dumps(creds, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # The Owner's one-click dashboard: one page that says what is true and offers
@@ -1308,7 +1468,7 @@ def repair_phase(browser) -> None:
         if (row.get_attribute("data-cpsd-persona-portal") or "") == "doctor":
             doctor_link = row.locator("a").first.get_attribute("href") or ""
     check("the doctor portal link is a real URL", doctor_link.startswith("http"), doctor_link)
-    admin.screenshot(path=str(EVIDENCE / "repair-portals.png"))
+    # Screenshot omitted: ACTION_LAUNCH displays live rotated persona passwords above.
 
     # The purpose of the whole exercise: a rotated password must really open the
     # real production portal of that persona.
@@ -1335,7 +1495,7 @@ def repair_phase(browser) -> None:
           f"rows={admin.locator('tr[data-cpsd-persona-portal]').count()}")
     check("a second click still offers no destructive action",
           admin.locator('form[data-cpsd-form="teardown"]').count() == 0)
-    admin.screenshot(path=str(EVIDENCE / "repair-second-click.png"))
+    # Screenshot omitted: second ACTION_LAUNCH rotates and displays live persona passwords.
 
     JOURNEY_EVIDENCE["repair"] = {
         "activated": True,
@@ -1787,11 +1947,20 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
             try:
                 admin.goto(f"{BASE}/wp-admin/tools.php?page=cpms-scoped-demo", wait_until="domcontentloaded")
                 submit_form(admin, "otp")
-                otp_node = admin.locator("[data-cpsd-otp-code]")
-                code = otp_node.inner_text().strip() if otp_node.count() else ""
+                otp_card = admin.locator('[data-cpsd-secret="otp"]')
+                otp_node = otp_card.locator("[data-cpsd-otp-code]")
+                otp_card_count = otp_card.count()
+                otp_node_count = otp_node.count()
+                code = otp_node.inner_text().strip() if otp_node_count else ""
+                # Screenshot omitted: this POST response renders the live OTP code.
                 check("the scoped admin form shows the code of that live challenge",
-                      len(code) == 6 and code.isdigit(), f"code_len={len(code)}")
-                admin.screenshot(path=str(EVIDENCE / "scoped-admin-otp.png"))
+                      otp_card_count == 1 and otp_node_count == 1
+                      and len(code) == 6 and code.isdigit(),
+                      safe_counts_detail(
+                          otp_card_count=otp_card_count,
+                          otp_node_count=otp_node_count,
+                          code_len=len(code),
+                      ))
             finally:
                 ctx_a.close()
 
@@ -2439,7 +2608,7 @@ def journeys_phase(browser) -> None:
         listed = []
     check("unbound demo patient lists no patient records",
           records["status"] == 200 and listed == [],
-          f"HTTP {records['status']} records={json.dumps(record_body, ensure_ascii=False)[:200]}")
+          safe_records_detail(records, listed))
     queue_denied = api(page, nonce, "GET", "/staff/portal/reception/board",
                        headers=scope_headers(clinic_id, visit_location), rest_root=root)
     check("patient is refused the staff arrival board", queue_denied["status"] in (401, 403),
