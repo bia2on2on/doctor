@@ -1,34 +1,30 @@
-# Patient Identity, SMS Login and Self-Registration — DESIGN ONLY (revision 5, final)
+# Patient Identity, SMS Login and Self-Registration — DESIGN ONLY (revision 7)
 
 > # ⛔ DESIGN ONLY — MERGE IS NOT PERMISSION TO BUILD
 >
 > A proposal for review. Merging does **not** authorise a build; the build starts only after this PR is
 > merged and two independent readers pass it. The one table `cpms_patient_logins` is **owner-approved**
-> for that later build (including the nullable column added in R3), and **any other new table or column
-> needs separate owner approval — stop and ask.** No code, migration, test or workflow here.
+> for that later build, and **any other new table or column needs separate owner approval — stop and ask.**
+> No code, migration, test or workflow here.
 
 | | |
 |---|---|
 | **Base** | `origin/main` = `c97714034e62b001a313ee6636b25d7bece9d374` |
-| **Prior head** | rev 4 `a7bc23edaa0482db6225512c4d3373a6c0df1a62` — two readers, 8 findings, BLOCKER |
+| **Prior head** | `7fd20d9021345f5ff3fd7046d939db2412627c43` (revision 5; no revision-6 commit exists on this branch) |
 | **Supersedes** | `docs/architecture/appointment-request-design.md` (absent; history keeps it) |
-| **Labels** | **OBSERVED** read in code at the stated commit, not executed · **INFERENCE** · **UNKNOWN** · **DECIDED** owner/manager decision · **DEBT** existing, untouched |
+| **Labels** | **OBSERVED** read in code at the stated commit, not executed · **INFERENCE** · **UNKNOWN** · **LIMITATION** · **DECIDED** · **DEBT** |
 | **Not executed** | No PHP/MySQL/WordPress/browser run; PHP gates NOT APPLICABLE (docs-only). |
 
-## Revision 5 changes (R1–R10)
+## Revision 7 changes (owner policy change)
 
 | # | Change |
 |---|---|
-| **R1** | Pending users get a **minimal login-row self view** only; `me`, `updateMe`, `linked_records` and the inbox are level-gated **in the service layer** (§2.4). |
-| **R2** | `/patient/enroll` reclassified `full`; routes counted **by actor branch**, not by file; recount = **18 sites / 20 runtime routes** reachable by a patient-only account (§2.2-2.3); self-check must enumerate the **runtime registry**, not source regex; non-REST surfaces enumerated (§2.5). |
-| **R3** | Complete atomic first-booking creation: every mandatory column, MRN generator, identity activation, link `linked_at`, placed **before** the scope check; collision recorded in the approved table via `collision_clinic_id` (§5). |
-| **R4** | **Prerequisite PR**: `PATIENT_CREATED` audit payload redacted to ids and closed vocabulary, because `staffView` currently writes raw names + NID (§6.1). |
-| **R5** | Cap is a **locking current read in an outermost transaction** with a depth guard; staff bookings explicitly exempt; the rev-4 `:1716-1718` attribution is corrected (§9). |
-| **R6** | Restore safety no longer relies on `App.php`; table existence is checked directly, and a **persistent restore barrier option** fails closed across an interrupted restore (§7). |
-| **R7** | Cookie issuance requires **transaction depth 0** via a new `CpmsDb` accessor; the flat "60 s cooldown" claim is corrected to purpose-specific policy state (§3). |
-| **R8** | PR sequence rebuilt so **no pending row can exist** before gate + cap + first booking + approval + attach (§12). |
-| **R9** | Full state matrix re-derived from the recount (§13). |
-| **R10** | Every file:line re-verified; overstated claims deleted, not explained (§14). |
+| **1** | Link logic **replaced** by the two-factor rule: mobile+OTP **and** national ID matching the stored record (§6.2–6.5). In-person approval is no longer a precondition for record access; the collision-refusal text is deleted and replaced with the first-booking outcome (§5.4). |
+| **2** | Shared mobile: **STOP** at Organization level with options and a recommendation (§6.6); clinic level already forbids it. |
+| **3** | `collision_clinic_id`: **no longer needed**; recommendation delete, owner decides (§6.7). |
+| **4** | New security section: five threats, mitigation each, residual risk, plus the self-declared-record squat check against `u_pat_nid` (§16). |
+| **5** | Tests table for the linking flow (§17). |
+| **6** | One paragraph: restore closes all logins, access is re-established through the same two-factor flow (§7.2). |
 
 ---
 
@@ -45,11 +41,11 @@ One table, `{wp_prefix}cpms_patient_logins` (`utf8mb4_unicode_ci`):
 | `given_name`, `family_name` | `VARCHAR(120) NULL` | scrubbed on decision / at 14 d |
 | `national_id` | `VARCHAR(10) NULL` | scrubbed on decision / at 14 d |
 | `hold_reason` | `ENUM('mobile_reuse','clinic_mobile_exists','nid_exists','other') NULL` | why an automatic path stopped |
-| `collision_clinic_id` | `BIGINT UNSIGNED NULL` | **R3**: which clinic held the colliding walk-in mobile |
+| `collision_clinic_id` | `BIGINT UNSIGNED NULL` | **recommended for deletion, §6.7 — owner decides**; kept in the table list so the column count stays explicit |
 | `verified_by_wp_user_id`, `verified_at` | `BIGINT UNSIGNED NULL`, `DATETIME(3) NULL` | who approved, when |
 | `created_at`, `updated_at` | `DATETIME(3) NOT NULL` | UTC |
 
-`UNIQUE u_pl_mobile (mobile)`, `UNIQUE u_pl_user (wp_user_id)`, `KEY (state, created_at)`, `KEY (national_id)`, `KEY (collision_clinic_id)`.
+`UNIQUE u_pl_mobile (mobile)`, `UNIQUE u_pl_user (wp_user_id)`, `KEY (state, created_at)`, `KEY (national_id)`, `KEY (collision_clinic_id)` (drop with the column if §6.7 is accepted).
 Revocation = **DELETE + one mandatory audit row** in one transaction (history lives in `cpms_audit_logs`: `clinic_id`, `actor_wp_user_id`, `actor_role`, `action`, `patient_id`, `ip_hash`, `before_json`/`after_json`/`meta_json`, `0001:676-701`). The delete/insert race serialises on `u_pl_mobile` inside one transaction; InnoDB releases row locks at COMMIT (dev.mysql.com/doc/refman/8.4/en/innodb-locking.html). **UNKNOWN:** not executed on MariaDB 11.4.13.
 
 ## 2. The gate, the recount, and the non-REST surfaces (R1, R2)
@@ -79,7 +75,7 @@ A user holding **any** staff role is not patient-only, and is **never** eligible
 | Level | Routes/branches |
 |---|---|
 | `booking` | `/booking/hold` `BookingController.php:80`; `/booking/confirm` `:96`; `/booking/resume` `:115`; `/appointments/mine` `:126`; `/appointments/{id}/reschedule-options` `:138`; `/appointments/{id}/reschedule` (patient branch) `:156`; `/appointments/{id}/cancel` (patient branch) `:198`; `PatientPortalPage::render()` `:261-265` |
-| `full` | `/visits` `ClinicalController.php:167`; `/visits/{id}` `:185`; `/prescriptions` `:199`; `/patients/{patient_id}/files` (GET+POST) `FilesController.php:72-95`; `/files/{id}/stream` patient branch `:60`; **`/patient/enroll`** `PatientController.php:38-49` (**reclassified — R2**); `/patient/my-records` `:52-62`; `/notifications`+`/notifications/read`+`/rt/notifications` patient branches `NotificationsController.php:34,51,74` |
+| `full` (**requires the two-factor link, §6.3**) | `/visits` `ClinicalController.php:167`; `/visits/{id}` `:185`; `/prescriptions` `:199`; `/patients/{patient_id}/files` (GET+POST) `FilesController.php:72-95`; `/files/{id}/stream` patient branch `:60`; **`/patient/enroll`** `PatientController.php:38-49` (**reclassified — R2**); `/patient/my-records` `:52-62`; `/notifications`+`/notifications/read`+`/rt/notifications` patient branches `NotificationsController.php:34,51,74` |
 | `booking`, **minimal view** | `GET /patient/me` `PatientController.php:64-72` returns **only** `{given_name, family_name, state}` from the login row — no patient row, no NID, no MRN; `PATCH /patient/me` `:73-92` is **rejected** (403) for `booking` |
 | unchanged | `/appointments` staff branch `BookingController.php:172`; `/patient/enroll`'s staff semantics; every staff route |
 
@@ -105,6 +101,8 @@ Test: one output assertion per method per level (`none`/`booking`/`full`). **DEB
 | shortcodes | `add_shortcode` | 1 (`PublicBookingShortcode.php:219`) | public by design; patient branch reads `get_current_user_id()` `:1171-1189` — no level gate needed, it books as a public visitor |
 | `template_redirect` | `git grep -n template_redirect` | `RuntimeSchemaGate.php:42` (portal guard), `DoctorPortalShell.php:30-31` (staff) | portal guard must consult the level; staff shell unchanged |
 
+**Level after this revision (task 1).** `booking` is the level of an account with a live login row that has **not** completed the two-factor link of §6.2 — it may hold appointments it booked and nothing else. `full` requires a **verified two-factor link** (§6.3), not merely an `active` state: the state alone no longer opens records. `pending` maps to `booking` and may call `/patient/link-record` only after its own reception step.
+
 **Registry self-check (R2):** enumerate `rest_get_server()->get_routes()` at runtime, filter by namespace, and assert every route has an entry in the level registry; the test fails on an unlisted route and on a listed route that no longer exists. A source regex cannot see loop-expanded or dynamically registered routes — this is why the runtime registry is required.
 
 ## 3. Login, transaction depth, and the cookie (R7)
@@ -126,50 +124,59 @@ Test: one output assertion per method per level (`none`/`booking`/`full`). **DEB
 3. Collisions: live mobile ⇒ create nothing, `hold_reason='mobile_reuse'` on the existing row. Per-clinic `u_pat_mobile`/`u_pat_nid` (`0001:82-83`) cannot be evaluated without a clinic — handled at first booking (§5) and approval (§6).
 4. Identical `202` on every branch; every branch leaves a queue entry (a `pending` row or a `hold_reason`). **Queue = the login table.** Not `cpms_notifications`: `clinic_id` is `NOT NULL` (`0001:634`) and no clinic exists. (Rev 4 already withdrew the false claim that archived rows are never purged; `NotifDispatchHandler.php:39-41` → `NotificationRepository::purgeArchived` `:232-242` do purge them.)
 
-## 5. First booking — the complete atomic creation (R3)
+## 5. First booking under the new policy (task 1, partial replacement)
 
-Hold fails a zero-link caller before any hold exists: trusted clinic asserted `BookingService.php:556-557` (`assert_patient_session_matches_clinic` → `PatientSessionScope::require_clinic_matching` `PatientSessionScope.php:347-358`), then `resolveBookingPatientForHold` `:3097-3122` returns `null`, then `mobile_for_user_in_clinic` `:3014-3038` returns `null` ⇒ `CLINIC_VALIDATION_FAILED` `:567-569`.
+The zero-link failure chain is unchanged (OBSERVED `BookingService.php:556-557`, `:3097-3122`, `:3014-3038`, `:567-569`), and the trusted clinic is still the owner of the **persisted slot** (`:519-522`). What changes is what first booking is allowed to *do*: **it may create the clinic patient row, and it may not link it to the account for record access.** Under the owner rule a link for record access needs both factors (§6.2), and the national ID is not part of the booking request.
 
-**Trusted clinic** = owner of the **persisted slot**, derived at `:519-522`: `requireClinician` `:2898-2909` → `clinic_for_persisted_slot` `:2848-2882` (cross-clinic slots additionally require the slot's clinician and an active participation). A body `clinic_id` is never read (`:515-518`).
+### 5.1 Creation (kept from revision 5, still required)
+One short outermost transaction **before** the scope check at `:553-557` (that check resolves the clinic from links, `PatientSessionScope.php:347-358` / `:261-277`, so it cannot pass for a zero-link account). Every mandatory column per `0001:54-79`: `mrn` via `PatientService::generateMrn()` `:760-773` (`u_pat_mrn` `0001:81`), names and mobile from the login row, `national_id` **NULL** (`0001:61`), `gender='unknown'` (`:63`), `status='active'` (`:75`), timestamps. Then the identity activation that record access later depends on (`PatientService::activate_identity()` `:561-576` → `PatientIdentityActivator::activate_for_new_patient()` `:77-95`), then the clinic link row with `mobile_at_link` and `linked_at` mirroring `PatientService.php:461-464`.
 
-**Placement (R3):** the creation runs **before** the scope check at `:553-557`, because `PatientSessionScope::require_clinic_matching` `:347-358` resolves the session clinic from **links** (`resolve_clinic_id` `:261-277`: a stamped marker, else exactly one distinct linked clinic, else `null`) — a zero-link account would fail there before it could ever be created. So:
+### 5.2 What the link means now
+`cpms_patient_user_links` remains a **booking-subject** link. It is **not** evidence for record access any more. This is forced by the code: `PatientRepository::clinical_access_identity_predicate()` `:261-269` grants clinical access whenever `p.identity_id IS NULL`, and first-booking creation leaves `identity_id` NULL unless activation runs — so a link alone would open records for a row whose only proofs were possession of a mobile. The gate (§2.4) therefore requires the **two-factor link** of §6.3 for `full`, and treats a bare clinic link as `booking` only.
 
-1. **Outermost short transaction**, opened by the booking layer (`booking_transaction` `:2442-2453`; depth must be 0 at entry — else fail closed).
-2. `SELECT … FROM cpms_patient_logins WHERE wp_user_id = %d FOR UPDATE` (login-row lock first, §9).
-3. If a link for (user, clinic) exists ⇒ continue (idempotent: a second hold creates nothing).
-4. Else insert the patient row with **every mandatory column** (`0001:54-79`): `clinic_id` = trusted slot clinic, `mrn` = `PatientService::generateMrn()` (`:760-773`; `MR-yymmdd-XXXXX`, 5 bounded attempts, `u_pat_mrn` `0001:81`), `first_name`/`last_name` = login row names, `mobile` = login row mobile, `national_id` = **NULL** (`:61` nullable), `gender` = `'unknown'` (ENUM default `:63`), `status='active'` (`:75`), `created_at`/`updated_at` = `nowUtcSql()`.
-5. **Identity activation + organization identity link** through the existing path: `PatientService::activate_identity()` `:561-576` → `identities->activate_for_new_patient()`; the row that satisfies `PatientRepository::clinical_access_identity_predicate()` `:261-269` (`p.identity_id` + a `cpms_patient_identity_links` row for this user in the clinic's organization) is what makes later record access possible. Skipping it would produce a patient row with `identity_id IS NULL` — legacy-shaped and readable without proof, so it is **mandatory**, and a failure rolls the whole creation back (the pattern at `PatientService.php:431-455`).
-6. Link insert with `linked_at` and the rest of the row: `cpms_patient_user_links (clinic_id, patient_id, wp_user_id, mobile_at_link, is_primary, linked_at)` — compare the existing insert at `PatientService.php:461-464`; `u_link_pair (patient_id, wp_user_id)` `0001:97`.
-7. Commit → **then** the scope check proceeds; the session clinic is the **explicit slot clinic**, never a guess.
+### 5.3 Idempotency
+A second hold finds the existing clinic link and creates nothing (`u_link_pair` `0001:97`); the login-row lock is taken first (§9).
 
-**What `PatientSessionScope` returns afterwards:** zero-link account **before** creation would be `null` ⇒ `CLINIC_SCOPE_REQUIRED`; after step 6 it has exactly one distinct linked clinic ⇒ that clinic; a multi-clinic account resolves from the stamped marker (`:297-305`) and only falls back to the single-link rule; if the marker is stale it throws. The design uses the **explicit slot clinic** and never infers it from links, so a multi-clinic account cannot be routed to the wrong clinic.
+### 5.4 The clinic already holds this mobile but the national ID does not match (replaces the rev-5 collision refusal)
+`u_pat_mobile (clinic_id, mobile)` (`0001:82`) means the clinic already holds this mobile on **some** patient row. Under the new policy that is **not** a refusal and not an automatic link: the row stays unlinked, the account stays `booking`, and the ordinary booking path continues. Record access for that row is obtainable only through §6.2, whose national-ID comparison happens **inside that same clinic** (M3). If the caller's national ID does not match that row, **no link is created**, the response is the single generic failure of M5, and the in-person reception path (§6.5) is the only way forward. Nothing about the existing row (its name, its MRN, whether it exists) is disclosed.
 
-**Collision (R3b).** If `u_pat_mobile(clinic_id, mobile)` (`0001:82`) already holds this mobile — a walk-in patient created by reception (`ReceptionPortalController.php:183-188` → `PatientService::create` `:370-400`) — then: insert nothing, link nothing, one fixed generic message ("online booking is not possible, please contact reception"), and record `hold_reason='clinic_mobile_exists'` **plus `collision_clinic_id` = that clinic** on the login row. Reception of **that** clinic sees the row in its pending queue showing only `given_name` and the mobile — a mobile that clinic already stores on its own walk-in row, so no new exposure — never the NID, never another clinic's rows. Resolution is approval case (iii), an explicit staff link. Double-click: the second attempt finds the same row and does nothing new (unique `u_pl_user`).
+## 6. The two-factor link (task 1, new core)
 
-**Why the caller learns nothing extra:** reaching step 4 requires a session minted from an OTP sent to that mobile; the message is identical for every collision cause; no id, MRN, clinic or patient count is returned.
+### 6.1 Owner decision (final, supersedes "no auto-link" and "in-person approval before record access")
+A patient is authenticated by **both** (1) a mobile that receives a valid SMS OTP and (2) a national ID matching the stored record. When both match, the patient gets `full` access to **their own** record. In-person approval is **not** a precondition. Mobile alone never grants record access; a mismatch creates **no** link; a shared mobile never merges identities or family members' records; if one mobile belongs to several patients the national ID selects which.
 
-## 6. Reception: audit prerequisite, queue, approval, attach (R4, R6)
+**Manager defaults (overridable):** **M1** the record's own mobile must equal the OTP-verified mobile, otherwise the national ID alone would open any record; **M2** a record with no national ID is never auto-linked; **M3** linking happens only inside the clinic whose own record matches **both** values, never across clinics from this check alone; **M4** attempt limits key on account, mobile and IP — **never on the national ID**, which appears only in a request body, never in a URL, log, audit row, rate-limit key or notification; **M5** every failure returns the same status, body and message, with no oracle for "record exists", "mobile exists" or "NID wrong", and **no timing-equality claim**; **M6** after success, an SMS to that same mobile ("your record was linked to an account", no NID), one audit row with ids and closed codes, and reception can sever the link with its own audit row; **M7** every additional patient needs its own mobile+OTP+national-ID proof — no cross-patient inheritance.
 
-### 6.1 Prerequisite PR — audit redaction (R4)
-Approval case (ii) reuses `PatientService::create`, whose `PATIENT_CREATED` audit writes `$this->staffView($created_row)` (`PatientService.php:472-482`) — and `staffView` `:801-820` extends `publicView` `:779-795`, which contains **raw** `first_name`, `last_name`, `national_id` (`:787`), `mobile` (`:786`) and address. `AuditLogger` masks only `mobile`, `phone`, `national_id`, `card_number`, `email` (`AuditLogger.php:26`, applied `:249-251`) and forbids OTP/password keys (`:24`) — **names are not masked anywhere**. So a pending registrant's name and NID would land in `before_json` in the clear.
+### 6.2 Endpoint and proof
+`POST /patient/link-record {mobile, code, national_id}` — a new patient route at level `booking`, registered **only** in the PR that also ships the gate (§12). Proof order, inside **one outermost transaction** with the depth guard (§3, §9):
+1. Consume the OTP for `verify_mobile` and require it bound to **this account's live login row** and to `mobile` (single-use consume, `OtpService.php:527-534`).
+2. Re-lock the login row `FOR UPDATE`; refuse if `state='pending'` **and** no approval path exists yet (§12) — a `pending` account may link only after its own reception step, and an `active` account may link immediately.
+3. `national_id`: strip invisibles/bidi, fold Persian/Arabic digits, then `NationalIdValidator::isValid()`.
+4. Candidate row: `SELECT * FROM cpms_patients WHERE clinic_id = %d AND mobile = %s AND national_id = %s AND status='active'`. The clinic comes from the account's **linked** clinic set; if the account is linked in several clinics the loop runs per clinic and must resolve to **exactly one** candidate, else the generic failure (no election, no "first match").
+5. Exactly one candidate ⇒ write the link and set the login row `active` (first link means verified), then M6.
 
-**Therefore a small PR precedes any PR that creates patients for pending users:** change the existing `PATIENT_CREATED` payload to ids and closed-vocabulary fields only (`patient_id`, `clinic_id`, `actor role`, `source=reception|first_booking|approval`) — no names, no NID, no mobile — with a reception-creation test. The new first-booking and approval paths use the same redacted payload. **Assumption stated:** the plugin is unreleased, so there are no historical audit rows to migrate.
+### 6.3 What a successful link writes
+`cpms_patient_identity_links (organization_id, identity_id, wp_user_id, mobile_at_link, is_primary, linked_at)` — `u_pil_pair (identity_id, wp_user_id)` (`0019:54-73`) — **plus** `cpms_patient_user_links` for the clinic row, so the existing record selector works without change (`require_selected_patient()` `PatientService.php:219-238`). OBSERVED: the identity row is what the clinical predicate consults (`PatientRepository.php:261-269`), and it carries **`normalized_mobile` only — no national ID** (`0018:27-36`, `0019:44-53`). **Consequence, stated plainly: the national ID is never promoted to the Organization identity.** It stays on the clinic patient row, so a second clinic of the same organization requires its **own** two-factor proof (M3/M7), which is the conservative reading and needs no schema change.
 
-### 6.2 Queue visibility
-Only a clinic where the account already has a `cpms_patients` row sees the entry, **plus** the collision case (R3), which shows `given_name` + mobile to the clinic named in `collision_clinic_id`. Pending registrants with neither are invisible to every clinic and are scrubbed at 14 days (§7.3).
+### 6.4 Failure behaviour (all reasons, one answer)
+Every failing step returns the identical `422` envelope with a fixed code and message ("record could not be verified, please contact reception"), no `Set-Cookie` change, no state change, one audit row with closed codes only (`LINK_RECORD_DENIED`, reason enum, ids — never the NID, never the compared mobile). Rate limits (M4): per account, per mobile and per IP using the existing buckets plus new hashed keys `link-acct:<sha256(wp_user_id)>`, `link-mobile:<sha256(mobile)>`, `link-ip:<sha256(ip)>`; the national ID is **never** a key. After N failures per account the route returns the same envelope with `429` semantics — the only distinguishing signal is the rate-limit status, which is identical for every reason.
 
-### 6.3 Output flag (R4/F7 carry-over)
-Reception search and create return `searchView` (`PatientService.php:245-257`, `:831-844`) via `to_search_view` `:823-825`, called at `ReceptionPortalController.php:544` and `:576` — **not** `staffView` `:801`. `searchView` has no verification flag; add `login_state` only.
+### 6.5 In-person fallback, and what replaced approval
+Reception keeps three documented actions (unchanged in substance from the previous revision): create the patient through the existing reception path (`ReceptionPortalController.php:183-188` → `PatientService::create` `:370-400`), set a checked national ID, or explicitly link an existing walk-in patient — all staff-initiated, audited, never automatic, never merging rows, with sessions reset (`WP_Session_Tokens::destroy_all`). Under the new policy this is **not** the normal path to record access; it is the fallback for M1/M2 failures (wrong mobile on the record, record with no national ID) and for a shared-mobile family.
 
-### 6.4 Approval — three cases (staff, in person, documents)
-- **(i) patient row exists for the account:** write the checked `national_id` under `assert_unique_national_id` `:850-857`, `state='active'`, `verified_*`, clear `hold_reason`/`collision_clinic_id`; scrub the login row's NID in the same transaction.
-- **(ii) no patient row yet:** create through the existing reception path (`ReceptionPortalController.php:183-188` → `PatientService::create` `:370-400`, which enforces scoped secretary authority and the license gate), then link, then `active`.
-- **(iii) walk-in exists with the same mobile:** staff explicitly pick that patient and link; never automatic, never merging rows.
-- **NID collision message to staff:** the authenticated operator may see existence — the existing product message (`:855`) plus the masked `searchView` row; never returned to a patient session.
-- **Audit + sessions:** one redacted audit row per action; `WP_Session_Tokens::destroy_all()` on any state/mobile/link change.
+### 6.6 Shared mobile — **STOP: needs owner decision** (task 2)
+OBSERVED, both levels:
+- **Clinic level cannot hold it.** `u_pat_mobile (clinic_id, mobile)` is `UNIQUE` (`0001:82`) and `mobile` is `VARCHAR(32) NOT NULL` (`0001:60`), so two patients with one mobile **cannot** coexist in one clinic.
+- **Organization level does not hold it either.** `cpms_patient_identities.normalized_mobile` is explicitly **non-unique** with duplicate candidates allowed (`0019` header and `:44-53`), so the identity layer *tolerates* a shared mobile — but the identity carries no national ID, so "one mobile, several patients, national ID selects" cannot be evaluated there. It can only be evaluated on `cpms_patients`, which is per clinic and unique per mobile.
 
-### 6.5 Legacy / password users (R2 carry-over)
-No real legacy users (unreleased plugin). A `cpms_patient` without a login row has level `none` and sees a fixed message with no data; password login **authenticates** but the level comes from the login row. "Attach SMS login" (one transaction: insert `active`, `destroy_all`, one audit row) ships in the **same PR as the gate**.
+> **STOP — needs an owner decision: schema change.** Options, with recommendation:
+> **(A)** Keep one patient row per mobile per clinic and treat a family share as a **booking-subject** relationship only (the guardian books for the dependent; the dependent never gets record access through the shared number). *Recommended:* no schema change, no merge risk, matches M7.
+> **(B)** Add a nullable secondary-contact/`mobile_override` concept **or** a dependent table so a clinic can hold several patients under one number. Needs a new column/table — outside the approved scope; also re-opens the merge/leak questions this design avoids.
+> **(C)** Relax `u_pat_mobile` — rejected: it removes the only hard guarantee that a mobile maps to one clinic record, and the collision logic in §5.4 depends on it.
+> **Risk of (A):** a family that genuinely shares one number cannot get self-service record access for the second person; they use reception. **Supported today without any schema change:** one mobile → one patient per clinic; several patients per account with distinct mobiles; a guardian holding a child's appointments.
+
+### 6.7 `collision_clinic_id` — **recommend delete** (task 3)
+Under the new policy the first-booking collision is no longer a refusal that someone must find and resolve (§5.4): the account simply stays unlinked and the patient later self-services through §6.2. The column existed to give reception a work item for a refusal that no longer happens. **Recommendation: delete it** (it was added in this design, never shipped, so removing it costs nothing). Counter-argument recorded: reception may still want visibility of "this account collided"; that is served by the audit row of §5.4. **Owner decides.**
 
 ## 7. Lifecycle: existence, restore barrier, retention (R6)
 
@@ -183,6 +190,9 @@ No real legacy users (unreleased plugin). A `cpms_patient` without a login row h
 - **Set BEFORE restore starts.** Hook point: `BackupService` — **UNKNOWN whether a pre-drop hook exists**; `restoreApply` `:324-363` shows no such call. The build PR must add it (set barrier → run restore), with a test that kills the process between the drop and the re-create and asserts the barrier is still set. Until that hook exists, the only safe statement is: **a manual restore must set the barrier first**, and the runbook says so.
 - **While set:** every patient level is `none`, patient login refuses with the neutral message, patient sessions are unusable. An interrupted restore therefore stays **closed**.
 - **Clearing:** only an explicit manager action **"accept restored access state"**, which shows counts of restored `active`/`pending` login rows, destroys **all** patient-only sessions, writes one audit row, and clears the option. Consequence stated plainly: a *restored revoked* account (row resurrected from an old backup) can regain access only if the manager accepts — the design cannot distinguish it by itself, because revocation history lives only in the audit log.
+
+### 7.2a Restore and the two-factor flow (task 6)
+After a restore the barrier (§7.2) closes **every** patient login, including a restored `active` row and any resurrected link — the barrier is the only thing standing between an old backup and an automatic link, so it is applied unconditionally. A patient then re-establishes access through **this same** mobile+OTP+national-ID flow (§6.2): the restored record still needs both factors, and because the identity row carries no national ID (§6.3) a restored identity link alone does not reopen records. A restored revoked account can therefore regain access only by completing the proof again, or by the manager accepting the restored state (§7.2).
 
 ### 7.3 Retention
 Live rows are never deleted except by revocation. At decision: `given_name`, `family_name`, `national_id` → NULL. At 14 days: any still-`pending` row is scrubbed and deleted (revocation path), its WP user deleted only when it has no link and no appointment. Sweep host: a **new** `cleanup.patient_logins` recurring job (`App::RECURRING_JOBS` `:2616-2635`); the four existing `cleanup.*` jobs (`:2625-2628`) each own a different table and `OtpCleanupHandler.php:22-25` touches only `cpms_otp_tokens`. A stalled sweep is a **residual**: no health surface exists that I read.
@@ -222,63 +232,68 @@ Several patients per account already work (`u_link_pair` `0001:97`; `linkedActiv
 
 > **⛔ OQ-D1 — unchanged blocker.** `cpms_patients.mobile` is `VARCHAR(32) NOT NULL` (`0001:60`) and `UNIQUE (clinic_id, mobile)` (`:82`), so a dependent sharing the guardian's mobile cannot have a row in that clinic. Reusing the guardian's row is a merge; a fake mobile corrupts the call-back field. Neither is invented: **no column or table is added for dependents.** Until the owner decides, dependents work only where the mobile differs (or in another clinic), and the UI says so.
 
-Creation/approval only at reception in person; a `pending` account may not create a dependent; the cap counts parent + dependents; **per-link** access in the gate; no age limit; no auto-link; never merged with a walk-in patient. Negative tests: IDOR by patient id; pending guardian cannot read a dependent's record; a dependent cannot take the parent's NID; two dependents with the same mobile do not leak existence; the cap under concurrency.
+Under the two-factor policy a dependent's own record opens only through that dependent's **own** mobile+OTP+national-ID proof (M7) — a guardian's proof never inherits; where the dependent shares the guardian's mobile this is the §6.6 STOP. A `pending` account may not create a dependent; the cap counts parent + dependents; **per-link** access in the gate; no age limit; never merged with a walk-in patient. Negative tests: IDOR by patient id; pending guardian cannot read a dependent's record; a dependent cannot take the parent's NID; two dependents with the same mobile do not leak existence; the cap under concurrency.
 
 ## 12. Rollout sequence (R8)
 
 | PR | Contents | Prerequisites | Login-row states possible after deploy | Patient session possible |
 |---|---|---|---|---|
-| **P1** | table `cpms_patient_logins` (incl. `collision_clinic_id`), existence check, restore barrier option + hook, `CpmsDb` depth accessor | — | none | no |
+| **P1** | table `cpms_patient_logins`, existence check, restore barrier option + hook, `CpmsDb` depth accessor | — | none | no |
 | **P2** | audit redaction of `PATIENT_CREATED` (R4) | P1 | none | no |
 | **P3** | central gate on **all** routes by actor branch + service-layer checks + runtime-registry test + **"attach SMS login"** | P1, P2 | `active` (staff-attached only) | yes, `full` |
 | **P4** | SMS login session issuance (cookie after depth-0 check) | P3 | `active` | yes |
-| **P5** | cap + first-booking creation + collision queue | P3, P4 | `active` (+ collision `hold_reason`) | yes |
-| **P6** | reception queue + approval cases (i)(ii)(iii), session reset | P5 | `active`; `pending` only for reception-provisioned accounts | yes |
+| **P5** | cap + first-booking **creation only** (link is booking-subject, §5.2) | P3, P4 | `active` (unlinked) | yes, `booking` |
+| **P6** | **two-factor link** `POST /patient/link-record` (§6.2) + reception fallback actions (§6.5), session reset | P5 | `active`; `pending` only for reception-provisioned accounts | yes |
 | **P7** | **public `/patient/register` registered here** | P3–P6 | `pending` may now exist | yes |
 | **P8** | UI journeys (login with SMS **and** password, registration, `register_required`, return to slot) | P7 | `pending`, `active` | yes |
 | **P9** | browser lanes for the new journeys | P8 | same | yes |
 | **P10** | dependents — **blocked on OQ-D1** | P6 | same | yes |
 
+**Invariant, restated for the new policy:** `full` access cannot exist before **P6** (the two-factor link), and the link route is registered in the same PR that depends on the gate, the cap and first-booking creation being in place. **No PR before P6 grants record access.**
+
 **Invariant:** no `pending` row can be **created** before the gate, the cap, the first-booking path, approval and attach all exist (P7 is last). "Attach SMS login" is in the gate PR, so no password patient lacking a row is locked out by rollout.
 
 Minutes (INFERENCE, review rounds included): P1 90 · P2 60 · P3 210 · P4 90 · P5 180 · P6 120 · P7 150 · P8 180 · P9 120 · P10 0 until decided ⇒ **≈ 1 200 implementation + 700–900 review/rework ≈ 1 900–2 100**.
 
-## 13. State matrix (R9)
+## 13. State matrix (R9, re-derived for the two-factor policy)
 
-Rows = every patient-reachable route/branch (§2.4). Columns = account states. `✗` = refused (403 or the neutral envelope), `—` = not routed here, `✓` = allowed.
+`✗` = refused (403 or the neutral envelope) · `—` = not routed here · `✓` = allowed. **`active` is split**: `active unlinked` is level `booking` (a live login row without a completed two-factor link, §2.4); `active linked` is level `full`.
 
-| Route / branch | no row | pending | active | deleted | password-only, no row | staff / mixed | anonymous |
-|---|---|---|---|---|---|---|---|
-| `POST /booking/hold` | ✗ (login impossible) | ✓ + first-booking create | ✓ | ✗ | ✗ (has session) | — staff path | ✗ 401 |
-| `POST /booking/confirm` | ✗ | ✓ cap-checked | ✓ cap-checked | ✗ | ✗ | — staff path | ✗ |
-| `GET /booking/resume` | ✗ | ✓ | ✓ | ✗ | ✗ | — | ✗ |
-| `GET /appointments/mine` | ✗ | ✓ | ✓ | ✗ | ✗ | — | ✗ |
-| `GET …/reschedule-options` | ✗ | ✓ | ✓ | ✗ | ✗ | — | ✗ |
-| `POST …/reschedule` | ✗ | ✓ | ✓ | ✗ | ✗ | staff branch (capability) | ✗ |
-| `POST …/cancel` | ✗ | ✓ | ✓ | ✗ | ✗ | staff branch (capability) | ✗ |
-| `GET /patient/me` | ✗ | ✓ minimal view | ✓ full | ✗ | ✗ | — | ✗ |
-| `PATCH /patient/me` | ✗ | ✗ 403 | ✓ | ✗ | ✗ | — | ✗ |
-| `POST /patient/enroll` | ✗ | ✗ 403 | ✓ | ✗ | ✗ | — staff path | ✗ |
-| `GET /patient/my-records` | ✗ | ✗ 403 | ✓ | ✗ | ✗ | — | ✗ |
-| `GET /visits`, `/visits/{id}`, `/prescriptions` | ✗ | ✗ 403 | ✓ | ✗ | ✗ | — | ✗ |
-| `/patients/{id}/files` | ✗ | ✗ 403 | ✓ | ✗ | ✗ | staff `permCap` | ✗ |
-| `GET /files/{id}/stream` | ✗ | ✗ 403 | ✓ (own, link-checked) | ✗ | ✗ | `MedicalFileService:219-250` | ✗ 401 |
-| `/notifications`, `/notifications/read`, `/rt/notifications` | ✗ | empty envelope | ✓ | ✗ | ✗ | staff branch | ✗ |
-| portal page render | ✗ | appointments only | full | ✗ | ✗ | — | ✗ 403 |
-| `/patient/register` (P7+) | ✓ 202 + pending row | ✓ 202 (existing row) | ✓ 202 no new row | ✓ 202 | ✓ 202 | ✗ ineligible | ✓ 202 |
+| Route / branch | no row | pending | active unlinked | active linked | deleted | password-only, no row | staff / mixed | anonymous |
+|---|---|---|---|---|---|---|---|---|
+| `POST /booking/hold` | ✗ | ✓ + first-booking create | ✓ | ✓ | ✗ | ✗ (has session) | — staff path | ✗ 401 |
+| `POST /booking/confirm` | ✗ | ✓ cap-checked | ✓ cap-checked | ✓ cap-checked | ✗ | ✗ | — staff path | ✗ |
+| `GET /booking/resume` | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | — | ✗ |
+| `GET /appointments/mine` | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | — | ✗ |
+| `GET …/reschedule-options` | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | — | ✗ |
+| `POST …/reschedule` | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | staff branch (capability) | ✗ |
+| `POST …/cancel` | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ | staff branch (capability) | ✗ |
+| `GET /patient/me` | ✗ | ✓ minimal | ✓ minimal | ✓ full | ✗ | ✗ | — | ✗ |
+| `PATCH /patient/me` | ✗ | ✗ 403 | ✗ 403 | ✓ | ✗ | ✗ | — | ✗ |
+| `POST /patient/link-record` (§6.2) | ✗ | ✗ 403 until its reception step | ✓ | ✓ (re-link idempotent) | ✗ | ✗ | ✗ ineligible | ✗ |
+| `POST /patient/enroll` | ✗ | ✗ 403 | ✗ 403 | ✓ | ✗ | ✗ | — staff path | ✗ |
+| `GET /patient/my-records` | ✗ | ✗ 403 | ✗ 403 | ✓ | ✗ | ✗ | — | ✗ |
+| `GET /visits`, `/visits/{id}`, `/prescriptions` | ✗ | ✗ 403 | ✗ 403 | ✓ | ✗ | ✗ | — | ✗ |
+| `/patients/{id}/files` | ✗ | ✗ 403 | ✗ 403 | ✓ | ✗ | ✗ | staff `permCap` | ✗ |
+| `GET /files/{id}/stream` | ✗ | ✗ 403 | ✗ 403 | ✓ own, link-checked | ✗ | ✗ | `MedicalFileService:219-250` | ✗ 401 |
+| `/notifications`, `/notifications/read`, `/rt/notifications` | ✗ | empty envelope | empty envelope | ✓ | ✗ | ✗ | staff branch | ✗ |
+| portal page render | ✗ | appointments only | appointments only | full | ✗ | ✗ | — | ✗ 403 |
+| `/patient/register` (P7+) | ✓ 202 + pending row | ✓ 202 | ✓ 202 no new row | ✓ 202 | ✓ 202 | ✓ 202 | ✗ ineligible | ✓ 202 |
 
-Every cell follows from one rule set: `level()` from the live row, the per-branch level in §2.4, and the service-layer checks in §2.4's table. `deleted` behaves exactly like `no row`.
+Every cell follows from one rule set: `level()` from the live row plus the **two-factor link**, the per-branch level in §2.4, and the service-layer checks in §2.4's table. `deleted` behaves exactly like `no row`. The single new cell that matters: **`active unlinked` must not reach a single record route**, which is the whole point of §5.2 and §6.2.
 
-## 14. Self-audit (R10)
+## 14. Self-audit for this revision (Phase 2, adversarial)
 
-- **Every file:line re-verified** against `origin/main` = `c9771403`. Corrections applied: `App.php:622-639` cannot detect a missing table (§7.1, rev-4 claim withdrawn); `:1716-1718` is reschedule, not staff ownership (§9); the "60 s cooldown" claim replaced by purpose-scoped policy state (§3); `MedicalFileService.php:219-250` cited only for what it does (a `$isPatient` branch decided from durable membership, then link); `/patient/enroll` is **not** staff-only (§2.4).
-- **Overstated claims deleted, not explained:** "137 routes ⇒ 14 patient routes" (now 18 sites / 20 runtime routes with the method stated); "nothing purges notifications" (already withdrawn); "the controller placement proves the outermost commit" (now a depth check that fails closed).
-- **NID never in a URL, log, audit row, rate-limit key or notification:** enforced by §6.1's redacted payload, §10's hashed keys, and §1's scrub rule. **Residual, declared:** pending NIDs sit in plaintext in the live table (≤14 days) and in every backup (§7.4, DECIDED).
-- **No auto-merge, auto-link or auto-access** anywhere; the three approval cases are all staff-initiated (§6.4).
-- **UNKNOWNs kept:** (1) MariaDB plain-unique behaviour; (2) locking-read visibility on MariaDB 11.4.13. **New UNKNOWNs:** (3) whether a pre-restore hook can be added cleanly at `BackupService::restoreApply` `:324-363`; (4) exact `verify_mobile` cooldown interleaving under concurrency; (5) whether any `admin_post_*` handler is reachable by a `cpms_patient` user (46 distinct names to be proven by the build PR's registry test).
+Read as an attacker against the **new** delta only.
+
+- **(a) A path to records/session/notifications for pending, revoked, no-row or anonymous, or a wrong-patient/wrong-clinic link.** The dangerous new surface is `/patient/link-record`. It requires a live login row **and** a consumed `verify_mobile` OTP for that account's mobile (§6.2), so `no-row`, `deleted` and `anonymous` cannot reach it (matrix §13). `pending` is refused until its reception step. The wrong-clinic risk is handled by looping the account's **linked** clinics and demanding exactly one candidate (M3) — no election, no cross-clinic write. The wrong-patient risk is `mobile = %s AND national_id = %s` **and** `status='active'` on the same row, so a partial match cannot link. **Found and fixed while writing:** the first draft set `full` from `state='active'`; that was wrong, because first-booking creation leaves `identity_id` NULL and the clinical predicate admits NULL identities (`PatientRepository.php:261-269`), so an `active unlinked` account would have opened records through its clinic link. §2.4 and §13 now require the **two-factor link** for `full`.
+- **(b) Any false file:line.** All new citations re-verified with `git show origin/main:`: `0001:60,61,82,83,97` (mobile NOT NULL, NID nullable, both uniques, link pair), `0018:27-36` (identities: no national ID), `0019:44-53,54-73` (non-unique `normalized_mobile`, identity links), `PatientRepository.php:261-269` (NULL-identity clause), `PatientService.php:850-857` (`assert_unique_national_id`), `PatientIdentityActivator.php:77-95,110-112,156-176`, `PatientIdentityService.php:48-62`, `BookingService.php:556-569,3097-3122,3014-3038,519-522`, `PatientSessionScope.php:261-277,347-358`, `PatientService.php:219-238,370-400,461-464,760-773`, `ReceptionPortalController.php:183-188`, `OtpService.php:527-534`. One earlier claim is corrected in place: revision 5 said first booking could grant record access after the link — **withdrawn** (§5.2). A Portuguese heading slipped into a draft and was replaced (§5.4).
+- **(c) Registration or linking open before the gate exists.** No: `/patient/register` is P7 and `/patient/link-record` is registered in P6, both after P3's gate over all routes (§12), with the invariant restated in §5.2/§12 that `full` cannot exist before P6.
+- **(d) Unbuildable contradiction.** The revision-5 flow asked for a national ID at first booking while the booking request cannot carry one; §5 no longer does. The remaining build dependency is honest: M3's per-clinic loop needs the account's linked clinic set, which exists only after P5 — the matrix and the PR order reflect that.
+- **(e) Untraced CLAIM words.** "Never" is used only where traced: `u_pat_mobile`/`u_pat_nid` uniqueness (`0001:82-83`), the national ID never being an identity attribute (no column exists, `0018:27-36`), and the NID never being a rate-limit key (a design rule, not a code fact — labelled as design). Everything else is **INFERENCE** or **UNKNOWN**, listed in §15.
 
 ## 15. Weakest points and open decisions
 
-**Weakest:** (a) plaintext pending NID in the live table and in backups — reduced, not eliminated; (b) the restore barrier needs a hook that does not exist yet, so until then it is a runbook step; (c) the 14-day sweep has no existing host and no health surface; (d) the runtime registry test cannot see routes registered outside the REST server; (e) the cap is per account and staff bookings are exempt by decision; (f) dependents remain blocked; (g) `active` users keep the existing NID self-edit and unmasked self-read (DEBT, §2.4).
+**Weakest:** (a) the national ID is not a secret, so the whole policy rests on mobile possession plus the matcher — a relative holding both can link (§16); (b) a **squatting row blocks a real patient's national ID inside that clinic** (`u_pat_nid` `0001:83`) and M2 then refuses auto-link, so resolution is manual; (c) `clinical_access_identity_predicate()` still admits `identity_id IS NULL` rows, so the gate — not the repository — is what keeps records closed (DEBT, §16); (d) the SMS after a successful link goes to the same number an attacker would control in a SIM-swap case (M6, weak warning); (e) shared-mobile families are only partly served until §6.6 is decided; (f) the national ID is never promoted to the organization identity, so a second clinic needs its own proof (§6.3) — conservative but more friction; (g) plaintext pending NID in the table and in backups (§7.4); (h) the restore barrier needs a hook that does not exist yet (§7.2); (i) the 14-day sweep has no existing host (§7.3); (j) dependents remain blocked.
 
-**Open:** **OQ-D1** dependents (blocking) · **OQ-D2** should a stalled sweep warn (needs a health surface) · **OQ-D3** record access per account or per verified link (assumed per link) · **OQ-D4** is "attach login" mandatory forever for password accounts. **Closed:** OQ-D5 (backups, §7.4).
+**Open:** **OQ-D1** dependents · **OQ-D2** stalled-sweep warning · **OQ-D3** per-account or per-link record access (assumed per link) · **OQ-D4** "attach login" mandatory forever for password accounts · **OQ-D5 closed** (backups, §7.4) · **new OQ-D6** shared mobile at organization level — §6.6 STOP, owner decides · **new OQ-D7** `collision_clinic_id` keep or delete — §6.7, recommendation delete.
