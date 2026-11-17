@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import subprocess
 import time
@@ -50,12 +51,70 @@ def annotate(title: str, message: str) -> None:
     print(f"::error title={title}::{flat}", flush=True)
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
-    CHECKS.append({"name": name, "ok": bool(ok), "detail": str(detail)[:400]})
-    print(("PASS " if ok else "FAIL ") + name + (f" — {detail}" if detail else ""), flush=True)
+_SAFE_ERROR_CODE_RE = re.compile(r"(?:CLINIC|SCOPED|CPMS)_[A-Z0-9_]{1,56}|rest_[a-z0-9_]{1,56}")
+_SAFE_KEY_NAME_RE = re.compile(r"[a-z][a-zA-Z0-9_]{0,47}")
+_SECRET_DETAIL_JSON_RE = re.compile(
+    r'(["\'](?:hold_token|confirm_token|idempotency_key|idempotency-key|idempotency|'
+    r'otp|otp_code|token_id|latest_token_id|nonce|_wpnonce|wp_nonce|x-wp-nonce|rest_nonce|'
+    r'cookie|set-cookie|set_cookie|password|user_pass|secret|reference_code|'
+    r'cpsd_persona_entry)["\']\s*:\s*)'
+    r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|-?\d+)',
+    re.IGNORECASE,
+)
+_SECRET_DETAIL_KV_RE = re.compile(
+    r'(\b(?:hold_token|confirm_token|idempotency_key|idempotency-key|'
+    r'otp|otp_code|token_id|latest_token_id|nonce|_wpnonce|wp_nonce|x-wp-nonce|rest_nonce|'
+    r'cookie|set-cookie|set_cookie|password|user_pass|secret|reference_code|'
+    r'cpsd_persona_entry)\s*[=:]\s*)'
+    r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,;\])\}]+)',
+    re.IGNORECASE,
+)
+
+
+def safe_error_code(raw: object) -> str:
+    if raw is None or raw == "":
+        return ""
+    if not isinstance(raw, str):
+        return "<nonstandard_code>"
+    return raw if _SAFE_ERROR_CODE_RE.fullmatch(raw) else "<nonstandard_code>"
+
+
+def safe_key_names(payload: object) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    safe = sorted(k for k in payload.keys() if isinstance(k, str) and _SAFE_KEY_NAME_RE.fullmatch(k))
+    if len(safe) != len(payload):
+        safe.append("<nonstandard_key>")
+    return safe
+
+
+def format_check_detail(detail: object) -> str:
+    if detail is None or detail == "":
+        return ""
+    if isinstance(detail, dict):
+        parts: list[str] = []
+        if type(detail.get("status")) is int:
+            parts.append(f"HTTP {detail['status']}")
+        code = safe_error_code(detail.get("code"))
+        if code:
+            parts.append(code)
+        parts.append(f"keys={json.dumps(safe_key_names(detail))}")
+        return " ".join(parts)[:400]
+    if isinstance(detail, list):
+        return f"count={len(detail)}"
+    text = str(detail)
+    text = _SECRET_DETAIL_JSON_RE.sub(r'\1"<redacted>"', text)
+    text = _SECRET_DETAIL_KV_RE.sub(r"\1<redacted>", text)
+    return text[:400]
+
+
+def check(name: str, ok: bool, detail: object = "") -> None:
+    safe_detail = format_check_detail(detail)
+    CHECKS.append({"name": name, "ok": bool(ok), "detail": safe_detail})
+    print(("PASS " if ok else "FAIL ") + name + (f" — {safe_detail}" if safe_detail else ""), flush=True)
     if not ok:
-        annotate("CPSA_RECOVERY", name + ((f" — {detail}" if detail else "")))
-        raise AssertionError(name + (f": {detail}" if detail else ""))
+        annotate("CPSA_RECOVERY", name + (f" — {safe_detail}" if safe_detail else ""))
+        raise AssertionError(name + (f": {safe_detail}" if safe_detail else ""))
 
 
 def submit(page, action: str, phrase: str | None = None) -> None:
@@ -136,7 +195,10 @@ def wp_eval_json(marker: str, code: str, env_extra: dict | None = None) -> dict:
         env=merged,
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"WP-CLI eval ({marker}) failed rc={proc.returncode}: {(proc.stderr or proc.stdout)[:240]}")
+        raise RuntimeError(
+            f"WP-CLI eval ({marker}) failed rc={proc.returncode} "
+            f"stderr_len={len(proc.stderr or '')} stdout_len={len(proc.stdout or '')}"
+        )
     prefix = marker + "="
     line = next((row for row in (proc.stdout or "").splitlines() if row.startswith(prefix)), "")
     if not line:
@@ -290,10 +352,11 @@ def password_login(ctx, page, username: str, password: str, label: str) -> None:
     page.click("#wp-submit")
     page.wait_for_url(lambda url: "wp-login.php" not in url, wait_until="domcontentloaded", timeout=20000)
     logged_in = any(str(c.get("name", "")).startswith("wordpress_logged_in_") for c in ctx.cookies())
+    on_login = "wp-login.php" in page.url
     check(
         f"native password login succeeded: {label}",
-        logged_in and page.locator("#login_error").count() == 0 and "wp-login.php" not in page.url,
-        page.url,
+        logged_in and page.locator("#login_error").count() == 0 and not on_login,
+        f"logged_in={logged_in} on_login={on_login}",
     )
 
 
@@ -418,7 +481,7 @@ def main() -> int:
                       and after_wrong["patients"] == before_verify["patients"]
                       and after_wrong["verify_ok"] == before_verify["verify_ok"]
                       and after_wrong["login_success"] == before_verify["login_success"],
-                      f"status={wrong_resp.status} code={wrong_err}")
+                      f"status={wrong_resp.status} code={safe_error_code(wrong_err)}")
 
                 page.locator('[data-role="otp-code"]').fill(code)
                 code = ""
@@ -436,7 +499,8 @@ def main() -> int:
                 verify_data = verify_json.get("data") if isinstance(verify_json, dict) else None
                 check("production OTP verification returns the HTTP 200 zero-access envelope",
                       verify_resp.status == 200 and is_zero_access_otp_envelope(verify_data),
-                      f"status={verify_resp.status} data={json.dumps(verify_data, ensure_ascii=False)[:240]}")
+                      f"status={verify_resp.status} keys={json.dumps(safe_key_names(verify_data))} "
+                      f"zero_access={is_zero_access_otp_envelope(verify_data)}")
                 check("wrong-mobile OTP verify sets no WordPress auth or settings cookie",
                       auth_cookie_names(ctx) == [] and not response_sets_auth_cookie(verify_resp),
                       f"cookies={auth_cookie_names(ctx)}")
@@ -444,12 +508,14 @@ def main() -> int:
                 auth_status = page.locator('[data-role="auth-status"]')
                 auth_status.wait_for(state="visible")
                 auth_status_text = auth_status.inner_text()[:240]
+                possession_notice = "ورود با کد یک‌بارمصرف در حال حاضر فعال نیست"
+                has_possession_notice = possession_notice in auth_status_text
                 check("public booking stays anonymous and shows possession-only notice without reload",
                       page.locator('[data-role="otp-code"]').get_attribute("aria-invalid") == "true"
-                      and "ورود با کد یک‌بارمصرف در حال حاضر فعال نیست" in auth_status_text
+                      and has_possession_notice
                       and page.locator('[data-role="confirm-btn"]:visible').count() == 0
                       and page.locator('[data-role="receipt"]:visible').count() == 0,
-                      auth_status_text)
+                      f"has_notice={has_possession_notice} text_len={len(auth_status_text)}")
 
                 after_verify = recovery_db_snapshot(clinic_id, WRONG_MOBILE)
                 check("wrong-mobile OTP verify creates no wp_users, patient link, patient, hold or appointment row",
@@ -458,7 +524,13 @@ def main() -> int:
                       and after_verify["patients"] == after_wrong["patients"]
                       and after_verify["holds"] == after_wrong["holds"]
                       and after_verify["appointments"] == after_wrong["appointments"],
-                      json.dumps({"before": after_wrong, "after": after_verify}, ensure_ascii=False)[:350])
+                      json.dumps({
+                          "users_delta": after_verify["users"] - after_wrong["users"],
+                          "links_delta": after_verify["links"] - after_wrong["links"],
+                          "patients_delta": after_verify["patients"] - after_wrong["patients"],
+                          "holds_delta": after_verify["holds"] - after_wrong["holds"],
+                          "appointments_delta": after_verify["appointments"] - after_wrong["appointments"],
+                      }))
                 check("wrong-mobile OTP verify consumes challenge and writes possession audit without LOGIN_SUCCESS",
                       after_verify["tokens"] == after_wrong["tokens"]
                       and after_verify["unconsumed"] == 0
@@ -494,7 +566,7 @@ def main() -> int:
                       and after_replay["patients"] == after_verify["patients"]
                       and after_replay["verify_ok"] == after_verify["verify_ok"]
                       and after_replay["login_success"] == after_verify["login_success"],
-                      f"status={replay_resp.status} code={replay_code}")
+                      f"status={replay_resp.status} code={safe_error_code(replay_code)}")
             finally:
                 ctx.close()
 
@@ -553,14 +625,15 @@ def main() -> int:
                         hold_payload = holds[0].json() if holds else {}
                     except Exception:  # noqa: BLE001 - a non-JSON body is itself informative
                         hold_payload = {}
-                    hold_code = str((hold_payload or {}).get("code") or "")
+                    hold_code = str((hold_payload or {}).get("code") or "") if isinstance(hold_payload, dict) else ""
+                    safe_hold_code = safe_error_code(hold_code)
                     evidence["hold_status"] = hold_status
-                    evidence["hold_code"] = hold_code
+                    evidence["hold_code"] = safe_hold_code
                     evidence["appointment_created"] = False
                     check(
                         "the tenant write barrier REFUSES the Hold of a real (non-fixture) visitor",
                         hold_status == 403 and hold_code == BARRIER_CODE,
-                        f"status={hold_status} code={hold_code or '(none)'}",
+                        f"status={hold_status} code={safe_hold_code or '(none)'}",
                     )
                     status_panel = visitor_page.locator('[data-role="continue-status"]')
                     if status_panel.count():
@@ -570,11 +643,12 @@ def main() -> int:
                             pass
                     status_text = status_panel.inner_text()[:300] if status_panel.count() else ""
                     refusal_marker = "\u062d\u0633\u0627\u0628\u200c\u0647\u0627\u06cc \u0633\u0627\u062e\u062a\u06af\u06cc"
-                    evidence["barrier_text_present"] = refusal_marker in status_text
+                    has_refusal_marker = refusal_marker in status_text
+                    evidence["barrier_text_present"] = has_refusal_marker
                     check(
                         "the refusal is explained in Persian on the booking page",
-                        refusal_marker in status_text,
-                        status_text or "no status text",
+                        has_refusal_marker,
+                        f"has_marker={has_refusal_marker} text_len={len(status_text)}",
                     )
                     check(
                         "no confirm affordance and no receipt are offered after the refused Hold",

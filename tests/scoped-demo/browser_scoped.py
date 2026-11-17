@@ -55,6 +55,8 @@ Honest scope notes (do not overclaim):
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import re
@@ -126,12 +128,244 @@ def annotate(title: str, message: str) -> None:
     print(f"::error title={title}::{flat}", flush=True)
 
 
-def check(name: str, ok: bool, detail: str = "") -> None:
-    CHECKS.append({"name": name, "ok": bool(ok), "detail": detail})
-    print(("PASS " if ok else "FAIL ") + name + ((" — " + detail) if detail else ""), flush=True)
+_SAFE_ERROR_CODE_RE = re.compile(r"(?:CLINIC|SCOPED|CPMS)_[A-Z0-9_]{1,56}|rest_[a-z0-9_]{1,56}")
+_SAFE_KEY_NAME_RE = re.compile(r"[a-z][a-zA-Z0-9_]{0,47}")
+_SAFE_FLAG_NAME_RE = re.compile(r"[a-z][a-z0-9_]{0,63}")
+_FORBIDDEN_INT_FLAG_SEGMENTS = frozenset({
+    "token", "otp", "code", "nonce", "cookie", "password", "pass",
+    "secret", "key", "reference", "mobile", "phone", "ticket", "session",
+})
+_ALLOWED_COUNT_SUFFIXES = ("_count", "_delta", "_len")
+_SECRET_DETAIL_JSON_RE = re.compile(
+    r'(["\'](?:hold_token|confirm_token|idempotency_key|idempotency-key|idempotency|'
+    r'otp|otp_code|token_id|latest_token_id|nonce|_wpnonce|wp_nonce|x-wp-nonce|rest_nonce|'
+    r'cookie|set-cookie|set_cookie|password|user_pass|secret|reference_code|'
+    r'cpsd_persona_entry)["\']\s*:\s*)'
+    r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|-?\d+)',
+    re.IGNORECASE,
+)
+_SECRET_DETAIL_KV_RE = re.compile(
+    r'(\b(?:hold_token|confirm_token|idempotency_key|idempotency-key|'
+    r'otp|otp_code|token_id|latest_token_id|nonce|_wpnonce|wp_nonce|x-wp-nonce|rest_nonce|'
+    r'cookie|set-cookie|set_cookie|password|user_pass|secret|reference_code|'
+    r'cpsd_persona_entry)\s*[=:]\s*)'
+    r'(?:"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|[^\s,;\])\}]+)',
+    re.IGNORECASE,
+)
+
+
+def safe_error_code(source: object) -> str:
+    """Return a matching machine error code or `<nonstandard_code>`."""
+    if isinstance(source, dict):
+        data = source.get("data")
+        raw = data.get("code") if isinstance(data, dict) and "code" in data else source.get("code")
+    else:
+        raw = source
+    if raw is None or raw == "":
+        return ""
+    if not isinstance(raw, str):
+        return "<nonstandard_code>"
+    return raw if _SAFE_ERROR_CODE_RE.fullmatch(raw) else "<nonstandard_code>"
+
+
+def safe_key_names(payload: object) -> list[str]:
+    """Return sorted schema key names of a dict payload without any values."""
+    if not isinstance(payload, dict):
+        return []
+    safe: list[str] = []
+    has_other = False
+    for key in payload.keys():
+        if isinstance(key, str) and _SAFE_KEY_NAME_RE.fullmatch(key):
+            safe.append(key)
+        else:
+            has_other = True
+    names = sorted(safe)
+    if has_other:
+        names.append("<nonstandard_key>")
+    return names
+
+
+def _validate_safe_flags(flags: dict[str, object]) -> dict[str, bool | int]:
+    """Validate boolean and non-identifier/non-secret integer detail flags."""
+    clean: dict[str, bool | int] = {}
+    for name, value in flags.items():
+        if not isinstance(name, str) or not _SAFE_FLAG_NAME_RE.fullmatch(name):
+            raise ValueError(f"unsafe detail flag name: {name!r}")
+        if type(value) is bool:
+            clean[name] = value
+            continue
+        if type(value) is int:
+            if name == "id" or name.endswith("_id"):
+                raise ValueError(f"identifier value disallowed in detail flag: {name}")
+            if not name.endswith(_ALLOWED_COUNT_SUFFIXES):
+                if set(name.split("_")) & _FORBIDDEN_INT_FLAG_SEGMENTS:
+                    raise ValueError(f"secret-like int disallowed in detail flag: {name}")
+            clean[name] = value
+            continue
+        raise ValueError(f"unsafe detail flag type for {name}: {type(value).__name__}")
+    return clean
+
+
+def safe_counts_detail(**flags: bool | int) -> str:
+    """Format validated boolean/count check details with no IDs, tokens, or bodies."""
+    return json.dumps(_validate_safe_flags(flags))
+
+
+def safe_response_detail(result: object, **flags: bool | int) -> str:
+    """Format safe API response detail: HTTP status, error code, key names, bools, counts."""
+    clean_flags = _validate_safe_flags(flags)
+    parts: list[str] = []
+    if isinstance(result, dict):
+        status = result.get("status")
+        if type(status) is int:
+            parts.append(f"HTTP {status}")
+        code = safe_error_code(result)
+        if code:
+            parts.append(code)
+        if "data" in result:
+            body = result.get("data")
+            if isinstance(body, dict) and isinstance(body.get("data"), dict):
+                parts.append(f"keys={json.dumps(safe_key_names(body['data']))}")
+            elif isinstance(body, dict) and isinstance(body.get("data"), list):
+                parts.append(f"count={len(body['data'])}")
+            elif isinstance(body, list):
+                parts.append(f"count={len(body)}")
+            elif isinstance(body, dict):
+                parts.append(f"keys={json.dumps(safe_key_names(body))}")
+            else:
+                parts.append(f"data_type={type(body).__name__}")
+        else:
+            parts.append(f"keys={json.dumps(safe_key_names(result))}")
+    elif isinstance(result, list):
+        parts.append(f"count={len(result)}")
+    for name, value in clean_flags.items():
+        parts.append(f"{name}={value}")
+    return " ".join(parts)
+
+
+def format_check_detail(detail: object) -> str:
+    """Prevent check() from serializing dict/list values or secret key/value pairs."""
+    if detail is None or detail == "":
+        return ""
+    if isinstance(detail, (dict, list)):
+        return safe_response_detail(detail)
+    text = str(detail)
+    text = _SECRET_DETAIL_JSON_RE.sub(r'\1"<redacted>"', text)
+    text = _SECRET_DETAIL_KV_RE.sub(r"\1<redacted>", text)
+    return text
+
+
+def check(name: str, ok: bool, detail: object = "") -> None:
+    safe_detail = format_check_detail(detail)
+    CHECKS.append({"name": name, "ok": bool(ok), "detail": safe_detail})
+    print(("PASS " if ok else "FAIL ") + name + ((" — " + safe_detail) if safe_detail else ""), flush=True)
     if not ok:
-        annotate("SCOPED_BROWSER", name + ((" — " + detail) if detail else ""))
-        raise AssertionError(name + ": " + detail)
+        annotate("SCOPED_BROWSER", name + ((" — " + safe_detail) if safe_detail else ""))
+        raise AssertionError(name + ": " + safe_detail)
+
+
+def selftest_safe_detail() -> dict[str, int]:
+    """Pure-logic self-check using synthetic placeholders; leaves CHECKS and stdout untouched."""
+    sentinels = {
+        "hold_token": "SYNTH_HOLD_9f8e7d6c5b4a",
+        "confirm_token": "SYNTH_CONFIRM_1a2b3c4d5e",
+        "idempotency_key": "SYNTH_IDEM_778899aabbcc",
+        "otp_code": "839204",
+        "token_id": 94827163,
+        "latest_token_id": 94827164,
+        "nonce": "SYNTH_NONCE_ccddeeff00",
+        "cookie": "wordpress_logged_in_synth=SYNTH_COOKIE_val99",
+        "password": "SYNTH_PASS_zzxxyy1122",
+        "reference_code": "SYNTH_REF_445566",
+    }
+    sentinel_strings = tuple(str(v) for v in sentinels.values())
+    hold_envelope = {
+        "status": 200,
+        "data": {"data": {
+            "hold_token": sentinels["hold_token"],
+            "expires_at": "2026-11-16T12:00:00Z",
+            "slot": {"id": 5},
+            **sentinels,
+        }},
+    }
+    bad_code_envelope = {
+        "status": 409,
+        "data": {
+            "code": sentinels["hold_token"],
+            "message": sentinels["password"],
+            sentinels["nonce"]: sentinels["cookie"],
+            "hold_token": sentinels["hold_token"],
+        },
+    }
+    cases = [
+        ("hold_pass", True, safe_response_detail(hold_envelope, has_hold_token=True)),
+        ("hold_fail", False, safe_response_detail(bad_code_envelope, has_hold_token=False)),
+        ("raw_dict_pass", True, dict(sentinels)),
+        ("raw_dict_fail", False, hold_envelope),
+        ("list_pass", True, [dict(sentinels)]),
+        ("json_str_pass", True, json.dumps(sentinels)),
+        ("json_str_fail", False, json.dumps({"nested": sentinels})),
+        ("kv_str_pass", True, " ".join(f"{k}={v}" for k, v in sentinels.items())),
+        ("counts_pass", True, safe_counts_detail(
+            same_token=True, consumed=True, unconsumed=0, tokens_delta=1, verify_ok_delta=1,
+        )),
+    ]
+    saved = list(CHECKS)
+    buf = io.StringIO()
+    try:
+        CHECKS.clear()
+        with contextlib.redirect_stdout(buf):
+            for label, ok, detail in cases:
+                if ok:
+                    check(label, True, detail)
+                else:
+                    try:
+                        check(label, False, detail)
+                    except AssertionError as exc:
+                        err_text = str(exc)
+                        for secret in sentinel_strings:
+                            if secret in err_text:
+                                raise RuntimeError(f"safe detail self-test failed on {label} exception") from None
+                    else:
+                        raise RuntimeError(f"safe detail self-test failed to raise on {label}")
+        captured_stdout = buf.getvalue()
+        captured_checks = json.dumps(CHECKS, ensure_ascii=False)
+        for secret in sentinel_strings:
+            if secret in captured_stdout or secret in captured_checks:
+                raise RuntimeError("safe detail self-test detected sentinel in check sink")
+        if 'HTTP 200' not in CHECKS[0]["detail"] or '"hold_token"' not in CHECKS[0]["detail"]:
+            raise RuntimeError("safe detail self-test lost status or key-name metadata")
+    finally:
+        CHECKS[:] = saved
+
+    rejected = 0
+    bad_flags: tuple[dict[str, object], ...] = (
+        {"hold_token": sentinels["hold_token"]},
+        {"confirm_token": sentinels["confirm_token"]},
+        {"idempotency_key": sentinels["idempotency_key"]},
+        {"otp_code": sentinels["otp_code"]},
+        {"otp": int(sentinels["otp_code"])},
+        {"code": int(sentinels["otp_code"])},
+        {"token_id": sentinels["token_id"]},
+        {"latest_token_id": sentinels["latest_token_id"]},
+        {"link_id": 77},
+        {"appointment_id": 88},
+        {"id": 99},
+        {"nonce": sentinels["nonce"]},
+        {"cookie": sentinels["cookie"]},
+        {"password": sentinels["password"]},
+        {"reference_code": sentinels["reference_code"]},
+        {"body": dict(sentinels)},
+        {"items": [sentinels["hold_token"]]},
+    )
+    for bad in bad_flags:
+        try:
+            safe_response_detail(hold_envelope, **bad)  # type: ignore[arg-type]
+        except ValueError:
+            rejected += 1
+        else:
+            raise RuntimeError(f"safe detail self-test accepted unsafe flag {sorted(bad)}")
+    return {"cases": len(cases), "rejected_flags": rejected, "sentinels": len(sentinel_strings), "leaks": 0}
 
 
 # --- Shared in-page dialog (assets/js/cpms-dialog.js) — DUAL-MODE answers ----
@@ -664,7 +898,9 @@ def assert_same_otp_refusal_class(anon_refusal: object, auth_refusal: object) ->
     anon_code = code_of(anon_refusal)
     auth_code = code_of(auth_refusal)
     if anon_code != "CLINIC_OTP_INVALID" or auth_code != anon_code:
-        raise AssertionError(f"OTP refusal code mismatch: anon={anon_code!r} auth={auth_code!r}")
+        raise AssertionError(
+            f"OTP refusal code mismatch: anon={safe_error_code(anon_code)!r} auth={safe_error_code(auth_code)!r}"
+        )
     anon_msg = anon_body.get("message")
     auth_msg = auth_body.get("message")
     if (
@@ -679,7 +915,9 @@ def assert_same_otp_refusal_class(anon_refusal: object, auth_refusal: object) ->
     if anon_data.get("status") != anon_status or auth_data.get("status") != auth_status:
         raise AssertionError("OTP refusal data.status does not match HTTP status")
     if set(auth_body.keys()) != set(anon_body.keys()):
-        raise AssertionError(f"OTP refusal keys differ: anon={sorted(anon_body)} auth={sorted(auth_body)}")
+        raise AssertionError(
+            f"OTP refusal keys differ: anon={safe_key_names(anon_body)} auth={safe_key_names(auth_body)}"
+        )
     forbidden = {"session_issued", "user_id", "patient_links", "is_new_user"}
     if (forbidden & set(auth_body.keys())) or (forbidden & set(auth_data.keys())):
         raise AssertionError("OTP refusal exposed verify-success fields")
@@ -724,7 +962,10 @@ def wp_eval_json(marker: str, code: str, env_extra: dict | None = None) -> dict:
         env=merged,
     )
     if proc.returncode != 0:
-        raise RuntimeError(f"WP-CLI eval ({marker}) failed rc={proc.returncode}: {(proc.stderr or proc.stdout)[:240]}")
+        raise RuntimeError(
+            f"WP-CLI eval ({marker}) failed rc={proc.returncode} "
+            f"stderr_len={len(proc.stderr or '')} stdout_len={len(proc.stdout or '')}"
+        )
     prefix = marker + "="
     line = next((row for row in (proc.stdout or "").splitlines() if row.startswith(prefix)), "")
     if not line:
@@ -1474,6 +1715,7 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
           bool(slot.get("id")) and int(slot.get("id") or 0) != int(fixture_slot.get("id") or 0),
           json.dumps({"patient_slot": slot, "reception_slot": fixture_slot}, ensure_ascii=False))
 
+    selftest_safe_detail()
     before_req = otp_db_snapshot(clinic_id, mobile)
     consumed_code = ""
     try:
@@ -1513,7 +1755,11 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
             check("the public OTP request creates a challenge bound to the fixture Clinic",
                   requested["status"] == 200 and is_json_response(requested)
                   and auth_cookie_names(ctx) == [] and not response_sets_auth_cookie(req_resp_info.value),
-                  f"HTTP {requested['status']} {code_of(requested)} cookies={auth_cookie_names(ctx)}")
+                  safe_response_detail(
+                      requested,
+                      cookie_count=len(auth_cookie_names(ctx)),
+                      wp_set_cookie=response_sets_auth_cookie(req_resp_info.value),
+                  ))
             after_req = otp_db_snapshot(clinic_id, mobile)
             challenge_token_id = int(after_req.get("latest_token_id") or 0)
             check("OTP request persists one unconsumed token and creates no user, link or patient",
@@ -1525,7 +1771,16 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
                   and after_req["links"] == before_req["links"]
                   and after_req["patients"] == before_req["patients"]
                   and after_req["login_success"] == before_req["login_success"],
-                  json.dumps({"before": before_req, "after": after_req}, ensure_ascii=False)[:350])
+                  safe_counts_detail(
+                      tokens_delta=after_req["tokens"] - before_req["tokens"],
+                      token_advanced=challenge_token_id > int(before_req.get("latest_token_id") or 0),
+                      consumed=bool(after_req["latest_consumed"]),
+                      unconsumed=after_req["unconsumed"],
+                      users_delta=after_req["users"] - before_req["users"],
+                      links_delta=after_req["links"] - before_req["links"],
+                      patients_delta=after_req["patients"] - before_req["patients"],
+                      login_success_delta=after_req["login_success"] - before_req["login_success"],
+                  ))
 
             # --------------------------- sanctioned code disclosure (admin form)
             ctx_a, admin = admin_login(browser)
@@ -1558,7 +1813,11 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
                   and after_wrong["unconsumed"] == 1
                   and after_wrong["latest_attempts"] == before_wrong["latest_attempts"] + 1
                   and after_wrong["verify_ok"] == before_wrong["verify_ok"],
-                  f"HTTP {refused['status']} {code_of(refused)} attempts={after_wrong['latest_attempts']}")
+                  safe_response_detail(
+                      refused,
+                      same_token=after_wrong["latest_token_id"] == challenge_token_id,
+                      attempts=after_wrong["latest_attempts"],
+                  ))
             check("the refused code issued no WordPress session and wrote no identity row",
                   auth_cookie_names(ctx) == []
                   and not response_sets_auth_cookie(wrong_resp_info.value)
@@ -1579,8 +1838,7 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
             check("the production verify path returns the HTTP 200 zero-access envelope",
                   verified["status"] == 200 and is_json_response(verified)
                   and is_zero_access_otp_envelope(verified_data),
-                  f"HTTP {verified['status']} {code_of(verified)} "
-                  f"{json.dumps(verified_data, ensure_ascii=False)[:300]}")
+                  safe_response_detail(verified, zero_access=is_zero_access_otp_envelope(verified_data)))
             check("OTP verification sets no WordPress auth or settings cookie",
                   auth_cookie_names(ctx) == []
                   and not response_sets_auth_cookie(verify_resp_info.value),
@@ -1594,7 +1852,15 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
                   and after_verify["clinic_patients"] == before_verify["clinic_patients"]
                   and after_verify["holds"] == before_verify["holds"]
                   and after_verify["appointments"] == before_verify["appointments"],
-                  json.dumps({"before": before_verify, "after": after_verify}, ensure_ascii=False)[:350])
+                  safe_counts_detail(
+                      users_delta=after_verify["users"] - before_verify["users"],
+                      links_delta=after_verify["links"] - before_verify["links"],
+                      clinic_links=after_verify["clinic_links"],
+                      patients_delta=after_verify["patients"] - before_verify["patients"],
+                      clinic_patients_delta=after_verify["clinic_patients"] - before_verify["clinic_patients"],
+                      holds_delta=after_verify["holds"] - before_verify["holds"],
+                      appointments_delta=after_verify["appointments"] - before_verify["appointments"],
+                  ))
             check("OTP verification consumes the challenge and audits possession without LOGIN_SUCCESS",
                   after_verify["tokens"] == before_verify["tokens"]
                   and after_verify["latest_token_id"] == challenge_token_id
@@ -1604,14 +1870,14 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
                   and type(after_verify["last_verify_actor"]) is int
                   and after_verify["last_verify_actor"] == 0
                   and after_verify["login_success"] == before_verify["login_success"],
-                  json.dumps({
-                      "token_id": after_verify["latest_token_id"],
-                      "consumed": after_verify["latest_consumed"],
-                      "unconsumed": after_verify["unconsumed"],
-                      "verify_ok_delta": after_verify["verify_ok"] - before_verify["verify_ok"],
-                      "last_verify_actor": after_verify["last_verify_actor"],
-                      "login_success_delta": after_verify["login_success"] - before_verify["login_success"],
-                  }))
+                  safe_counts_detail(
+                      same_token=after_verify["latest_token_id"] == challenge_token_id,
+                      consumed=bool(after_verify["latest_consumed"]),
+                      unconsumed=after_verify["unconsumed"],
+                      verify_ok_delta=after_verify["verify_ok"] - before_verify["verify_ok"],
+                      last_verify_actor=after_verify["last_verify_actor"],
+                      login_success_delta=after_verify["login_success"] - before_verify["login_success"],
+                  ))
 
             # ----------------------------------- anonymous replay of consumed code
             with page.expect_response(
@@ -1628,7 +1894,7 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
             check("replaying the consumed OTP code is refused (single use)",
                   replay["status"] in (400, 401, 422) and is_json_response(replay)
                   and code_of(replay) == "CLINIC_OTP_INVALID",
-                  f"HTTP {replay['status']} {code_of(replay)}")
+                  safe_response_detail(replay))
             check("the replay issued no session cookie and wrote no identity or audit row",
                   auth_cookie_names(ctx) == []
                   and not response_sets_auth_cookie(replay_resp_info.value)
@@ -1657,16 +1923,27 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
               and after_link["links"] == after_replay["links"] + 1
               and after_link["clinic_links"] == 1
               and after_link["patients"] == after_replay["patients"],
-              json.dumps(linked, ensure_ascii=False))
+              safe_counts_detail(
+                  has_link=int(linked.get("link_id") or 0) > 0,
+                  patient_role_only=linked.get("roles") == ["cpms_patient"],
+                  clinic_memberships=int(linked.get("clinic_memberships") or 0),
+                  org_memberships=int(linked.get("org_memberships") or 0),
+                  is_admin=bool(linked.get("is_admin")),
+                  users_delta=after_link["users"] - after_replay["users"],
+                  links_delta=after_link["links"] - after_replay["links"],
+                  clinic_links=after_link["clinic_links"],
+                  patients_delta=after_link["patients"] - after_replay["patients"],
+              ))
 
         patient_ctx, patient_page = persona_login(
             browser, creds["patient"]["username"], creds["patient"]["password"]
         )
         try:
             patient_page.goto(patient_url, wait_until="domcontentloaded")
+            portal_cfg_count = patient_page.locator("script.cpms-patient-portal__config").count()
             check("the linked patient session renders the patient portal",
-                  patient_page.locator("script.cpms-patient-portal__config").count() == 1,
-                  f"url={patient_page.url}")
+                  portal_cfg_count == 1,
+                  safe_counts_detail(config_count=portal_cfg_count))
             cfg = surface_config(patient_page, "linked patient")
             nonce = str(cfg.get("nonce", ""))
             root = str(cfg.get("rest_root", "") or REST)
@@ -1680,12 +1957,12 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
             me = api(patient_page, nonce, "GET", "/patient/me", rest_root=root)
             check("the linked patient's clinical read stays fail-closed without an identity link",
                   me["status"] == 404 and code_of(me) == "CLINIC_NOT_FOUND",
-                  f"HTTP {me['status']} {code_of(me)}")
+                  safe_response_detail(me))
             records = api(patient_page, nonce, "GET", "/patient/my-records", rest_root=root)
             listed = list_of(records)
             check("the linked patient's record list stays empty for the same reason",
                   records["status"] == 200 and listed == [],
-                  f"HTTP {records['status']} {json.dumps(listed, ensure_ascii=False)[:200]}")
+                  safe_response_detail(records, record_count=len(listed)))
 
             # --- authenticated replay of the earlier-consumed OTP (session held)
             before_auth_replay = otp_db_snapshot(clinic_id, mobile)
@@ -1696,11 +1973,11 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
                   and before_auth_replay["latest_token_id"] == challenge_token_id
                   and before_auth_replay["latest_consumed"] is True
                   and before_auth_replay["unconsumed"] == 0,
-                  json.dumps({
-                      "token_id": before_auth_replay["latest_token_id"],
-                      "consumed": before_auth_replay["latest_consumed"],
-                      "unconsumed": before_auth_replay["unconsumed"],
-                  }))
+                  safe_counts_detail(
+                      same_token=before_auth_replay["latest_token_id"] == challenge_token_id,
+                      consumed=bool(before_auth_replay["latest_consumed"]),
+                      unconsumed=before_auth_replay["unconsumed"],
+                  ))
             cookies_before_auth_replay = patient_ctx.cookies()
 
             # 1) Public-route call shape (no X-WP-Nonce; browser sends live session cookies).
@@ -1788,7 +2065,7 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
             hold_token = str(hold_data.get("hold_token") or "")
             check("the linked patient holds a real slot",
                   hold["status"] == 200 and bool(hold_token),
-                  f"HTTP {hold['status']} {code_of(hold)} {json.dumps(hold_data, ensure_ascii=False)[:200]}")
+                  safe_response_detail(hold, has_hold_token=bool(hold_token)))
 
             key = new_idempotency_key()
             confirm_body = {"hold_token": hold_token, "reason": "scoped demo patient journey"}
@@ -1801,20 +2078,22 @@ def patient_otp_journey(browser, targets: dict, creds: dict) -> None:
             check("the captured booking is committed once for the linked patient "
                   "(no names sent, and no new patient row is created)",
                   captured["status"] == 200 and appointment_id > 0,
-                  f"HTTP {captured['status']} {code_of(captured)} "
-                  f"{json.dumps(captured_data, ensure_ascii=False)[:200]}")
+                  safe_response_detail(captured, has_appointment=appointment_id > 0))
             check("the committed appointment is a new row, not the fixture appointment",
                   appointment_id != int(targets.get("appointment_id") or 0),
-                  f"appointment={appointment_id} fixture={targets.get('appointment_id')}")
+                  safe_counts_detail(
+                      distinct_from_fixture=appointment_id != int(targets.get("appointment_id") or 0),
+                      has_appointment=appointment_id > 0,
+                  ))
 
             replayed = api(patient_page, nonce, "POST", "/booking/confirm", confirm_body,
                            headers={"Idempotency-Key": key}, rest_root=root)
             replayed_data = payload_of(replayed)
+            replayed_appointment_id = int(replayed_data.get("appointment_id") or replayed_data.get("id") or 0)
             check("replaying the identical request returns the same appointment",
                   replayed["status"] == 200
-                  and int(replayed_data.get("appointment_id") or replayed_data.get("id") or 0) == appointment_id,
-                  f"HTTP {replayed['status']} {code_of(replayed)} "
-                  f"{json.dumps(replayed_data, ensure_ascii=False)[:200]}")
+                  and replayed_appointment_id == appointment_id,
+                  safe_response_detail(replayed, same_appointment=replayed_appointment_id == appointment_id))
 
             after_booking = otp_db_snapshot(clinic_id, mobile)
             booked_row = wp_eval_json(
@@ -1843,11 +2122,16 @@ echo "CPSD_BOOKED_APPT=" . wp_json_encode([
                   and booked_row["patient_id"] == patient_id
                   and booked_row["slot_id"] == int(slot.get("id") or 0)
                   and booked_row["status"] == "confirmed",
-                  json.dumps({
-                      "appointments_delta": after_booking["appointments"] - after_link["appointments"],
-                      "patients_delta": after_booking["patients"] - after_link["patients"],
-                      "booked": booked_row,
-                  }))
+                  safe_counts_detail(
+                      appointments_delta=after_booking["appointments"] - after_link["appointments"],
+                      patients_delta=after_booking["patients"] - after_link["patients"],
+                      users_delta=after_booking["users"] - after_link["users"],
+                      links_delta=after_booking["links"] - after_link["links"],
+                      clinic_match=booked_row["clinic_id"] == clinic_id,
+                      patient_match=booked_row["patient_id"] == patient_id,
+                      slot_match=booked_row["slot_id"] == int(slot.get("id") or 0),
+                      confirmed=booked_row["status"] == "confirmed",
+                  ))
 
             mine = api(patient_page, nonce, "GET", "/appointments/mine", rest_root=root)
             mine_list = list_of(mine)
@@ -1856,10 +2140,14 @@ echo "CPSD_BOOKED_APPT=" . wp_json_encode([
             same_slot = [row for row in mine_list
                          if isinstance(row, dict) and str(row.get("date") or "") == slot_date
                          and str(row.get("time") or "")[:5] == slot_time]
+            same_appointment = len(same_slot) == 1 and int(same_slot[0].get("id") or 0) == appointment_id
             check("exactly one appointment exists for the captured slot after the replay",
-                  mine["status"] == 200 and len(same_slot) == 1
-                  and int(same_slot[0].get("id") or 0) == appointment_id,
-                  f"HTTP {mine['status']} matches={json.dumps(same_slot, ensure_ascii=False)[:300]}")
+                  mine["status"] == 200 and same_appointment,
+                  safe_response_detail(
+                      mine,
+                      match_count=len(same_slot),
+                      same_appointment=same_appointment,
+                  ))
             check_wp_auth_cookies_unchanged(
                 "patient session cookies stay unchanged after post-replay authenticated /appointments/mine",
                 cookies_before_auth_replay,
